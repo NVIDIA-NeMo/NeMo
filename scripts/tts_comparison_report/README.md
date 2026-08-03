@@ -2,7 +2,8 @@
 
 This tool generates HTML comparison reports for TTS evaluation buckets and uploads them to S3.
 
-The `generate_report` script compares two evaluation buckets produced by `magpietts_inference` and generates:
+The `generate_report` script compares a baseline with one or more candidate evaluation buckets produced by
+`magpietts_inference` and generates:
 1. an HTML evaluation report with aggregated and per-benchmark metrics;
 2. an optional HTML audio comparison report with side-by-side audio samples.
 
@@ -48,7 +49,7 @@ experiment_root/
     └── benchmark_3
 ```
 
-In both cases, `--baseline_path` and `--candidate_path` should point to the experiment root. 
+In both cases, `--baseline_path` and each `--candidate_path` should point to an experiment root.
 If evaluation artifacts are stored directly inside the experiment root, set `--results_subdir` 
 to an empty string. If evaluation artifacts are stored under a dedicated subdirectory, 
 set `--results_subdir` to that subdirectory name.
@@ -110,6 +111,10 @@ python scripts/tts_comparison_report/generate_report.py \
 
 If the evaluation artifacts are stored in a non-default results subdirectory, 
 use `--results_subdir`.
+
+For more than two systems, repeat `--candidate_name` and `--candidate_path` for each additional candidate.
+Use `--s3_prefix` to override the generated S3 directory name, or `--local_output_dir` to create the report
+locally without uploading.
 
 To generate both the evaluation report and the audio comparison report, use `--audio_report`.
 You can also use `--audio_report_benchmarks` and `--samples_per_benchmark` 
@@ -178,7 +183,7 @@ only artifacts from repetition `0`.
 the experiment root that contains evaluation outputs such as metrics and generated audio. 
 If evaluation artifacts are stored directly inside the experiment root, `--results_subdir` 
 should be set to an empty string.
-- Both generated reports are HTML reports uploaded to S3-compatible object storage.
+- Reports are uploaded to S3-compatible object storage unless `--local_output_dir` is used.
 - If the audio report is enabled, the evaluation report includes a link to the audio report.
 - Audio files referenced by the audio report are uploaded separately and linked through presigned URLs.
 - Box plot images are also uploaded to S3 and embedded into the evaluation report via presigned URLs.

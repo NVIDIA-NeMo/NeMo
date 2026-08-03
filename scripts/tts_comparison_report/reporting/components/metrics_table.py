@@ -12,143 +12,114 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import html
-from typing import Optional
 
 import numpy as np
 from scripts.tts_comparison_report.reporting.metrics import MetricSpec, MetricsRegistry
 from scripts.tts_comparison_report.reporting.models import BucketData
 
 
-def _metric_comparator(
-    a: float,
-    b: float,
-    lower_is_better: Optional[bool],
-) -> Optional[bool]:
-    if lower_is_better is None:
-        return None
-
-    if lower_is_better:
-        # If the values ​​are equal, the baseline wins.
-        return a <= b
-
-    return a >= b
+def _as_bucket_list(
+    bucket_baseline: BucketData,
+    bucket_candidate: BucketData | list[BucketData],
+) -> list[BucketData]:
+    candidates = bucket_candidate if isinstance(bucket_candidate, list) else [bucket_candidate]
+    return [bucket_baseline, *candidates]
 
 
 def _format_metric_values(
-    a: float,
-    b: float,
+    values: list[float],
     metric: MetricSpec,
-) -> tuple[str, str]:
-    a, b = metric.multiplier * a, metric.multiplier * b
-    a_is_better = _metric_comparator(a, b, metric.lower_is_better)
-    a, b = round(a, metric.round_digits), round(b, metric.round_digits)
-    a_str, b_str = f"{a}{metric.units}", f"{b}{metric.units}"
+) -> list[str]:
+    scaled_values = [metric.multiplier * value for value in values]
+    best_value = None
 
-    a_str = html.escape(a_str)
-    b_str = html.escape(b_str)
+    if metric.lower_is_better is True:
+        best_value = min(scaled_values)
+    elif metric.lower_is_better is False:
+        best_value = max(scaled_values)
 
-    if metric.lower_is_better is not None:
-        if a_is_better:
-            a_str = f"<strong>{a_str}</strong>"
-        else:
-            b_str = f"<strong>{b_str}</strong>"
+    best_indices = set()
+    if best_value is not None:
+        best_indices = {index for index, value in enumerate(scaled_values) if value == best_value}
+        if len(scaled_values) == 2 and len(best_indices) == 2:
+            best_indices = {0}
 
-    return a_str, b_str
+    output = []
+    for index, value in enumerate(scaled_values):
+        value_str = html.escape(f"{round(value, metric.round_digits)}{metric.units}")
+        if index in best_indices:
+            value_str = f"<strong>{value_str}</strong>"
+        output.append(value_str)
+
+    return output
 
 
 def prepare_benchmark_metrics_table_rows(
     benchmark_name: str,
     bucket_baseline: BucketData,
-    bucket_candidate: BucketData,
+    bucket_candidate: BucketData | list[BucketData],
 ) -> list[list[str]]:
-    """Prepare formatted metric rows for one benchmark comparison table.
-
-    Args:
-        benchmark_name: Name of the benchmark to render.
-        bucket_baseline: Baseline bucket data.
-        bucket_candidate: Candidate bucket data.
-
-    Returns:
-        Table rows containing metric names and formatted baseline/candidate values.
-
-    Raises:
-        ValueError: If a required metric is missing for the benchmark.
-    """
+    """Prepare formatted metric rows for one benchmark across all systems."""
+    buckets = _as_bucket_list(bucket_baseline, bucket_candidate)
     rows = []
 
     for metric in MetricsRegistry:
-        a = bucket_baseline.get_metric_avg_value(
-            metric_name=metric.key,
-            benchmark_name=benchmark_name,
-        )
-        b = bucket_candidate.get_metric_avg_value(
-            metric_name=metric.key,
-            benchmark_name=benchmark_name,
-        )
+        values = [
+            bucket.get_metric_avg_value(
+                metric_name=metric.key,
+                benchmark_name=benchmark_name,
+            )
+            for bucket in buckets
+        ]
 
-        if a is None or b is None:
+        if any(value is None for value in values):
             if metric.optional:
                 continue
             raise ValueError(f"Unknown metric '{metric.key}' for benchmark '{benchmark_name}'.")
 
-        a_str, b_str = _format_metric_values(a, b, metric)
-
-        rows.append([html.escape(metric.report_name), a_str, b_str])
+        formatted_values = _format_metric_values([float(value) for value in values], metric)
+        rows.append([html.escape(metric.report_name), *formatted_values])
 
     return rows
 
 
 def prepare_summary_metrics_table_rows(
     bucket_baseline: BucketData,
-    bucket_candidate: BucketData,
+    bucket_candidate: BucketData | list[BucketData],
 ) -> list[list[str]]:
-    """Prepare formatted metric rows for the summary comparison table.
-
-    Args:
-        bucket_baseline: Baseline bucket data.
-        bucket_candidate: Candidate bucket data.
-
-    Returns:
-        Table rows containing metric names and formatted macro-averaged
-        baseline/candidate values.
-
-    Raises:
-        ValueError: If a required metric is missing for any benchmark included
-            in the summary.
-    """
+    """Prepare macro-averaged metric rows across all benchmarks and systems."""
+    buckets = _as_bucket_list(bucket_baseline, bucket_candidate)
     rows = []
 
     for metric in MetricsRegistry:
         if not metric.include_in_summary:
             continue
 
-        a_vals, b_vals = [], []
+        system_values: list[list[float]] = [[] for _ in buckets]
         skip = False
 
         for benchmark_name in bucket_baseline.benchmarks:
-            a = bucket_baseline.get_metric_avg_value(
-                metric_name=metric.key,
-                benchmark_name=benchmark_name,
-            )
-            b = bucket_candidate.get_metric_avg_value(
-                metric_name=metric.key,
-                benchmark_name=benchmark_name,
-            )
+            values = [
+                bucket.get_metric_avg_value(
+                    metric_name=metric.key,
+                    benchmark_name=benchmark_name,
+                )
+                for bucket in buckets
+            ]
 
-            if a is None or b is None:
+            if any(value is None for value in values):
                 if metric.optional:
                     skip = True
                     break
                 raise ValueError(f"Unknown metric '{metric.key}' for benchmark '{benchmark_name}'.")
 
-            a_vals.append(a)
-            b_vals.append(b)
+            for system_index, value in enumerate(values):
+                system_values[system_index].append(float(value))
 
         if skip:
             continue
 
-        avg_a, avg_b = np.mean(a_vals), np.mean(b_vals)
-        a_str, b_str = _format_metric_values(avg_a, avg_b, metric)
-        rows.append([html.escape(metric.report_name), a_str, b_str])
+        averages = [float(np.mean(values)) for values in system_values]
+        rows.append([html.escape(metric.report_name), *_format_metric_values(averages, metric)])
 
     return rows

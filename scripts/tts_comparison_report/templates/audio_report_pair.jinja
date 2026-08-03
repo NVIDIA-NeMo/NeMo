@@ -1,20 +1,17 @@
 <div class="audio-pair-card">
-  <div class="audio-pair-row">
+  <div class="audio-pair-row" style="grid-template-columns: repeat({{ system_urls|length + 1 }}, minmax(180px, 1fr));">
     <div class="audio-cell">
       <audio controls preload="metadata">
       <source src="{{ context_url }}" type="audio/wav">
       </audio>
     </div>
+    {% for system_url in system_urls.values() %}
     <div class="audio-cell">
       <audio controls preload="metadata">
-      <source src="{{ baseline_url }}" type="audio/wav">
+      <source src="{{ system_url }}" type="audio/wav">
       </audio>
     </div>
-    <div class="audio-cell">
-      <audio controls preload="metadata">
-      <source src="{{ candidate_url }}" type="audio/wav">
-      </audio>
-    </div>
+    {% endfor %}
   </div>
   <p class="pair-comment">
     Text: {{ text }}

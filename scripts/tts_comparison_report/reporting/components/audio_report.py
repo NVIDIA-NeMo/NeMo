@@ -20,67 +20,67 @@ from scripts.tts_comparison_report.reporting.models import AudioPair, BucketData
 _RNG = random.Random(SEED)
 
 
+def _as_bucket_list(
+    bucket_baseline: BucketData,
+    bucket_candidate: BucketData | list[BucketData],
+) -> list[BucketData]:
+    candidates = bucket_candidate if isinstance(bucket_candidate, list) else [bucket_candidate]
+    return [bucket_baseline, *candidates]
+
+
 def _collect_audio_pairs(
     benchmark_name: str,
     bucket_baseline: BucketData,
-    bucket_candidate: BucketData,
+    bucket_candidate: BucketData | list[BucketData],
     bucket_structure: BucketStructure,
 ) -> list[AudioPair]:
-    baseline_paths = bucket_baseline.get_benchmark_audio_paths(benchmark_name)
-    candidate_paths = bucket_candidate.get_benchmark_audio_paths(benchmark_name)
-    baseline_meta = bucket_baseline.get_benchmark_sample_meta(benchmark_name, bucket_structure)
-    candidate_meta = bucket_candidate.get_benchmark_sample_meta(benchmark_name, bucket_structure)
+    buckets = _as_bucket_list(bucket_baseline, bucket_candidate)
+    audio_paths = [bucket.get_benchmark_audio_paths(benchmark_name) for bucket in buckets]
+    sample_meta = [bucket.get_benchmark_sample_meta(benchmark_name, bucket_structure) for bucket in buckets]
+    expected_names = set(audio_paths[0])
+
+    for bucket, paths in zip(buckets[1:], audio_paths[1:]):
+        if set(paths) != expected_names:
+            raise ValueError(f"Audio sample sets differ for benchmark '{benchmark_name}' in system '{bucket.name}'.")
+
     pairs = []
 
-    if set(baseline_paths) != set(candidate_paths):
-        raise ValueError(f"Audio sample sets differ for benchmark '{benchmark_name}'.")
-
-    for name in baseline_paths:
-        if name not in candidate_paths or name not in baseline_meta or name not in candidate_meta:
+    for name in sorted(expected_names):
+        if any(name not in paths or name not in metadata for paths, metadata in zip(audio_paths, sample_meta)):
             raise ValueError(
                 f"Missing matched sample '{name}' in audio paths or metadata for benchmark '{benchmark_name}'."
             )
 
-        if baseline_meta[name].sample_id != candidate_meta[name].sample_id:
-            raise ValueError(
-                f"Sample id mismatch for '{name}' in benchmark '{benchmark_name}'. "
-                "Probably you use different versions of buckets."
+        expected_sample_id = sample_meta[0][name].sample_id
+        for bucket, metadata in zip(buckets[1:], sample_meta[1:]):
+            if metadata[name].sample_id != expected_sample_id:
+                raise ValueError(
+                    f"Sample id mismatch for '{name}' in benchmark '{benchmark_name}' and system '{bucket.name}'. "
+                    "Probably you use different versions of buckets."
+                )
+
+        system_paths = {bucket.name: paths[name] for bucket, paths in zip(buckets, audio_paths)}
+        pairs.append(
+            AudioPair(
+                context_path=sample_meta[0][name].context_path,
+                baseline_path=audio_paths[0][name],
+                candidate_path=audio_paths[1][name],
+                text=sample_meta[0][name].gt_text,
+                system_paths=system_paths,
             )
-
-        pair = AudioPair(
-            context_path=baseline_meta[name].context_path,
-            baseline_path=baseline_paths[name],
-            candidate_path=candidate_paths[name],
-            text=baseline_meta[name].gt_text,
         )
-        pairs.append(pair)
-
-    pairs.sort(key=lambda p: p.baseline_path.stem)
 
     return pairs
 
 
 def prepare_audio_pairs(
     bucket_baseline: BucketData,
-    bucket_candidate: BucketData,
+    bucket_candidate: BucketData | list[BucketData],
     bucket_structure: BucketStructure,
     used_benchmarks: list[str],
     samples_per_benchmark: int,
 ) -> dict[str, list[AudioPair]]:
-    """Prepare audio pairs for the selected benchmarks.
-
-    Args:
-        bucket_baseline: Baseline bucket data.
-        bucket_candidate: Candidate bucket data.
-        used_benchmarks: Benchmark names to include in the audio report.
-        samples_per_benchmark: Maximum number of audio pairs to sample per benchmark.
-
-    Returns:
-        Mapping from benchmark name to sampled baseline/candidate audio pairs.
-
-    Raises:
-        ValueError: If benchmark audio sets or sample metadata are inconsistent.
-    """
+    """Prepare matched audio samples for every system and selected benchmark."""
     pairs = {}
 
     for benchmark_name in used_benchmarks:

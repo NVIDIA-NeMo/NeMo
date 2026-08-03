@@ -1,7 +1,12 @@
 <div class="sub-card">
   <h4>Analysis of Statistical Tests</h4>
-  {% if winner is none %}
+  {% if winner is none and multiple_systems %}
+    <p>No statistically significant pairwise difference was observed.</p>
+  {% elif winner is none %}
     <p>No statistically significant difference was observed between these two models.</p>
+  {% elif multiple_systems %}
+    <p><strong>{{ winner }}</strong> recorded the most significant pairwise wins.
+    Significant advantages: {{ advantages }}.</p>
   {% else %}
     <p><strong>{{ winner }}</strong> performs best. 
     Key statistically significant advantages: {{ advantages }}.</p>

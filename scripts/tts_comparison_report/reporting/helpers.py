@@ -57,24 +57,32 @@ def make_task_info(task_id: str) -> TaskInfo:
 
 def generate_s3_prefix(
     baseline_path: Path,
-    candidate_path: Path,
+    candidate_path: Path | list[Path],
     task_info: TaskInfo,
     expiration_info: ExpirationInfo,
+    override: str | None = None,
 ) -> str:
     """Generate the S3 prefix used to store report artifacts.
 
     Args:
         baseline_path: Path to the baseline bucket root.
-        candidate_path: Path to the candidate bucket root.
+        candidate_path: Path or paths to candidate bucket roots.
         task_info: Task metadata.
         expiration_info: Expiration metadata.
+        override: Optional explicit S3 key prefix.
 
     Returns:
         S3 key prefix for uploaded report artifacts.
     """
-    parts = [
-        task_info.task_id,
-        f"{baseline_path.stem}_vs_{candidate_path.stem}",
-        expiration_info.path_str,
-    ]
+    if override is not None:
+        prefix = override.strip("/")
+        if not prefix:
+            raise ValueError("S3 prefix override must not be empty.")
+        if any(part in {".", ".."} for part in prefix.split("/")):
+            raise ValueError("S3 prefix override must not contain relative path components.")
+        return prefix
+
+    candidate_paths = candidate_path if isinstance(candidate_path, list) else [candidate_path]
+    comparison_name = "_vs_".join([baseline_path.stem, *(path.stem for path in candidate_paths)])
+    parts = [task_info.task_id, comparison_name, expiration_info.path_str]
     return "-".join(parts)

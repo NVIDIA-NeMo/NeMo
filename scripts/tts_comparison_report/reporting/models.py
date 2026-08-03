@@ -567,6 +567,8 @@ class StatTestResult:
     winner: Winner
     alternative: str
     p_value: float
+    baseline_name: Optional[str] = None
+    candidate_name: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -589,10 +591,11 @@ class EvalResult:
 
 @dataclass(frozen=True)
 class ModelConfiguration:
-    """Configuration strings associated with the baseline and candidate models."""
+    """Configuration strings associated with all compared systems."""
 
-    baseline: str
-    candidate: str
+    baseline: Optional[str]
+    candidate: Optional[str]
+    systems: dict[str, Optional[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -615,19 +618,21 @@ class UploadedBoxPlotsInfo:
 
 @dataclass(frozen=True)
 class AudioPair:
-    """Matched context, baseline, and candidate audio files for one sample."""
+    """Matched context and generated audio files for one sample."""
 
     context_path: Path
     baseline_path: Path
     candidate_path: Path
     text: str
+    system_paths: dict[str, Path] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class UploadedAudioPairInfo:
-    """Uploaded context, baseline, and candidate audio URLs for one sample."""
+    """Uploaded context and generated audio URLs for one sample."""
 
     context_url: str
     baseline_url: str
     candidate_url: str
     text: str
+    system_urls: dict[str, str] = field(default_factory=dict)

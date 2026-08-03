@@ -18,7 +18,6 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
-from matplotlib.patches import PathPatch
 from scripts.tts_comparison_report.reporting.metrics import DistributionMetricSpec, DistributionMetricsRegistry
 from scripts.tts_comparison_report.reporting.models import BucketData, StatTestResult, Winner
 
@@ -51,20 +50,39 @@ class BoxPlotsConfig:
     outlier_alpha: float = 0.5
 
 
+def _as_bucket_list(
+    bucket_baseline: BucketData,
+    bucket_candidate: BucketData | list[BucketData],
+) -> list[BucketData]:
+    candidates = bucket_candidate if isinstance(bucket_candidate, list) else [bucket_candidate]
+    return [bucket_baseline, *candidates]
+
+
+def _winning_systems(metric_name: str, stat_test_results: list[StatTestResult]) -> set[str]:
+    wins: dict[str, int] = {}
+
+    for result in stat_test_results:
+        if result.metric_name != metric_name or result.winner == Winner.tie:
+            continue
+        winner = result.baseline_name if result.winner == Winner.baseline else result.candidate_name
+        if winner is not None:
+            wins[winner] = wins.get(winner, 0) + 1
+
+    if not wins:
+        return set()
+
+    max_wins = max(wins.values())
+    return {name for name, count in wins.items() if count == max_wins}
+
+
 def _style_boxplot(
-    bp: dict[str, PathPatch],
-    metric: DistributionMetricSpec,
-    winner_lookup: dict[str, Winner],
+    bp: dict,
+    system_names: list[str],
+    winning_systems: set[str],
     cfg: BoxPlotsConfig,
 ) -> None:
-    for i, patch in enumerate(bp["boxes"]):
-        winner = winner_lookup[metric.report_name]
-
-        if (i == 0 and winner == Winner.baseline) or (i == 1 and winner == Winner.candidate):
-            color = cfg.winner_model_color
-        else:
-            color = cfg.default_model_color
-
+    for system_name, patch in zip(system_names, bp["boxes"]):
+        color = cfg.winner_model_color if system_name in winning_systems else cfg.default_model_color
         patch.set_facecolor(color)
         patch.set_alpha(cfg.box_alpha)
         patch.set_edgecolor(color)
@@ -73,12 +91,11 @@ def _style_boxplot(
 
 def _add_mean_ci_labels(
     ax: Axes,
-    baseline: np.ndarray,
-    candidate: np.ndarray,
+    values_by_system: list[np.ndarray],
     metric: DistributionMetricSpec,
     cfg: BoxPlotsConfig,
 ) -> None:
-    for x, values in [(1, baseline), (2, candidate)]:
+    for x, values in enumerate(values_by_system, start=1):
         mean, median = values.mean(), np.median(values)
         sem = values.std(ddof=1) / np.sqrt(len(values)) if len(values) > 1 else 0.0
         ci95 = 1.96 * sem
@@ -101,13 +118,15 @@ def _add_mean_ci_labels(
 def _configure_boxplot_axis(
     ax: Axes,
     metric: DistributionMetricSpec,
-    baseline_name: str,
-    candidate_name: str,
+    system_names: list[str],
     cfg: BoxPlotsConfig,
 ) -> None:
+    positions = list(range(1, len(system_names) + 1))
     ax.set_title(metric.report_name, fontsize=cfg.fontsize_title)
-    ax.set_xticks([1, 2])
-    ax.set_xticklabels([baseline_name, candidate_name])
+    ax.set_xticks(positions)
+    ax.set_xticklabels(
+        system_names, rotation=20 if len(system_names) > 3 else 0, ha="right" if len(system_names) > 3 else "center"
+    )
     ax.tick_params(axis="x", labelsize=cfg.fontsize)
     ax.tick_params(axis="y", labelsize=cfg.fontsize)
     ax.grid(True, axis="y", linestyle="dotted", alpha=cfg.grid_alpha)
@@ -123,32 +142,20 @@ def _configure_boxplot_axis(
 
 def prepare_boxplots(
     bucket_baseline: BucketData,
-    bucket_candidate: BucketData,
+    bucket_candidate: BucketData | list[BucketData],
     stat_test_results: list[StatTestResult],
     cfg: BoxPlotsConfig,
     benchmark_name: Optional[str] = None,
 ) -> BytesIO:
-    """Create an in-memory box plot figure for summary or benchmark-level metrics.
-
-    Args:
-        bucket_baseline: Baseline bucket data.
-        bucket_candidate: Candidate bucket data.
-        stat_test_results: Statistical test results used to highlight the winning model.
-        cfg: Plot styling and layout configuration.
-        benchmark_name: Benchmark name. If omitted, metric samples are aggregated
-            across all benchmarks.
-
-    Returns:
-        PNG image stored in an in-memory bytes buffer.
-    """
-    baseline_name = bucket_baseline.name
-    candidate_name = bucket_candidate.name
-    winner_lookup = {res.metric_name: res.winner for res in stat_test_results}
-    num_rows = sum(m.add_to_box_plot for m in DistributionMetricsRegistry)
+    """Create an in-memory box plot figure containing every compared system."""
+    buckets = _as_bucket_list(bucket_baseline, bucket_candidate)
+    system_names = [bucket.name for bucket in buckets]
+    num_rows = sum(metric.add_to_box_plot for metric in DistributionMetricsRegistry)
     fig_height = max(2.0 * num_rows, 4.5)
+    fig_width = max(6.0, 1.6 * len(buckets))
 
     with plt.rc_context({"font.family": cfg.font_family, "font.sans-serif": cfg.font_list}):
-        fig, axs = plt.subplots(num_rows, 1, figsize=(6, fig_height), squeeze=False)
+        fig, axs = plt.subplots(num_rows, 1, figsize=(fig_width, fig_height), squeeze=False)
         axs = axs.flatten()
         plot_idx = 0
 
@@ -156,23 +163,16 @@ def prepare_boxplots(
             if not metric.add_to_box_plot:
                 continue
 
-            baseline = bucket_baseline.get_metric_samples(
-                metric_name=metric.key,
-                benchmark_name=benchmark_name,
-            )
-            candidate = bucket_candidate.get_metric_samples(
-                metric_name=metric.key,
-                benchmark_name=benchmark_name,
-            )
-            baseline = np.asarray(baseline, dtype=float)
-            candidate = np.asarray(candidate, dtype=float)
-
+            values_by_system = [
+                np.asarray(bucket.get_metric_samples(metric.key, benchmark_name), dtype=float) for bucket in buckets
+            ]
+            positions = list(range(1, len(buckets) + 1))
             ax = axs[plot_idx]
             plot_idx += 1
 
             bp = ax.boxplot(
-                [baseline, candidate],
-                positions=[1, 2],
+                values_by_system,
+                positions=positions,
                 widths=cfg.widths,
                 patch_artist=True,
                 showmeans=True,
@@ -183,21 +183,10 @@ def prepare_boxplots(
                     "markeredgecolor": cfg.mean_marker_color,
                     "markersize": cfg.mean_marker_size,
                 },
-                medianprops={
-                    "color": cfg.median_color,
-                    "linewidth": cfg.linewidth,
-                },
-                whiskerprops={
-                    "color": cfg.whisker_color,
-                    "linewidth": cfg.linewidth,
-                },
-                capprops={
-                    "color": cfg.cap_color,
-                    "linewidth": cfg.linewidth,
-                },
-                boxprops={
-                    "linewidth": cfg.linewidth,
-                },
+                medianprops={"color": cfg.median_color, "linewidth": cfg.linewidth},
+                whiskerprops={"color": cfg.whisker_color, "linewidth": cfg.linewidth},
+                capprops={"color": cfg.cap_color, "linewidth": cfg.linewidth},
+                boxprops={"linewidth": cfg.linewidth},
                 flierprops={
                     "marker": cfg.outlier_marker,
                     "markerfacecolor": cfg.outlier_color,
@@ -207,9 +196,9 @@ def prepare_boxplots(
                 },
             )
 
-            _style_boxplot(bp, metric, winner_lookup, cfg)
-            _add_mean_ci_labels(ax, baseline, candidate, metric, cfg)
-            _configure_boxplot_axis(ax, metric, baseline_name, candidate_name, cfg)
+            _style_boxplot(bp, system_names, _winning_systems(metric.report_name, stat_test_results), cfg)
+            _add_mean_ci_labels(ax, values_by_system, metric, cfg)
+            _configure_boxplot_axis(ax, metric, system_names, cfg)
 
         fig.tight_layout(rect=[0, 0, 1, 0.985])
 
@@ -217,5 +206,4 @@ def prepare_boxplots(
     fig.savefig(buffer, format="png", dpi=300, bbox_inches="tight")
     plt.close(fig)
     buffer.seek(0)
-
     return buffer

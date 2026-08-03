@@ -1,7 +1,12 @@
 <h1>Audio Comparison Report</h1>
 <p class="subtitle">
-  Comparing baseline <strong class="strong-muted">{{ baseline_name }}</strong>
-  against candidate <strong class="strong-muted">{{ candidate_name }}</strong>
+  {% if system_names|length == 2 %}
+  Comparing baseline <strong class="strong-muted">{{ system_names[0] }}</strong>
+  against candidate <strong class="strong-muted">{{ system_names[1] }}</strong>
+  {% else %}
+  Comparing baseline <strong class="strong-muted">{{ system_names[0] }}</strong>
+  against candidates <strong class="strong-muted">{{ system_names[1:]|join(", ") }}</strong>
+  {% endif %}
 </p>
 <p class="expiration_comment">
   {{ expiration_comment }}

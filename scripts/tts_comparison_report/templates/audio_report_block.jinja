@@ -1,15 +1,10 @@
 <h2 id="{{ section_id }}"> {{ title }} </h2>
 <div class="card">
-  <div class="model-header-row">
-    <div class="model-header">
-      Context
-    </div>
-    <div class="model-header">
-      {{ baseline_name }}
-    </div>
-    <div class="model-header">
-      {{ candidate_name }}
-    </div>
+  <div class="model-header-row" style="grid-template-columns: repeat({{ column_count }}, minmax(180px, 1fr));">
+    <div class="model-header">Context</div>
+    {% for system_name in system_names %}
+    <div class="model-header">{{ system_name }}</div>
+    {% endfor %}
   </div>
 
 {% for block in pair_blocks %}

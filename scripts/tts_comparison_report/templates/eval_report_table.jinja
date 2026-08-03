@@ -1,7 +1,7 @@
 <div class="sub-card">
   <h4>{{ title }}</h4>
   <div class="table-wrap">
-    <table>
+    <table style="min-width: {{ [headers|length * 180, 720]|max }}px;">
       <thead>
         <tr>
         {% for header in headers %}

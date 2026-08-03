@@ -11,10 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import shutil
 from io import BytesIO
 from logging import Logger
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypeVar
 
 from scripts.tts_comparison_report.reporting.components import (
     BoxPlotsConfig,
@@ -44,98 +45,137 @@ from scripts.tts_comparison_report.reporting.s3_client import S3Client
 from scripts.tts_comparison_report.reporting.storage import BaseStorage
 from tqdm import tqdm
 
+_T = TypeVar("_T")
+
 
 class Orchestrator:
-    """Coordinate loading, processing, rendering, and uploading of comparison reports."""
+    """Coordinate loading, processing, rendering, and publishing comparison reports."""
 
     def __init__(
         self,
         bucket_structure: BucketStructure,
         storage: BaseStorage,
-        s3_client: S3Client,
+        s3_client: Optional[S3Client],
         renderer: Renderer,
         logger: Optional[Logger] = None,
+        local_output_dir: Optional[Path] = None,
     ) -> None:
         self.bucket_structure = bucket_structure
         self.storage = storage
         self.s3_client = s3_client
         self.renderer = renderer
         self.logger = logger
+        self.local_output_dir = local_output_dir.resolve() if local_output_dir is not None else None
+        self.show_pbar = logger is not None
 
-        self.show_pbar = True if logger is not None else False
+        if (self.s3_client is None) == (self.local_output_dir is None):
+            raise ValueError("Configure exactly one report destination: S3 or a local output directory.")
 
     def _log_info(self, msg: str) -> None:
         if self.logger is not None:
             self.logger.info(msg)
 
+    def _expiration_comment(self, expiration_info: ExpirationInfo) -> str:
+        if self.local_output_dir is not None:
+            return "Local preview; audio and images are served from this directory."
+        return f"This report will expire at {expiration_info.user_str}"
+
+    @staticmethod
+    def _normalize_candidates(candidate: _T | list[_T]) -> list[_T]:
+        return candidate if isinstance(candidate, list) else [candidate]
+
     def _load_buckets(
         self,
         baseline_name: str,
-        candidate_name: str,
+        candidate_name: str | list[str],
         baseline_path: Path,
-        candidate_path: Path,
+        candidate_path: Path | list[Path],
         benchmark_names: tuple[str, ...],
         check_audio: bool,
-    ) -> tuple[BucketData, BucketData]:
-        self._log_info(f"\nLoading metadata for {baseline_name}...")
-        bucket_baseline = BucketData.from_storage(
-            bucket_name=baseline_name,
-            bucket_path=baseline_path,
-            bucket_structure=self.bucket_structure,
-            benchmark_names=benchmark_names,
-            check_audio=check_audio,
-            storage=self.storage,
-        )
-        self._log_info(f"Loading metadata for {candidate_name}...")
-        bucket_candidate = BucketData.from_storage(
-            bucket_name=candidate_name,
-            bucket_path=candidate_path,
-            bucket_structure=self.bucket_structure,
-            benchmark_names=benchmark_names,
-            check_audio=check_audio,
-            storage=self.storage,
-        )
+    ) -> list[BucketData]:
+        candidate_names = self._normalize_candidates(candidate_name)
+        candidate_paths = self._normalize_candidates(candidate_path)
+        if not candidate_names:
+            raise ValueError("At least one candidate system is required.")
+        if len(candidate_names) != len(candidate_paths):
+            raise ValueError("Candidate names and paths must have the same length.")
 
-        baseline_set = set(bucket_baseline.benchmarks.keys())
-        candidate_set = set(bucket_candidate.benchmarks.keys())
+        names = [baseline_name, *candidate_names]
+        paths = [baseline_path, *candidate_paths]
+        if len(set(names)) != len(names):
+            raise ValueError("System names must be unique.")
 
-        if baseline_set != candidate_set:
-            raise ValueError(f"Benchmark sets differ: '{baseline_set}' vs '{candidate_set}'.")
+        buckets = []
+        for name, path in zip(names, paths):
+            self._log_info(f"\nLoading metadata for {name}...")
+            buckets.append(
+                BucketData.from_storage(
+                    bucket_name=name,
+                    bucket_path=path,
+                    bucket_structure=self.bucket_structure,
+                    benchmark_names=benchmark_names,
+                    check_audio=check_audio,
+                    storage=self.storage,
+                )
+            )
 
-        self._log_info(f"\nLoading metric data for {baseline_name}:")
-        bucket_baseline.load_metrics(storage=self.storage, show_pbar=self.show_pbar)
+        reference_set = set(buckets[0].benchmarks)
+        for bucket in buckets[1:]:
+            benchmark_set = set(bucket.benchmarks)
+            if benchmark_set != reference_set:
+                raise ValueError(
+                    f"Benchmark sets differ for '{buckets[0].name}' and '{bucket.name}': "
+                    f"'{reference_set}' vs '{benchmark_set}'."
+                )
 
-        self._log_info(f"\nLoading metric data for {candidate_name}:")
-        bucket_candidate.load_metrics(storage=self.storage, show_pbar=self.show_pbar)
+        for bucket in buckets:
+            self._log_info(f"\nLoading metric data for {bucket.name}:")
+            bucket.load_metrics(storage=self.storage, show_pbar=self.show_pbar)
 
-        return bucket_baseline, bucket_candidate
+        return buckets
 
-    def _upload_audio_file(
-        self,
-        path: Path,
-        key: str,
-    ) -> str:
-        with self.storage.open_file(path) as f:
-            url = self.s3_client.upload_fileobj(
-                fileobj=f,
+    @staticmethod
+    def _artifact_key(prefix: str, relative_key: str) -> str:
+        return f"{prefix}/{relative_key}" if prefix else relative_key
+
+    def _local_artifact_path(self, key: str) -> Path:
+        if self.local_output_dir is None:
+            raise RuntimeError("Local output directory is not configured.")
+        target = (self.local_output_dir / key).resolve()
+        if not target.is_relative_to(self.local_output_dir):
+            raise ValueError(f"Local artifact path escapes output directory: '{key}'.")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def _upload_audio_file(self, path: Path, key: str) -> str:
+        with self.storage.open_file(path) as fileobj:
+            if self.local_output_dir is not None:
+                with self._local_artifact_path(key).open("wb") as output:
+                    shutil.copyfileobj(fileobj, output)
+                return key
+
+            if self.s3_client is None:
+                raise RuntimeError("S3 client is not configured.")
+            return self.s3_client.upload_fileobj(
+                fileobj=fileobj,
                 key=key,
                 expires_in=S3_LINK_EXPIRES_IN,
                 content_type="audio/wav",
             )
-        return url
 
-    def _upload_png_image(
-        self,
-        image: BytesIO,
-        key: str,
-    ) -> str:
-        url = self.s3_client.upload_bytes(
+    def _upload_png_image(self, image: BytesIO, key: str) -> str:
+        if self.local_output_dir is not None:
+            self._local_artifact_path(key).write_bytes(image.getvalue())
+            return key
+
+        if self.s3_client is None:
+            raise RuntimeError("S3 client is not configured.")
+        return self.s3_client.upload_bytes(
             data=image.getvalue(),
             key=key,
             expires_in=S3_LINK_EXPIRES_IN,
             content_type="image/png",
         )
-        return url
 
     def _upload_audio(
         self,
@@ -143,34 +183,43 @@ class Orchestrator:
         audio_pairs: dict[str, list[AudioPair]],
         s3_prefix: str,
     ) -> dict[str, list[UploadedAudioPairInfo]]:
-        total = sum(len(v) for v in audio_pairs.values())
+        total = sum(len(values) for values in audio_pairs.values())
         pbar = tqdm(total=total, ncols=TQDM_NCOLS) if self.show_pbar else None
         uploaded_info = {}
 
         for benchmark_name in used_benchmarks:
             benchmark_info = []
 
-            for i, pair in enumerate(audio_pairs[benchmark_name]):
+            for sample_index, pair in enumerate(audio_pairs[benchmark_name]):
                 context_url = self._upload_audio_file(
-                    path=pair.context_path,
-                    key=f"{s3_prefix}/{S3_AUDIO_DIR}/context_{benchmark_name}_{i}.wav",
+                    pair.context_path,
+                    self._artifact_key(s3_prefix, f"{S3_AUDIO_DIR}/context_{benchmark_name}_{sample_index}.wav"),
                 )
-                baseline_url = self._upload_audio_file(
-                    path=pair.baseline_path,
-                    key=f"{s3_prefix}/{S3_AUDIO_DIR}/baseline_{benchmark_name}_{i}.wav",
-                )
-                candidate_url = self._upload_audio_file(
-                    path=pair.candidate_path,
-                    key=f"{s3_prefix}/{S3_AUDIO_DIR}/candidate_{benchmark_name}_{i}.wav",
-                )
-                pair_info = UploadedAudioPairInfo(
-                    context_url=context_url,
-                    baseline_url=baseline_url,
-                    candidate_url=candidate_url,
-                    text=pair.text,
-                )
-                benchmark_info.append(pair_info)
+                system_urls = {}
+                system_items = list(pair.system_paths.items())
+                for system_index, (system_name, system_path) in enumerate(system_items):
+                    if len(system_items) == 2:
+                        artifact_name = ("baseline", "candidate")[system_index]
+                    else:
+                        artifact_name = f"system_{system_index}"
+                    system_urls[system_name] = self._upload_audio_file(
+                        system_path,
+                        self._artifact_key(
+                            s3_prefix,
+                            f"{S3_AUDIO_DIR}/{artifact_name}_{benchmark_name}_{sample_index}.wav",
+                        ),
+                    )
 
+                urls = list(system_urls.values())
+                benchmark_info.append(
+                    UploadedAudioPairInfo(
+                        context_url=context_url,
+                        baseline_url=urls[0],
+                        candidate_url=urls[1],
+                        text=pair.text,
+                        system_urls=system_urls,
+                    )
+                )
                 if pbar:
                     pbar.update(1)
 
@@ -178,102 +227,84 @@ class Orchestrator:
 
         if pbar:
             pbar.close()
-
         return uploaded_info
 
-    def _upload_boxplots(
-        self,
-        eval_artifacts: EvalArtifacts,
-        s3_prefix: str,
-    ) -> UploadedBoxPlotsInfo:
+    def _upload_boxplots(self, eval_artifacts: EvalArtifacts, s3_prefix: str) -> UploadedBoxPlotsInfo:
         name_prefix = "box_plot"
         pbar = tqdm(total=len(eval_artifacts.benchmarks) + 1, ncols=TQDM_NCOLS) if self.show_pbar else None
-
         summary_url = self._upload_png_image(
-            image=eval_artifacts.summary.box_plots,
-            key=f"{s3_prefix}/{S3_IMAGES_DIR}/{name_prefix}_summary.png",
+            eval_artifacts.summary.box_plots,
+            self._artifact_key(s3_prefix, f"{S3_IMAGES_DIR}/{name_prefix}_summary.png"),
         )
         if pbar:
             pbar.update(1)
 
         benchmark_urls = {}
-
         for benchmark_name, benchmark_result in eval_artifacts.benchmarks.items():
             benchmark_urls[benchmark_name] = self._upload_png_image(
-                image=benchmark_result.box_plots,
-                key=f"{s3_prefix}/{S3_IMAGES_DIR}/{name_prefix}_{benchmark_name}.png",
+                benchmark_result.box_plots,
+                self._artifact_key(s3_prefix, f"{S3_IMAGES_DIR}/{name_prefix}_{benchmark_name}.png"),
             )
             if pbar:
                 pbar.update(1)
 
         if pbar:
             pbar.close()
+        return UploadedBoxPlotsInfo(summary_url=summary_url, benchmark_urls=benchmark_urls)
 
-        return UploadedBoxPlotsInfo(
-            summary_url=summary_url,
-            benchmark_urls=benchmark_urls,
-        )
+    def _upload_report(self, report: str, s3_prefix: str, report_name: str) -> str:
+        key = self._artifact_key(s3_prefix, f"{report_name}.html")
+        if self.local_output_dir is not None:
+            self._local_artifact_path(key).write_text(report, encoding="utf-8")
+            return key
 
-    def _upload_report(
-        self,
-        report: str,
-        s3_prefix: str,
-        report_name: str,
-    ) -> str:
-        report_url = self.s3_client.upload_bytes(
+        if self.s3_client is None:
+            raise RuntimeError("S3 client is not configured.")
+        return self.s3_client.upload_bytes(
             data=report.encode("utf-8"),
-            key=f"{s3_prefix}/{report_name}.html",
+            key=key,
             expires_in=S3_LINK_EXPIRES_IN,
             content_type="text/html; charset=utf-8",
         )
-        return report_url
 
     def _render_audio_report(
         self,
-        baseline_name: str,
-        candidate_name: str,
+        system_names: list[str],
         used_benchmarks: list[str],
         uploaded_audio_info: dict[str, list[UploadedAudioPairInfo]],
         task_info: TaskInfo,
         expiration_info: ExpirationInfo,
     ) -> str:
-        expiration_comment = f"This report will expire at {expiration_info.user_str}"
-
         header_block = self.renderer.render(
             name=TemplateName.audio_report_header,
-            baseline_name=baseline_name,
-            candidate_name=candidate_name,
-            expiration_comment=expiration_comment,
+            system_names=system_names,
+            expiration_comment=self._expiration_comment(expiration_info),
         )
         benchmark_blocks, benchmark_section_info = [], []
 
         for benchmark_name in used_benchmarks:
-            pair_blocks = []
-
-            for pair in uploaded_audio_info[benchmark_name]:
-                block = self.renderer.render(
+            pair_blocks = [
+                self.renderer.render(
                     name=TemplateName.audio_report_pair,
                     context_url=pair.context_url,
-                    baseline_url=pair.baseline_url,
-                    candidate_url=pair.candidate_url,
+                    system_urls=pair.system_urls,
                     text=pair.text,
                 )
-                pair_blocks.append(block)
-
-            block = self.renderer.render(
-                name=TemplateName.audio_report_block,
-                title=benchmark_name,
-                section_id=benchmark_name,
-                baseline_name=baseline_name,
-                candidate_name=candidate_name,
-                pair_blocks=pair_blocks,
+                for pair in uploaded_audio_info[benchmark_name]
+            ]
+            benchmark_blocks.append(
+                self.renderer.render(
+                    name=TemplateName.audio_report_block,
+                    title=benchmark_name,
+                    section_id=benchmark_name,
+                    system_names=system_names,
+                    column_count=len(system_names) + 1,
+                    pair_blocks=pair_blocks,
+                )
             )
-            benchmark_blocks.append(block)
-            benchmark_language = BENCHMARK_META[benchmark_name]
-            name_info = f"{benchmark_name} ({benchmark_language})"
-            benchmark_section_info.append((benchmark_name, name_info))
+            benchmark_section_info.append((benchmark_name, f"{benchmark_name} ({BENCHMARK_META[benchmark_name]})"))
 
-        report = self.renderer.render(
+        return self.renderer.render(
             name=TemplateName.audio_report,
             jira_id=task_info.jira_id,
             jira_url=task_info.jira_url,
@@ -282,49 +313,46 @@ class Orchestrator:
             benchmark_section_info=benchmark_section_info,
         )
 
-        return report
-
     def _render_eval_report(
         self,
-        baseline_name: str,
-        candidate_name: str,
+        system_names: list[str],
         eval_artifacts: EvalArtifacts,
         uploaded_box_plots_info: UploadedBoxPlotsInfo,
         task_info: TaskInfo,
         expiration_info: ExpirationInfo,
         audio_report_url: Optional[str],
     ) -> str:
-        expiration_comment = f"This report will expire at {expiration_info.user_str}"
+        include_comparison = len(system_names) > 2
+        stat_headers = ["Metric", "Winner", "Alternative", "p-value"]
+        if include_comparison:
+            stat_headers.insert(1, "Comparison")
 
         configuration_block = self.renderer.render(
             name=TemplateName.eval_report_configuration,
-            baseline_name=baseline_name,
-            baseline_configuration=eval_artifacts.configuration.baseline,
-            candidate_name=candidate_name,
-            candidate_configuration=eval_artifacts.configuration.candidate,
+            configurations=eval_artifacts.configuration.systems,
         )
         header_block = self.renderer.render(
             name=TemplateName.eval_report_header,
-            baseline_name=baseline_name,
-            candidate_name=candidate_name,
-            expiration_comment=expiration_comment,
+            system_names=system_names,
+            expiration_comment=self._expiration_comment(expiration_info),
         )
         metrics_table = self.renderer.render(
             name=TemplateName.eval_report_table,
             title="Metrics (macro-average across benchmarks)",
-            headers=["Metric", baseline_name, candidate_name],
+            headers=["Metric", *system_names],
             rows=eval_artifacts.summary.metrics_table_row,
         )
         stat_tests_table = self.renderer.render(
             name=TemplateName.eval_report_table,
             title="Statistical Tests (pooled filewise across benchmarks)",
-            headers=["Metric", "Winner", "Alternative", "p-value"],
+            headers=stat_headers,
             rows=eval_artifacts.summary.stat_test_table_row,
         )
         stat_tests_analysis = self.renderer.render(
             name=TemplateName.eval_report_stat_analysis,
             winner=eval_artifacts.summary.stat_tests_analysis_info.winner,
             advantages=eval_artifacts.summary.stat_tests_analysis_info.advantages,
+            multiple_systems=include_comparison,
         )
         image_block = self.renderer.render(
             name=TemplateName.eval_report_image,
@@ -340,44 +368,45 @@ class Orchestrator:
         )
         benchmark_blocks, benchmark_section_info = [], []
 
-        for benchmark_name in sorted(eval_artifacts.benchmarks.keys()):
+        for benchmark_name in sorted(eval_artifacts.benchmarks):
+            result = eval_artifacts.benchmarks[benchmark_name]
             metrics_table = self.renderer.render(
                 name=TemplateName.eval_report_table,
                 title="Metrics",
-                headers=["Metric", baseline_name, candidate_name],
-                rows=eval_artifacts.benchmarks[benchmark_name].metrics_table_row,
+                headers=["Metric", *system_names],
+                rows=result.metrics_table_row,
             )
             stat_tests_table = self.renderer.render(
                 name=TemplateName.eval_report_table,
                 title="Statistical Tests",
-                headers=["Metric", "Winner", "Alternative", "p-value"],
-                rows=eval_artifacts.benchmarks[benchmark_name].stat_test_table_row,
+                headers=stat_headers,
+                rows=result.stat_test_table_row,
             )
             stat_tests_analysis = self.renderer.render(
                 name=TemplateName.eval_report_stat_analysis,
-                winner=eval_artifacts.benchmarks[benchmark_name].stat_tests_analysis_info.winner,
-                advantages=eval_artifacts.benchmarks[benchmark_name].stat_tests_analysis_info.advantages,
+                winner=result.stat_tests_analysis_info.winner,
+                advantages=result.stat_tests_analysis_info.advantages,
+                multiple_systems=include_comparison,
             )
             image_block = self.renderer.render(
                 name=TemplateName.eval_report_image,
                 image_url=uploaded_box_plots_info.benchmark_urls[benchmark_name],
             )
-            block = self.renderer.render(
-                name=TemplateName.eval_report_block,
-                is_summary=False,
-                title=benchmark_name,
-                section_id=benchmark_name,
-                metrics_table=metrics_table,
-                stat_tests_table=stat_tests_table,
-                stat_tests_analysis=stat_tests_analysis,
-                image_block=image_block,
+            benchmark_blocks.append(
+                self.renderer.render(
+                    name=TemplateName.eval_report_block,
+                    is_summary=False,
+                    title=benchmark_name,
+                    section_id=benchmark_name,
+                    metrics_table=metrics_table,
+                    stat_tests_table=stat_tests_table,
+                    stat_tests_analysis=stat_tests_analysis,
+                    image_block=image_block,
+                )
             )
-            benchmark_blocks.append(block)
-            benchmark_language = BENCHMARK_META[benchmark_name]
-            name_info = f"{benchmark_name} ({benchmark_language})"
-            benchmark_section_info.append((benchmark_name, name_info))
+            benchmark_section_info.append((benchmark_name, f"{benchmark_name} ({BENCHMARK_META[benchmark_name]})"))
 
-        report = self.renderer.render(
+        return self.renderer.render(
             name=TemplateName.eval_report,
             is_self_comparison=eval_artifacts.is_self_comparison,
             jira_id=task_info.jira_id,
@@ -388,126 +417,97 @@ class Orchestrator:
             summary_block=summary_block,
             benchmark_blocks=benchmark_blocks,
             benchmark_section_info=benchmark_section_info,
+            multiple_systems=include_comparison,
         )
-        return report
 
     def run(
         self,
         baseline_name: str,
-        candidate_name: str,
+        candidate_name: str | list[str],
         baseline_path: Path,
-        candidate_path: Path,
+        candidate_path: Path | list[Path],
         benchmarks: list[str],
         generate_audio_report: bool,
         audio_report_benchmarks: Optional[list[str]],
         samples_per_benchmark: int,
         task_id: str,
+        s3_prefix_override: Optional[str] = None,
     ) -> tuple[str, Optional[str]]:
-        """Generate evaluation reports, upload report artifacts to S3, and return report URLs.
-
-        This method performs the full end-to-end comparison workflow:
-        it loads evaluation buckets, prepares summary and benchmark-level artifacts,
-        uploads plots and optional audio samples to S3, renders the final HTML
-        reports, uploads them, and returns their presigned URLs.
-
-        Args:
-            baseline_name: Name of the baseline model used in the reports.
-            candidate_name: Name of the candidate model used in the reports.
-            baseline_path: Path to the baseline evaluation bucket root.
-            candidate_path: Path to the candidate evaluation bucket root.
-            benchmarks: Benchmark names to include in the evaluation report.
-            generate_audio_report: Whether to generate the audio comparison report.
-            audio_report_benchmarks: Benchmark names to include in the audio report.
-            samples_per_benchmark: Number of audio pairs to sample per benchmark.
-            task_id: Task identifier used for report metadata and Jira linking.
-
-        Returns:
-            Tuple containing the evaluation report URL and the optional audio report URL.
-
-        Raises:
-            ValueError: If input configuration is inconsistent, required benchmarks
-                are missing, or report generation inputs are invalid.
-            FileNotFoundError: If required bucket artifacts are missing from storage.
-            TypeError: If loaded metric files have unexpected types.
-        """
+        """Generate N-system reports, publish all artifacts, and return their locations."""
         benchmark_names = tuple(sorted(benchmarks, key=len, reverse=True))
-
-        audio_report: Optional[str] = None
-        audio_report_url: Optional[str] = None
-
-        bucket_baseline, bucket_candidate = self._load_buckets(
-            baseline_name=baseline_name,
-            candidate_name=candidate_name,
-            baseline_path=baseline_path,
-            candidate_path=candidate_path,
-            benchmark_names=benchmark_names,
+        candidate_names = self._normalize_candidates(candidate_name)
+        candidate_paths = self._normalize_candidates(candidate_path)
+        system_names = [baseline_name, *candidate_names]
+        buckets = self._load_buckets(
+            baseline_name,
+            candidate_names,
+            baseline_path,
+            candidate_paths,
+            benchmark_names,
             check_audio=generate_audio_report,
         )
 
         task_info = make_task_info(task_id)
         expiration_info = make_expiration_info(S3_LINK_EXPIRES_IN)
-        s3_prefix = generate_s3_prefix(baseline_path, candidate_path, task_info, expiration_info)
+        if self.local_output_dir is not None:
+            self.local_output_dir.mkdir(parents=True, exist_ok=True)
+            artifact_prefix = ""
+        else:
+            artifact_prefix = generate_s3_prefix(
+                baseline_path,
+                candidate_paths,
+                task_info,
+                expiration_info,
+                override=s3_prefix_override,
+            )
         box_plots_cfg = BoxPlotsConfig()
+        bucket_baseline, candidate_buckets = buckets[0], buckets[1:]
 
         self._log_info("\nPreparing evaluation artifacts...")
-        eval_artifacts = prepare_eval_artifacts(
-            bucket_baseline=bucket_baseline,
-            bucket_candidate=bucket_candidate,
-            box_plots_cfg=box_plots_cfg,
-        )
-        self._log_info("\nUploading images to S3:")
-        uploaded_box_plots_info = self._upload_boxplots(
-            eval_artifacts=eval_artifacts,
-            s3_prefix=s3_prefix,
-        )
+        eval_artifacts = prepare_eval_artifacts(bucket_baseline, candidate_buckets, box_plots_cfg)
+        destination = "local preview" if self.local_output_dir is not None else "S3"
+        self._log_info(f"\nPublishing images to {destination}:")
+        uploaded_box_plots_info = self._upload_boxplots(eval_artifacts, artifact_prefix)
 
+        audio_report_url = None
         if generate_audio_report:
             if audio_report_benchmarks is None:
                 raise ValueError("Audio report benchmarks must be provided when audio report is enabled.")
-
             audio_pairs = prepare_audio_pairs(
-                bucket_baseline=bucket_baseline,
-                bucket_candidate=bucket_candidate,
-                bucket_structure=self.bucket_structure,
-                used_benchmarks=audio_report_benchmarks,
-                samples_per_benchmark=samples_per_benchmark,
+                bucket_baseline,
+                candidate_buckets,
+                self.bucket_structure,
+                audio_report_benchmarks,
+                samples_per_benchmark,
             )
-            self._log_info("\nUploading audio files to S3:")
-            uploaded_audio_info = self._upload_audio(
-                used_benchmarks=audio_report_benchmarks,
-                audio_pairs=audio_pairs,
-                s3_prefix=s3_prefix,
-            )
+            self._log_info(f"\nPublishing audio files to {destination}:")
+            uploaded_audio_info = self._upload_audio(audio_report_benchmarks, audio_pairs, artifact_prefix)
             self._log_info("\nPreparing audio report...")
             audio_report = self._render_audio_report(
-                baseline_name=baseline_name,
-                candidate_name=candidate_name,
-                used_benchmarks=audio_report_benchmarks,
-                uploaded_audio_info=uploaded_audio_info,
-                task_info=task_info,
-                expiration_info=expiration_info,
+                system_names,
+                audio_report_benchmarks,
+                uploaded_audio_info,
+                task_info,
+                expiration_info,
             )
-            audio_report_url = self._upload_report(
-                report=audio_report,
-                s3_prefix=s3_prefix,
-                report_name="audio_report",
-            )
+            audio_report_url = self._upload_report(audio_report, artifact_prefix, "audio_report")
 
         self._log_info("\nPreparing evaluation report...")
         eval_report = self._render_eval_report(
-            baseline_name=bucket_baseline.name,
-            candidate_name=bucket_candidate.name,
-            eval_artifacts=eval_artifacts,
-            uploaded_box_plots_info=uploaded_box_plots_info,
-            task_info=task_info,
-            expiration_info=expiration_info,
-            audio_report_url=audio_report_url,
+            system_names,
+            eval_artifacts,
+            uploaded_box_plots_info,
+            task_info,
+            expiration_info,
+            audio_report_url,
         )
-        eval_report_url = self._upload_report(
-            report=eval_report,
-            s3_prefix=s3_prefix,
-            report_name="eval_report",
-        )
-        self._log_info(f"\nUploaded artifacts to bucket '{self.s3_client.cfg.bucket}' with prefix '{s3_prefix}'.")
-
+        eval_report_url = self._upload_report(eval_report, artifact_prefix, "eval_report")
+        if self.local_output_dir is not None:
+            self._log_info(f"\nWrote local preview to '{self.local_output_dir}'.")
+        else:
+            if self.s3_client is None:
+                raise RuntimeError("S3 client is not configured.")
+            self._log_info(
+                f"\nUploaded artifacts to bucket '{self.s3_client.cfg.bucket}' with prefix '{artifact_prefix}'."
+            )
         return eval_report_url, audio_report_url

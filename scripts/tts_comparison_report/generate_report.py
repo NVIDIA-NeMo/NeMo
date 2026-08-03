@@ -64,14 +64,16 @@ def _create_argparser() -> ArgumentParser:
     parser.add_argument(
         "--candidate_name",
         type=str,
+        action="append",
         required=True,
-        help="Name of the candidate model that will be used in report.",
+        help="Name of a candidate model used in the report. Repeat with --candidate_path to compare more systems.",
     )
     parser.add_argument(
         "--candidate_path",
         type=str,
+        action="append",
         required=True,
-        help="Path to the generated evaluation bucket for the candidate model.",
+        help="Path to a candidate evaluation bucket. Repeat with --candidate_name to compare more systems.",
     )
     parser.add_argument(
         "--benchmarks",
@@ -82,20 +84,32 @@ def _create_argparser() -> ArgumentParser:
     parser.add_argument(
         "--s3_endpoint",
         type=str,
-        required=True,
-        help="S3 endpoint URL used for uploading the audio report.",
+        default=None,
+        help="S3 endpoint URL. Required unless --local_output_dir is used.",
     )
     parser.add_argument(
         "--s3_bucket",
         type=str,
-        required=True,
-        help="Name of the S3 bucket where the audio report HTML and audio files will be uploaded.",
+        default=None,
+        help="S3 bucket for report artifacts. Required unless --local_output_dir is used.",
     )
     parser.add_argument(
         "--s3_region",
         type=str,
-        required=True,
-        help="AWS region name for the S3 client.",
+        default=None,
+        help="AWS region name. Required unless --local_output_dir is used.",
+    )
+    parser.add_argument(
+        "--s3_prefix",
+        type=str,
+        default=None,
+        help="Override the generated S3 directory/key prefix, for example 'codec-comparison-aug-2026'.",
+    )
+    parser.add_argument(
+        "--local_output_dir",
+        type=str,
+        default=None,
+        help="Write a complete local HTML preview and assets here instead of uploading to S3.",
     )
     parser.add_argument(
         "--remote_hostname",
@@ -170,12 +184,23 @@ def _validate_audio_report_benchmarks(
             raise ValueError(f"Benchmark name for audio report '{name}' is not included in evaluation benchmarks.")
 
 
+def _validate_candidate_args(candidate_names: list[str], candidate_paths: list[str]) -> None:
+    if len(candidate_names) != len(candidate_paths):
+        raise ValueError(
+            "Each '--candidate_name' must have a matching '--candidate_path' "
+            f"({len(candidate_names)} names and {len(candidate_paths)} paths were provided)."
+        )
+
+    if len(set(candidate_names)) != len(candidate_names):
+        raise ValueError("Candidate names must be unique.")
+
+
 def main() -> None:
-    """Parse CLI arguments, generate comparison reports, and upload them to S3.
+    """Parse CLI arguments, generate comparison reports, and publish their artifacts.
 
     This function serves as the command-line entry point for the report
-    generation workflow. It validates user input, initializes storage and S3
-    clients, runs the report orchestrator, and logs the resulting report URLs.
+    generation workflow. It validates user input, initializes storage and the
+    selected destination, runs the report orchestrator, and logs the results.
 
     Raises:
         ValueError: If required environment variables are missing or CLI
@@ -191,7 +216,9 @@ def main() -> None:
     bucket_structure = BucketStructure()
     bucket_structure.eval_output_subdir = args.results_subdir
     baseline_path = Path(args.baseline_path).resolve()
-    candidate_path = Path(args.candidate_path).resolve()
+    _validate_candidate_args(args.candidate_name, args.candidate_path)
+    candidate_paths = [Path(path).resolve() for path in args.candidate_path]
+    local_output_dir = Path(args.local_output_dir).resolve() if args.local_output_dir is not None else None
     task_id = args.task_id
 
     storage: BaseStorage
@@ -202,25 +229,41 @@ def main() -> None:
     audio_report_url: Optional[str] = None
     audio_report_benchmarks: Optional[list[str]] = None
 
-    s3_key_id = os.getenv(_S3_ACCESS_KEY_ID)
-    s3_secret_key = os.getenv(_S3_SECRET_ACCESS_KEY)
+    if local_output_dir is not None:
+        if args.s3_prefix is not None:
+            raise ValueError("'--s3_prefix' cannot be used with '--local_output_dir'.")
+    else:
+        s3_args = {
+            "--s3_endpoint": args.s3_endpoint,
+            "--s3_bucket": args.s3_bucket,
+            "--s3_region": args.s3_region,
+        }
+        missing_s3_args = [name for name, value in s3_args.items() if value is None]
+        if missing_s3_args:
+            raise ValueError(f"Missing required S3 arguments: {', '.join(missing_s3_args)}.")
 
-    if s3_key_id is None or s3_secret_key is None:
-        raise ValueError(
-            f"Environment variables '{_S3_ACCESS_KEY_ID}' and '{_S3_SECRET_ACCESS_KEY}' "
-            "must be set for uploading reports to S3."
+        assert args.s3_endpoint is not None
+        assert args.s3_bucket is not None
+        assert args.s3_region is not None
+
+        s3_key_id = os.getenv(_S3_ACCESS_KEY_ID)
+        s3_secret_key = os.getenv(_S3_SECRET_ACCESS_KEY)
+        if s3_key_id is None or s3_secret_key is None:
+            raise ValueError(
+                f"Environment variables '{_S3_ACCESS_KEY_ID}' and '{_S3_SECRET_ACCESS_KEY}' "
+                "must be set for uploading reports to S3."
+            )
+
+        s3_cfg = S3Config(
+            bucket=args.s3_bucket,
+            endpoint_url=args.s3_endpoint,
+            region_name=args.s3_region,
         )
-
-    s3_cfg = S3Config(
-        bucket=args.s3_bucket,
-        endpoint_url=args.s3_endpoint,
-        region_name=args.s3_region,
-    )
-    s3_client = S3Client(
-        cfg=s3_cfg,
-        aws_access_key_id=s3_key_id,
-        aws_secret_access_key=s3_secret_key,
-    )
+        s3_client = S3Client(
+            cfg=s3_cfg,
+            aws_access_key_id=s3_key_id,
+            aws_secret_access_key=s3_secret_key,
+        )
 
     benchmarks = _get_benchmarks_list(args.benchmarks)
     _validate_benchmarks(benchmarks)
@@ -235,13 +278,18 @@ def main() -> None:
     if task_id == DUMMY_TASK_ID:
         logger.warning("\nWARNING: It is recommended to assign the evaluation report to a specific ticket!")
 
-    if baseline_path == candidate_path:
-        logger.warning(
-            "\nWARNING: Baseline and candidate paths are identical. "
-            "Comparison report is not meaningful in this case!"
-        )
+    if args.baseline_name in args.candidate_name:
+        raise ValueError("Baseline and candidate names must be unique.")
 
-    logger.info(f"\nComparing baseline '{args.baseline_name}' against candidate '{args.candidate_name}'")
+    for candidate_path in candidate_paths:
+        if baseline_path == candidate_path:
+            logger.warning(
+                "\nWARNING: Baseline and candidate paths are identical. "
+                "Comparison report is not meaningful in this case!"
+            )
+
+    candidates_str = ", ".join(f"'{name}'" for name in args.candidate_name)
+    logger.info(f"\nComparing baseline '{args.baseline_name}' against candidates {candidates_str}")
 
     try:
         if args.remote_hostname is not None or args.remote_username is not None:
@@ -279,17 +327,19 @@ def main() -> None:
             s3_client=s3_client,
             renderer=renderer,
             logger=logger,
+            local_output_dir=local_output_dir,
         )
         eval_report_url, audio_report_url = orchestrator.run(
             baseline_name=args.baseline_name,
             candidate_name=args.candidate_name,
             baseline_path=baseline_path,
-            candidate_path=candidate_path,
+            candidate_path=candidate_paths,
             benchmarks=benchmarks,
             generate_audio_report=args.audio_report,
             audio_report_benchmarks=audio_report_benchmarks,
             samples_per_benchmark=args.samples_per_benchmark,
             task_id=task_id,
+            s3_prefix_override=args.s3_prefix,
         )
 
     finally:
@@ -303,17 +353,21 @@ def main() -> None:
             s3_client.close()
 
     if eval_report_url is None:
-        raise RuntimeError("Failed to generate evaluation report and upload it to S3.")
+        raise RuntimeError("Failed to generate evaluation report.")
 
     if args.audio_report and audio_report_url is None:
-        raise RuntimeError("Failed to upload audio report to S3 and create URL.")
+        raise RuntimeError("Failed to generate audio report.")
 
-    if audio_report_url is not None:
-        logger.info(f"\nAudio report is available at:\n{audio_report_url}")
-
-    logger.info(f"\nEvaluation report is available at:\n{eval_report_url}")
-
-    logger.info("\nSave the links and open in your browser!\n")
+    if local_output_dir is not None:
+        if audio_report_url is not None:
+            logger.info(f"\nLocal audio report:\n{local_output_dir / audio_report_url}")
+        logger.info(f"\nLocal evaluation report:\n{local_output_dir / eval_report_url}")
+        logger.info("\nServe the output directory over HTTP to inspect the complete preview.\n")
+    else:
+        if audio_report_url is not None:
+            logger.info(f"\nAudio report is available at:\n{audio_report_url}")
+        logger.info(f"\nEvaluation report is available at:\n{eval_report_url}")
+        logger.info("\nSave the links and open in your browser!\n")
 
 
 if __name__ == "__main__":

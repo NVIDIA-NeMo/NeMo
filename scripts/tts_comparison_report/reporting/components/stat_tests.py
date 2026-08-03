@@ -14,6 +14,7 @@
 import html
 import warnings
 from enum import Enum
+from itertools import combinations
 from typing import Optional
 
 from scipy.stats import mannwhitneyu
@@ -29,6 +30,14 @@ class _Alternative(str, Enum):
     two_sided = "two-sided"
     greater = "greater"
     less = "less"
+
+
+def _as_bucket_list(
+    bucket_baseline: BucketData,
+    bucket_candidate: BucketData | list[BucketData],
+) -> list[BucketData]:
+    candidates = bucket_candidate if isinstance(bucket_candidate, list) else [bucket_candidate]
+    return [bucket_baseline, *candidates]
 
 
 def _run_single_stat_test(
@@ -49,7 +58,6 @@ def _run_single_stat_test(
             stacklevel=2,
         )
 
-    # First test whether distributions differ at all, then determine direction.
     p_val_two_sided = mannwhitneyu(baseline, candidate, alternative="two-sided", method="auto").pvalue
 
     if p_val_two_sided >= _SIGNIFICANCE_LEVEL:
@@ -59,15 +67,13 @@ def _run_single_stat_test(
 
     if p_val < _SIGNIFICANCE_LEVEL:
         winner = Winner.baseline if lower_is_better else Winner.candidate
-        p_val = round(p_val, P_VAL_ROUND_DIGITS)
-        return winner, _Alternative.less, p_val
+        return winner, _Alternative.less, round(p_val, P_VAL_ROUND_DIGITS)
 
     p_val = mannwhitneyu(baseline, candidate, alternative="greater", method="auto").pvalue
 
     if p_val < _SIGNIFICANCE_LEVEL:
         winner = Winner.candidate if lower_is_better else Winner.baseline
-        p_val = round(p_val, P_VAL_ROUND_DIGITS)
-        return winner, _Alternative.greater, p_val
+        return winner, _Alternative.greater, round(p_val, P_VAL_ROUND_DIGITS)
 
     return Winner.tie, _Alternative.two_sided, round(p_val_two_sided, P_VAL_ROUND_DIGITS)
 
@@ -86,38 +92,30 @@ def _map_winner_to_name(
 
 def run_stat_tests(
     bucket_baseline: BucketData,
-    bucket_candidate: BucketData,
+    bucket_candidate: BucketData | list[BucketData],
     benchmark_name: Optional[str] = None,
 ) -> list[StatTestResult]:
-    """Run statistical tests for all distribution metrics.
-
-    Args:
-        bucket_baseline: Baseline bucket data.
-        bucket_candidate: Candidate bucket data.
-        benchmark_name: Benchmark name. If omitted, metric samples are aggregated
-            across all benchmarks.
-
-    Returns:
-        List of StatTestResult instances for configured distribution metrics.
-
-    Raises:
-        ValueError: If metric samples are missing or benchmark data is invalid.
-    """
+    """Run every configured distribution test for all pairs of systems."""
+    buckets = _as_bucket_list(bucket_baseline, bucket_candidate)
     results = []
 
-    for metric in DistributionMetricsRegistry:
-        winner, alternative, p_value = _run_single_stat_test(
-            baseline=bucket_baseline.get_metric_samples(metric.key, benchmark_name),
-            candidate=bucket_candidate.get_metric_samples(metric.key, benchmark_name),
-            lower_is_better=metric.lower_is_better,
-        )
-        result = StatTestResult(
-            metric_name=metric.report_name,
-            winner=winner,
-            alternative=alternative.value,
-            p_value=p_value,
-        )
-        results.append(result)
+    for first_bucket, second_bucket in combinations(buckets, 2):
+        for metric in DistributionMetricsRegistry:
+            winner, alternative, p_value = _run_single_stat_test(
+                baseline=first_bucket.get_metric_samples(metric.key, benchmark_name),
+                candidate=second_bucket.get_metric_samples(metric.key, benchmark_name),
+                lower_is_better=metric.lower_is_better,
+            )
+            results.append(
+                StatTestResult(
+                    metric_name=metric.report_name,
+                    winner=winner,
+                    alternative=alternative.value,
+                    p_value=p_value,
+                    baseline_name=first_bucket.name,
+                    candidate_name=second_bucket.name,
+                )
+            )
 
     return results
 
@@ -126,30 +124,24 @@ def prepare_stat_tests_table_rows(
     baseline_name: str,
     candidate_name: str,
     stat_test_results: list[StatTestResult],
+    include_comparison: bool = False,
 ) -> list[list[str]]:
-    """Prepare formatted rows for a statistical test results table.
-
-    Args:
-        baseline_name: Name of the baseline model used in the reports.
-        candidate_name: Name of the candidate model used in the reports.
-        stat_test_results: Statistical test results to format.
-
-    Returns:
-        Table rows containing metric name, winner, alternative hypothesis,
-        and p-value.
-    """
+    """Prepare statistical-test table rows, optionally identifying each system pair."""
     rows = []
 
-    for res in stat_test_results:
-        winner = _map_winner_to_name(res.winner, baseline_name, candidate_name)
-        rows.append(
-            [
-                html.escape(res.metric_name),
-                html.escape(winner),
-                html.escape(res.alternative),
-                html.escape(str(res.p_value)),
-            ]
-        )
+    for result in stat_test_results:
+        first_name = result.baseline_name or baseline_name
+        second_name = result.candidate_name or candidate_name
+        winner = _map_winner_to_name(result.winner, first_name, second_name)
+        row = [
+            html.escape(result.metric_name),
+            html.escape(winner),
+            html.escape(result.alternative),
+            html.escape(str(result.p_value)),
+        ]
+        if include_comparison:
+            row.insert(1, html.escape(f"{first_name} vs {second_name}"))
+        rows.append(row)
 
     return rows
 
@@ -159,33 +151,39 @@ def prepare_stat_tests_analysis_info(
     candidate_name: str,
     stat_test_results: list[StatTestResult],
 ) -> StatTestAnalysisInfo:
-    """Prepare summary information for the statistical test analysis section.
+    """Summarize significant wins, preserving the original two-system behavior."""
+    comparison_pairs = {
+        (result.baseline_name or baseline_name, result.candidate_name or candidate_name)
+        for result in stat_test_results
+    }
+    if len(comparison_pairs) <= 1:
+        baseline_wins = [result.metric_name for result in stat_test_results if result.winner == Winner.baseline]
+        candidate_wins = [result.metric_name for result in stat_test_results if result.winner == Winner.candidate]
+        if not baseline_wins and not candidate_wins:
+            return StatTestAnalysisInfo(winner=None, advantages=None)
 
-    Args:
-        baseline_name: Name of the baseline model used in the reports.
-        candidate_name: Name of the candidate model used in the reports.
-        stat_test_results: Statistical test results to summarize.
+        winner, wins = (
+            (baseline_name, baseline_wins)
+            if len(baseline_wins) >= len(candidate_wins)
+            else (candidate_name, candidate_wins)
+        )
+        return StatTestAnalysisInfo(winner=winner, advantages=", ".join(wins))
 
-    Returns:
-        Instance of StatTestAnalysisInfo containing the overall winner and its
-        key advantages. If no statistically significant wins are present, both
-        fields are set to `None`.
-    """
-    a_wins, b_wins = [], []
+    wins: dict[str, list[str]] = {}
+    for result in stat_test_results:
+        first_name = result.baseline_name or baseline_name
+        second_name = result.candidate_name or candidate_name
+        winner = _map_winner_to_name(result.winner, first_name, second_name)
+        if result.winner == Winner.tie:
+            continue
+        loser = second_name if winner == first_name else first_name
+        wins.setdefault(winner, []).append(f"{result.metric_name} over {loser}")
 
-    for res in stat_test_results:
-        if res.winner == Winner.baseline:
-            a_wins.append(res.metric_name)
-        elif res.winner == Winner.candidate:
-            b_wins.append(res.metric_name)
+    if not wins:
+        return StatTestAnalysisInfo(winner=None, advantages=None)
 
-    if not a_wins and not b_wins:
-        winner, advantages = None, None
-    else:
-        winner, wins = (baseline_name, a_wins) if len(a_wins) >= len(b_wins) else (candidate_name, b_wins)
-        advantages = ", ".join(wins)
-
-    return StatTestAnalysisInfo(
-        winner=winner,
-        advantages=advantages,
-    )
+    max_wins = max(len(metrics) for metrics in wins.values())
+    leaders = sorted(name for name, metrics in wins.items() if len(metrics) == max_wins)
+    winner = ", ".join(leaders)
+    advantages = "; ".join(f"{name}: {', '.join(wins[name])}" for name in leaders)
+    return StatTestAnalysisInfo(winner=winner, advantages=advantages)

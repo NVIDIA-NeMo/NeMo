@@ -32,7 +32,7 @@ docker run -it --rm --name=nemotron-voicechat \
   -p 9000:9000 \
   -v $(pwd)/nemotron-voicechat_v2.0.0:/data/models \
   --entrypoint /s2s/run_s2s_server.sh \
-  nvcr.io/nvidia/nemotron-voicechat:latest
+  nvcr.io/nim/nvidia/nemotron-voicechat:latest
 ```
 
 ### Verify Readiness

@@ -20,7 +20,7 @@ NeMo Speech works with the **Python, PyTorch, and CUDA versions of your choosing
 
    The recommended install path is uv (below), which gives you our actively-tested stack. But NeMo Speech can also install *on top of* an existing environment: if you already have a Python, PyTorch, and CUDA stack that satisfies the minimums above, your pre-installed PyTorch is **kept, not replaced** (see :ref:`the pip fallback <install-from-pypi>`).
 
-   The versions pinned in ``uv.lock`` and shipped in the official container — **Python 3.13, PyTorch 2.12, CUDA 12.6/13.2** — are simply the combination we actively test and support. They make setup turnkey and reproducible, but they are **not** a hard requirement.
+   The versions pinned in ``uv.lock`` and shipped in the official container — **Python 3.13, PyTorch 2.11 with CUDA 12.9 or PyTorch 2.12 with CUDA 13.2** — are simply the combinations we actively test and support. They make setup turnkey and reproducible, but they are **not** a hard requirement.
 
 .. note::
 
@@ -104,7 +104,7 @@ The Automodel backend used for SpeechLM2 **does not require any compiled depende
 Choose the variant that matches your GPU (the two are mutually exclusive):
 
 * ``compiled`` — Hopper/Blackwell and newer (SM90/SM100/SM120, e.g. H100/H200/B200). Includes DeepEP.
-* ``compiled-a100`` — Ampere A100 (SM80). Omits DeepEP, which requires a separately-built, patched version on A100; our Dockerfile auto-builds and installs it when the CUDA 12 base image is selected.
+* ``compiled-a100`` — Ampere A100 (SM80). Omits DeepEP, which requires a separately-built, patched version on A100; our Dockerfile auto-builds and installs it for A100 images.
 
 .. warning::
 
@@ -164,8 +164,8 @@ Prefer your own Python/PyTorch/CUDA? Install your preferred PyTorch first (any v
    uv venv --python 3.12          # any Python >= 3.12 your PyTorch supports — or use your own env
    source .venv/bin/activate
 
-   # 1) Your choice of PyTorch (example: CUDA 12.6 build). Skip if you already have one.
-   uv pip install torch --index-url https://download.pytorch.org/whl/cu126
+   # 1) Your choice of PyTorch (example: CUDA 12.9 build). Skip if you already have one.
+   uv pip install torch --index-url https://download.pytorch.org/whl/cu129
 
    # 2) NeMo — your PyTorch above is kept (plain `pip install` works identically)
    uv pip install 'nemo-toolkit[asr,tts]'        # also: [asr,tts,audio], [speechlm2], etc.
@@ -179,7 +179,7 @@ To instead have the installer pull *our* pinned PyTorch build, add the matching 
 .. code-block:: bash
 
    pip install 'nemo-toolkit[asr,tts,cu13]' --extra-index-url https://download.pytorch.org/whl/cu132   # CUDA 13.x
-   pip install 'nemo-toolkit[asr,tts,cu12]' --extra-index-url https://download.pytorch.org/whl/cu126   # CUDA 12.x
+   pip install 'nemo-toolkit[asr,tts,cu12]' --extra-index-url https://download.pytorch.org/whl/cu129   # CUDA 12.x
 
 .. tip::
 

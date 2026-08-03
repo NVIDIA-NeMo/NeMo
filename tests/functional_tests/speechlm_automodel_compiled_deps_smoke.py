@@ -52,7 +52,7 @@ def _require_multi_gpu_torchrun() -> tuple[int, int, torch.device]:
     return local_rank, world_size, torch.device(f"cuda:{local_rank}")
 
 
-def _require_nvlink_topology() -> None:
+def _require_nvlink_topology(*, world_size: int) -> None:
     try:
         topo = subprocess.run(
             ["nvidia-smi", "topo", "-m"],
@@ -64,12 +64,46 @@ def _require_nvlink_topology() -> None:
     except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         pytest.skip("DeepEP topology check requires `nvidia-smi topo -m`")
 
-    for line in topo.splitlines():
-        columns = line.split()
-        if columns[:1] == ["GPU0"] and len(columns) > 2 and columns[2].startswith("NV"):
-            return
+    rows = [line.split() for line in topo.splitlines()]
+    header = next(
+        (
+            columns
+            for columns in rows
+            if len(columns) > 1
+            and columns[0].startswith("GPU")
+            and columns[0][3:].isdigit()
+            and columns[1].startswith("GPU")
+            and columns[1][3:].isdigit()
+        ),
+        None,
+    )
+    if header is None:
+        pytest.skip("DeepEP topology check could not parse GPU columns from `nvidia-smi topo -m`")
 
-    pytest.skip("DeepEP intranode dispatch requires NVLink between the two visible GPUs")
+    gpu_names = []
+    for column in header:
+        if column.startswith("GPU") and column[3:].isdigit():
+            gpu_names.append(column)
+        else:
+            break
+
+    if len(gpu_names) < world_size:
+        pytest.skip(f"DeepEP topology check found fewer than {world_size} GPU columns")
+
+    topology_rows = {
+        columns[0]: columns[1 : 1 + len(gpu_names)] for columns in rows if columns and columns[0] in gpu_names
+    }
+    participating_gpus = gpu_names[:world_size]
+    if any(gpu not in topology_rows or len(topology_rows[gpu]) < world_size for gpu in participating_gpus):
+        pytest.skip("DeepEP topology check could not find every participating GPU row")
+
+    for source_index, source_gpu in enumerate(participating_gpus):
+        for target_index, target_gpu in enumerate(participating_gpus):
+            if source_index == target_index:
+                continue
+            link = topology_rows[source_gpu][target_index]
+            if not link.startswith("NV"):
+                pytest.skip(f"DeepEP intranode dispatch requires NVLink between {source_gpu} and {target_gpu}")
 
 
 def _require_compiled_dependencies() -> None:
@@ -244,6 +278,8 @@ def _run_salm_automodel_nemotron3_forward_backward(
     *, dispatcher: str, expect_deepep: bool, ep_size: int | None
 ) -> None:
     local_rank, world_size, device = _require_multi_gpu_torchrun()
+    if expect_deepep:
+        _require_nvlink_topology(world_size=world_size)
     _require_compiled_dependencies()
     if ep_size is None:
         ep_size = world_size
@@ -288,9 +324,8 @@ def test_salm_automodel_nemotron3_transformer_engine_grouped_gemm_forward_backwa
 def test_salm_automodel_nemotron3_deepep_grouped_gemm_forward_backward():
     """Run a tiny real Nemotron3 SALMAutomodel forward/backward through DeepEP-dispatched grouped-gemm.
 
-    This is intentionally launched with two CUDA ranks. DeepEP falls back or is
-    inactive in a single-process run. It also requires NVLink for intranode
-    dispatch; PCIe-only machines skip this test to avoid a known DeepEP hang.
+    This is launched with the configured number of CUDA ranks. DeepEP is inactive
+    in a single-process run. It also requires NVLink between all participating
+    GPUs; PCIe-only machines skip this test to avoid a known DeepEP hang.
     """
-    _require_nvlink_topology()
     _run_salm_automodel_nemotron3_forward_backward(dispatcher="deepep", expect_deepep=True, ep_size=None)

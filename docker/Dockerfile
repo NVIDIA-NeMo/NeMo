@@ -255,7 +255,6 @@ if [[ "${GPU_TARGET}" == "a100" ]]; then
     TORCH_CUDA_ARCH_LIST="${DEEPEP_TORCH_CUDA_ARCH_LIST}" \
         uv pip install \
         --no-build-isolation \
-        --no-deps \
         /opt/automodel-src/DeepEP
 fi
 

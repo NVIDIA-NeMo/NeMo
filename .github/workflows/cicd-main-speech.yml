@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 name: NeMo E2E Speech Tests
+
+env:
+  HF_HUB_OFFLINE: 1
+  HF_DATASETS_OFFLINE: 1
+  TRANSFORMERS_OFFLINE: 1
+
 on:
   workflow_call:
     inputs:
@@ -128,9 +134,9 @@ jobs:
     name: ${{ matrix.script }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Checkout NeMo
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: ${{ github.run_id }}
       - name: main
@@ -294,9 +300,9 @@ jobs:
     name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Checkout NeMo
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: ${{ github.run_id }}
       - name: main
@@ -561,9 +567,9 @@ jobs:
     name: ${{ matrix.script }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Checkout NeMo
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           path: ${{ github.run_id }}
       - name: main

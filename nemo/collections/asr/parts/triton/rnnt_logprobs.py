@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import torch
 import triton
 import triton.language as tl
@@ -58,8 +57,7 @@ def _rnnt_logprobs_fwd_kernel(
     # stable log softmax calculation
     logits_max = tl.max(logits, axis=0)
     logits_minus_max = logits - logits_max
-    denominator_sum = tl.sum(tl.exp(logits_minus_max), axis=0)
-    denominator = tl.log(denominator_sum)
+    denominator = tl.log(tl.sum(tl.exp(logits_minus_max), axis=0))
     blank_logit = tl.load(logits_ptr + blank_id).to(tl.float32)
     flat_index_output = (batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i
     tl.store(blank_scores_ptr + flat_index_output, blank_logit - logits_max - denominator)
@@ -230,7 +228,6 @@ class RnntLogProbs(torch.autograd.Function):
             target_lengths = target_lengths.contiguous()
 
         # run Triton kernel
-        block_size = triton.next_power_of_2(logits.shape[-1])
         _rnnt_logprobs_fwd_kernel[(logits.shape[0], logits.shape[1], logits.shape[2])](
             logits_ptr=logits,
             targets_ptr=targets,
@@ -242,7 +239,7 @@ class RnntLogProbs(torch.autograd.Function):
             blank_id=blank_id,
             target_scores_ptr=target_scores,
             blank_scores_ptr=blank_scores,
-            BLOCK_SIZE=block_size,
+            BLOCK_SIZE=triton.next_power_of_2(logits.shape[-1]),
         )
 
         # saving for backward
@@ -279,7 +276,6 @@ class RnntLogProbs(torch.autograd.Function):
         grad_target_scores = grad_target_scores.contiguous()
         grad_blank_scores = grad_blank_scores.contiguous()
         grad_logits = logits if ctx.reuse_logits_for_grad else torch.zeros_like(logits)
-        block_size = triton.next_power_of_2(logits.shape[-1])
         # Any valid pointer will do when clamping is off: CLAMP_GRAD is a constexpr, so the
         # only branch that reads this argument is compiled out.
         upstream_scale = ctx.upstream_scale if ctx.upstream_scale is not None else grad_blank_scores
@@ -298,7 +294,7 @@ class RnntLogProbs(torch.autograd.Function):
             upstream_scale_ptr=upstream_scale,
             clamp=clamp,
             CLAMP_GRAD=clamp > 0.0,
-            BLOCK_SIZE=block_size,
+            BLOCK_SIZE=triton.next_power_of_2(logits.shape[-1]),
         )
         return grad_logits, None, None, None, None, None, None, None
 

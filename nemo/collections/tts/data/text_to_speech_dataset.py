@@ -648,7 +648,6 @@ class MagpieTTSDataset(TextToSpeechDataset):
             else:
                 if self.add_language_to_context_text:
                     context_text = f"[{language.upper()}]"
-                    print(f"Context text: {context_text}")
                 else:
                     context_text = "[NO TEXT CONTEXT]"
                 context_tokens = self.text_tokenizer.encode(context_text, self.text_conditioning_tokenizer_name)

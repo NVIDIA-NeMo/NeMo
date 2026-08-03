@@ -101,11 +101,34 @@ def normalize_volume(audio: np.array, volume_level: float = 0.95) -> np.array:
 
 
 def _validate_probability(name: str, value: float):
+    """Validate that a probability lies in the inclusive range ``[0.0, 1.0]``.
+
+    Args:
+        name: Parameter name to include in the error message.
+        value: Probability value to validate.
+
+    Raises:
+        ValueError: If ``value`` is outside the valid probability range.
+    """
     if not 0.0 <= value <= 1.0:
         raise ValueError(f"`{name}` must be in range [0.0, 1.0], received {value}")
 
 
 def _sample_probability_range(name: str, min_value: float, max_value: float) -> float:
+    """Sample a probability uniformly from an inclusive configured range.
+
+    Args:
+        name: Base parameter name to include in validation errors.
+        min_value: Lower bound of the probability range.
+        max_value: Upper bound of the probability range.
+
+    Returns:
+        A uniformly sampled probability between ``min_value`` and ``max_value``.
+
+    Raises:
+        ValueError: If either bound is outside ``[0.0, 1.0]`` or the lower
+            bound is greater than the upper bound.
+    """
     _validate_probability(f"{name}_min", min_value)
     _validate_probability(f"{name}_max", max_value)
     if min_value > max_value:
@@ -114,6 +137,19 @@ def _sample_probability_range(name: str, min_value: float, max_value: float) -> 
 
 
 def has_phoneme_text_spans(text: str, bop_marker: str = "<bop>", eop_marker: str = "<eop>") -> bool:
+    """Check whether text contains either an opening or closing phoneme-span marker.
+
+    Checking for either marker also identifies malformed or incomplete spans so
+    callers can avoid transforming the marked input before it is validated.
+
+    Args:
+        text: Text to inspect.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
+
+    Returns:
+        ``True`` if either marker occurs in ``text``; otherwise ``False``.
+    """
     return bop_marker in text or eop_marker in text
 
 
@@ -122,7 +158,20 @@ def _split_text_and_phoneme_spans(
     bop_marker: str = "<bop>",
     eop_marker: str = "<eop>",
 ) -> List[Tuple[str, str]]:
-    """Split mixed text into ("text"|"phoneme", segment) tuples."""
+    """Split mixed text into ordered text and phoneme segments.
+
+    Args:
+        text: Input containing regular text and optionally marked phoneme spans.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
+
+    Returns:
+        Non-empty ``("text", segment)`` and ``("phoneme", segment)`` tuples
+        in their original order. Phoneme-span markers are omitted.
+
+    Raises:
+        ValueError: If an opening or closing marker has no matching counterpart.
+    """
     segments = []
     cursor = 0
 
@@ -160,7 +209,30 @@ def partially_phonemize_text(
     bop_marker: str = "<bop>",
     eop_marker: str = "<eop>",
 ) -> str:
-    """Replace a sampled portion of aligned words, merging adjacent words into IPA spans."""
+    """Replace a sampled portion of aligned words with marked IPA spans.
+
+    The requested portion determines how many aligned words are selected.
+    Adjacent selected words are merged into one span. If every aligned word is
+    selected, the supplied full IPA transcription is emitted as a single span.
+    Invalid or unavailable alignment data leaves the original text unchanged.
+
+    Args:
+        text: Original text whose character offsets are referenced by the alignment.
+        ipa_alignment: Word alignments in the form
+            ``(text_start, text_end, word, ipa_text)``.
+        partial_phoneme_portion: Fraction of aligned words to replace, in
+            ``[0.0, 1.0]``.
+        full_ipa_text: IPA transcription of the complete input text.
+        bop_marker: Marker to place before each generated IPA span.
+        eop_marker: Marker to place after each generated IPA span.
+
+    Returns:
+        Text with sampled words replaced by marked IPA spans, or the original
+        text when replacement cannot be performed.
+
+    Raises:
+        ValueError: If ``partial_phoneme_portion`` is outside ``[0.0, 1.0]``.
+    """
     _validate_probability("partial_phoneme_portion", partial_phoneme_portion)
     if partial_phoneme_portion == 0.0 or not text or not ipa_alignment or not full_ipa_text:
         return text
@@ -216,6 +288,27 @@ def tokenize_text_with_phoneme_spans(
 
     Span markers are syntax only and are not emitted as token IDs. IPA span IDs are encoded with the phoneme tokenizer
     and shifted by ``text_phoneme_token_offset`` so they live in the text-channel vocabulary.
+
+    Args:
+        text_tokenizer: Text tokenizer that supports named tokenizer selection.
+        text_str: Text to encode, optionally containing marked IPA spans.
+        tokenizer_name: Name of the text tokenizer used for regular text segments.
+        enable_phoneme_text_input: Whether to parse and separately encode marked
+            phoneme spans. If disabled, the complete input is encoded as text.
+        phoneme_tokenizer: Tokenizer used to encode IPA span contents. Required
+            when ``enable_phoneme_text_input`` is enabled.
+        text_phoneme_token_offset: Offset added to every phoneme token ID so it
+            occupies the text-channel vocabulary. Required when phoneme text
+            input is enabled.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
+
+    Returns:
+        Token IDs containing interleaved text IDs and offset phoneme IDs.
+
+    Raises:
+        ValueError: If phoneme text input is enabled without its tokenizer or
+            token offset, or if span markers are unmatched.
     """
     if not enable_phoneme_text_input:
         return text_tokenizer.encode(text=text_str, tokenizer_name=tokenizer_name)
@@ -695,6 +788,14 @@ def chunk_and_tokenize_text_by_sentence(
         language: Language code for selecting appropriate sentence separators.
             Supported: "en", "ja", "hi", "zh", "es", "fr", "it", "de", "vi".
             Defaults to "en".
+        enable_phoneme_text_input: Whether to parse and separately encode marked
+            phoneme spans.
+        phoneme_tokenizer: Tokenizer used for marked phoneme spans. Required
+            when ``enable_phoneme_text_input`` is enabled.
+        text_phoneme_token_offset: Offset added to phoneme token IDs in the
+            text-channel vocabulary.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
 
     Returns:
         Tuple of:
@@ -889,6 +990,15 @@ def chunk_text_for_inference(
         text_tokenizer: The tokenizer instance.
         eos_token_id: End-of-sequence token ID to append.
         language_thresholds: Optional custom thresholds. Uses defaults if None.
+        enable_phoneme_text_input: Whether to parse and separately encode marked
+            phoneme spans.
+        phoneme_tokenizer: Tokenizer used for marked phoneme spans. Required
+            when ``enable_phoneme_text_input`` is enabled.
+        text_phoneme_token_offset: Offset added to phoneme token IDs in the
+            text-channel vocabulary.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span. Text containing
+            either span marker is kept as one chunk to preserve span boundaries.
 
     Returns:
         Tuple of:

@@ -281,9 +281,6 @@ def _compute_flash_rnnt(
     # scale autograd already folded in, so each chunk can divide it back out.
     upstream_scale = torch.zeros(batch, device=encoder.device, dtype=torch.float32) if clamp > 0.0 else None
 
-    # Chunks are trimmed to their own longest member, so they disagree on the source and target
-    # extents. Writing each into its slice of one padded buffer settles that once, rather than
-    # padding every chunk out to the batch extent and concatenating the results.
     source_steps = encoder.shape[1]
     target_states = predictor.shape[1]
     target_scores = torch.zeros((batch, source_steps, target_states), device=encoder.device, dtype=torch.float32)

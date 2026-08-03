@@ -21,10 +21,15 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from nemo.collections.asr.parts.triton.rnnt_joint import join_activate
-from nemo.collections.asr.parts.triton.rnnt_loss import MAX_TARGET_TOKENS
+from nemo.collections.asr.parts.triton.rnnt_loss import MAX_TARGET_TOKENS, rnnt_loss_triton
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 _DEFAULT_MAX_JOINT_ROWS = 200_000
+
+
+def _ceil_div(numerator: int, denominator: int) -> int:
+    """Smallest integer at least ``numerator / denominator``."""
+    return (numerator + denominator - 1) // denominator
 
 
 def _validate_joint(joint, blank: int) -> None:
@@ -62,11 +67,11 @@ class FlashRNNTLoss(torch.nn.Module):
     target dimensions require new, increasingly expensive kernel compilations
     and accumulate more float32 scan error.
 
-    ``max_joint_rows`` applies to the flattened B * T * (U + 1) rows in each
-    disposable joint workspace. Source time is divided into balanced tiles so
-    that the final tile is not substantially smaller than the others. A tile
-    contains at least one source step, so B * (U + 1) can exceed the requested
-    budget.
+    ``max_joint_rows`` budgets the flattened B * T * (U + 1) rows of one joint
+    workspace tile. Peak workspace is the largest tile, so source time is divided
+    into equal tiles rather than tiles filled to the budget, and tiles usually
+    come in under it. One source step is the smallest tile, so a batch whose
+    B * (U + 1) already exceeds the budget overruns it.
     """
 
     def __init__(
@@ -129,7 +134,7 @@ def _chunk_scores(
     dropout_p: float,
     blank: int,
     clamp: float,
-    upstream_scale: torch.Tensor,
+    upstream_scale: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Calculate transition scores for one disposable joint chunk."""
     from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
@@ -154,10 +159,13 @@ def _balanced_time_tile_size(
     target_states: int,
     max_joint_rows: int,
 ) -> int:
-    """Choose balanced source tiles subject to a one-source-step minimum."""
+    """Size source tiles evenly rather than filling the budget, since peak workspace is the largest tile.
+
+    A tile covers at least one source step, so a step wider than the budget still runs.
+    """
     max_time_tile = max(1, max_joint_rows // (chunk_batch * target_states))
-    num_tiles = (source_steps + max_time_tile - 1) // max_time_tile
-    return (source_steps + num_tiles - 1) // num_tiles
+    num_tiles = _ceil_div(source_steps, max_time_tile)
+    return _ceil_div(source_steps, num_tiles)
 
 
 def _time_tiled_chunk_scores(
@@ -173,7 +181,7 @@ def _time_tiled_chunk_scores(
     blank: int,
     clamp: float,
     max_joint_rows: int,
-    upstream_scale: torch.Tensor,
+    upstream_scale: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Checkpoint one balanced source tile at a time."""
     source_steps = projected_encoder.shape[1]
@@ -248,7 +256,7 @@ def _compute_flash_rnnt(
     source_lengths = source_lengths.index_select(0, order)
     target_lengths = target_lengths.index_select(0, order)
 
-    num_chunks = (batch + max_samples_per_chunk - 1) // max_samples_per_chunk
+    num_chunks = _ceil_div(batch, max_samples_per_chunk)
     padded_batch = num_chunks * max_samples_per_chunk
     length_pairs = torch.stack((source_lengths, target_lengths), dim=1)
     if padded_batch != batch:
@@ -261,16 +269,13 @@ def _compute_flash_rnnt(
             f"Batch target length {chunk_maxima[-1][1]} exceeds configured max_target_tokens={max_target_tokens}"
         )
 
-    inverse_order = torch.empty_like(order)
-    inverse_order.scatter_(0, order, torch.arange(order.numel(), device=order.device))
+    inverse_order = torch.argsort(order)
     encoder = encoder.index_select(0, order)
     predictor = predictor.index_select(0, order)
     targets = targets.index_select(0, order)
 
     projected_encoder = joint.project_encoder(encoder)
     projected_predictor = joint.project_prednet(predictor)
-
-    from nemo.collections.asr.parts.triton.rnnt_loss import rnnt_loss_triton
 
     # Clamping needs the unit-scale gradient; the loss backward publishes the per-sample
     # scale autograd already folded in, so each chunk can divide it back out.
@@ -279,10 +284,11 @@ def _compute_flash_rnnt(
     # Chunks are trimmed to their own longest member, so they disagree on the source and target
     # extents. Writing each into its slice of one padded buffer settles that once, rather than
     # padding every chunk out to the batch extent and concatenating the results.
-    scores_shape = (batch, encoder.shape[1], predictor.shape[1])
-    target_scores = torch.zeros(scores_shape, device=encoder.device, dtype=torch.float32)
+    source_steps = encoder.shape[1]
+    target_states = predictor.shape[1]
+    target_scores = torch.zeros((batch, source_steps, target_states), device=encoder.device, dtype=torch.float32)
     blank_scores = torch.zeros_like(target_scores)
-    output = joint.joint_net[-1]
+    output_layer = joint.joint_net[-1]
     dropout_p = joint.dropout if joint.training else 0.0
     for chunk_index, (max_source, max_target) in enumerate(chunk_maxima):
         begin = chunk_index * max_samples_per_chunk
@@ -293,8 +299,8 @@ def _compute_flash_rnnt(
             targets[begin:end, :max_target],
             source_lengths[begin:end],
             target_lengths[begin:end],
-            output.weight,
-            output.bias,
+            output_layer.weight,
+            output_layer.bias,
             joint.activation,
             dropout_p,
             blank,

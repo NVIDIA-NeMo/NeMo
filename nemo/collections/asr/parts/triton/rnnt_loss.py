@@ -52,7 +52,7 @@ def _validate_transition_inputs(
 if TRITON_AVAILABLE:
 
     @triton.jit
-    def _logadd_scan(left, right):
+    def _logaddexp(left, right):
         maximum = tl.maximum(left, right)
         value = maximum + tl.log(tl.exp(left - maximum) + tl.exp(right - maximum))
         return tl.where(maximum == -float("inf"), -float("inf"), value)
@@ -61,7 +61,7 @@ if TRITON_AVAILABLE:
     def _log_semiring_compose(a_left, b_left, a_right, b_right):
         # Compose F(x) = logadd(a, b + x). The inclusive scan's ``a``
         # component is the RNN-T recurrence value at that lane.
-        return _logadd_scan(a_right, b_right + a_left), b_right + b_left
+        return _logaddexp(a_right, b_right + a_left), b_right + b_left
 
     @triton.jit
     def _rnnt_loss_kernel(
@@ -266,7 +266,8 @@ class _RNNTLossTriton(torch.autograd.Function):
             block_target=block_target,
             num_warps=8 if block_target >= 128 else 4,
         )
-        if max_target:
+        # Every transcript in the batch is empty, so there are no target transitions to score.
+        if max_target > 0:
             _rnnt_target_occupation_kernel[(batch, max_source)](
                 target_scores,
                 source_lengths,

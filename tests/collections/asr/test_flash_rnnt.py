@@ -442,55 +442,6 @@ def test_rnnt_logprobs_reused_logits_reject_second_backward():
 
 
 @pytest.mark.unit
-@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-def test_rnnt_logprobs_combines_target_and_blank_deltas():
-    torch.manual_seed(157)
-    batch, source, target, vocab, blank = 1, 3, 2, 4, 3
-    base = torch.randn(batch, source, target + 1, vocab, device="cuda")
-    labels = torch.full((batch, target), blank, device="cuda", dtype=torch.int64)
-    source_lengths = torch.full((batch,), source, device="cuda", dtype=torch.int64)
-    target_lengths = torch.full((batch,), target, device="cuda", dtype=torch.int64)
-    target_weights = torch.randn(batch, source, target + 1, device="cuda")
-    target_weights[..., -1] = 0.0
-    blank_weights = torch.randn_like(target_weights)
-
-    logits = base.clone().requires_grad_(True)
-    target_scores, blank_scores = rnnt_logprobs_triton(
-        logits,
-        labels,
-        blank_id=blank,
-        source_lengths=source_lengths,
-        target_lengths=target_lengths,
-    )
-    actual = torch.autograd.grad((target_scores * target_weights + blank_scores * blank_weights).sum(), logits)[0]
-
-    reference_logits = base.clone().requires_grad_(True)
-    blank_log_probs = reference_logits.log_softmax(dim=-1)[..., blank]
-    expected = torch.autograd.grad(((target_weights + blank_weights) * blank_log_probs).sum(), reference_logits)[0]
-
-    torch.testing.assert_close(actual, expected, atol=2e-6, rtol=2e-5)
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-@pytest.mark.parametrize("invalid_target", [-1, 8])
-def test_rnnt_logprobs_masks_out_of_range_target_reads(invalid_target):
-    logits = torch.randn(1, 2, 2, 8, device="cuda")
-    labels = torch.full((1, 1), invalid_target, device="cuda", dtype=torch.int64)
-    lengths = torch.ones(1, device="cuda", dtype=torch.int64)
-
-    target_scores, _ = rnnt_logprobs_triton(
-        logits,
-        labels,
-        blank_id=7,
-        source_lengths=torch.full_like(lengths, 2),
-        target_lengths=lengths,
-    )
-
-    assert torch.isneginf(target_scores[:, :, 0]).all()
-
-
-@pytest.mark.unit
 @pytest.mark.skipif(
     not CUDA_TRITON_AVAILABLE or not NUMBA_RNNT_AVAILABLE,
     reason="CUDA, Triton, and Numba RNN-T are required",

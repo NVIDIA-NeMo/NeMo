@@ -65,8 +65,7 @@ def _rnnt_logprobs_fwd_kernel(
     # calculate log prob for target if needed
     if target_i < target_len:
         target_id = tl.load(targets_ptr + batch_i * (max_target_len_plus_1 - 1) + target_i)
-        valid_target_id = (target_id >= 0) & (target_id < num_labels)
-        target_logit = tl.load(logits_ptr + target_id, mask=valid_target_id, other=-float("inf")).to(tl.float32)
+        target_logit = tl.load(logits_ptr + target_id).to(tl.float32)
         tl.store(target_scores_ptr + flat_index_output, target_logit - logits_max - denominator)
 
 

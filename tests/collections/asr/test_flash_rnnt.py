@@ -694,41 +694,41 @@ def test_flash_rnnt_clamp_matches_numba_across_chunks(fused_batch_size, upstream
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_flash_rnnt_joint_dropout_matches_dense_loss_and_gradients(dtype):
-    torch.manual_seed(91)
-    dense_joint = _make_joint(2, activation="tanh", dropout=0.25).to(dtype)
-    flash_joint = _make_joint(2, activation="tanh", dropout=0.25).to(dtype)
-    flash_joint.load_state_dict(dense_joint.state_dict())
-    flash_loss = RNNTLoss(num_classes=7, reduction="mean_batch", loss_name="flash_rnnt")
-    flash_joint.set_loss(flash_loss)
-    flash_joint.set_wer(object())
-    encoder = torch.randn(2, 6, 5, device="cuda", dtype=dtype, requires_grad=True)
-    predictor = torch.randn(2, 7, 4, device="cuda", dtype=dtype, requires_grad=True)
-    flash_encoder = encoder.detach().clone().requires_grad_(True)
-    flash_predictor = predictor.detach().clone().requires_grad_(True)
-    source_lengths = torch.tensor([4, 5], device="cuda")
-    target_lengths = torch.tensor([2, 3], device="cuda")
-    labels = torch.randint(0, 7, (2, 3), device="cuda")
+@pytest.mark.parametrize("hidden_size", [6, 8, 1536])
+def test_join_activate_dropout_mask_agrees_across_kernels(hidden_size):
+    """The forward and both backward kernels must reach the same verdict on every element.
 
-    torch.manual_seed(117)
-    logits = dense_joint.joint(encoder.transpose(1, 2), predictor.transpose(1, 2))
-    dense_value = _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, 7).mean()
-    dense_gradients = torch.autograd.grad(dense_value, (encoder, predictor, *dense_joint.parameters()))
-    torch.manual_seed(117)
-    flash_value = flash_joint(
-        encoder_outputs=flash_encoder,
-        decoder_outputs=flash_predictor,
-        encoder_lengths=source_lengths,
-        transcripts=labels,
-        transcript_lengths=target_lengths,
-    )[0]
-    flash_gradients = torch.autograd.grad(flash_value, (flash_encoder, flash_predictor, *flash_joint.parameters()))
+    Nothing stores the mask and the three kernels walk the joint grid along different axes, so each
+    redraws it from the element's position. Under relu with a positive pre-activation the activation
+    derivative is exactly 1, which reduces each backward under a grad_output of ones to the
+    mask-weighted sum of ones along its axis -- that is, the sum of the forward output. One element
+    the kernels disagree on breaks the identity exactly.
 
-    atol, rtol = (2e-5, 2e-4) if dtype == torch.float32 else (2e-2, 2e-2)
-    torch.testing.assert_close(flash_value, dense_value, atol=atol, rtol=rtol)
-    for actual, expected in zip(flash_gradients, dense_gradients):
-        torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+    ``hidden_size`` covers a size that is not a multiple of four, one block, and several blocks.
+    """
+    torch.manual_seed(53)
+    dropout_p = 0.25
+    encoder = torch.ones(2, 5, hidden_size, device="cuda", requires_grad=True)
+    predictor = torch.zeros(2, 4, hidden_size, device="cuda", requires_grad=True)
+
+    hidden = join_activate(encoder, predictor, "relu", dropout_p)
+    hidden.backward(torch.ones_like(hidden))
+
+    torch.testing.assert_close(encoder.grad, hidden.sum(dim=2))
+    torch.testing.assert_close(predictor.grad, hidden.sum(dim=1))
+
+    survivors = hidden[hidden != 0.0]
+    torch.testing.assert_close(survivors, torch.full_like(survivors, 1.0 / (1.0 - dropout_p)))
+    assert 0.6 < survivors.numel() / hidden.numel() < 0.9
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+def test_join_activate_rejects_invalid_dropout():
+    encoder = torch.randn(1, 2, 8, device="cuda")
+    predictor = torch.randn(1, 3, 8, device="cuda")
+    with pytest.raises(ValueError, match=r"dropout_p must be in \[0, 1\)"):
+        join_activate(encoder, predictor, "relu", 1.0)
 
 
 @pytest.mark.unit

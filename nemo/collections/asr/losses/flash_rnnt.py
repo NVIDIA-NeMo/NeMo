@@ -134,8 +134,7 @@ def _chunk_scores(
     """Calculate transition scores for one disposable joint chunk."""
     from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
 
-    hidden = join_activate(projected_encoder, projected_predictor, activation)
-    hidden = F.dropout(hidden, p=dropout_p, training=True)
+    hidden = join_activate(projected_encoder, projected_predictor, activation, dropout_p)
     logits = F.linear(hidden, output_weight, output_bias)
     return rnnt_logprobs_triton(
         logits,

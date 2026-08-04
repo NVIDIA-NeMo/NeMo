@@ -496,6 +496,86 @@ def test_process_batch_with_autoregressive_local_transformer():
     assert output.local_transformer_logits.shape == output.logits.shape
 
 
+def test_process_batch_with_one_shot_flow_local_predictor():
+    _seed_everything()
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "normalizing_flow",
+                "frame_stacking_factor": 2,
+                "local_flow_hidden_dim": 16,
+                "local_flow_n_layers": 2,
+                "local_flow_n_flows": 2,
+                "local_flow_kernel_size": 3,
+                "local_transformer_loss_scale": 0.5,
+            }
+        )
+    )
+    batch = _toy_batch(model)
+    audio_embedding = torch.randn(
+        batch["audio_codes"].size(0),
+        model._codec_model.vector_quantizer.codebook_dim,
+        batch["audio_codes"].size(2),
+    )
+
+    output = model.process_batch(
+        text=batch["text"],
+        text_lens=batch["text_lens"],
+        context_text_tokens=batch["context_text_tokens"],
+        context_text_tokens_lens=batch["context_text_tokens_lens"],
+        audio_codes=batch["audio_codes"],
+        audio_codes_lens=batch["audio_codes_lens"],
+        context_audio_codes=batch["context_audio_codes"],
+        context_audio_codes_lens=batch["context_audio_codes_lens"],
+        audio_embedding=audio_embedding,
+        audio_embedding_lens=batch["audio_codes_lens"],
+        mode="val",
+        training_mode=model.training_modes[0],
+        agent_mask=batch["agent_mask"],
+    )
+
+    assert torch.isfinite(output.loss)
+    assert torch.isfinite(output.codebook_loss)
+    assert torch.isfinite(output.local_transformer_loss)
+    assert output.local_transformer_logits is None
+
+
+def test_one_shot_flow_sampling_returns_all_codec_groups():
+    _seed_everything()
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "normalizing_flow",
+                "frame_stacking_factor": 2,
+                "local_flow_hidden_dim": 16,
+                "local_flow_n_layers": 2,
+                "local_flow_n_flows": 2,
+                "local_flow_kernel_size": 3,
+            }
+        )
+    )
+    last_hidden = torch.randn(2, 1, model.cfg.hidden_dim)
+    logits = torch.randn(
+        2,
+        model.num_audio_codebooks * model.frame_stacking_factor * model.num_all_tokens_per_codebook,
+    )
+
+    sampled, argmax = model._sample_audio_codes(
+        last_hidden=last_hidden,
+        all_code_logits_t=logits,
+        temperature=0.7,
+        topk=20,
+        use_local_transformer_for_inference=True,
+        use_cfg=False,
+        cfg_scale=1.0,
+    )
+
+    expected_shape = (2, model.num_audio_codebooks * model.frame_stacking_factor)
+    assert sampled.shape == expected_shape
+    assert argmax.shape == expected_shape
+    assert sampled.dtype == torch.long
+
+
 def test_training_step_smoke(model, toy_batch):
     _seed_everything()
     model.train()

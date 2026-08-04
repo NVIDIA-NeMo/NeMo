@@ -66,6 +66,7 @@ model:
   use_text_conditioning_encoder: true # If true, distilbert will be used to encode context_text if provided.
   context_duration_min: 5.0
   context_duration_max: 5.0
+  # normalizing_flow needs target waveforms to build the pre-quantization target; set this false.
   load_cached_codes_if_available: true
   
   embedding_dim: 1536
@@ -75,14 +76,26 @@ model:
   max_epochs: ${max_epochs}
   steps_per_epoch: ${weighted_sampling_steps_per_epoch}
   
-  # Local transformer parameters for autoregressive codebook prediction within a frame
-  local_transformer_type: "autoregressive" # "none", "autoregressive"
-  # Below args are only relevant if use_local_transformer is autoregressive
+  # Local predictor for acoustic information within each stacked frame.
+  local_transformer_type: "autoregressive" # "none", "autoregressive", "normalizing_flow"
   local_transformer_loss_scale: 1.0
   phoneme_loss_weight: 1.0
+
+  # Autoregressive local-transformer parameters.
   local_transformer_n_layers: 3
   local_transformer_n_heads: 12
   local_transformer_hidden_dim: 1536
+
+  # One-shot VITS-style normalizing-flow parameters. The 1024-wide default has
+  # approximately the same parameter count as the reference autoregressive local predictor.
+  num_semantic_codebooks: 1
+  local_flow_hidden_dim: 1024
+  local_flow_n_flows: 4
+  local_flow_n_layers: 4
+  local_flow_kernel_size: 5
+  local_flow_dilation_rate: 1
+  local_flow_dropout: 0.0
+  local_flow_noise_scale: 1.0
 
   cfg_unconditional_prob: 0.05
   # To get special_tokens of the tokenzer, you can do:

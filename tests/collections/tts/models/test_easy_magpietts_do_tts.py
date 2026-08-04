@@ -15,10 +15,9 @@
 """
 Unit tests for EasyMagpieTTSInferenceModel.do_tts local-transformer selection.
 
-With use_local_transformer=None, do_tts derives it from local_transformer_type (AR -> use it;
-MASKGIT/NO_LT -> parallel sampling, since EasyMagpie only supports an AR local transformer and raises
-otherwise); an explicit value overrides that. The test drives the real do_tts with a mock self and
-asserts the use_local_transformer_for_inference passed to infer_batch.
+With use_local_transformer=None, do_tts derives it from local_transformer_type (AR/flow -> use it;
+MASKGIT/NO_LT -> parallel sampling); an explicit value overrides that. The test drives the real do_tts
+with a mock self and asserts the use_local_transformer_for_inference passed to infer_batch.
 """
 
 from types import SimpleNamespace
@@ -62,10 +61,10 @@ class TestEasyDoTtsLocalTransformerSelection:
     @pytest.mark.parametrize(
         "local_transformer_type, use_local_transformer, expected_use_lt",
         [
-            # use_local_transformer=None -> derive from local_transformer_type (EasyMagpie uses the
-            # local transformer only for AR; MASKGIT/NO_LT decode via parallel sampling).
+            # use_local_transformer=None -> derive from local_transformer_type.
             (LocalTransformerType.NO_LT, None, False),
             (LocalTransformerType.AR, None, True),
+            (LocalTransformerType.FLOW, None, True),
             (LocalTransformerType.MASKGIT, None, False),
             # An explicit value overrides the derived default -- e.g. False flips AR's derived True.
             (LocalTransformerType.AR, True, True),

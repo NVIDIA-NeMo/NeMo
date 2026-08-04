@@ -872,6 +872,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         audio_codes_lens: torch.Tensor,
         context_audio_codes: torch.Tensor,
         context_audio_codes_lens: torch.Tensor,
+        audio_embedding: Optional[torch.Tensor] = None,
+        audio_embedding_lens: Optional[torch.Tensor] = None,
         phoneme_tokens: Optional[torch.Tensor] = None,
         phoneme_tokens_lens: Optional[torch.Tensor] = None,
         phoneme_turn_dropout: Optional[torch.Tensor] = None,
@@ -904,6 +906,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_codes_lens: Length of audio codes (B,)
             context_audio_codes: Pre-computed context audio codes (B, C, T')
             context_audio_codes_lens: Length of context audio codes (B,)
+            audio_embedding: Optional codec encoder output before quantization (B, D, T).
+                Required by the normalizing-flow local predictor.
+            audio_embedding_lens: Valid lengths for ``audio_embedding`` (B,).
             phoneme_tokens: Optional phoneme token IDs with shape
                 ``(B, L_phoneme)``.
             phoneme_tokens_lens: Optional phoneme-token lengths with shape ``(B,)``.
@@ -1199,19 +1204,34 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         logits = self.final_proj(pred_embeddings_audio)
 
         # Compute codebook loss
-        codebook_loss, _ = self.compute_loss(
-            logits,
-            audio_codes_target,
-            audio_codes_lens_target,
-            agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
-        )
+        if self.local_transformer_type == LocalTransformerType.FLOW:
+            semantic_channels = self.num_semantic_codebooks * self.frame_stacking_factor
+            semantic_logits = logits.view(
+                logits.size(0),
+                logits.size(1),
+                self.num_audio_codebooks * self.frame_stacking_factor,
+                self.num_all_tokens_per_codebook,
+            )[:, :, :semantic_channels]
+            semantic_logits = semantic_logits.reshape(semantic_logits.size(0), semantic_logits.size(1), -1)
+            codebook_loss, _ = self.compute_loss(
+                semantic_logits,
+                audio_codes_target[:, :semantic_channels],
+                audio_codes_lens_target,
+                agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
+            )
+        else:
+            codebook_loss, _ = self.compute_loss(
+                logits,
+                audio_codes_target,
+                audio_codes_lens_target,
+                agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
+            )
         loss = self.parallel_codebook_loss_scale * codebook_loss
 
         # Compute local transformer loss if applicable
         local_transformer_loss = None
         local_transformer_logits = None
-        if self.local_transformer_type != LocalTransformerType.NO_LT:
-            assert self.local_transformer_type == LocalTransformerType.AR, "Unexpected local transformer type"
+        if self.local_transformer_type == LocalTransformerType.AR:
             local_transformer_logits = self._lt_helper.compute_logits(
                 pred_embeddings, audio_codes_target, targets_offset_by_one=False
             )
@@ -1221,7 +1241,56 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 audio_codes_lens_target,
                 agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
             )
+        elif self.local_transformer_type == LocalTransformerType.FLOW:
+            if audio_embedding is None or audio_embedding_lens is None:
+                raise ValueError(
+                    "normalizing_flow requires target audio waveforms so the codec encoder output can be "
+                    "computed before quantization; set model.load_cached_codes_if_available=false."
+                )
+            if not torch.equal(audio_embedding_lens.to(audio_codes_lens.device), audio_codes_lens):
+                raise ValueError("Pre-quantization embedding lengths must match target codec-code lengths.")
 
+            semantic_codes = audio_codes[:, : self.num_semantic_codebooks]
+            semantic_embedding = self._codec_helper.semantic_codes_to_embedding(
+                semantic_codes,
+                audio_codes_lens,
+            )
+            _, acoustic_embedding = self._codec_helper.split_prequantized_embedding(
+                audio_embedding,
+                num_semantic_codebooks=self.num_semantic_codebooks,
+            )
+            semantic_embedding_stacked = self.stack_codec_embeddings(
+                semantic_embedding,
+                self.frame_stacking_factor,
+            )
+            acoustic_embedding_stacked = self.stack_codec_embeddings(
+                acoustic_embedding,
+                self.frame_stacking_factor,
+            )
+            flow_lens = torch.div(
+                audio_embedding_lens + self.frame_stacking_factor - 1,
+                self.frame_stacking_factor,
+                rounding_mode='floor',
+            )
+            target_steps = acoustic_embedding_stacked.size(2)
+            flow_condition = torch.cat(
+                [
+                    pred_embeddings[:, :target_steps].transpose(1, 2),
+                    semantic_embedding_stacked.to(pred_embeddings.dtype),
+                ],
+                dim=1,
+            )
+            flow_frame_mask = None
+            if self.cfg.get("mask_user_on_loss", False) and agent_mask is not None:
+                flow_frame_mask = agent_mask[:, :target_steps]
+            local_transformer_loss = self.local_flow.compute_loss(
+                acoustic_embedding_stacked,
+                flow_condition,
+                flow_lens,
+                frame_mask=flow_frame_mask,
+            )
+
+        if local_transformer_loss is not None:
             loss = loss + self.local_transformer_loss_scale * local_transformer_loss
 
         # Compute phoneme loss if applicable
@@ -1288,7 +1357,18 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 context_audio, context_audio_lens
             )
 
-        if 'audio_codes' in batch:
+        audio_embedding = None
+        audio_embedding_lens = None
+        if self.local_transformer_type == LocalTransformerType.FLOW:
+            if 'audio' not in batch:
+                raise ValueError(
+                    "normalizing_flow requires target audio; set model.load_cached_codes_if_available=false."
+                )
+            audio_codes, audio_codes_lens, audio_embedding = self._codec_helper.audio_to_codes_and_embedding(
+                batch['audio'], batch['audio_lens']
+            )
+            audio_embedding_lens = audio_codes_lens
+        elif 'audio_codes' in batch:
             audio_codes = batch['audio_codes']
             audio_codes_lens = batch['audio_codes_lens']
         else:
@@ -1492,6 +1572,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_codes_lens=audio_codes_lens,
             context_audio_codes=context_audio_codes,
             context_audio_codes_lens=context_audio_codes_lens,
+            audio_embedding=audio_embedding,
+            audio_embedding_lens=audio_embedding_lens,
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             phoneme_turn_dropout=batch.get('phoneme_turn_dropout'),
@@ -1576,7 +1658,18 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 context_audio, context_audio_lens
             )
 
-        if 'audio_codes' in batch:
+        audio_embedding = None
+        audio_embedding_lens = None
+        if self.local_transformer_type == LocalTransformerType.FLOW:
+            if 'audio' not in batch:
+                raise ValueError(
+                    "normalizing_flow requires target audio; set model.load_cached_codes_if_available=false."
+                )
+            audio_codes, audio_codes_lens, audio_embedding = self._codec_helper.audio_to_codes_and_embedding(
+                batch['audio'], batch['audio_lens']
+            )
+            audio_embedding_lens = audio_codes_lens
+        elif 'audio_codes' in batch:
             audio_codes = batch['audio_codes']
             audio_codes_lens = batch['audio_codes_lens']
         else:
@@ -1593,6 +1686,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_codes_lens=audio_codes_lens,
             context_audio_codes=context_audio_codes,
             context_audio_codes_lens=context_audio_codes_lens,
+            audio_embedding=audio_embedding,
+            audio_embedding_lens=audio_embedding_lens,
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             mode="val",
@@ -1644,7 +1739,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 max_decoder_steps=330,
                 temperature=0.7,
                 topk=80,
-                use_local_transformer_for_inference=self.local_transformer_type == LocalTransformerType.AR,
+                use_local_transformer_for_inference=(
+                    self.local_transformer_type in (LocalTransformerType.AR, LocalTransformerType.FLOW)
+                ),
                 use_cfg=self.cfg.get('inference_use_cfg_in_val', True),
                 cfg_scale=2.5,
             )

@@ -36,6 +36,7 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
 from nemo.collections.tts.modules.audio_codec_modules import VectorQuantizerIndexConverter
+from nemo.collections.tts.modules.magpietts_flow import OneShotLocalFlow
 from nemo.collections.tts.modules.magpietts_modules import (
     CharAwareSubwordEncoder,
     CodecHelper,
@@ -591,7 +592,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         self.local_transformer_type = LocalTransformerType(cfg.get('local_transformer_type', 'none').lower())
         logging.info(f"Local transformer type: {self.local_transformer_type}")
-        if self.local_transformer_type != LocalTransformerType.NO_LT:
+        if self.local_transformer_type not in (LocalTransformerType.NO_LT, LocalTransformerType.FLOW):
             local_transformer_hidden_dim = cfg.get('local_transformer_hidden_dim', 256)
             if local_transformer_hidden_dim != cfg.hidden_dim:
                 self.local_transformer_in_projection = nn.Linear(cfg.hidden_dim, local_transformer_hidden_dim)
@@ -638,6 +639,35 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 audio_eos_id=self.audio_eos_id,
                 mask_token_id=self.mask_token_id,
                 codebook_size=self.codebook_size,
+            )
+
+        elif self.local_transformer_type == LocalTransformerType.FLOW:
+            if self._codec_converter is not None:
+                raise ValueError("normalizing_flow does not support model.vector_quantizer conversion.")
+
+            self.num_semantic_codebooks = int(cfg.get("num_semantic_codebooks", 1))
+            if not 0 < self.num_semantic_codebooks < self.num_audio_codebooks:
+                raise ValueError(
+                    f"num_semantic_codebooks must be in [1, {self.num_audio_codebooks - 1}], "
+                    f"got {self.num_semantic_codebooks}."
+                )
+
+            embedding_dim_per_codebook = self._codec_helper._embedding_dim_per_codebook()
+            self.semantic_codec_embedding_dim = self.num_semantic_codebooks * embedding_dim_per_codebook
+            self.acoustic_codec_embedding_dim = (
+                self.num_audio_codebooks - self.num_semantic_codebooks
+            ) * embedding_dim_per_codebook
+            stacked_semantic_dim = self.semantic_codec_embedding_dim * self.frame_stacking_factor
+            stacked_acoustic_dim = self.acoustic_codec_embedding_dim * self.frame_stacking_factor
+            self.local_flow = OneShotLocalFlow(
+                acoustic_channels=stacked_acoustic_dim,
+                condition_channels=cfg.hidden_dim + stacked_semantic_dim,
+                hidden_channels=int(cfg.get("local_flow_hidden_dim", 1024)),
+                kernel_size=int(cfg.get("local_flow_kernel_size", 5)),
+                dilation_rate=int(cfg.get("local_flow_dilation_rate", 1)),
+                n_layers=int(cfg.get("local_flow_n_layers", 4)),
+                n_flows=int(cfg.get("local_flow_n_flows", 4)),
+                dropout=float(cfg.get("local_flow_dropout", 0.0)),
             )
 
     @property
@@ -1349,6 +1379,37 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         return context_embedding, context_lens, context_audio_codes, context_audio_codes_lens
 
+    @staticmethod
+    def stack_codec_embeddings(embeddings: torch.Tensor, stacking_factor: int) -> torch.Tensor:
+        """Stack consecutive embedding frames into channels, matching ``stack_codes`` layout."""
+        if stacking_factor == 1:
+            return embeddings
+
+        batch_size, embedding_dim, num_frames = embeddings.shape
+        pad_frames = (-num_frames) % stacking_factor
+        if pad_frames:
+            embeddings = torch.nn.functional.pad(embeddings, (0, pad_frames))
+        stacked_frames = embeddings.size(2) // stacking_factor
+        embeddings = embeddings.view(batch_size, embedding_dim, stacked_frames, stacking_factor)
+        return embeddings.permute(0, 1, 3, 2).reshape(batch_size, embedding_dim * stacking_factor, stacked_frames)
+
+    @staticmethod
+    def unstack_codec_embeddings(
+        embeddings: torch.Tensor,
+        stacking_factor: int,
+        embedding_dim: int,
+    ) -> torch.Tensor:
+        """Restore time-stacked codec embeddings to ``(batch, channels, frames)``."""
+        if stacking_factor == 1:
+            return embeddings
+
+        batch_size, stacked_dim, stacked_frames = embeddings.shape
+        expected_dim = embedding_dim * stacking_factor
+        if stacked_dim != expected_dim:
+            raise ValueError(f"Expected stacked embedding dimension {expected_dim}, got {stacked_dim}.")
+        embeddings = embeddings.view(batch_size, embedding_dim, stacking_factor, stacked_frames)
+        return embeddings.permute(0, 1, 3, 2).reshape(batch_size, embedding_dim, stacked_frames * stacking_factor)
+
     def stack_codes(self, codes, codes_lens, bos_id, eos_id, stacking_factor, num_codebooks):
         """
         Stack multiple time steps into the channel dimension to reduce sequence length.
@@ -1442,6 +1503,80 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         return x, orig_lens
 
+    def _sample_audio_codes_with_flow(
+        self,
+        last_hidden: torch.Tensor,
+        all_code_logits_t: torch.Tensor,
+        temperature: float,
+        topk: int,
+        use_cfg: bool,
+        cfg_scale: float,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Sample semantic tokens, then generate all acoustic groups in one flow pass."""
+        semantic_channels = self.num_semantic_codebooks * self.frame_stacking_factor
+        sampled_parallel = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk)
+        if temperature <= 0.0:
+            argmax_parallel = sampled_parallel
+        else:
+            argmax_parallel = self.sample_codes_from_logits(all_code_logits_t, temperature=0.01)
+
+        batch_size = sampled_parallel.size(0)
+        semantic_codes = sampled_parallel[:, :semantic_channels].view(
+            batch_size,
+            self.num_semantic_codebooks,
+            self.frame_stacking_factor,
+        )
+        semantic_codes_argmax = argmax_parallel[:, :semantic_channels].view_as(semantic_codes)
+
+        semantic_special = (semantic_codes >= self.codebook_size).any(dim=1)
+        semantic_special_argmax = (semantic_codes_argmax >= self.codebook_size).any(dim=1)
+        safe_semantic_codes = semantic_codes.masked_fill(semantic_special.unsqueeze(1), 0)
+        codes_len = torch.full(
+            (batch_size,),
+            self.frame_stacking_factor,
+            dtype=torch.long,
+            device=semantic_codes.device,
+        )
+        semantic_embedding = self._codec_helper.semantic_codes_to_embedding(safe_semantic_codes, codes_len)
+        stacked_semantic_embedding = self.stack_codec_embeddings(semantic_embedding, self.frame_stacking_factor)
+
+        hidden = last_hidden[:, -1, :]
+        if use_cfg:
+            conditional, unconditional = hidden.chunk(2, dim=0)
+            hidden = cfg_scale * conditional + (1.0 - cfg_scale) * unconditional
+        condition = torch.cat(
+            [hidden.unsqueeze(-1), stacked_semantic_embedding.to(hidden.dtype)],
+            dim=1,
+        )
+        stacked_acoustic_embedding = self.local_flow.sample(
+            condition=condition,
+            lengths=torch.ones(batch_size, dtype=torch.long, device=condition.device),
+            noise_scale=float(self.cfg.get("local_flow_noise_scale", 1.0)),
+        )
+        acoustic_embedding = self.unstack_codec_embeddings(
+            stacked_acoustic_embedding,
+            self.frame_stacking_factor,
+            self.acoustic_codec_embedding_dim,
+        )
+        audio_codes = self._codec_helper.acoustic_embedding_to_codes(
+            safe_semantic_codes, acoustic_embedding, codes_len
+        )
+        audio_codes[:, : self.num_semantic_codebooks] = semantic_codes
+        audio_codes = torch.where(
+            semantic_special.unsqueeze(1),
+            semantic_codes[:, :1].expand(-1, self.num_audio_codebooks, -1),
+            audio_codes,
+        )
+
+        argmax_codes = audio_codes.clone()
+        argmax_codes[:, : self.num_semantic_codebooks] = semantic_codes_argmax
+        argmax_codes = torch.where(
+            semantic_special_argmax.unsqueeze(1),
+            semantic_codes_argmax[:, :1].expand(-1, self.num_audio_codebooks, -1),
+            argmax_codes,
+        )
+        return audio_codes.reshape(batch_size, -1), argmax_codes.reshape(batch_size, -1)
+
     def _sample_audio_codes(
         self,
         last_hidden: torch.Tensor,
@@ -1473,6 +1608,15 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 # Base class returns (B, C, S); flatten to (B, C*S) for downstream code
                 audio_codes_next = audio_codes_next.permute(0, 2, 1)
                 audio_codes_next = audio_codes_next.reshape(audio_codes_next.size(0), -1)
+            elif self.local_transformer_type == LocalTransformerType.FLOW:
+                return self._sample_audio_codes_with_flow(
+                    last_hidden=last_hidden,
+                    all_code_logits_t=all_code_logits_t,
+                    temperature=temperature,
+                    topk=topk,
+                    use_cfg=use_cfg,
+                    cfg_scale=cfg_scale,
+                )
             else:
                 raise ValueError(
                     f"Local transformer inference requested but local transformer type is {self.local_transformer_type}"
@@ -2614,7 +2758,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         context_audio_duration: float = 5.0,
         use_cfg: bool = True,
         cfg_scale: float = 2.5,
-        use_local_transformer: Optional[bool] = None,  # If unset, defaults to True if AR LT is present
+        use_local_transformer: Optional[bool] = None,  # Defaults to True for AR or one-shot flow
         temperature: float = 0.7,
         topk: int = 80,
         max_steps: int = 330,
@@ -2631,9 +2775,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         transcript = transcript.strip()
         context_text = (context_text or "[NO TEXT CONTEXT]").strip()
         if use_local_transformer is None:
-            # EasyMagpie uses the local transformer only for AR; MASKGIT/NO_LT decode via
-            # parallel sampling (_sample_audio_codes raises if asked to use a non-AR local transformer).
-            use_local_transformer = self.local_transformer_type == LocalTransformerType.AR
+            # AR and one-shot flow both replace parallel acoustic-codebook sampling.
+            use_local_transformer = self.local_transformer_type in (LocalTransformerType.AR, LocalTransformerType.FLOW)
 
         if main_tokenizer_name is None:
             # Match model init behavior: default to first configured tokenizer.

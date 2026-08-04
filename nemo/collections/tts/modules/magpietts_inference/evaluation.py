@@ -43,6 +43,11 @@ class EvaluationConfig:
         with_utmosv2: Whether to compute UTMOSv2 (Mean Opinion Score) metrics.
         with_fcd: Whether to compute Frechet Codec Distance metric.
         codec_model_path: Path to the audio codec model. If None, will skip computing Frechet Codec Distance metric.
+        with_prosody_metrics: Whether to compute ESIM/EMS plus pitch,
+            intensity, and speech-rate distance metrics.
+        prosody_model_size: Emotion encoder size ("small" or "large").
+        prosody_embedding_type: Emotion embedding type used for ESIM.
+        prosody_cache_dir: Optional Hugging Face cache directory for the emotion encoder.
         strip_text_annotations_for_metrics: Whether to strip annotation/control markers from reference and ASR hypothesis text before text metrics.
         device: Device to use for running models used during evaluation.
     """
@@ -55,6 +60,10 @@ class EvaluationConfig:
     with_utmosv2: bool = True
     with_fcd: bool = True
     codec_model_path: str = None
+    with_prosody_metrics: bool = False
+    prosody_model_size: str = "small"
+    prosody_embedding_type: str = "score_vector"
+    prosody_cache_dir: str = None
     strip_text_annotations_for_metrics: bool = False
     device: str = "cuda"
     asr_batch_size: int = 32
@@ -99,6 +108,10 @@ def evaluate_generated_audio_dir(
         with_utmosv2=config.with_utmosv2,
         with_fcd=config.with_fcd,
         codec_model_path=config.codec_model_path,
+        with_prosody_metrics=config.with_prosody_metrics,
+        prosody_model_size=config.prosody_model_size,
+        prosody_embedding_type=config.prosody_embedding_type,
+        prosody_cache_dir=config.prosody_cache_dir,
         strip_text_annotations_for_metrics=config.strip_text_annotations_for_metrics,
         device=config.device,
         eou_model_name=config.eou_model_name,

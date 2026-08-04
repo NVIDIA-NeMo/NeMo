@@ -169,7 +169,9 @@ def run_inference_and_evaluation(
         "checkpoint_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,"
         "wer_cumulative,ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,"
         "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
-        "ssim_gt_context_avg_alternate,cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
+        "ssim_gt_context_avg_alternate,esim_pred_gt_avg,ems_pred_gt_avg,"
+        "pitch_distance_avg,intensity_distance_avg,speech_rate_distance_avg,"
+        "cer_gt_audio_cumulative,wer_gt_audio_cumulative,"
         "utmosv2_avg,total_gen_audio_seconds,frechet_codec_distance,"
         "eou_cutoff_rate,eou_silence_rate,eou_noise_rate,eou_error_rate,"
         "katakana_cer_filewise_avg,katakana_cer_cumulative"
@@ -303,6 +305,10 @@ def run_inference_and_evaluation(
                 with_utmosv2=eval_config.with_utmosv2,
                 with_fcd=eval_config.with_fcd,
                 codec_model_path=eval_config.codec_model_path,
+                with_prosody_metrics=eval_config.with_prosody_metrics,
+                prosody_model_size=eval_config.prosody_model_size,
+                prosody_embedding_type=eval_config.prosody_embedding_type,
+                prosody_cache_dir=eval_config.prosody_cache_dir,
                 strip_text_annotations_for_metrics=eval_config.strip_text_annotations_for_metrics,
                 device=eval_config.device,
                 asr_batch_size=eval_config.asr_batch_size,
@@ -456,6 +462,10 @@ def main(argv=None):
         with_utmosv2=not args.disable_utmosv2,
         with_fcd=not args.disable_fcd,
         codec_model_path=args.codecmodel_path if not args.disable_fcd else None,
+        with_prosody_metrics=args.with_prosody_metrics,
+        prosody_model_size=args.prosody_model_size,
+        prosody_embedding_type=args.prosody_embedding_type,
+        prosody_cache_dir=args.prosody_cache_dir,
         strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
         asr_batch_size=args.asr_batch_size,
         eou_batch_size=args.eou_batch_size,

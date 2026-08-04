@@ -43,9 +43,15 @@ def load_pretrained_nemo(cls, model_path_or_name: str):
         cfg = cls.restore_from(model_path_or_name, return_config=True)
         target = cfg.get("target", None) if hasattr(cfg, "get") else None
         if target is not None:
-            from nemo.utils.model_utils import import_class_by_path
+            from nemo.core.classes.common import _get_allowed_target_class
 
-            cls = import_class_by_path(target)
+            resolved_cls = _get_allowed_target_class(target)
+            concrete_cls = resolved_cls
+            while hasattr(concrete_cls, "__wrapped__"):
+                concrete_cls = concrete_cls.__wrapped__
+            if not isinstance(concrete_cls, type) or not issubclass(concrete_cls, cls):
+                raise TypeError(f"Checkpoint target {target!r} is not a subclass of {cls.__name__}.")
+            cls = resolved_cls
         return cls.restore_from(model_path_or_name)
     else:
         return cls.from_pretrained(model_path_or_name)

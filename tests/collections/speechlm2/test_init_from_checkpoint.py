@@ -18,7 +18,7 @@ Integration tests use real SALM / SALMAutomodel (require HF config download;
 SALMAutomodel tests also require CUDA).
 """
 import os
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
@@ -29,6 +29,7 @@ from safetensors.torch import save_file
 from nemo.collections.speechlm2.parts.pretrained import (
     _is_dcp_checkpoint,
     init_from_training_checkpoint,
+    load_pretrained_nemo,
     maybe_load_pretrained_models,
 )
 
@@ -202,6 +203,95 @@ class TestInitFromTrainingCheckpointDCP:
         mock_compat.assert_called_once_with()
         mock_compat.return_value.__enter__.assert_called_once_with()
         mock_compat.return_value.__exit__.assert_called_once()
+
+
+def test_load_local_nemo_resolves_concrete_target(tmp_path):
+    """Local .nemo restores must not instantiate an abstract base class."""
+
+    class BaseModel:
+        pass
+
+    class ConcreteModel(BaseModel):
+        pass
+
+    model_path = tmp_path / "encoder.nemo"
+    model_path.touch()
+    restored = object()
+    base_restore = Mock(return_value=DictConfig({"target": "nemo.ConcreteASRModel"}))
+    concrete_restore = Mock(return_value=restored)
+
+    with (
+        patch.object(BaseModel, "restore_from", base_restore, create=True),
+        patch.object(ConcreteModel, "restore_from", concrete_restore, create=True),
+        patch("nemo.core.classes.common._get_allowed_target_class", return_value=ConcreteModel) as resolve_target,
+    ):
+        result = load_pretrained_nemo(BaseModel, str(model_path))
+
+    assert result is restored
+    base_restore.assert_called_once_with(str(model_path), return_config=True)
+    resolve_target.assert_called_once_with("nemo.ConcreteASRModel")
+    concrete_restore.assert_called_once_with(str(model_path))
+
+
+def test_load_local_nemo_rejects_unsafe_target(tmp_path):
+    class BaseModel:
+        pass
+
+    model_path = tmp_path / "encoder.nemo"
+    model_path.touch()
+    base_restore = Mock(return_value=DictConfig({"target": "subprocess.Popen"}))
+
+    with (
+        patch.object(BaseModel, "restore_from", base_restore, create=True),
+        pytest.raises(ValueError, match="unsafe target 'subprocess.Popen'"),
+    ):
+        load_pretrained_nemo(BaseModel, str(model_path))
+
+
+def test_load_local_nemo_rejects_unrelated_target(tmp_path):
+    class BaseModel:
+        pass
+
+    class UnrelatedModel:
+        pass
+
+    model_path = tmp_path / "encoder.nemo"
+    model_path.touch()
+    base_restore = Mock(return_value=DictConfig({"target": "nemo.UnrelatedModel"}))
+
+    with (
+        patch.object(BaseModel, "restore_from", base_restore, create=True),
+        patch("nemo.core.classes.common._get_allowed_target_class", return_value=UnrelatedModel),
+        pytest.raises(TypeError, match="not a subclass"),
+    ):
+        load_pretrained_nemo(BaseModel, str(model_path))
+
+
+def test_load_local_nemo_accepts_wrapped_subclass(tmp_path):
+    class BaseModel:
+        pass
+
+    class ConcreteModel(BaseModel):
+        pass
+
+    class WrappedModel:
+        __wrapped__ = ConcreteModel
+
+    model_path = tmp_path / "encoder.nemo"
+    model_path.touch()
+    restored = object()
+    base_restore = Mock(return_value=DictConfig({"target": "nemo.WrappedModel"}))
+    wrapped_restore = Mock(return_value=restored)
+
+    with (
+        patch.object(BaseModel, "restore_from", base_restore, create=True),
+        patch.object(WrappedModel, "restore_from", wrapped_restore, create=True),
+        patch("nemo.core.classes.common._get_allowed_target_class", return_value=WrappedModel),
+    ):
+        result = load_pretrained_nemo(BaseModel, str(model_path))
+
+    assert result is restored
+    wrapped_restore.assert_called_once_with(str(model_path))
 
 
 # ---------------------------------------------------------------------------

@@ -269,6 +269,52 @@ class OneShotLocalFlow(nn.Module):
         denominator = (mask.sum() * latent.size(1)).clamp_min(1.0)
         return ((negative_log_likelihood * mask.float()).sum() - log_determinant.float().sum()) / denominator
 
+    @torch.no_grad()
+    def compute_diagnostics(
+        self,
+        acoustic_embedding: torch.Tensor,
+        condition: torch.Tensor,
+        lengths: torch.Tensor,
+        frame_mask: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Return compact diagnostics for the worst sample in a spiking batch."""
+        latent, mask, log_determinant = self.encode(
+            acoustic_embedding,
+            condition,
+            lengths,
+            frame_mask=frame_mask,
+        )
+        float_mask = mask.float()
+        negative_log_likelihood = 0.5 * (latent.float().square() + math.log(2.0 * math.pi))
+        valid_frames = float_mask.sum(dim=(1, 2))
+        latent_denominator = (valid_frames * latent.size(1)).clamp_min(1.0)
+        per_sample_loss = (
+            (negative_log_likelihood * float_mask).sum(dim=(1, 2)) - log_determinant.float()
+        ) / latent_denominator
+        worst_sample_index = per_sample_loss.argmax()
+
+        def _masked_abs_max(values: torch.Tensor) -> torch.Tensor:
+            return (values.float().abs() * float_mask).amax(dim=(1, 2))
+
+        def _masked_rms(values: torch.Tensor) -> torch.Tensor:
+            denominator = (valid_frames * values.size(1)).clamp_min(1.0)
+            return ((values.float().square() * float_mask).sum(dim=(1, 2)) / denominator).sqrt()
+
+        return {
+            "sample_index": worst_sample_index,
+            "sample_loss": per_sample_loss[worst_sample_index],
+            "valid_frames": valid_frames[worst_sample_index],
+            "target_abs_max": _masked_abs_max(acoustic_embedding)[worst_sample_index],
+            "target_rms": _masked_rms(acoustic_embedding)[worst_sample_index],
+            "condition_abs_max": _masked_abs_max(condition)[worst_sample_index],
+            "condition_rms": _masked_rms(condition)[worst_sample_index],
+            "latent_abs_max": _masked_abs_max(latent)[worst_sample_index],
+            "latent_rms": _masked_rms(latent)[worst_sample_index],
+            "normalized_log_determinant": (
+                log_determinant.float()[worst_sample_index] / latent_denominator[worst_sample_index]
+            ),
+        }
+
     def sample(
         self,
         condition: torch.Tensor,

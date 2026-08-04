@@ -74,6 +74,7 @@ class ProcessBatchOutput:
         codebook_loss: Cross-entropy loss for parallel audio codebook prediction
         phoneme_loss: Cross-entropy loss for phoneme prediction (None if no phoneme tokenizer)
         local_transformer_loss: Loss from local transformer (None if not used)
+        local_flow_diagnostics: Worst-sample diagnostics populated only when flow loss crosses the debug threshold
         local_transformer_logits: Logits from local transformer (None if not used)
         logits: Predicted logits for audio codes (B, T', num_codebooks * num_tokens_per_codebook)
         phoneme_logits: Predicted logits for phoneme tokens (None if no phoneme tokenizer)
@@ -90,6 +91,7 @@ class ProcessBatchOutput:
     codebook_loss: torch.Tensor
     phoneme_loss: Optional[torch.Tensor]
     local_transformer_loss: Optional[torch.Tensor]
+    local_flow_diagnostics: Optional[dict[str, torch.Tensor]]
     local_transformer_logits: Optional[torch.Tensor]
     logits: torch.Tensor
     phoneme_logits: Optional[torch.Tensor]
@@ -123,6 +125,12 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         self.phoneme_loss_weight = cfg.get('phoneme_loss_weight', 1.0)
         self.parallel_codebook_loss_scale = cfg.get('parallel_codebook_loss_scale', 1.0)
         self.local_transformer_loss_scale = cfg.get('local_transformer_loss_scale', 1.0)
+        local_flow_debug_loss_threshold = cfg.get('local_flow_debug_loss_threshold', 100.0)
+        self.local_flow_debug_loss_threshold = (
+            None if local_flow_debug_loss_threshold is None else float(local_flow_debug_loss_threshold)
+        )
+        if self.local_flow_debug_loss_threshold is not None and self.local_flow_debug_loss_threshold <= 0.0:
+            raise ValueError("local_flow_debug_loss_threshold must be positive or null.")
         self.phoneme_as_text_prob = cfg.get('phoneme_as_text_prob', 0.0)
 
         self.cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
@@ -1230,6 +1238,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         # Compute local transformer loss if applicable
         local_transformer_loss = None
+        local_flow_diagnostics = None
         local_transformer_logits = None
         if self.local_transformer_type == LocalTransformerType.AR:
             local_transformer_logits = self._lt_helper.compute_logits(
@@ -1289,6 +1298,17 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 flow_lens,
                 frame_mask=flow_frame_mask,
             )
+            if (
+                mode == "train"
+                and self.local_flow_debug_loss_threshold is not None
+                and bool(local_transformer_loss.detach() >= self.local_flow_debug_loss_threshold)
+            ):
+                local_flow_diagnostics = self.local_flow.compute_diagnostics(
+                    acoustic_embedding_stacked,
+                    flow_condition,
+                    flow_lens,
+                    frame_mask=flow_frame_mask,
+                )
 
         if local_transformer_loss is not None:
             loss = loss + self.local_transformer_loss_scale * local_transformer_loss
@@ -1334,6 +1354,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             codebook_loss=codebook_loss,
             phoneme_loss=phoneme_loss,
             local_transformer_loss=local_transformer_loss,
+            local_flow_diagnostics=local_flow_diagnostics,
             local_transformer_logits=local_transformer_logits,
             logits=logits,
             phoneme_logits=pb_phoneme_logits,
@@ -1344,6 +1365,45 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_audio_codes=context_audio_codes_processed,
             context_audio_codes_lens=context_audio_codes_lens_processed,
             selected_training_mode=selected_training_mode.name if selected_training_mode is not None else None,
+        )
+
+    def _log_local_predictor_loss(self, mode: str, loss: torch.Tensor) -> None:
+        self.log(f'{mode}/local_transformer_loss', loss, prog_bar=True, sync_dist=True)
+        if self.local_transformer_type == LocalTransformerType.FLOW:
+            self.log(f'{mode}/flow_loss', loss, prog_bar=False, sync_dist=True)
+
+    def _log_local_flow_spike(self, batch, loss: torch.Tensor, diagnostics: dict[str, torch.Tensor]) -> None:
+        sample_index = int(diagnostics['sample_index'].item())
+
+        def _metadata(key: str, default: str = "unknown") -> str:
+            values = batch.get(key)
+            if isinstance(values, (list, tuple)) and sample_index < len(values):
+                return str(values[sample_index]).replace("\n", " ")[:160]
+            return default
+
+        logging.warning(
+            "Flow loss spike at global_step=%s rank=%s: batch_loss=%.6g, "
+            "worst_sample_index=%d, cut_id=%s, dataset=%s, language=%s, text=%r, "
+            "sample_loss=%.6g, valid_frames=%d, target_abs_max=%.6g, target_rms=%.6g, "
+            "condition_abs_max=%.6g, condition_rms=%.6g, latent_abs_max=%.6g, "
+            "latent_rms=%.6g, normalized_log_determinant=%.6g",
+            self.global_step,
+            self.global_rank,
+            float(loss.detach().item()),
+            sample_index,
+            _metadata('cut_ids'),
+            _metadata('dataset_names'),
+            _metadata('languages'),
+            _metadata('raw_texts'),
+            float(diagnostics['sample_loss'].item()),
+            int(diagnostics['valid_frames'].item()),
+            float(diagnostics['target_abs_max'].item()),
+            float(diagnostics['target_rms'].item()),
+            float(diagnostics['condition_abs_max'].item()),
+            float(diagnostics['condition_rms'].item()),
+            float(diagnostics['latent_abs_max'].item()),
+            float(diagnostics['latent_rms'].item()),
+            float(diagnostics['normalized_log_determinant'].item()),
         )
 
     def training_step(self, batch, batch_idx):
@@ -1593,7 +1653,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         local_transformer_loss = batch_output.local_transformer_loss
         if local_transformer_loss is not None:
-            self.log('train/local_transformer_loss', local_transformer_loss, prog_bar=True, sync_dist=True)
+            self._log_local_predictor_loss('train', local_transformer_loss)
+            if batch_output.local_flow_diagnostics is not None:
+                self._log_local_flow_spike(batch, local_transformer_loss, batch_output.local_flow_diagnostics)
 
         # Log training mode info for multi-mode training
         if batch_output.selected_training_mode is not None:
@@ -1969,7 +2031,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         if self.local_transformer_type != LocalTransformerType.NO_LT:
             val_local_transformer_loss = collect("val_local_transformer_loss")
-            self.log("val/local_transformer_loss", val_local_transformer_loss, prog_bar=True, sync_dist=True)
+            self._log_local_predictor_loss("val", val_local_transformer_loss)
 
         if self.phoneme_tokenizer is not None:
             val_phoneme_loss = collect("val_phoneme_loss")

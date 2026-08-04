@@ -574,6 +574,73 @@ def test_one_shot_flow_sampling_returns_all_codec_groups():
     assert sampled.dtype == torch.long
 
 
+def test_one_shot_flow_logs_explicit_wandb_loss_aliases():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "normalizing_flow",
+                "local_flow_hidden_dim": 16,
+                "local_flow_n_layers": 2,
+                "local_flow_n_flows": 2,
+            }
+        )
+    )
+
+    with patch.object(model, "log") as log_mock:
+        model._log_local_predictor_loss("train", torch.tensor(1.25))
+        model._log_local_predictor_loss("val", torch.tensor(1.5))
+
+    assert [call.args[0] for call in log_mock.call_args_list] == [
+        "train/local_transformer_loss",
+        "train/flow_loss",
+        "val/local_transformer_loss",
+        "val/flow_loss",
+    ]
+    assert all(call.kwargs["sync_dist"] for call in log_mock.call_args_list)
+
+
+def test_one_shot_flow_spike_warning_identifies_worst_cut():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "normalizing_flow",
+                "local_flow_hidden_dim": 16,
+                "local_flow_n_layers": 2,
+                "local_flow_n_flows": 2,
+            }
+        )
+    )
+    object.__setattr__(model, "_trainer", SimpleNamespace(global_step=8423, global_rank=0))
+    batch = {
+        "cut_ids": ["cut-a", "cut-b"],
+        "dataset_names": ["hifitts", "hifitts"],
+        "languages": ["en", "en"],
+        "raw_texts": ["ordinary sample", "spiking sample"],
+    }
+    diagnostics = {
+        "sample_index": torch.tensor(1),
+        "sample_loss": torch.tensor(33301.93),
+        "valid_frames": torch.tensor(120),
+        "target_abs_max": torch.tensor(4.0),
+        "target_rms": torch.tensor(1.0),
+        "condition_abs_max": torch.tensor(5.0),
+        "condition_rms": torch.tensor(1.5),
+        "latent_abs_max": torch.tensor(800.0),
+        "latent_rms": torch.tensor(258.0),
+        "normalized_log_determinant": torch.tensor(0.25),
+    }
+
+    with patch("nemo.collections.tts.models.easy_magpietts.logging.warning") as warning_mock:
+        model._log_local_flow_spike(batch, torch.tensor(33303.99), diagnostics)
+
+    warning_args = warning_mock.call_args.args
+    rendered_warning = warning_args[0] % warning_args[1:]
+    assert "global_step=8423" in rendered_warning
+    assert "cut_id=cut-b" in rendered_warning
+    assert "text='spiking sample'" in rendered_warning
+    assert "latent_abs_max=800" in rendered_warning
+
+
 def test_training_step_smoke(model, toy_batch):
     _seed_everything()
     model.train()

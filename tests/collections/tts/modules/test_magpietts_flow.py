@@ -81,3 +81,30 @@ def test_one_shot_local_flow_loss_is_finite_and_backpropagates():
     assert condition.grad is not None
     assert torch.isfinite(condition.grad).all()
     assert any(parameter.grad is not None for parameter in flow.parameters())
+
+
+def test_one_shot_local_flow_diagnostics_select_worst_sample():
+    flow = _make_non_identity_flow()
+    acoustic = torch.randn(2, 12, 5)
+    acoustic[1] *= 100.0
+    condition = torch.randn(2, 20, 5)
+    lengths = torch.tensor([5, 4])
+
+    diagnostics = flow.compute_diagnostics(acoustic, condition, lengths)
+
+    assert set(diagnostics) == {
+        "sample_index",
+        "sample_loss",
+        "valid_frames",
+        "target_abs_max",
+        "target_rms",
+        "condition_abs_max",
+        "condition_rms",
+        "latent_abs_max",
+        "latent_rms",
+        "normalized_log_determinant",
+    }
+    assert diagnostics["sample_index"].item() == 1
+    assert diagnostics["valid_frames"].item() == 4
+    assert all(torch.isfinite(value) for value in diagnostics.values())
+    assert diagnostics["target_abs_max"] > diagnostics["condition_abs_max"]

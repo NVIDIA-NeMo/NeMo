@@ -261,6 +261,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
             self.pronunciation_control_g2p = setup_pronunciation_control_g2p(self.pronunciation_control_g2p_config)
 
         # define list to store batched information
+        cut_id_list = []
         dataset_name_list = []
         audio_list = []
         audio_len_list = []
@@ -292,6 +293,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
             return random.uniform(self.context_duration_min, effective_duration_max)
 
         for cut in cuts:
+            cut_id_list.append(cut.id)
             speaker = cut.supervisions[0].speaker
             if not check_speaker_format(speaker):
                 raise ValueError(f"Invalid format in cut.supervisions[0].speaker: {speaker}")
@@ -534,6 +536,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
 
         # collate vectors and matrices here.
         batch_dict = {
+            "cut_ids": cut_id_list,
             "dataset_names": dataset_name_list,
             "raw_texts": raw_text_list,
             "languages": language_list,

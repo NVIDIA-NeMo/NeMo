@@ -32,7 +32,7 @@ docker run -it --rm \
   -v ~/nemotron-labs-voicechat/model-repo:/data/models \
   -e NEMO_CHECKPOINT_PATH=/checkpoint \
   --entrypoint /s2s/deploy_s2s_model.sh \
-  nvcr.io/nvidia/nemotron-labs-voicechat:latest
+  nvcr.io/nim/nvidia/nemotron-labs-voicechat:latest
 ```
 
 - `-v ~/nemotron-labs-voicechat/hf-checkpoint:/checkpoint` — mounts the checkpoint into the container.
@@ -61,7 +61,7 @@ docker run -it --rm --name=nemotron-labs-voicechat \
   -p 9000:9000 \
   -v ~/nemotron-labs-voicechat/model-repo:/data/models \
   --entrypoint /s2s/run_s2s_server.sh \
-  nvcr.io/nvidia/nemotron-labs-voicechat:latest
+  nvcr.io/nim/nvidia/nemotron-labs-voicechat:latest
 ```
 
 ---

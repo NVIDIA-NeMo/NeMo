@@ -15,6 +15,9 @@ weight checkpoints and demos!
 > The first release of NeMo Speech after NeMo repository split is scheduled for June 2026, as the repo undergoes transformation.
 > For the latest stable released version, please use [the 26.02 NGC container](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo?version=26.02).
 
+- 2026-07: [MagpieTTS v2607](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) has been released with support
+    for 3 new languages (Ar, Ko, Pt) + 9 existing languages (En, Es, De, Fr, Vi, It, Zh, Hi, Ja). Try out
+    [the demo](https://huggingface.co/spaces/nvidia/magpie_tts_multilingual_demo)!
 - 2026-06: [Nemotron-3.5-ASR-Streaming-0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) has been released with 40 languages supported, controllable latency 80ms-1s, and 240-2400 1xH100 concurrent streams. Built on cache-aware Fastconformer architecture.
 - 2026-04: [Parakeet-unified-en-0.6b](https://huggingface.co/nvidia/parakeet-unified-en-0.6b) has been released with high-quality offline and streaming (with a minimum latency of 160ms) inference in one model for English language with punctuation and capitalization support. 
 - 2026-03: [Nemotron 3 VoiceChat](https://build.nvidia.com/nvidia/nemotron-voicechat/modelcard) is now released in Early Access. Built on the Nemotron Nano v2 LLM backbone with Nemotron speech and TTS decoder, VoiceChat delivers full-duplex, natural, interruptible conversations with low latency. Try out [the demo](https://build.nvidia.com/nvidia/nemotron-voicechat) and apply for [early access](https://developer.nvidia.com/nemotron-voicechat-early-access).
@@ -22,13 +25,11 @@ weight checkpoints and demos!
     updated. It has been trained on a larger and more diverse corpus, resulting in lower WER across all latency modes.
     Try out [the demo](https://huggingface.co/spaces/nvidia/nemotron-speech-streaming-en-0.6b) and check out
     [the NIM](https://build.nvidia.com/nvidia/nemotron-asr-streaming).
-- 2026-03: [MagpieTTS v2602](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) has been released with support
-    for 9 languages(En, Es, De, Fr, Vi, It, Zh, Hi, Ja). Try out
-    [the demo](https://huggingface.co/nvidia/magpie_tts_multilingual_357m) and check out
-    [the NIM](https://build.nvidia.com/nvidia/magpie-tts-multilingual).
+- 2026-03: [MagpieTTS v2602](https://huggingface.co/nvidia/magpie_tts_multilingual_357m/tree/v2602) has been released with support
+    for 9 languages (En, Es, De, Fr, Vi, It, Zh, Hi, Ja).
 - 2026-01: Nemotron-Speech-Streaming was released: One checkpoint that enables users to pick their optimal point
     on the latency-accuracy Pareto curve!
-- 2026-01: MagpieTTS was released.
+- 2026-01: [MagpieTTS v2512](https://huggingface.co/nvidia/magpie_tts_multilingual_357m/tree/v2512) was released.
 - 2026: This repo has pivoted to focus on audio, speech, and multimodal LLM. For the last NeMo release with support for more
     modalities, see [v2.7.0](https://github.com/NVIDIA-NeMo/NeMo/releases/tag/v2.7.0)
 - 2025-08: [Parakeet V3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) and

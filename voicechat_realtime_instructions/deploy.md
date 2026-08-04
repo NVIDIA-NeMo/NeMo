@@ -155,7 +155,7 @@ python3 nemotron-voicechat-client.py --server ws://localhost:9000 \
 ### Tool Definition Format
 
 Tools follow the OpenAI Realtime API function tool specification:
-bs
+
 ```json
 [
   {

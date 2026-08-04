@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+#SBATCH -A nemotron_speech_tts
+#SBATCH -J oneshot-lt-12fps-4n32g
+#SBATCH -p batch_block1,batch_block3,batch_block4
+#SBATCH -N 4
+#SBATCH -t 04:00:00
+#SBATCH --exclusive
+#SBATCH --mem=0
+#SBATCH --mail-type=FAIL
+#SBATCH --ntasks-per-node=8
+#SBATCH --gpus-per-node=8
+#SBATCH --overcommit
+#SBATCH --output=log_slurm/%j_%x.stdout
+#SBATCH --error=log_slurm/%j_%x.stderr
+
+set -euo pipefail
+
+# Required at submission time:
+#   export WANDB_API_KEY=...
+#   export AWS_SHARED_CREDENTIALS_FILE="$HOME/.aws/credentials"
+#   sbatch scripts/magpietts/oneshot_lt_4n32g.sub
+: "${WANDB_API_KEY:?Export WANDB_API_KEY before submitting}"
+
+WORKSPACE="${WORKSPACE:-/lustre/fs12/portfolios/nemotron/users/vklimkov/oneshot_lt}"
+SPEECH_REPO="${SPEECH_REPO:-${WORKSPACE}/Speech.git}"
+MODEL_CODE_COMMIT="ce489d910d60b7c4548adc48cdc38bdd955f5b03"
+NODE_CODE="/tmp/oneshot_lt_${SLURM_JOB_ID}/Speech"
+
+CONTAINER="${CONTAINER:-/lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/containers/nemo_26.06_rc3.sqsh}"
+SHARED_DATA="${SHARED_DATA:-/lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/data}"
+CODEC_ARTIFACTS="${CODEC_ARTIFACTS:-/lustre/fsw/portfolios/nemotron/users/rlangman/model_artifacts}"
+MANIFEST_ROOT_HOST="${MANIFEST_ROOT_HOST:-${SHARED_DATA}/manifest}"
+HF_CACHE_HOST="${HF_CACHE_HOST:-${SHARED_DATA}/cache}"
+AWS_CREDENTIALS_HOST="${AWS_SHARED_CREDENTIALS_FILE:-${HOME}/.aws/credentials}"
+
+EXP_NAME="${EXP_NAME:-oneshot_lt_12fps_4n32g_ce489d9}"
+WANDB_ENTITY="${WANDB_ENTITY:-aiapps}"
+WANDB_PROJECT="${WANDB_PROJECT:-onehot_lt}"
+WANDB_RUN_ID="${WANDB_RUN_ID:-oneshot-lt-ce489d9-4n32g}"
+MAX_STEPS="${MAX_STEPS:-1000000}"
+TRAIN_BATCH_DURATION="${TRAIN_BATCH_DURATION:-200}"
+VAL_BATCH_DURATION="${VAL_BATCH_DURATION:-20}"
+VAL_CHECK_INTERVAL="${VAL_CHECK_INTERVAL:-1000}"
+
+for required_path in \
+    "${SPEECH_REPO}" \
+    "${CONTAINER}" \
+    "${MANIFEST_ROOT_HOST}/train_all.yaml" \
+    "${MANIFEST_ROOT_HOST}/val_en.yaml" \
+    "${CODEC_ARTIFACTS}/12fps_spectral_semantic_codec.nemo" \
+    "${SHARED_DATA}/models/tokenizers/bpe_ipa_tokenizer_2048_en_de_es_fr_hi_it_vi_zh_ko-KR_pt-BR_ar.json" \
+    "${AWS_CREDENTIALS_HOST}"; do
+    if [[ ! -r "${required_path}" ]]; then
+        echo "Required path is not readable: ${required_path}" >&2
+        exit 2
+    fi
+done
+
+LOG_DIR="${WORKSPACE}/log"
+mkdir -p "${LOG_DIR}" "${WORKSPACE}/log_slurm"
+
+# Materialize one node-local checkout per node. This avoids importing thousands
+# of Python files over the shared filesystem during every rank's startup.
+srun \
+    --nodes="${SLURM_JOB_NUM_NODES}" \
+    --ntasks="${SLURM_JOB_NUM_NODES}" \
+    --ntasks-per-node=1 \
+    --kill-on-bad-exit=1 \
+    bash -lc '
+        set -euo pipefail
+        git clone --quiet "'"${SPEECH_REPO}"'" "'"${NODE_CODE}"'"
+        git -C "'"${NODE_CODE}"'" merge-base --is-ancestor "'"${MODEL_CODE_COMMIT}"'" HEAD
+        echo "$(hostname): staged Speech $(git -C "'"${NODE_CODE}"'" rev-parse HEAD)"
+    '
+
+export HYDRA_FULL_ERROR=1
+export CUDA_LAUNCH_BLOCKING=0
+export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
+export TOKENIZERS_PARALLELISM=false
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# smart_open/boto3 reads the same S3-compatible store used by the HiFiTTS
+# fetch script. The credentials file is mounted read-only into the container.
+export AWS_PROFILE="${AWS_PROFILE:-pdx}"
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+export AWS_EC2_METADATA_DISABLED=true
+export AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-https://pdx.s8k.io}"
+export AWS_ENDPOINT_URL_S3="${AWS_ENDPOINT_URL_S3:-${AWS_ENDPOINT_URL}}"
+export AWS_SHARED_CREDENTIALS_FILE=/run/secrets/aws_credentials
+export AUDIO_ROOT="${AUDIO_ROOT:-s3://TTS/lhotse_datasets_2505}"
+export MANIFEST_ROOT=/manifest
+
+export WANDB_API_KEY
+export WANDB_ENTITY WANDB_PROJECT WANDB_RUN_ID
+export WANDB_DIR=/workspace/log/wandb
+export HF_HOME=/cache/huggingface
+export TORCH_HOME=/cache/torch
+export NEMO_CACHE_DIR=/cache/torch/nemo
+
+MOUNTS="--container-mounts=${NODE_CODE}:/code,${WORKSPACE}:/workspace,${SHARED_DATA}/models:/model_artifacts,${CODEC_ARTIFACTS}:/codec_artifacts,${MANIFEST_ROOT_HOST}:/manifest,${HF_CACHE_HOST}:/cache,${AWS_CREDENTIALS_HOST}:/run/secrets/aws_credentials:ro"
+BUCKET_DURATION_BINS="[4.4,5.48,6.32,7.1,7.84,8.6,9.36,10.1,10.84,11.61,12.42,13.28,14.16,15.12,16.12,17.2,18.33,19.44,20.0]"
+
+TRAIN_CMD=$(cat <<EOF
+set -euo pipefail
+cd /code
+export PYTHONPATH="/code:\${PYTHONPATH:-}"
+nvidia-smi
+python examples/tts/easy_magpietts.py \\
+    --config-name=easy_magpietts_lhotse_oneshot_flow \\
+    name=${EXP_NAME} \\
+    model.codecmodel_path=/codec_artifacts/12fps_spectral_semantic_codec.nemo \\
+    model.phoneme_tokenizer.tokenizer_path=/model_artifacts/tokenizers/bpe_ipa_tokenizer_2048_en_de_es_fr_hi_it_vi_zh_ko-KR_pt-BR_ar.json \\
+    model.load_cached_codes_if_available=false \\
+    model.frame_stacking_factor=1 \\
+    model.local_transformer_type=normalizing_flow \\
+    model.local_flow_hidden_dim=1536 \\
+    model.local_flow_n_flows=4 \\
+    model.local_flow_n_layers=3 \\
+    model.local_flow_debug_loss_threshold=100.0 \\
+    model.train_ds.dataset.input_cfg=/manifest/train_all.yaml \\
+    model.train_ds.dataset.batch_duration=${TRAIN_BATCH_DURATION} \\
+    model.train_ds.dataset.bucket_duration_bins=${BUCKET_DURATION_BINS} \\
+    model.train_ds.dataset.bucket_buffer_size=10000 \\
+    model.train_ds.dataset.shuffle_buffer_size=10000 \\
+    model.train_ds.dataset.num_workers=6 \\
+    model.validation_ds.dataset.input_cfg=/manifest/val_en.yaml \\
+    model.validation_ds.dataset.batch_duration=${VAL_BATCH_DURATION} \\
+    model.validation_ds.dataset.num_workers=2 \\
+    +model.run_val_inference=true \\
+    +model.use_multilingual_asr=false \\
+    +model.use_utmos=false \\
+    trainer.num_nodes=${SLURM_JOB_NUM_NODES} \\
+    trainer.devices=8 \\
+    trainer.accelerator=gpu \\
+    trainer.strategy=ddp_find_unused_parameters_true \\
+    trainer.precision=bf16-mixed \\
+    trainer.max_steps=${MAX_STEPS} \\
+    trainer.log_every_n_steps=1 \\
+    trainer.val_check_interval=${VAL_CHECK_INTERVAL} \\
+    trainer.limit_train_batches=3000 \\
+    +trainer.limit_val_batches=10 \\
+    trainer.num_sanity_val_steps=0 \\
+    model.optim.lr=2e-4 \\
+    +exp_manager.explicit_log_dir=/workspace/log/${EXP_NAME} \\
+    +exp_manager.max_time_per_run=00:03:50:00 \\
+    exp_manager.create_tensorboard_logger=false \\
+    exp_manager.create_wandb_logger=true \\
+    exp_manager.wandb_logger_kwargs.entity=${WANDB_ENTITY} \\
+    exp_manager.wandb_logger_kwargs.project=${WANDB_PROJECT} \\
+    exp_manager.wandb_logger_kwargs.name=${EXP_NAME} \\
+    +exp_manager.wandb_logger_kwargs.id=${WANDB_RUN_ID} \\
+    exp_manager.wandb_logger_kwargs.resume=true \\
+    exp_manager.create_checkpoint_callback=true \\
+    exp_manager.resume_if_exists=true \\
+    exp_manager.resume_ignore_no_checkpoint=true \\
+    +exp_manager.version=0
+EOF
+)
+
+OUTFILE="${LOG_DIR}/%j-%n.stdout"
+ERRFILE="${LOG_DIR}/%j-%n.stderr"
+
+srun \
+    --kill-on-bad-exit=1 \
+    -o "${OUTFILE}" \
+    -e "${ERRFILE}" \
+    --no-container-mount-home \
+    --container-image="${CONTAINER}" \
+    "${MOUNTS}" \
+    bash -lc "${TRAIN_CMD}"

@@ -1,6 +1,6 @@
-# Nemotron Voicechat
+# NemotronLabs Voicechat
 
-The NVIDIA Nemotron Voicechat microservice enables real-time voice conversations. It accepts spoken audio as input and returns synthesized speech as output in a single end-to-end pipeline, without requiring separate ASR, LLM, and TTS components.
+The NVIDIA NemotronLabs Voicechat microservice enables real-time voice conversations. It accepts spoken audio as input and returns synthesized speech as output in a single end-to-end pipeline, without requiring separate ASR, LLM, and TTS components.
 
 The microservice uses a bidirectional WebSocket interface to stream audio in and stream synthesized speech out with low latency. It packages the complete model with the full NVIDIA inference stack (CUDA, Triton, vLLM) into a single container — no orchestration of multiple containers is required.
 
@@ -15,24 +15,24 @@ The microservice uses a bidirectional WebSocket interface to stream audio in and
 ### Step 1 — Download the model
 
 ```bash
-ngc registry model download-version nim/nvidia/nemotron-voicechat:2.0.0
-chmod 777 nemotron-voicechat_v2.0.0
+ngc registry model download-version nim/nvidia/nemotron-labs-voicechat:1.0.0
+chmod 777 nemotron-labs-voicechat_v1.0.0
 ```
 
-This creates a `nemotron-voicechat_v2.0.0/` directory in the current working directory containing the Triton model repository.
+This creates a `nemotron-labs-voicechat_v1.0.0/` directory in the current working directory containing the Triton model repository.
 
 ### Step 2 — Launch the container
 
 ```bash
-docker run -it --rm --name=nemotron-voicechat \
+docker run -it --rm --name=nemotron-labs-voicechat \
   --runtime=nvidia \
   --gpus '"device=0"' \
   --shm-size=8GB \
   -e NIM_HTTP_API_PORT=9000 \
   -p 9000:9000 \
-  -v $(pwd)/nemotron-voicechat_v2.0.0:/data/models \
+  -v $(pwd)/nemotron-labs-voicechat_v1.0.0:/data/models \
   --entrypoint /s2s/run_s2s_server.sh \
-  nvcr.io/nim/nvidia/nemotron-voicechat:latest
+  nvcr.io/nim/nvidia/nemotron-labs-voicechat:latest
 ```
 
 ### Verify Readiness
@@ -51,14 +51,14 @@ Expected response:
 
 ## Run a Voice Conversation
 
-The Nemotron Voicechat container uses a bidirectional WebSocket connection for real-time voice conversations. Audio is streamed to the server and synthesized speech is streamed back.
+The NemotronLabs Voicechat container uses a bidirectional WebSocket connection for real-time voice conversations. Audio is streamed to the server and synthesized speech is streamed back.
 
 ### Copy the Client Script
 
 Copy the client script from the running container:
 
 ```bash
-docker cp nemotron-voicechat:/s2s/nemotron-voicechat-client.py .
+docker cp nemotron-labs-voicechat:/s2s/nemotron-voicechat-client.py .
 ```
 
 ### Install Dependencies
@@ -97,7 +97,7 @@ python3 nemotron-voicechat-client.py --server ws://localhost:9000
 
 Stream from and to a file:
 
-Use a speech recording file, with 16-bit, Mono, 16KHz format as the input. Make sure to append silence (~20 seconds) after the speech when preparing `sample_speech.wav`, to get the correct response. Nemotron Voicechat is a full duplex model, it generates output as long as there is input.
+Use a speech recording file, with 16-bit, Mono, 16KHz format as the input. Make sure to append silence (~20 seconds) after the speech when preparing `sample_speech.wav`, to get the correct response. NemotronLabs Voicechat is a full duplex model, it generates output as long as there is input.
 
 ```bash
 python3 nemotron-voicechat-client.py --server ws://localhost:9000 \
@@ -106,12 +106,12 @@ python3 nemotron-voicechat-client.py --server ws://localhost:9000 \
   --no-playback
 ```
 
-> **Note:** The Nemotron Voicechat container supports real-time streaming mode only. Offline (batch) synthesis is not supported.
+> **Note:** The NemotronLabs Voicechat container supports real-time streaming mode only. Offline (batch) synthesis is not supported.
 
 
 ## Function Calling
 
-The Nemotron Voicechat container supports function calling (tool use), allowing the model to pause its spoken response, request an external function result, and seamlessly resume after receiving the result.
+The NemotronLabs Voicechat container supports function calling (tool use), allowing the model to pause its spoken response, request an external function result, and seamlessly resume after receiving the result.
 
 ### How It Works
 
@@ -155,7 +155,7 @@ python3 nemotron-voicechat-client.py --server ws://localhost:9000 \
 ### Tool Definition Format
 
 Tools follow the OpenAI Realtime API function tool specification:
-
+bs
 ```json
 [
   {
@@ -283,7 +283,7 @@ python3 nemotron-voicechat-client.py --server localhost:9000 \
 
 **Cause:** Model repository initialization on first launch.
 
-**Solution:** Ensure `nemotron-voicechat_v2.0.0/` is correctly mounted at `/data/models` and the `--entrypoint /s2s/run_s2s_server.sh` flag is set.
+**Solution:** Ensure `nemotron-labs-voicechat_v1.0.0/` is correctly mounted at `/data/models` and the `--entrypoint /s2s/run_s2s_server.sh` flag is set.
 
 ### GPU Out of Memory (OOM)
 

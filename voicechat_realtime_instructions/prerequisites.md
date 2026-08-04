@@ -1,10 +1,10 @@
 # Prerequisites
 
-Verify that your environment meets the following requirements before deploying the Nemotron Voicechat container.
+Verify that your environment meets the following requirements before deploying the NemotronLabs Voicechat container.
 
 ## Hardware
 
-The Nemotron Voicechat container requires an NVIDIA GPU with at least 80 GB of VRAM.
+The NemotronLabs Voicechat container requires an NVIDIA GPU with at least 80 GB of VRAM.
 
 | GPU | Precision |
 |-----|-----------|
@@ -75,7 +75,7 @@ The output should display the driver version, CUDA version, and available GPU(s)
 | GPU  Name                 ...
 ```
 
-If this succeeds, your environment is ready to run the Nemotron Voicechat container.
+If this succeeds, your environment is ready to run the NemotronLabs Voicechat container.
 
 ---
 Once your environment is ready, proceed to deploy the container and run your first voice conversation.

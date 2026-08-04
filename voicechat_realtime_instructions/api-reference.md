@@ -1,6 +1,6 @@
 # API Reference
 
-The Nemotron Voicechat container exposes a WebSocket-based real-time audio API compatible with the OpenAI Realtime API protocol. Clients stream raw audio to the server and receive synthesized speech and transcripts in return. The wire protocol uses JSON messages with base64-encoded audio payloads.
+The NemotronLabs Voicechat container exposes a WebSocket-based real-time audio API compatible with the OpenAI Realtime API protocol. Clients stream raw audio to the server and receive synthesized speech and transcripts in return. The wire protocol uses JSON messages with base64-encoded audio payloads.
 
 ## HTTP Endpoints
 

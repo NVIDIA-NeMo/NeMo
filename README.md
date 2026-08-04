@@ -1,7 +1,7 @@
 > **Note:** This is the experimental `nemotron-labs-voicechat` branch of
 > [`NVIDIA-NeMo/Speech`](https://github.com/NVIDIA-NeMo/Speech), holding the code
 > and instructions for the
-> [Nemotron Labs VoiceChat model](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B)
+> [NemotronLabs Labs VoiceChat model](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B)
 > on Hugging Face.
 >
 > This project is currently not accepting contributions on the
@@ -21,7 +21,7 @@ The released NemotronLabs VoiceChat checkpoint uses a single fixed voice and doe
 
 ## Quickstart
 
-This guide explains how to test the NVIDIA Nemotron Labs VoiceChat model using either of the following approaches:
+This guide explains how to test the NVIDIA NemotronLabs Labs VoiceChat model using either of the following approaches:
 
 - **Offline inference** — load the [Hugging Face (HF) checkpoint](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B) for quick, non-interactive testing with offline batch inference using a conda environment.
 - **Interactive streaming** — use an [optimized NVIDIA inference container](#optimized-nvidia-inference-container-for-interactive-streaming-deployment) for interactive audio testing with the same HF checkpoint.
@@ -136,7 +136,7 @@ predicted function call, such as:
 
 ### Optimized NVIDIA inference container for interactive streaming deployment
 
-The [Nemotron Voicechat container](voicechat_realtime_instructions/deploy.md) packages the complete model with the NVIDIA inference stack (CUDA, Triton, vLLM) into a single container. It exposes a bidirectional WebSocket interface for real-time, low-latency voice conversations and supports function calling.
+The [NemotronLabs Voicechat container](voicechat_realtime_instructions/deploy.md) packages the complete model with the NVIDIA inference stack (CUDA, Triton, vLLM) into a single container. It exposes a bidirectional WebSocket interface for real-time, low-latency voice conversations and supports function calling.
 
 - [Prerequisites](voicechat_realtime_instructions/prerequisites.md) — hardware, software, and driver requirements
 - [Deploy and Run](voicechat_realtime_instructions/deploy.md) — launch the container and run voice conversations
@@ -252,7 +252,7 @@ The script writes intermediate and final checkpoints under:
 ## License
 
 The NeMo codebase in this repository is licensed under the [Apache License 2.0](LICENSE).
-The Nemotron Labs VoiceChat model is licensed under
+The NemotronLabs Labs VoiceChat model is licensed under
 [OpenMDW 1.1](LICENSE_OpenMDW-1.1).
 
 ## Known Limitations

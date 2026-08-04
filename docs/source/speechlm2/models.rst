@@ -66,8 +66,8 @@ Key differences from SALM:
 * **Native LoRA**: Uses NeMo Automodel's built-in LoRA instead of HuggingFace PEFT.
   LoRA is applied before FSDP2 sharding for correct meta-device handling.
 * **AutomodelParallelStrategy**: Integrates with a custom Lightning strategy that
-  delegates device mesh creation to NeMo Automodel, supporting FSDP2, TP, PP, CP,
-  EP (MoE), and HSDP.
+  delegates topology resolution to NeMo Automodel, supporting FSDP2, TP, PP, CP,
+  EP (MoE), and HSDP. ``SALMAutomodel`` currently uses all except PP.
 * **MoE optimizations**: NeMo Automodel provides first-class support for
   Mixture-of-Experts architectures with **Grouped GEMM** (fused expert computation
   for higher throughput) and **DeepEP** (Deep Expert Parallelism for efficient

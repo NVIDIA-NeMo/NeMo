@@ -82,18 +82,14 @@ def load_pretrained_automodel_llm(
     Setting ``pretrained_weights=False`` returns a model that has identical architecture
     with the checkpoint, but is randomly initialized.
 
-    Extra ``kwargs`` (e.g. ``device_mesh``, ``distributed_config``, ``moe_mesh``,
-    ``moe_config``) are forwarded to the underlying ``from_pretrained`` /
-    ``from_config`` call so that parallelization happens during loading.
+    Extra ``kwargs`` (including ``distributed_setup``) are forwarded to the
+    underlying ``from_pretrained`` / ``from_config`` call so that parallelization
+    happens during loading.
     """
     from nemo_automodel import NeMoAutoModelForCausalLM
 
-    from nemo.collections.speechlm2.parts.automodel_compat import (
-        install_nemotron_h_layer_compatibility,
-        remove_automodel_backend_for_hf_fallback,
-    )
+    from nemo.collections.speechlm2.parts.automodel_compat import remove_automodel_backend_for_hf_fallback
 
-    install_nemotron_h_layer_compatibility()
     remove_automodel_backend_for_hf_fallback(
         model_path_or_name,
         kwargs,

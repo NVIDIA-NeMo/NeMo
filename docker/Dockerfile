@@ -141,7 +141,6 @@ ARG FLASH_ATTN_NVCC_THREADS=1
 ENV PIP_NO_CACHE_DIR=1
 
 COPY external/patches/deepep_v1_a100_disable_nvshmem.patch /tmp/patches/
-COPY external/patches/automodel_inline_shared_experts.patch /tmp/patches/
 RUN <<"EOF" bash -euxo pipefail
 apt-get update
 apt-get install -y \
@@ -234,19 +233,6 @@ import nemo_automodel
 print(Path(nemo_automodel.__file__).resolve().parent.parent)
 PY
 )"
-patch --batch --forward --fuzz=0 \
-    -d "${automodel_site_packages}" \
-    -p1 \
-    < /tmp/patches/automodel_inline_shared_experts.patch
-python - <<'PY'
-import inspect
-
-from nemo_automodel.components.moe.layers import MoE
-
-source = inspect.getsource(MoE.forward)
-assert "_shared_experts_stream" not in source
-assert "computed inline on the main" in source
-PY
 
 if [[ "${GPU_TARGET}" == "a100" ]]; then
     git clone "${DEEPEP_REPO}" /opt/automodel-src/DeepEP
@@ -272,7 +258,7 @@ if [[ "${GPU_TARGET}" == "h100plus" ]]; then
         --no-deps \
         "apache-tvm-ffi==0.1.11" \
         "${cutlass_packages[@]}" \
-        "quack-kernels==0.5.0" \
+        "quack-kernels==0.6.1" \
         "torch-c-dlpack-ext==0.1.5"
 
     mkdir -p /opt/automodel-src/flash-attn-4 /tmp/flash-attn-4

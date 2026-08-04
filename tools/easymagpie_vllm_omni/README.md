@@ -56,7 +56,8 @@ better kernels; for an explicit sweep, run `python scripts/tune_mamba_ssu.py --m
 
 ### Quick start — offline synthesis
 
-See [`scripts/offline_demo.ipynb`](scripts/offline_demo.ipynb) to check how `AsyncOmni` is initialized and used.
+See the [`offline_demo.ipynb`](../../tutorials/tts/easymagpie_vllm_omni/offline_demo.ipynb) tutorial to check how
+`AsyncOmni` is initialized and used.
 
 ### Serve over HTTP and WebSocket
 
@@ -89,7 +90,7 @@ curl -X POST http://localhost:8091/v1/audio/speech \
   --output out.wav
 ```
 
-See [`scripts/server_request.ipynb`](scripts/server_request.ipynb) for examples
+See the [`server_request.ipynb`](../../tutorials/tts/easymagpie_vllm_omni/server_request.ipynb) tutorial for examples
 of both serving APIs.
 
 ### Benchmarks

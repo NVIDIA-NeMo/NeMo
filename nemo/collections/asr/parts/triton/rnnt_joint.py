@@ -248,6 +248,9 @@ class _JointHiddenState(torch.autograd.Function):
             activation=activation,
             dropout_p=dropout_p,
             block_hidden=block_hidden,
+            # One warp per row, so each lane carries several elements. The kernel only streams a
+            # write, and splitting that stream across more warps adds no bandwidth.
+            num_warps=1,
         )
         ctx.save_for_backward(encoder, predictor, seed)
         ctx.activation = activation

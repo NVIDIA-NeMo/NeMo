@@ -35,6 +35,8 @@ docker run -it --rm --name=nemotron-labs-voicechat \
   nvcr.io/nim/nvidia/nemotron-labs-voicechat:latest
 ```
 
+> **Note:** If you see `Error response from daemon: error from registry: Access Denied`, run `docker logout nvcr.io` and retry.
+
 ### Verify Readiness
 
 Server readiness can take up to 5 minutes depending on system configuration. Poll the health endpoint until it returns `ready`:

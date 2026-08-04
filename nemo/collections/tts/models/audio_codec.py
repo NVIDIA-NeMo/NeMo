@@ -14,6 +14,7 @@
 
 import itertools
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -59,6 +60,20 @@ from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
 from nemo.utils import logging, model_utils
 
 
+@dataclass
+class HybridCodecOutput:
+    """Intermediate representations produced by the hybrid semantic/residual bottleneck."""
+
+    decoder_inputs: torch.Tensor
+    encoded_len: torch.Tensor
+    semantic_tokens: torch.Tensor
+    semantic_embedding: torch.Tensor
+    residual_mu: torch.Tensor
+    residual_logvar: torch.Tensor
+    residual_enabled: torch.Tensor
+    kl_loss: torch.Tensor
+
+
 class AudioCodecModel(ModelPT):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         # Convert to Hydra 1.0 compatible DictConfig
@@ -73,6 +88,7 @@ class AudioCodecModel(ModelPT):
         self.output_sample_rate = cfg.get("output_sample_rate", self.sample_rate)
 
         super().__init__(cfg=cfg, trainer=trainer)
+        self.hybrid_codec_enabled = cfg.get("hybrid_codec") is not None
 
         # Number of samples of input in each audio frame that is encoded
         self.samples_per_frame = cfg.samples_per_frame
@@ -95,7 +111,7 @@ class AudioCodecModel(ModelPT):
         else:
             self.encoder_noise = None
 
-        if "vector_quantizer" in cfg:
+        if "vector_quantizer" in cfg and not self.hybrid_codec_enabled:
             self.vector_quantizer = safe_instantiate(cfg.vector_quantizer)
 
             vq_output_types = list(self.vector_quantizer.output_types.keys())
@@ -137,6 +153,9 @@ class AudioCodecModel(ModelPT):
             self.register_nemo_submodule(name="semantic_codec", config_field="semantic_codec", model=semantic_codec)
         else:
             self.semantic_codec = None
+
+        if self.hybrid_codec_enabled:
+            self._setup_hybrid_codec(cfg=cfg)
 
         # Optional config for using semantic distillation loss
         self.use_slm_loss = cfg.get("use_slm_loss", False)
@@ -247,12 +266,76 @@ class AudioCodecModel(ModelPT):
         self.clip_grad_norm = cfg.get("clip_grad_norm", None)
         self.skip_nan_gradients = cfg.get("skip_nan_gradients", False)
 
+    @staticmethod
+    def _module_config_value(module_cfg: DictConfig, name: str) -> int:
+        """Read a constructor argument from either current or legacy Hydra module config."""
+        if name in module_cfg:
+            return module_cfg[name]
+        if "params" in module_cfg and name in module_cfg.params:
+            return module_cfg.params[name]
+        raise ValueError(f"Missing `{name}` in module config: {module_cfg}")
+
+    def _setup_hybrid_codec(self, cfg: DictConfig) -> None:
+        """Set up the additive semantic-code plus variational-residual bottleneck."""
+        if self.semantic_codec is None or self.semantic_codec.vector_quantizer is None:
+            raise ValueError("`hybrid_codec` requires a semantic codec with a vector quantizer.")
+
+        hybrid_cfg = cfg.hybrid_codec
+        self.residual_dropout_rate = hybrid_cfg.get("residual_dropout_rate", 0.5)
+        self.kl_loss_scale = hybrid_cfg.get("kl_loss_scale", 1.0)
+        initial_logvar = hybrid_cfg.get("initial_logvar", -6.0)
+
+        if not 0.0 <= self.residual_dropout_rate <= 1.0:
+            raise ValueError(f"Residual dropout rate must be in [0, 1], got {self.residual_dropout_rate}.")
+
+        self.semantic_dim = self.semantic_codec.vector_quantizer.codebook_dim
+        self.encoder_dim = self._module_config_value(cfg.audio_encoder, "out_dim")
+        self.decoder_dim = self._module_config_value(cfg.audio_decoder, "input_dim")
+        self.continuous_dim = hybrid_cfg.get("continuous_dim", self.encoder_dim)
+
+        self.semantic_to_decoder = torch.nn.Conv1d(self.semantic_dim, self.decoder_dim, kernel_size=1)
+        self.residual_mu = torch.nn.Conv1d(self.encoder_dim, self.continuous_dim, kernel_size=1)
+        self.residual_logvar = torch.nn.Conv1d(self.encoder_dim, self.continuous_dim, kernel_size=1)
+        self.residual_to_decoder = torch.nn.Conv1d(self.continuous_dim, self.decoder_dim, kernel_size=1, bias=False)
+
+        torch.nn.init.zeros_(self.residual_logvar.weight)
+        torch.nn.init.constant_(self.residual_logvar.bias, initial_logvar)
+
+        # With the reference 6-D semantic + 72-D spectral layout, initialize the additive
+        # projections to exactly reproduce the previous 78-D concatenated decoder input.
+        preserves_reference_layout = (
+            self.continuous_dim == self.encoder_dim and self.decoder_dim == self.semantic_dim + self.continuous_dim
+        )
+        if preserves_reference_layout:
+            with torch.no_grad():
+                torch.nn.init.zeros_(self.semantic_to_decoder.weight)
+                torch.nn.init.zeros_(self.semantic_to_decoder.bias)
+                self.semantic_to_decoder.weight[: self.semantic_dim, :, 0] = torch.eye(self.semantic_dim)
+
+                torch.nn.init.zeros_(self.residual_mu.weight)
+                torch.nn.init.zeros_(self.residual_mu.bias)
+                self.residual_mu.weight[:, :, 0] = torch.eye(self.continuous_dim)
+
+                torch.nn.init.zeros_(self.residual_to_decoder.weight)
+                self.residual_to_decoder.weight[self.semantic_dim :, :, 0] = torch.eye(self.continuous_dim)
+
+        logging.info(
+            "Hybrid codec enabled: semantic_dim=%d, continuous_dim=%d, decoder_dim=%d, residual_dropout=%.3f",
+            self.semantic_dim,
+            self.continuous_dim,
+            self.decoder_dim,
+            self.residual_dropout_rate,
+        )
+
     @property
     def dtype(self):
         return next(self.parameters()).dtype
 
     @property
     def num_codebooks(self):
+        if self.hybrid_codec_enabled:
+            return self.semantic_codec.vector_quantizer.num_codebooks
+
         if self.vector_quantizer is None:
             raise ValueError("This AudioCodecModel does not have a vector quantizer.")
 
@@ -260,6 +343,9 @@ class AudioCodecModel(ModelPT):
 
     @property
     def codebook_size(self):
+        if self.hybrid_codec_enabled:
+            return self.semantic_codec.vector_quantizer.codebook_size
+
         if self.vector_quantizer is None:
             raise ValueError("This AudioCodecModel does not have a vector quantizer.")
 
@@ -299,6 +385,81 @@ class AudioCodecModel(ModelPT):
             g = self.speaker_encoder(audio_resampled, l2_norm=True).unsqueeze(-1)
 
         return g
+
+    @staticmethod
+    def _masked_standard_normal_kl(
+        residual_mu: torch.Tensor, residual_logvar: torch.Tensor, encoded_len: torch.Tensor
+    ) -> torch.Tensor:
+        """Mean KL(q(residual|audio) || N(0, I)) over valid latent elements."""
+        frame_index = torch.arange(residual_mu.shape[-1], device=residual_mu.device)
+        valid = frame_index.unsqueeze(0) < encoded_len.unsqueeze(1)
+        valid = valid.unsqueeze(1).to(residual_mu.dtype)
+        kl = -0.5 * (1.0 + residual_logvar - residual_mu.square() - residual_logvar.exp())
+        denominator = (valid.sum() * residual_mu.shape[1]).clamp_min(1.0)
+        return (kl * valid).sum() / denominator
+
+    def _encode_hybrid(
+        self, audio: torch.Tensor, audio_len: torch.Tensor, sample_rate: Optional[int] = None
+    ) -> HybridCodecOutput:
+        """Encode audio into one semantic code and a variational continuous residual."""
+        if not self.hybrid_codec_enabled:
+            raise RuntimeError("Hybrid encoding requested for a codec without `hybrid_codec` config.")
+        if not sample_rate:
+            sample_rate = self.sample_rate
+
+        audio_preprocessed, audio_preprocessed_len = self.preprocess_audio(
+            audio=audio, audio_len=audio_len, sample_rate=sample_rate
+        )
+        encoded, encoded_len = self.audio_encoder(audio=audio_preprocessed, audio_len=audio_preprocessed_len)
+        if self.encoder_noise is not None:
+            encoded = self.encoder_noise(encoded)
+
+        # ``train()`` propagates to child modules, so restore eval mode explicitly.
+        self.semantic_codec.eval()
+        with torch.no_grad():
+            semantic_encoded, semantic_len = self.semantic_codec.encode_audio(
+                audio=audio, audio_len=audio_len, sample_rate=sample_rate
+            )
+            with default_precision(torch.float32):
+                semantic_output = self.semantic_codec.vector_quantizer(inputs=semantic_encoded, input_len=semantic_len)
+            semantic_codes, semantic_tokens = semantic_output[:2]
+
+        if not torch.equal(encoded_len, semantic_len):
+            raise RuntimeError(
+                "Spectral and semantic encoders produced different frame lengths: "
+                f"spectral={encoded_len.tolist()}, semantic={semantic_len.tolist()}."
+            )
+
+        semantic_codes = semantic_codes.to(encoded.dtype)
+        semantic_embedding = self.semantic_to_decoder(semantic_codes)
+
+        residual_mu = self.residual_mu(encoded)
+        residual_logvar = self.residual_logvar(encoded).clamp(min=-30.0, max=20.0)
+        kl_loss = self._masked_standard_normal_kl(
+            residual_mu=residual_mu, residual_logvar=residual_logvar, encoded_len=encoded_len
+        )
+
+        if self.training:
+            residual = residual_mu + torch.randn_like(residual_mu) * torch.exp(0.5 * residual_logvar)
+            residual_enabled = torch.rand(audio.shape[0], device=audio.device) >= self.residual_dropout_rate
+        else:
+            residual = residual_mu
+            residual_enabled = torch.ones(audio.shape[0], device=audio.device, dtype=torch.bool)
+
+        residual_mask = residual_enabled[:, None, None].to(residual.dtype)
+        residual_embedding = self.residual_to_decoder(residual) * residual_mask
+        decoder_inputs = semantic_embedding + residual_embedding
+
+        return HybridCodecOutput(
+            decoder_inputs=decoder_inputs,
+            encoded_len=encoded_len,
+            semantic_tokens=semantic_tokens,
+            semantic_embedding=semantic_embedding,
+            residual_mu=residual_mu,
+            residual_logvar=residual_logvar,
+            residual_enabled=residual_enabled,
+            kl_loss=kl_loss,
+        )
 
     @typecheck(
         input_types={
@@ -448,11 +609,25 @@ class AudioCodecModel(ModelPT):
             Tokens for each codebook for each frame, shape `(batch, number of codebooks, number of frames)`,
             and the corresponding valid lengths, shape `(batch,)`
         """
+        if self.hybrid_codec_enabled:
+            tokens, _, _, encoded_len = self.encode_hybrid(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
+            return tokens, encoded_len
+
         # Apply encoder to obtain a continuous vector for each frame
         encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
         # Apply quantizer to obtain discrete representation per frame
         tokens = self.quantize(encoded=encoded, encoded_len=encoded_len)
         return tokens, encoded_len
+
+    def encode_hybrid(
+        self, audio: torch.Tensor, audio_len: torch.Tensor, sample_rate: Optional[int] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return semantic tokens, residual posterior parameters, and frame lengths."""
+        if not self.hybrid_codec_enabled:
+            raise RuntimeError("Hybrid encoding requested for a codec without `hybrid_codec` config.")
+        hybrid = self._encode_hybrid(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
+        semantic_tokens = rearrange(hybrid.semantic_tokens, 'C B T -> B C T')
+        return semantic_tokens, hybrid.residual_mu, hybrid.residual_logvar, hybrid.encoded_len
 
     @typecheck(
         input_types={
@@ -475,6 +650,9 @@ class AudioCodecModel(ModelPT):
             Decoded output `audio` in the time domain and its length in number of samples `audio_len`.
             Note that `audio_len` will be a multiple of `self.samples_per_frame`.
         """
+        if self.hybrid_codec_enabled:
+            return self.decode_hybrid(tokens=tokens, tokens_len=tokens_len)
+
         # Convert a discrete representation to a dequantized vector for each frame
         dequantized = self.dequantize(tokens=tokens, tokens_len=tokens_len)
         dequantized = dequantized.to(self.dtype)  # make sure that the dequantized is in the model dtype
@@ -482,6 +660,34 @@ class AudioCodecModel(ModelPT):
         audio, audio_len = self.decode_audio(inputs=dequantized, input_len=tokens_len)
 
         return audio, audio_len
+
+    def decode_hybrid(
+        self, tokens: torch.Tensor, tokens_len: torch.Tensor, residual: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Decode semantic tokens with an optional continuous residual.
+
+        Omitting ``residual`` intentionally exercises the semantic-code-only path.
+        """
+        if not self.hybrid_codec_enabled:
+            raise RuntimeError("Hybrid decoding requested for a codec without `hybrid_codec` config.")
+
+        semantic_tokens = rearrange(tokens, 'B C T -> C B T')
+        with default_precision(torch.float32):
+            semantic_codes = self.semantic_codec.vector_quantizer.decode(indices=semantic_tokens, input_len=tokens_len)
+        semantic_embedding = self.semantic_to_decoder(semantic_codes.to(self.dtype))
+
+        if residual is None:
+            decoder_inputs = semantic_embedding
+        else:
+            if residual.shape[1] != self.continuous_dim or residual.shape[2] != tokens.shape[2]:
+                raise ValueError(
+                    "Residual shape must be [batch, continuous_dim, frames], got "
+                    f"{tuple(residual.shape)} for continuous_dim={self.continuous_dim} "
+                    f"and token frames={tokens.shape[2]}."
+                )
+            decoder_inputs = semantic_embedding + self.residual_to_decoder(residual.to(self.dtype))
+
+        return self.decode_audio(inputs=decoder_inputs, input_len=tokens_len)
 
     @typecheck(
         input_types={
@@ -507,6 +713,13 @@ class AudioCodecModel(ModelPT):
         Returns:
             Reconstructed time-domain signal `output_audio` and its length in number of samples `output_audio_len`.
         """
+        if self.hybrid_codec_enabled:
+            hybrid = self._encode_hybrid(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
+            return self.decode_audio(
+                inputs=hybrid.decoder_inputs,
+                input_len=hybrid.encoded_len,
+            )
+
         encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
 
         if self.vector_quantizer:
@@ -560,23 +773,35 @@ class AudioCodecModel(ModelPT):
         target_samples_per_frame = int(self.samples_per_frame / self.sample_rate * self.output_sample_rate)
         audio, audio_len = self.pad_audio(audio=audio, audio_len=audio_len, samples_per_frame=target_samples_per_frame)
 
-        # [B, D, T_encoded]
-        encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len, sample_rate=self.output_sample_rate)
-
-        if self.encoder_noise is not None:
-            encoded = self.encoder_noise(encoded)
-
-        if self.vector_quantizer:
-            with default_precision(torch.float32):
-                if self.vector_quantizer_has_commit_loss:
-                    encoded, _, commit_loss = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
-                else:
-                    encoded, _ = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
-                    commit_loss = 0.0
-
-            encoded = encoded.to(encoded.dtype)  # make sure encoded is converted to the right dtype
-        else:
+        if self.hybrid_codec_enabled:
+            hybrid = self._encode_hybrid(audio=audio, audio_len=audio_len, sample_rate=self.output_sample_rate)
+            encoded = hybrid.decoder_inputs
+            encoded_len = hybrid.encoded_len
             commit_loss = 0.0
+            kl_loss = hybrid.kl_loss
+            residual_enabled = hybrid.residual_enabled
+        else:
+            # [B, D, T_encoded]
+            encoded, encoded_len = self.encode_audio(
+                audio=audio, audio_len=audio_len, sample_rate=self.output_sample_rate
+            )
+
+            if self.encoder_noise is not None:
+                encoded = self.encoder_noise(encoded)
+
+            if self.vector_quantizer:
+                with default_precision(torch.float32):
+                    if self.vector_quantizer_has_commit_loss:
+                        encoded, _, commit_loss = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
+                    else:
+                        encoded, _ = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
+                        commit_loss = 0.0
+
+                encoded = encoded.to(encoded.dtype)  # make sure encoded is converted to the right dtype
+            else:
+                commit_loss = 0.0
+            kl_loss = audio.new_zeros(())
+            residual_enabled = torch.ones(audio.shape[0], device=audio.device, dtype=torch.bool)
 
         # [B, T]
         audio_gen, _ = self.audio_decoder(inputs=encoded, input_len=encoded_len)
@@ -588,7 +813,7 @@ class AudioCodecModel(ModelPT):
             slm_emb = None
             slm_emb_pred = None
 
-        return audio, audio_len, audio_gen, commit_loss, encoded, slm_emb, slm_emb_pred
+        return (audio, audio_len, audio_gen, commit_loss, encoded, slm_emb, slm_emb_pred, kl_loss, residual_enabled)
 
     @property
     def disc_update_prob(self) -> float:
@@ -645,7 +870,17 @@ class AudioCodecModel(ModelPT):
         else:
             optim_gen, optim_disc = self.optimizers()
 
-        audio, audio_len, audio_gen, commit_loss, codes, slm_emb, slm_emb_pred = self._process_batch(batch)
+        (
+            audio,
+            audio_len,
+            audio_gen,
+            commit_loss,
+            codes,
+            slm_emb,
+            slm_emb_pred,
+            kl_loss,
+            residual_enabled,
+        ) = self._process_batch(batch)
 
         metrics = {
             "global_step": self.global_step,
@@ -712,6 +947,11 @@ class AudioCodecModel(ModelPT):
         if self.commit_loss_scale:
             metrics["g_loss_commit"] = commit_loss
             generator_losses.append(self.commit_loss_scale * commit_loss)
+
+        if self.hybrid_codec_enabled:
+            metrics["g_loss_kl"] = kl_loss
+            metrics["residual_enabled_rate"] = residual_enabled.float().mean()
+            generator_losses.append(self.kl_loss_scale * kl_loss)
 
         if self.mmd_loss_scale:
             loss_mmd = self.mmd_loss_fn(inputs=codes)
@@ -899,11 +1139,10 @@ class AudioCodecModel(ModelPT):
             self._train_dl = self._get_non_tarred_dataloader(cfg)
 
     def setup_validation_data(self, cfg):
-        if cfg.get("use_lhotse", False):
-            raise ValueError("Lhotse data loading is not supported yet for validation.")
+        if cfg.get("dataloader_params", {}).get("use_lhotse", False):
+            self._validation_dl = self._get_lhotse_dataloader(cfg)
         else:
-            # For validation, we still use non-Lhotse, non-tarred data format (NeMo
-            # dataset with individual files).
+            # NeMo dataset with individual files.
             self._validation_dl = self._setup_test_dataloader(cfg)
 
     def setup_test_data(self, cfg):
@@ -937,9 +1176,28 @@ class AudioCodecModel(ModelPT):
         OmegaConf.set_struct(optim_config, True)
 
         se_params = self.speaker_encoder.parameters() if self.use_scl_loss else []
-        vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
+        if self.hybrid_codec_enabled:
+            vq_params = []
+            hybrid_params = itertools.chain(
+                self.semantic_to_decoder.parameters(),
+                self.residual_mu.parameters(),
+                self.residual_logvar.parameters(),
+                self.residual_to_decoder.parameters(),
+            )
+        else:
+            vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
+            hybrid_params = []
+
         self.gen_params = list(
-            itertools.chain(self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, se_params)
+            parameter
+            for parameter in itertools.chain(
+                self.audio_encoder.parameters(),
+                self.audio_decoder.parameters(),
+                vq_params,
+                se_params,
+                hybrid_params,
+            )
+            if parameter.requires_grad
         )
         optim_g = safe_instantiate(optim_config, params=self.gen_params)
 

@@ -1,0 +1,112 @@
+name: HybridSemanticCodec32k
+
+# The reference supplies the exact 32 kHz, 12.5 fps encoder/decoder and the
+# embedded 16 kHz semantic codec. Its weights initialize all matching modules.
+reference_model: ???
+init_from_nemo_model: ${reference_model}
+
+train_input_cfg: ???
+validation_input_cfg: ???
+output_dir: ./hybrid_codec_outputs
+batch_size: 24
+validation_batch_size: 4
+segment_duration: 1.2
+num_workers: 4
+validation_num_workers: 2
+# Number of training batches (the reference calls this steps_per_epoch).
+max_steps: 10000
+validation_max_batches: 25
+validation_interval: 1000
+
+# The reference delays adversarial and MMD training until epoch 1. This
+# step-limited local run has one epoch, so start them immediately. The
+# reference discriminator cadence (one update every two batches) is retained.
+reconstruction_only: false
+disc_start_epoch: 0
+mmd_loss_start_epoch: 0
+
+# W&B is opt-in. Authenticate through WANDB_API_KEY in the environment; do not
+# put API keys in this config or on the command line.
+use_wandb: false
+wandb_project: hybrid-semantic-codec
+wandb_name: ${name}-${max_steps}-steps
+wandb_entity: null
+
+hybrid_codec:
+  # 72 preserves the reference spectral path without an extra bottleneck.
+  continuous_dim: 72
+  residual_dropout_rate: 0.5
+  kl_loss_scale: 0.01
+  initial_logvar: -6.0
+
+train_ds:
+  dataloader_params:
+    use_lhotse: true
+    input_cfg: ${train_input_cfg}
+    batch_size: ${batch_size}
+    use_bucketing: false
+    shard_seed: trng
+    drop_last: true
+    shuffle: true
+    num_workers: ${num_workers}
+    pin_memory: true
+  dataset_args:
+    segment_duration: ${segment_duration}
+    sanity_check_audio: true
+
+validation_ds:
+  dataloader_params:
+    use_lhotse: true
+    input_cfg: ${validation_input_cfg}
+    batch_size: ${validation_batch_size}
+    use_bucketing: false
+    force_finite: true
+    shard_seed: 0
+    drop_last: false
+    shuffle: false
+    num_workers: ${validation_num_workers}
+    pin_memory: true
+  dataset_args:
+    segment_duration: ${segment_duration}
+    sanity_check_audio: true
+
+trainer:
+  num_nodes: 1
+  devices: 1
+  accelerator: gpu
+  strategy: auto
+  precision: 32
+  # Manual optimization can perform both generator and discriminator steps per batch.
+  # Keep a conservative 2x optimizer-step ceiling; it follows max_steps overrides.
+  max_steps: ${multiply:${max_steps},2}
+  max_epochs: 1
+  limit_train_batches: ${max_steps}
+  accumulate_grad_batches: 1
+  enable_checkpointing: false
+  logger: false
+  log_every_n_steps: 10
+  val_check_interval: ${validation_interval}
+  limit_val_batches: ${validation_max_batches}
+  num_sanity_val_steps: 0
+  benchmark: false
+
+exp_manager:
+  exp_dir: ${output_dir}
+  name: ${name}
+  create_tensorboard_logger: true
+  create_checkpoint_callback: true
+  checkpoint_callback_params:
+    monitor: val_loss
+    mode: min
+    save_top_k: 3
+    save_last: true
+    save_best_model: true
+    always_save_nemo: true
+  create_wandb_logger: ${use_wandb}
+  wandb_logger_kwargs:
+    project: ${wandb_project}
+    name: ${wandb_name}
+    entity: ${wandb_entity}
+    log_model: false
+  resume_if_exists: false
+  resume_ignore_no_checkpoint: true

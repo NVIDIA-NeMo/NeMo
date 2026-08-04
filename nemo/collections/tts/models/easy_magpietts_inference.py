@@ -662,10 +662,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             self.local_flow = OneShotLocalFlow(
                 acoustic_channels=stacked_acoustic_dim,
                 condition_channels=cfg.hidden_dim + stacked_semantic_dim,
-                hidden_channels=int(cfg.get("local_flow_hidden_dim", 1024)),
-                kernel_size=int(cfg.get("local_flow_kernel_size", 5)),
-                dilation_rate=int(cfg.get("local_flow_dilation_rate", 1)),
-                n_layers=int(cfg.get("local_flow_n_layers", 4)),
+                hidden_channels=int(cfg.get("local_flow_hidden_dim", 512)),
+                n_layers=int(cfg.get("local_flow_n_layers", 3)),
                 n_flows=int(cfg.get("local_flow_n_flows", 4)),
                 dropout=float(cfg.get("local_flow_dropout", 0.0)),
             )

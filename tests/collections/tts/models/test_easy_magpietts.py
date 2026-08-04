@@ -506,7 +506,6 @@ def test_process_batch_with_one_shot_flow_local_predictor():
                 "local_flow_hidden_dim": 16,
                 "local_flow_n_layers": 2,
                 "local_flow_n_flows": 2,
-                "local_flow_kernel_size": 3,
                 "local_transformer_loss_scale": 0.5,
             }
         )
@@ -550,7 +549,6 @@ def test_one_shot_flow_sampling_returns_all_codec_groups():
                 "local_flow_hidden_dim": 16,
                 "local_flow_n_layers": 2,
                 "local_flow_n_flows": 2,
-                "local_flow_kernel_size": 3,
             }
         )
     )

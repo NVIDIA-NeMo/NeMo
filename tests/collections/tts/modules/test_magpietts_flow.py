@@ -15,44 +15,60 @@
 import pytest
 import torch
 
-from nemo.collections.tts.modules.magpietts_flow import OneShotLocalFlow
+from nemo.collections.tts.modules.magpietts_flow import OneShotLocalFlow, PointwiseAffineCoupling
 
 
 pytestmark = pytest.mark.unit
 
 
-def test_one_shot_local_flow_is_invertible_on_valid_frames():
+def _make_non_identity_flow() -> OneShotLocalFlow:
     torch.manual_seed(42)
     flow = OneShotLocalFlow(
         acoustic_channels=12,
         condition_channels=20,
         hidden_channels=16,
-        kernel_size=3,
-        dilation_rate=1,
         n_layers=2,
         n_flows=2,
     )
+    with torch.no_grad():
+        for module in flow.modules():
+            if isinstance(module, PointwiseAffineCoupling):
+                torch.nn.init.normal_(module.output_projection.weight, std=0.01)
+                torch.nn.init.normal_(module.output_projection.bias, std=0.01)
+    return flow
+
+
+def test_one_shot_local_flow_is_invertible_on_valid_frames():
+    flow = _make_non_identity_flow()
     acoustic = torch.randn(2, 12, 5)
     condition = torch.randn(2, 20, 5)
     lengths = torch.tensor([5, 3])
 
-    latent, mask = flow.encode(acoustic, condition, lengths)
+    latent, mask, log_determinant = flow.encode(acoustic, condition, lengths)
     restored = flow.decode(latent, condition, mask)
 
     assert torch.allclose(restored * mask, acoustic * mask, atol=1e-5, rtol=1e-5)
+    assert torch.any(log_determinant != 0.0)
+
+
+def test_one_shot_local_flow_is_frame_permutation_equivariant():
+    flow = _make_non_identity_flow().eval()
+    acoustic = torch.randn(2, 12, 5)
+    condition = torch.randn(2, 20, 5)
+    lengths = torch.full((2,), 5)
+    permutation = torch.tensor([2, 0, 4, 1, 3])
+
+    latent, _, log_determinant = flow.encode(acoustic, condition, lengths)
+    permuted_latent, _, permuted_log_determinant = flow.encode(
+        acoustic[:, :, permutation], condition[:, :, permutation], lengths
+    )
+
+    assert torch.allclose(permuted_latent, latent[:, :, permutation], atol=1e-6, rtol=1e-6)
+    assert torch.allclose(permuted_log_determinant, log_determinant, atol=1e-6, rtol=1e-6)
 
 
 def test_one_shot_local_flow_loss_is_finite_and_backpropagates():
-    torch.manual_seed(42)
-    flow = OneShotLocalFlow(
-        acoustic_channels=12,
-        condition_channels=20,
-        hidden_channels=16,
-        kernel_size=3,
-        dilation_rate=1,
-        n_layers=2,
-        n_flows=2,
-    )
+    flow = _make_non_identity_flow()
     acoustic = torch.randn(2, 12, 5)
     condition = torch.randn(2, 20, 5, requires_grad=True)
     lengths = torch.tensor([5, 4])

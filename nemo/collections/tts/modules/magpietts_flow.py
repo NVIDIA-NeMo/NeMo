@@ -48,74 +48,43 @@ import torch
 from torch import nn
 
 
-class VITSWaveNet(nn.Module):
-    """Dilated WaveNet conditioner used by VITS residual coupling layers."""
+class PointwiseResidualConditioner(nn.Module):
+    """Per-frame residual MLP implemented with pointwise projections."""
 
     def __init__(
         self,
+        input_channels: int,
+        condition_channels: int,
         hidden_channels: int,
-        kernel_size: int,
-        dilation_rate: int,
         n_layers: int,
-        condition_channels: int = 0,
         dropout: float = 0.0,
     ):
         super().__init__()
-        if kernel_size % 2 != 1:
-            raise ValueError(f"kernel_size must be odd, got {kernel_size}")
+        if n_layers < 1:
+            raise ValueError(f"n_layers must be positive, got {n_layers}")
 
-        self.hidden_channels = hidden_channels
-        self.n_layers = n_layers
-        self.dropout = nn.Dropout(dropout)
-        self.input_layers = nn.ModuleList()
-        self.residual_skip_layers = nn.ModuleList()
-
-        if condition_channels > 0:
-            condition_layer = nn.Conv1d(condition_channels, 2 * hidden_channels * n_layers, 1)
-            self.condition_layer = nn.utils.weight_norm(condition_layer)
-        else:
-            self.condition_layer = None
-
-        for layer_idx in range(n_layers):
-            dilation = dilation_rate**layer_idx
-            padding = (kernel_size * dilation - dilation) // 2
-            input_layer = nn.Conv1d(
-                hidden_channels,
-                2 * hidden_channels,
-                kernel_size,
-                dilation=dilation,
-                padding=padding,
-            )
-            self.input_layers.append(nn.utils.weight_norm(input_layer))
-
-            output_channels = 2 * hidden_channels if layer_idx < n_layers - 1 else hidden_channels
-            residual_skip_layer = nn.Conv1d(hidden_channels, output_channels, 1)
-            self.residual_skip_layers.append(nn.utils.weight_norm(residual_skip_layer))
+        self.input_projection = nn.Conv1d(input_channels, hidden_channels, 1)
+        self.condition_projection = nn.Conv1d(condition_channels, hidden_channels, 1)
+        self.residual_layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Conv1d(hidden_channels, 2 * hidden_channels, 1),
+                    nn.SiLU(),
+                    nn.Dropout(dropout),
+                    nn.Conv1d(2 * hidden_channels, hidden_channels, 1),
+                )
+                for _ in range(n_layers)
+            ]
+        )
 
     def forward(self, inputs: torch.Tensor, mask: torch.Tensor, condition: torch.Tensor | None = None) -> torch.Tensor:
-        output = torch.zeros_like(inputs)
-        projected_condition = self.condition_layer(condition) if self.condition_layer is not None else None
+        if condition is None:
+            raise ValueError("Pointwise flow conditioner requires a conditioning tensor.")
 
-        for layer_idx, (input_layer, residual_skip_layer) in enumerate(
-            zip(self.input_layers, self.residual_skip_layers)
-        ):
-            activations = input_layer(inputs)
-            if projected_condition is not None:
-                offset = layer_idx * 2 * self.hidden_channels
-                activations = activations + projected_condition[:, offset : offset + 2 * self.hidden_channels]
-
-            tanh_part, sigmoid_part = activations.chunk(2, dim=1)
-            activations = self.dropout(torch.tanh(tanh_part) * torch.sigmoid(sigmoid_part))
-            residual_skip = residual_skip_layer(activations)
-
-            if layer_idx < self.n_layers - 1:
-                residual, skip = residual_skip.split(self.hidden_channels, dim=1)
-                inputs = (inputs + residual) * mask
-                output = output + skip
-            else:
-                output = output + residual_skip
-
-        return output * mask
+        hidden = (self.input_projection(inputs) + self.condition_projection(condition)) * mask
+        for residual_layer in self.residual_layers:
+            hidden = (hidden + residual_layer(hidden)) * mask
+        return hidden
 
 
 class ChannelFlip(nn.Module):
@@ -129,37 +98,34 @@ class ChannelFlip(nn.Module):
         return output, inputs.new_zeros(inputs.size(0))
 
 
-class ResidualCouplingLayer(nn.Module):
-    """VITS residual affine coupling layer."""
+class PointwiseAffineCoupling(nn.Module):
+    """Conditional affine coupling transform with no temporal mixing."""
 
     def __init__(
         self,
         channels: int,
         hidden_channels: int,
-        kernel_size: int,
-        dilation_rate: int,
         n_layers: int,
-        condition_channels: int = 0,
+        condition_channels: int,
         dropout: float = 0.0,
-        mean_only: bool = True,
+        log_scale_limit: float = 2.0,
     ):
         super().__init__()
         if channels % 2 != 0:
             raise ValueError(f"Flow channels must be divisible by two, got {channels}")
+        if log_scale_limit <= 0.0:
+            raise ValueError(f"log_scale_limit must be positive, got {log_scale_limit}")
 
         self.half_channels = channels // 2
-        self.mean_only = mean_only
-        self.input_projection = nn.Conv1d(self.half_channels, hidden_channels, 1)
-        self.conditioner = VITSWaveNet(
-            hidden_channels=hidden_channels,
-            kernel_size=kernel_size,
-            dilation_rate=dilation_rate,
-            n_layers=n_layers,
+        self.log_scale_limit = log_scale_limit
+        self.conditioner = PointwiseResidualConditioner(
+            input_channels=self.half_channels,
             condition_channels=condition_channels,
+            hidden_channels=hidden_channels,
+            n_layers=n_layers,
             dropout=dropout,
         )
-        output_channels = self.half_channels if mean_only else 2 * self.half_channels
-        self.output_projection = nn.Conv1d(hidden_channels, output_channels, 1)
+        self.output_projection = nn.Conv1d(hidden_channels, 2 * self.half_channels, 1)
         nn.init.zeros_(self.output_projection.weight)
         nn.init.zeros_(self.output_projection.bias)
 
@@ -171,34 +137,28 @@ class ResidualCouplingLayer(nn.Module):
         reverse: bool = False,
     ):
         first_half, second_half = inputs.chunk(2, dim=1)
-        hidden = self.input_projection(first_half) * mask
-        stats = self.output_projection(self.conditioner(hidden, mask, condition)) * mask
-
-        if self.mean_only:
-            mean = stats
-            log_scale = torch.zeros_like(mean)
-        else:
-            mean, log_scale = stats.chunk(2, dim=1)
+        hidden = self.conditioner(first_half * mask, mask, condition)
+        shift, unconstrained_log_scale = self.output_projection(hidden).chunk(2, dim=1)
+        shift = shift * mask
+        log_scale = self.log_scale_limit * torch.tanh(unconstrained_log_scale / self.log_scale_limit) * mask
 
         if reverse:
-            second_half = (second_half - mean) * torch.exp(-log_scale) * mask
+            second_half = (second_half - shift) * torch.exp(-log_scale) * mask
             return torch.cat([first_half, second_half], dim=1)
 
-        second_half = (mean + second_half * torch.exp(log_scale)) * mask
+        second_half = (shift + second_half * torch.exp(log_scale)) * mask
         output = torch.cat([first_half, second_half], dim=1)
-        log_determinant = torch.sum(log_scale, dim=(1, 2))
+        log_determinant = torch.sum(log_scale * mask, dim=(1, 2))
         return output, log_determinant
 
 
-class ResidualCouplingBlock(nn.Module):
-    """Stack residual coupling layers and channel flips as in VITS."""
+class PointwiseCouplingBlock(nn.Module):
+    """Stack pointwise affine coupling layers and channel flips."""
 
     def __init__(
         self,
         channels: int,
         hidden_channels: int,
-        kernel_size: int,
-        dilation_rate: int,
         n_layers: int,
         n_flows: int = 4,
         condition_channels: int = 0,
@@ -208,15 +168,12 @@ class ResidualCouplingBlock(nn.Module):
         flows = []
         for _ in range(n_flows):
             flows.append(
-                ResidualCouplingLayer(
+                PointwiseAffineCoupling(
                     channels=channels,
                     hidden_channels=hidden_channels,
-                    kernel_size=kernel_size,
-                    dilation_rate=dilation_rate,
                     n_layers=n_layers,
                     condition_channels=condition_channels,
                     dropout=dropout,
-                    mean_only=True,
                 )
             )
             flows.append(ChannelFlip())
@@ -228,39 +185,37 @@ class ResidualCouplingBlock(nn.Module):
         mask: torch.Tensor,
         condition: torch.Tensor | None = None,
         reverse: bool = False,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if reverse:
             for flow in reversed(self.flows):
                 inputs = flow(inputs, mask, condition=condition, reverse=True)
             return inputs
 
+        total_log_determinant = inputs.new_zeros(inputs.size(0))
         for flow in self.flows:
-            inputs, _ = flow(inputs, mask, condition=condition, reverse=False)
-        return inputs
+            inputs, log_determinant = flow(inputs, mask, condition=condition, reverse=False)
+            total_log_determinant = total_log_determinant + log_determinant
+        return inputs, total_log_determinant
 
 
 class OneShotLocalFlow(nn.Module):
-    """Conditional normalizing flow over a stacked pre-quantization acoustic codec embedding."""
+    """Conditional pointwise flow over a pre-quantization acoustic codec embedding."""
 
     def __init__(
         self,
         acoustic_channels: int,
         condition_channels: int,
         hidden_channels: int,
-        kernel_size: int = 5,
-        dilation_rate: int = 1,
-        n_layers: int = 4,
+        n_layers: int = 3,
         n_flows: int = 4,
         dropout: float = 0.0,
     ):
         super().__init__()
         self.acoustic_channels = acoustic_channels
         self.flow_channels = acoustic_channels + acoustic_channels % 2
-        self.flow = ResidualCouplingBlock(
+        self.flow = PointwiseCouplingBlock(
             channels=self.flow_channels,
             hidden_channels=hidden_channels,
-            kernel_size=kernel_size,
-            dilation_rate=dilation_rate,
             n_layers=n_layers,
             n_flows=n_flows,
             condition_channels=condition_channels,
@@ -278,7 +233,7 @@ class OneShotLocalFlow(nn.Module):
         condition: torch.Tensor,
         lengths: torch.Tensor,
         frame_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if acoustic_embedding.shape[0] != condition.shape[0] or acoustic_embedding.shape[2] != condition.shape[2]:
             raise ValueError(
                 "Acoustic target and condition must share batch/time dimensions, got "
@@ -290,13 +245,13 @@ class OneShotLocalFlow(nn.Module):
         mask = self._length_mask(lengths, acoustic_embedding.size(2), acoustic_embedding.dtype)
         if frame_mask is not None:
             mask = mask * frame_mask.unsqueeze(1).to(mask.dtype)
-        latent = self.flow(
+        latent, log_determinant = self.flow(
             acoustic_embedding * mask,
             mask,
             condition=condition * mask,
             reverse=False,
         )
-        return latent, mask
+        return latent, mask, log_determinant
 
     def decode(self, latent: torch.Tensor, condition: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         acoustic = self.flow(latent * mask, mask, condition=condition * mask, reverse=True) * mask
@@ -309,10 +264,10 @@ class OneShotLocalFlow(nn.Module):
         lengths: torch.Tensor,
         frame_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        latent, mask = self.encode(acoustic_embedding, condition, lengths, frame_mask=frame_mask)
+        latent, mask, log_determinant = self.encode(acoustic_embedding, condition, lengths, frame_mask=frame_mask)
         negative_log_likelihood = 0.5 * (latent.float().square() + math.log(2.0 * math.pi))
         denominator = (mask.sum() * latent.size(1)).clamp_min(1.0)
-        return (negative_log_likelihood * mask.float()).sum() / denominator
+        return ((negative_log_likelihood * mask.float()).sum() - log_determinant.float().sum()) / denominator
 
     def sample(
         self,

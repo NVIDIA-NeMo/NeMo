@@ -267,7 +267,8 @@ class EncDecRNNTBPEModelWithPrompt(PromptStreamingMixin, EncDecRNNTBPEModel, ASR
         self._train_dl = self._setup_dataloader_from_config(config=train_data_config)
 
         if (
-            not train_data_config.get('use_lhotse')
+            train_data_config.get('is_tarred')
+            and not train_data_config.get('use_lhotse')
             and self._train_dl is not None
             and hasattr(self._train_dl, 'dataset')
             and isinstance(self._train_dl.dataset, torch.utils.data.IterableDataset)

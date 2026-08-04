@@ -44,6 +44,14 @@ class _SizedIterableDataset(torch.utils.data.IterableDataset):
         return 100
 
 
+class _UnsizedIterableDataset(torch.utils.data.IterableDataset):
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        raise NotImplementedError
+
+
 @pytest.fixture()
 def hybrid_asr_model_with_prompt(test_data_dir):
     preprocessor = {'cls': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor', 'params': dict({})}
@@ -168,6 +176,21 @@ class TestEncDecHybridRNNTCTCBPEModelWithPrompt:
         EncDecHybridRNNTCTCBPEModelWithPrompt.setup_training_data(model, train_data_config)
 
         assert trainer.limit_train_batches == 5
+
+    @pytest.mark.unit
+    def test_setup_training_data_limit_train_batches_with_unsized_streaming_dataset(self):
+        trainer = SimpleNamespace(limit_train_batches=1.0)
+        model = SimpleNamespace(
+            _trainer=trainer,
+            world_size=1,
+            _update_dataset_config=lambda **kwargs: None,
+            _setup_dataloader_from_config=lambda config: SimpleNamespace(dataset=_UnsizedIterableDataset()),
+        )
+        train_data_config = DictConfig({'hf_data_cfg': {'path': 'dummy'}, 'streaming': True, 'batch_size': 10})
+
+        EncDecHybridRNNTCTCBPEModelWithPrompt.setup_training_data(model, train_data_config)
+
+        assert trainer.limit_train_batches == 1.0
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,

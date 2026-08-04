@@ -952,7 +952,8 @@ class EncDecHybridRNNTCTCBPEModelWithPrompt(PromptStreamingMixin, EncDecHybridRN
         # and this messes up the tqdm progress bar. So we set the number of steps manually
         # (to the correct number) to fix this.
         if (
-            not train_data_config.get('use_lhotse')
+            train_data_config.get('is_tarred')
+            and not train_data_config.get('use_lhotse')
             and self._train_dl is not None
             and hasattr(self._train_dl, 'dataset')
             and isinstance(self._train_dl.dataset, torch.utils.data.IterableDataset)

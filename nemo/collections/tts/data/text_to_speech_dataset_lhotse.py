@@ -508,9 +508,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                     text=text_str,
                     ipa_alignment=cut.supervisions[0].ipa_alignment,
                     partial_phoneme_portion=sampled_portion,
-                    full_ipa_text=(
-                        cut.supervisions[0].ipa if cut.supervisions[0].has_custom("ipa") else None
-                    ),
+                    full_ipa_text=(cut.supervisions[0].ipa if cut.supervisions[0].has_custom("ipa") else None),
                     bop_marker=self.phoneme_text_bop_marker,
                     eop_marker=self.phoneme_text_eop_marker,
                 )

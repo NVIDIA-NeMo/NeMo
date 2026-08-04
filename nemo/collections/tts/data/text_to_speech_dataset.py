@@ -462,6 +462,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         else:
             language = 'en'
 
+        # partial phoneme tokenization
         tokens = tokenize_text_with_phoneme_spans(
             text_tokenizer=self.text_tokenizer,
             text_str=data.text,

@@ -87,8 +87,9 @@ model:
   local_transformer_hidden_dim: 1536
 
   # Pointwise conditional affine flow; each codec frame is transformed independently.
+  # At 12 fps with no stacking, the 1536-wide flow has approximately 123M parameters.
   num_semantic_codebooks: 1
-  local_flow_hidden_dim: 512
+  local_flow_hidden_dim: 1536
   local_flow_n_flows: 4
   local_flow_n_layers: 3
   local_flow_dropout: 0.0

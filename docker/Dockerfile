@@ -247,18 +247,12 @@ fi
 if [[ "${GPU_TARGET}" == "h100plus" ]]; then
     # flash-attn-4 requires apache-tvm-ffi 0.1.11, while mamba-ssm
     # currently constrains the solved environment to apache-tvm-ffi<=0.1.9.
-    cutlass_packages=(
-        "nvidia-cutlass-dsl==4.5.2"
-        "nvidia-cutlass-dsl-libs-base==4.5.2"
-    )
-    if [[ "$(nemo-cuda-flavor)" == "cu13" ]]; then
-        cutlass_packages+=("nvidia-cutlass-dsl-libs-cu13==4.5.2")
-    fi
+    # Keep CUTLASS and Quack at the versions resolved by uv.lock. Automodel
+    # main now requires quack-kernels 0.6.1, which in turn requires CUTLASS
+    # 4.6.0; installing the old 4.5.2 override leaves the runtime inconsistent.
     uv pip install \
         --no-deps \
         "apache-tvm-ffi==0.1.11" \
-        "${cutlass_packages[@]}" \
-        "quack-kernels==0.6.1" \
         "torch-c-dlpack-ext==0.1.5"
 
     mkdir -p /opt/automodel-src/flash-attn-4 /tmp/flash-attn-4
@@ -276,6 +270,14 @@ if [[ "${GPU_TARGET}" == "h100plus" ]]; then
         --no-build-isolation \
         --no-deps \
         /opt/automodel-src/flash-attn-4
+fi
+EOF
+
+COPY external/patches/flash_attn_4_cutlass46_compat.patch /tmp/patches/
+RUN <<"EOF" bash -euxo pipefail
+if [[ "${GPU_TARGET}" == "h100plus" ]]; then
+    patch -d "${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/flash_attn/cute" -p1 \
+        < /tmp/patches/flash_attn_4_cutlass46_compat.patch
 fi
 EOF
 

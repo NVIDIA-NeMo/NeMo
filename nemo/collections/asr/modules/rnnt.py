@@ -1518,7 +1518,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 )
 
             losses = []
-            wers, wer_nums, wer_denoms = [], [], []
             target_lengths = []
             batch_size = int(encoder_outputs.size(0))  # actual batch size
             hypotheses = []
@@ -1595,11 +1594,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     sub_enc = sub_enc.detach()
                     sub_transcripts = sub_transcripts.detach()
 
-                    # Update WER on each process without syncing
-                    if self.training:
-                        original_sync = self.wer._to_sync
-                        self.wer._to_sync = False
-
                     self.wer.update(
                         predictions=sub_enc,
                         predictions_lengths=sub_enc_lens,
@@ -1608,17 +1602,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     )
 
                     hyp = self.wer.get_hypotheses() if keep_hypotheses else []
-
-                    # Sync and all_reduce on all processes, compute global WER
-                    wer, wer_num, wer_denom = self.wer.compute()
-                    self.wer.reset()
-
-                    if self.training:
-                        self.wer._to_sync = original_sync
-
-                    wers.append(wer)
-                    wer_nums.append(wer_num)
-                    wer_denoms.append(wer_denom)
                     hypotheses.extend(hyp)
 
                 del sub_enc, sub_transcripts, sub_enc_lens, sub_transcript_lens
@@ -1627,11 +1610,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
             if losses is not None:
                 losses = self.loss.reduce(losses, target_lengths)
 
-            # Collect sub batch wer results
             if compute_wer:
-                wer = sum(wers) / len(wers)
-                wer_num = sum(wer_nums)
-                wer_denom = sum(wer_denoms)
+                wer, wer_num, wer_denom = self._compute_wer()
             else:
                 wer = None
                 wer_num = None
@@ -1639,6 +1619,20 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
             self.hypotheses = hypotheses if keep_hypotheses else None
             return losses, wer, wer_num, wer_denom
+
+    def _compute_wer(self):
+        # Training WER is only logged for the local batch, while evaluation WER is synchronized across processes.
+        if self.training:
+            original_sync = self.wer._to_sync
+            self.wer._to_sync = False
+
+        wer = self.wer.compute()
+        self.wer.reset()
+
+        if self.training:
+            self.wer._to_sync = original_sync
+
+        return wer
 
     def get_hypotheses(self):
         """
@@ -2061,7 +2055,6 @@ class SampledRNNTJoint(RNNTJoint):
             )
 
         losses = []
-        wers, wer_nums, wer_denoms = [], [], []
         target_lengths = []
         batch_size = int(encoder_outputs.size(0))  # actual batch size
 
@@ -2147,7 +2140,6 @@ class SampledRNNTJoint(RNNTJoint):
                 sub_enc = sub_enc.detach()
                 sub_transcripts = sub_transcripts.detach()
 
-                # Update WER on each process without syncing
                 self.wer.update(
                     predictions=sub_enc,
                     predictions_lengths=sub_enc_lens,
@@ -2155,25 +2147,14 @@ class SampledRNNTJoint(RNNTJoint):
                     targets_lengths=sub_transcript_lens,
                 )
 
-                # Sync and all_reduce on all processes, compute global WER
-                wer, wer_num, wer_denom = self.wer.compute()
-                self.wer.reset()
-
-                wers.append(wer)
-                wer_nums.append(wer_num)
-                wer_denoms.append(wer_denom)
-
             del sub_enc, sub_transcripts, sub_enc_lens, sub_transcript_lens
 
         # Reduce over sub batches
         if losses is not None:
             losses = self.loss.reduce(losses, target_lengths)
 
-        # Collect sub batch wer results
         if compute_wer:
-            wer = sum(wers) / len(wers)
-            wer_num = sum(wer_nums)
-            wer_denom = sum(wer_denoms)
+            wer, wer_num, wer_denom = self._compute_wer()
         else:
             wer = None
             wer_num = None

@@ -14,7 +14,7 @@
 
 import random
 import re
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Union
 
 import numpy as np
 import torch

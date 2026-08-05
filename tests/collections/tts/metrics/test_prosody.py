@@ -16,19 +16,10 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from nemo.collections.tts.metrics.prosody import ProsodyDistanceConfig, compute_prosody_distances
+from nemo.collections.tts.metrics.prosody import compute_prosody_distances
 
 _SAMPLE_RATE = 16000
 _TEXT = "hello world"
-
-
-def _prosody_config() -> ProsodyDistanceConfig:
-    return ProsodyDistanceConfig(
-        f0_method="yin",
-        dtw_band_ratio=0.15,
-        max_dtw_frames=128,
-        min_voiced_frames=2,
-    )
 
 
 def _write_sine(path, duration_sec: float, frequency_hz: float = 220.0, amplitude: float = 0.2) -> None:
@@ -49,7 +40,6 @@ def test_prosody_distances_are_zero_for_identical_audio(tmp_path):
         gt_audio_path=str(gt_path),
         pred_audio_path=str(pred_path),
         text=_TEXT,
-        config=_prosody_config(),
     )
 
     assert metrics.pitch_distance == pytest.approx(0.0, abs=1.0e-6)
@@ -68,7 +58,6 @@ def test_speech_rate_distance_tracks_duration_difference(tmp_path):
         gt_audio_path=str(gt_path),
         pred_audio_path=str(pred_path),
         text=_TEXT,
-        config=_prosody_config(),
     )
 
     assert np.isfinite(metrics.pitch_distance)

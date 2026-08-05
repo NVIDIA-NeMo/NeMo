@@ -1260,13 +1260,6 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     eval_group.add_argument('--prosody_model_size', type=str, default="small", choices=["small", "large"])
     eval_group.add_argument(
-        '--prosody_embedding_type',
-        type=str,
-        default="score_vector",
-        choices=["head_concat", "head_mean", "score_vector"],
-    )
-    eval_group.add_argument('--prosody_cache_dir', type=str, default=None)
-    eval_group.add_argument(
         '--strip_text_annotations_for_metrics',
         action='store_true',
         help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',

@@ -36,7 +36,7 @@ import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType
 from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
-from nemo.collections.tts.metrics.prosody import ProsodyDistanceConfig, compute_prosody_distances
+from nemo.collections.tts.metrics.prosody import compute_prosody_distances
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     JapaneseTextProcessor,
     NemoTranscriber,
@@ -280,7 +280,6 @@ def load_evaluation_models(
     device="cuda",
     with_prosody_metrics=False,
     prosody_model_size="small",
-    prosody_cache_dir=None,
 ):
     """Load the ASR and speaker-verification models used for evaluation.
 
@@ -294,8 +293,6 @@ def load_evaluation_models(
         with_prosody_metrics: Whether to compute ESIM/EMS plus pitch,
             intensity, and speech-rate distance metrics.
         prosody_model_size: Size of the emotion encoder. Supported values are ``"small"`` or ``"large"``.
-        prosody_cache_dir: Optional directory used to cache the emotion encoder,
-            classifiers, and related model files.
 
     Returns:
         Dictionary containing:
@@ -356,7 +353,6 @@ def load_evaluation_models(
                 size=prosody_model_size,
                 device=device,
                 mlp_device=device,
-                cache_dir=prosody_cache_dir,
                 cache_classifiers=True,
                 load_all_classifiers=False,
                 top_k_emotions=1,
@@ -367,7 +363,7 @@ def load_evaluation_models(
     return models
 
 
-def compute_emotion_pair_metrics(emotion_model, gt_audio_path, pred_audio_path, embedding_type="score_vector"):
+def compute_emotion_pair_metrics(emotion_model, gt_audio_path, pred_audio_path):
     """Compute ground-truth to predicted emotion similarity and top-emotion match."""
     if emotion_model is None or gt_audio_path is None or pred_audio_path is None:
         return float('NaN'), float('NaN')
@@ -376,7 +372,7 @@ def compute_emotion_pair_metrics(emotion_model, gt_audio_path, pred_audio_path, 
         result = emotion_model.compare_emotion_pair(
             audio_path_a=gt_audio_path,
             audio_path_b=pred_audio_path,
-            embedding_type=embedding_type,
+            embedding_type="score_vector",
         )
         return float(result["emotion_similarity"]), float(result["top_emotion_match"])
     except Exception as e:
@@ -392,7 +388,6 @@ def compute_acoustic_prosody_metrics(
     gt_audio_path,
     pred_audio_path,
     text,
-    config: Optional[ProsodyDistanceConfig] = None,
 ):
     """Compute reference-based pitch, intensity, and speech-rate distances."""
     if gt_audio_path is None or pred_audio_path is None:
@@ -403,7 +398,6 @@ def compute_acoustic_prosody_metrics(
             gt_audio_path=gt_audio_path,
             pred_audio_path=pred_audio_path,
             text=text,
-            config=config,
         ).to_dict()
         return {key: metrics[key] for key in PROSODY_DISTANCE_KEYS}
     except Exception as e:
@@ -443,8 +437,6 @@ def evaluate_dir(
     strip_text_annotations_for_metrics=False,
     with_prosody_metrics=False,
     prosody_model_size="small",
-    prosody_embedding_type="score_vector",
-    prosody_cache_dir=None,
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
@@ -484,7 +476,6 @@ def evaluate_dir(
         device=device,
         with_prosody_metrics=with_prosody_metrics,
         prosody_model_size=prosody_model_size,
-        prosody_cache_dir=prosody_cache_dir,
     )
 
     asr_model = models['asr_model']
@@ -492,7 +483,6 @@ def evaluate_dir(
     speaker_verification_model = models['sv_model']
     speaker_verification_model_alternate = models['sv_model_alternate']
     emotion_model = models['emotion_model']
-    prosody_distance_config = ProsodyDistanceConfig() if with_prosody_metrics else None
 
     # 3. EoU classifier (support for English only)
     if language == "en":
@@ -592,13 +582,11 @@ def evaluate_dir(
                 emotion_model,
                 gt_audio_filepath,
                 pred_audio_filepath,
-                embedding_type=prosody_embedding_type,
             )
             prosody_distance_metrics = compute_acoustic_prosody_metrics(
                 gt_audio_path=gt_audio_filepath,
                 pred_audio_path=pred_audio_filepath,
                 text=gt_text,
-                config=prosody_distance_config,
             )
         logging.info(f"{ridx} GT Text: {gt_text}")
         logging.info(f"{ridx} Pr Text: {pred_text}")
@@ -738,8 +726,6 @@ def evaluate(
     codec_model_path=None,
     with_prosody_metrics=False,
     prosody_model_size="small",
-    prosody_embedding_type="head_concat",
-    prosody_cache_dir=None,
     asr_batch_size=32,
     eou_batch_size=32,
     device="cuda",
@@ -779,8 +765,6 @@ def evaluate(
         strip_text_annotations_for_metrics=strip_text_annotations_for_metrics,
         with_prosody_metrics=with_prosody_metrics,
         prosody_model_size=prosody_model_size,
-        prosody_embedding_type=prosody_embedding_type,
-        prosody_cache_dir=prosody_cache_dir,
         asr_batch_size=asr_batch_size,
         eou_batch_size=eou_batch_size,
         device=device,
@@ -962,13 +946,6 @@ def main():
     )
     parser.add_argument('--prosody_model_size', type=str, default="small", choices=["small", "large"])
     parser.add_argument(
-        '--prosody_embedding_type',
-        type=str,
-        default="score_vector",
-        choices=["head_concat", "head_mean", "score_vector"],
-    )
-    parser.add_argument('--prosody_cache_dir', type=str, default=None)
-    parser.add_argument(
         '--strip_text_annotations_for_metrics',
         action='store_true',
         help='Strip bracket/tag/control annotations from reference and ASR hypothesis text while computing text metrics.',
@@ -991,8 +968,6 @@ def main():
         with_prosody_metrics=args.with_prosody_metrics,
         strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
         prosody_model_size=args.prosody_model_size,
-        prosody_embedding_type=args.prosody_embedding_type,
-        prosody_cache_dir=args.prosody_cache_dir,
     )
 
 

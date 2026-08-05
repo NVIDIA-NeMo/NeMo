@@ -27,7 +27,7 @@ CUDA_TRITON_AVAILABLE = TRITON_AVAILABLE and torch.cuda.is_available()
 
 if TRITON_AVAILABLE:
     # This module imports Triton at the top level, so only reach for it once Triton is known good.
-    from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
+    from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_torch, rnnt_logprobs_triton
 
 
 def _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, blank, fastemit_lambda=0.0, clamp=-1.0):
@@ -133,6 +133,57 @@ def test_flash_rnnt_balances_time_tiles(
     expected,
 ):
     assert _balanced_time_tile_size(source_steps, chunk_batch, target_states, max_joint_rows) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.parametrize(
+    "batch_size,num_frames,num_text_units,vocab_size",
+    [
+        (1, 4, 2, 4),
+        (2, 3, 2, 5),
+        (2, 16, 31, 17),
+        (16, 129, 65, 2048),
+    ],
+)
+@pytest.mark.parametrize(
+    "float_dtype",
+    [torch.float32] + ([torch.bfloat16] if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else []),
+)
+def test_rnnt_logprobs_matches_torch_reference(
+    batch_size: int, num_frames: int, num_text_units: int, vocab_size: int, float_dtype: torch.dtype
+):
+    """Check the Triton extraction against the naive Torch one, forward and backward."""
+    device = torch.device("cuda")
+    torch.manual_seed(777)
+
+    targets = torch.randint(0, vocab_size - 1, (batch_size, num_text_units), device=device, dtype=torch.long)
+    logits = torch.rand(
+        [batch_size, num_frames, num_text_units + 1, vocab_size + 1],
+        dtype=float_dtype,
+        device=device,
+        requires_grad=True,
+    )
+
+    # The Triton kernel accumulates in float32 for accuracy, so the reference gets float32 input too.
+    target_scores_etalon, blank_scores_etalon = rnnt_logprobs_torch(
+        logits=logits.to(torch.float32), targets=targets, blank_id=vocab_size
+    )
+    logits2 = logits.clone().detach()
+    logits2.requires_grad_(True)
+    target_scores, blank_scores = rnnt_logprobs_triton(logits=logits2, targets=targets, blank_id=vocab_size)
+    target_scores[..., -1:] = 0.0
+    target_scores_etalon[..., -1:] = 0.0
+    assert torch.allclose(blank_scores, blank_scores_etalon, atol=1e-5)
+    assert torch.allclose(target_scores, target_scores_etalon, atol=1e-5)
+
+    target_scales = torch.rand_like(target_scores, requires_grad=False)
+    blank_scales = torch.rand_like(blank_scores, requires_grad=False)
+    loss_etalon = (target_scales * target_scores_etalon + blank_scales * blank_scores_etalon).sum()
+    loss = (target_scales * target_scores + blank_scales * blank_scores).sum()
+    loss_etalon.backward()
+    loss.backward()
+    assert torch.allclose(logits.grad, logits2.grad, atol=1e-5)
 
 
 @pytest.mark.unit

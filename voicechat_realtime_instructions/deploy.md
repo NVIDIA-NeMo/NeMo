@@ -16,7 +16,7 @@ The microservice uses a bidirectional WebSocket interface to stream audio in and
 
 ```bash
 ngc registry model download-version nim/nvidia/nemotron-labs-voicechat:1.0.0
-chmod 777 nemotron-labs-voicechat_v1.0.0
+chmod -R 777 nemotron-labs-voicechat_v1.0.0
 ```
 
 This creates a `nemotron-labs-voicechat_v1.0.0/` directory in the current working directory containing the Triton model repository.
@@ -39,16 +39,16 @@ docker run -it --rm --name=nemotron-labs-voicechat \
 
 ### Verify Readiness
 
-Server readiness can take up to 5 minutes depending on system configuration. Poll the health endpoint until it returns `ready`:
+Server readiness can take up to 5 minutes depending on system configuration. Poll the health endpoint until the server is ready:
 
 ```bash
-curl -X 'GET' 'http://localhost:9000/v1/health/ready'
+curl 'http://localhost:9000/v1/realtime/health'
 ```
 
 Expected response:
 
 ```json
-{"object":"health.response","message":"ready","status":"ready"}
+{"status":"ok","service":"nemotron-voicechat-websocket-server","mode":"triton","triton_status":"ready","model_inference_stats":{"success_count":0,"fail_count":0}}
 ```
 
 ## Run a Voice Conversation
@@ -299,7 +299,7 @@ python3 nemotron-voicechat-client.py --server localhost:9000 \
 
 **Solution:**
 - Watch logs with `docker logs -f <container>`.
-- Poll `curl http://localhost:9000/v1/health/ready` until it returns `ready`.
+- Poll `curl http://localhost:9000/v1/realtime/health` until the server is ready.
 - Ensure `--shm-size=8GB` is set on the `docker run` command.
 
 ---

@@ -231,7 +231,7 @@ all = [
 ]
 
 cu12 = [
-    "torch==2.12.0+cu126 ; sys_platform == 'linux'",
+    "torch==2.11.0+cu129 ; sys_platform == 'linux'",
     "numba-cuda[cu12] ; platform_system != 'Darwin'",
     "cuda-python>=12,<13 ; platform_system != 'Darwin'"
 ]
@@ -472,10 +472,10 @@ no-build-isolation-package = [
 # dependency also carries Torch source metadata; see the static metadata below.
 [tool.uv.sources]
 nemo_automodel = { git = "https://github.com/NVIDIA-NeMo/Automodel.git", rev = "9eccbb6102a260efd7cbdffa890fc57b94f94528" }
-deep_ep = { git = "https://github.com/deepseek-ai/DeepEP.git", tag = "v1.2.1" }
+deep_ep = { git = "https://github.com/deepseek-ai/DeepEP.git", rev = "7febc6e25660af0f54d95dd781ecdcd62265ecca" }
 torch = [
   { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'darwin'" },
-  { index = "pytorch-cu126", extra = "cu12", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu129", extra = "cu12", marker = "sys_platform == 'linux'" },
   { index = "pytorch-cu132", extra = "cu13", marker = "sys_platform == 'linux'" },
   { index = "pypi", marker = "sys_platform == 'darwin'" },
 ]
@@ -493,8 +493,8 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
 explicit = true
 
 [[tool.uv.index]]

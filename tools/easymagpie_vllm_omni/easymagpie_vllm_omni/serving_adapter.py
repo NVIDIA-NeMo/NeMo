@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable
 
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
+from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +92,8 @@ def _build_adapter_cls() -> type:
 
         def _tokenize(self) -> Callable[[str], Any]:
             if self._tokenizer is None:
-                from transformers import AutoTokenizer
-
-                self._tokenizer = AutoTokenizer.from_pretrained(self._model_path(), trust_remote_code=True)
-            return lambda text: self._tokenizer.encode(text)
+                self._tokenizer = EasyMagpieTextTokenizer.from_pretrained(self._model_path())
+            return self._tokenizer.encode_context
 
         def _model_tokenizer(self):
             self._tokenize()
@@ -156,7 +155,7 @@ def _build_adapter_cls() -> type:
             speaker_id = (request.voice or _DEFAULT_SPEAKER).strip()
             extra = request.extra_params or {}
             text_eos_id, text_prefill_num = self._text_stream_metadata()
-            text_tokens = list(self._model_tokenizer().encode(request.input, add_special_tokens=False))
+            text_tokens = self._model_tokenizer().encode(request.input, add_special_tokens=False)
             text_tokens.append(text_eos_id)
 
             prompt = {

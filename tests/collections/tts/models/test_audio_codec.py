@@ -147,3 +147,34 @@ class TestAudioCodecModel:
         output_audio, output_audio_len = acoustic_codec_model.decode(tokens=tokens, tokens_len=tokens_len)
         assert output_audio.shape[0] == batch_size
         assert output_audio.shape[1] == output_audio_len.max()
+
+    @pytest.mark.unit
+    def test_encode_with_dropout(self, codec_model):
+        batch_size = 4
+        audio = torch.randn(size=(batch_size, 20000))
+        audio_len = torch.randint(size=[batch_size], low=10000, high=20000)
+
+        tokens, tokens_len = codec_model.encode(
+            audio=audio,
+            audio_len=audio_len,
+            sample_rate=codec_model.sample_rate,
+        )
+
+        # Setting num_codebooks to the total number of codebooks should not modify the output
+        tokens_without_dropout, _ = codec_model.encode(
+            audio=audio,
+            audio_len=audio_len,
+            sample_rate=codec_model.sample_rate,
+            num_codebooks=codec_model.num_codebooks,
+        )
+        torch.testing.assert_close(actual=tokens_without_dropout, expected=tokens)
+
+        for i in range(1, codec_model.num_codebooks):
+            tokens_with_dropout, _ = codec_model.encode(
+                audio=audio, audio_len=audio_len, sample_rate=codec_model.sample_rate, num_codebooks=i
+            )
+            encoded = codec_model.dequantize(tokens=tokens_with_dropout, tokens_len=tokens_len)  # (B, D, T)
+            # Validate appropriate dimensions are zero
+            dropout_start_i = i * codec_model.vector_quantizer.codebook_dim
+            dropped_codes = encoded[:, dropout_start_i:, :]
+            torch.testing.assert_close(actual=dropped_codes, expected=torch.zeros_like(dropped_codes))

@@ -70,7 +70,7 @@ _STATE_DICT_EXCLUDE_NAMES: list[str] = ["_teacher_model"]
 class _DefaultParams:
 
     # Maximum number of decoding steps during audio rollout generation.
-    max_decoder_steps: int = 330
+    max_decoder_steps: int = 300
     # Sampling temperature during rollout generation.
     rollout_temperature: float = 0.7
     # Top-k sampling limit for token selection.
@@ -92,7 +92,7 @@ class _DefaultParams:
     # Weight assigned to truncated samples when computing the loss (used to down-weight rejected rollouts).
     rejection_weight: Optional[float] = 0.1
     # Target mixing weight for the backbone distillation loss in the final total loss.
-    backbone_loss_weight: float = 0.0
+    backbone_loss_weight: float = 1.0
     # Weight coefficient for the phoneme-channel loss contribution in the final total loss.
     phonemes_loss_weight: float = 0.01
     # Whether to save rejected teacher rollouts for debugging.
@@ -184,8 +184,8 @@ def _get_teacher_model(cfg: DictConfig) -> EasyMagpieTTSModel:
 class _StudentOutput:
     """Outputs produced by the student forward pass for distillation."""
 
-    logits: Tensor
     logits_backbone: Tensor
+    logits: Optional[Tensor]
     logits_phonemes: Optional[Tensor]
 
 
@@ -1951,10 +1951,17 @@ def _rescale_logits(
     if temperature == 1.0:
         return teacher_output, student_output
 
-    student_output.logits_backbone = student_output.logits_backbone / temperature
-    teacher_output.logits_backbone = teacher_output.logits_backbone / temperature
-    student_output.logits = student_output.logits / temperature
-    teacher_output.logits = teacher_output.logits / temperature
+    if student_output.logits_backbone is not None:
+        student_output.logits_backbone = student_output.logits_backbone / temperature
+
+    if teacher_output.logits_backbone is not None:
+        teacher_output.logits_backbone = teacher_output.logits_backbone / temperature
+
+    if student_output.logits is not None:
+        student_output.logits = student_output.logits / temperature
+
+    if teacher_output.logits is not None:
+        teacher_output.logits = teacher_output.logits / temperature
 
     return teacher_output, student_output
 
@@ -2380,12 +2387,13 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         )
         pred_embeddings_audio = self.audio_out_projection(pred_embeddings)
         logits_backbone = self.final_proj(pred_embeddings_audio)
+        logits = None
 
-        logits = self._lt_helper.compute_logits(
-            dec_out=pred_embeddings,
-            audio_codes_target=batch_combined.audio_codes_gt,
-            targets_offset_by_one=False,
-        )
+        # logits = self._lt_helper.compute_logits(
+        #     dec_out=pred_embeddings,
+        #     audio_codes_target=batch_combined.audio_codes_gt,
+        #     targets_offset_by_one=False,
+        # )
         if self.phoneme_tokenizer is not None and batch_combined.phoneme_tokens_lens_stacked is not None:
             pred_embeddings_phoneme = self.slice_sequence_embeddings(
                 sequence_embeddings=transformer_out.last_hidden_state,
@@ -2395,8 +2403,8 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             logits_phonemes = self.phoneme_final_proj(pred_embeddings_phoneme)
 
         return _StudentOutput(
-            logits=logits,
             logits_backbone=logits_backbone,
+            logits=logits,
             logits_phonemes=logits_phonemes,
         )
 
@@ -2500,7 +2508,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         output = self._compute_codes_loss_helper(
             teacher_logits=teacher_output.logits,
             teacher_codes=teacher_output.codes,
-            student_logits=student_output.logits,
+            student_logits=student_output.logits_backbone, # For student use only backbone.
             mask=codes_mask,
             sample_weights=teacher_output.sample_weights,
             mode=_LossMode.main,
@@ -2508,21 +2516,21 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         main_loss_key = _get_loss_key(key=_LossKey.loss, mode=_LossMode.main)
         output["loss"] = output[main_loss_key]
 
-        backbone_weight = self.backbone_loss_weight
+        # backbone_weight = self.backbone_loss_weight
 
-        if backbone_weight > 0.0:
-            backbone_output = self._compute_codes_loss_helper(
-                teacher_logits=teacher_output.logits_backbone,
-                teacher_codes=teacher_output.codes_backbone,
-                student_logits=student_output.logits_backbone,
-                mask=codes_mask,
-                sample_weights=teacher_output.sample_weights,
-                mode=_LossMode.backbone,
-            )
-            output.update(backbone_output)
-            backbone_key = _get_loss_key(key=_LossKey.loss, mode=_LossMode.backbone)
-            output["loss"] = (1 - backbone_weight) * output["loss"] + backbone_weight * output[backbone_key]
-            del output[backbone_key]
+        # if backbone_weight > 0.0:
+        #     backbone_output = self._compute_codes_loss_helper(
+        #         teacher_logits=teacher_output.logits_backbone,
+        #         teacher_codes=teacher_output.codes_backbone,
+        #         student_logits=student_output.logits_backbone,
+        #         mask=codes_mask,
+        #         sample_weights=teacher_output.sample_weights,
+        #         mode=_LossMode.backbone,
+        #     )
+        #     output.update(backbone_output)
+        #     backbone_key = _get_loss_key(key=_LossKey.loss, mode=_LossMode.backbone)
+        #     output["loss"] = (1 - backbone_weight) * output["loss"] + backbone_weight * output[backbone_key]
+        #     del output[backbone_key]
 
         if self.phonemes_loss_weight and student_output.logits_phonemes is not None:
             phonemes_output = self._compute_phoneme_loss_guidance(
@@ -2808,7 +2816,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             max_decoder_steps=self.max_decoder_steps,
             temperature=self.rollout_temperature,
             topk=self.rollout_topk,
-            use_local_transformer_for_inference=True,
+            use_local_transformer_for_inference=False,
             use_cfg=False,
         )
 

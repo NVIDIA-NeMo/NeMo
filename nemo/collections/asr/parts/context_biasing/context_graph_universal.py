@@ -420,6 +420,9 @@ class ContextGraph:
                     node.primary_next[token] = next_node
 
                     for alt_token in token_group[1:]:
+                        # NB: alternative tokens are not added to primary_next
+                        # primary_next holds arcs of a trie over elementary-token (char) alphabet,
+                        # and used to build fail links at the last stage
                         if alt_token.length == 1:
                             node.next[alt_token.token_id] = next_node
                         else:

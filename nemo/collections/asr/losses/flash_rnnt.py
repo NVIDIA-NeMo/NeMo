@@ -28,7 +28,6 @@ _DEFAULT_MAX_JOINT_ROWS = 200_000
 
 
 def _ceil_div(numerator: int, denominator: int) -> int:
-    """Smallest integer at least ``numerator / denominator``."""
     return (numerator + denominator - 1) // denominator
 
 
@@ -52,20 +51,17 @@ def _validate_joint(joint, blank: int) -> None:
 class FlashRNNTLoss(torch.nn.Module):
     """Exact Flash RNN-T loss configured for the fused joint path.
 
-    ``RNNTJoint.fused_batch_size`` supplies ``max_samples_per_chunk``. It limits
-    samples in each chunk, not the number of chunks. A local batch of size ``B``
-    produces ``ceil(B / fused_batch_size)`` chunks.
-    A chunk costs what its longest member costs, so smaller chunks trim padding
-    more aggressively: with a 4x spread of utterance lengths, chunks of 4 run
-    roughly twice as fast as chunks of 32 at the same peak memory. Prefer the
-    smallest value that still saturates the GPU. ``max_joint_rows`` independently
-    sets the target row budget for the disposable workspace within each chunk.
+    The batch is sorted by target length, then split into chunks of at most
+    ``max_samples_per_chunk`` samples -- the value ``RNNTJoint`` passes down from its
+    ``fused_batch_size`` -- and one chunk is scored at a time. Every tensor in a chunk is trimmed to
+    that chunk's own longest source and target, so a chunk costs what its longest member costs and
+    sorting groups samples of similar length together. Smaller chunks trim more aggressively; prefer
+    the smallest value that still saturates the GPU.
 
-    ``max_joint_rows`` budgets the flattened B * T * (U + 1) rows of one joint
-    workspace tile. Peak workspace is the largest tile, so source time is divided
-    into equal tiles rather than tiles filled to the budget, and tiles usually
-    come in under it. One source step is the smallest tile, so a batch whose
-    B * (U + 1) already exceeds the budget overruns it.
+    Within a chunk, ``max_joint_rows`` budgets the flattened ``B * T * (U + 1)`` rows of one joint
+    workspace tile. Peak workspace is the largest tile, so source time is divided into equal tiles
+    rather than tiles filled to the budget, and tiles usually come in under it. One source step is
+    the smallest tile, so a chunk whose ``B * (U + 1)`` already exceeds the budget overruns it.
     """
 
     def __init__(

@@ -73,6 +73,13 @@ if TRITON_AVAILABLE:
         fastemit_scale: tl.constexpr,
         block_target: tl.constexpr,
     ):
+        """Score one utterance's lattice and leave the occupations backward consumes.
+
+        Both passes walk source time sequentially and resolve the whole target axis in one scan over
+        the log semiring, so a lane holds a target state rather than a time step. The reverse pass
+        reads back the alphas the forward stored, which is what lets it emit each blank transition's
+        posterior beside beta.
+        """
         batch_idx = tl.program_id(0)
         source_len = tl.load(source_lengths_ptr + batch_idx)
         target_len = tl.load(target_lengths_ptr + batch_idx)
@@ -157,14 +164,14 @@ if TRITON_AVAILABLE:
                 mask=active_time & valid_symbol,
                 other=-float("inf"),
             )
-            blank_occ = tl.where(
+            blank_occupation = tl.where(
                 last_time,
                 tl.where(symbols == target_len, 1.0, 0.0),
                 tl.exp(alpha + blank + beta_next - log_likelihood),
             )
             tl.store(
                 blank_occupation_ptr + blank_offset,
-                tl.where(active_time & valid_symbol, blank_occ, 0.0),
+                tl.where(active_time & valid_symbol, blank_occupation, 0.0),
                 mask=(symbols >= 0) & (symbols <= max_target),
             )
             tl.store(beta_ptr + beta_offset, beta, mask=active_time & valid_symbol)
@@ -184,23 +191,24 @@ if TRITON_AVAILABLE:
         fastemit_scale: tl.constexpr,
         block_target: tl.constexpr,
     ):
+        """Posterior of each target transition, from the alphas and betas the loss kernel stored."""
         batch_idx = tl.program_id(0)
         time_idx = tl.program_id(1)
         symbols = tl.arange(0, block_target)
         source_len = tl.load(source_lengths_ptr + batch_idx)
         target_len = tl.load(target_lengths_ptr + batch_idx)
         valid_lengths = (source_len >= 1) & (source_len <= max_source) & (target_len >= 0) & (target_len <= max_target)
-        valid = valid_lengths & (time_idx < source_len) & (symbols < target_len)
+        valid_state = valid_lengths & (time_idx < source_len) & (symbols < target_len)
         alpha_offset = (batch_idx * max_source + time_idx) * (max_target + 1) + symbols
         target_offset = (batch_idx * max_source + time_idx) * max_target + symbols
-        alpha = tl.load(alpha_ptr + alpha_offset, mask=valid, other=-float("inf"))
-        target = tl.load(target_scores_ptr + target_offset, mask=valid, other=-float("inf"))
-        beta_after = tl.load(beta_ptr + alpha_offset + 1, mask=valid, other=-float("inf"))
+        alpha = tl.load(alpha_ptr + alpha_offset, mask=valid_state, other=-float("inf"))
+        target = tl.load(target_scores_ptr + target_offset, mask=valid_state, other=-float("inf"))
+        beta_after = tl.load(beta_ptr + alpha_offset + 1, mask=valid_state, other=-float("inf"))
         log_likelihood = -tl.load(losses_ptr + batch_idx) / fastemit_scale
         occupation = tl.exp(alpha + target + beta_after - log_likelihood)
         tl.store(
             target_occupation_ptr + target_offset,
-            tl.where(valid, occupation, 0.0),
+            tl.where(valid_state, occupation, 0.0),
             mask=symbols < max_target,
         )
 
@@ -255,7 +263,7 @@ class _RNNTLossTriton(torch.autograd.Function):
             # The floor keeps a small target axis from launching too narrow to fill the device.
             num_warps=min(max(block_target // 32, 4), 16),
         )
-        # Every transcript in the batch is empty, so there are no target transitions to score.
+        # Nothing to score when every transcript in the batch is empty.
         if max_target > 0:
             _rnnt_target_occupation_kernel[(batch, max_source)](
                 target_scores,

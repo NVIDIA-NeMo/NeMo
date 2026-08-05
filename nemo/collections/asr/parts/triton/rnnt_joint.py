@@ -14,13 +14,8 @@
 
 """Fused broadcast-add, activation and dropout for the RNN-T joint network.
 
-The joint hidden state is ``act(encoder[b, t, :] + predictor[b, u, :])`` over a
-``[B, T, U + 1, H]`` grid. Writing it as a Triton kernel rather than relying on
-``torch.compile`` keeps a single code path: Dynamo forks a graph per shape, dtype and
-grad mode, and once its recompile limit is reached it silently falls back to eager,
-which changes reduced-precision rounding part-way through a run.
-
-Backward saves only the two projected operands and rebuilds the pre-activation inside the
+The joint hidden state is ``act(encoder[b, t, :] + predictor[b, u, :])`` over a ``[B, T, U + 1, H]``
+grid. Backward saves only the two projected operands and rebuilds the pre-activation inside the
 reduction kernels, so no ``[B, T, U + 1, H]`` tensor stays live across the step.
 
 Dropout is folded in rather than applied afterwards, and its mask is never stored: each kernel

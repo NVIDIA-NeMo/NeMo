@@ -425,7 +425,7 @@ def test_dense_rnnt_matches_reference_fastemit_and_clamp(fastemit_lambda, clamp,
     ``rnnt_numpy`` runs the dynamic program in NumPy on the host, so it shares no code with either
     the Triton kernels or the Numba ones and a mismatch cannot be a bug both implementations hold in
     common. It clamps the gradient it is handed, which matches the unit-scale clamp only while the
-    upstream scale is one, so the objective here stays an unweighted sum.
+    loss gradient scale is one, so the objective here stays an unweighted sum.
     """
     from nemo.collections.asr.parts.numba.rnnt_loss.rnnt_numpy import RNNTLoss as RNNTLossNumpy
 
@@ -450,8 +450,8 @@ def test_dense_rnnt_matches_reference_fastemit_and_clamp(fastemit_lambda, clamp,
     not CUDA_TRITON_AVAILABLE or not NUMBA_RNNT_AVAILABLE,
     reason="CUDA, Triton, and Numba RNN-T are required",
 )
-@pytest.mark.parametrize(("upstream", "amp_scale"), [("mean", 1.0), ("mean", 1024.0), ("weighted", 1.0)])
-def test_dense_rnnt_clamp_precedes_upstream_scaling(upstream, amp_scale):
+@pytest.mark.parametrize(("objective_reduction", "amp_scale"), [("mean", 1.0), ("mean", 1024.0), ("weighted", 1.0)])
+def test_dense_rnnt_clamp_precedes_loss_grad_scaling(objective_reduction, amp_scale):
     from nemo.collections.asr.parts.numba.rnnt_loss import RNNTLossNumba
 
     logits, labels, source_lengths, target_lengths = _inputs(blank=BLANK)
@@ -464,7 +464,7 @@ def test_dense_rnnt_clamp_precedes_upstream_scaling(upstream, amp_scale):
         clamp=0.02,
     )(reference_logits, labels, source_lengths, target_lengths)
 
-    if upstream == "mean":
+    if objective_reduction == "mean":
         native_objective = native_loss.mean()
         reference_objective = reference_loss.mean()
     else:
@@ -529,8 +529,10 @@ def _make_joint(fused_batch_size, activation="relu", log_softmax=False, dropout=
     reason="CUDA, Triton, and Numba RNN-T are required",
 )
 @pytest.mark.parametrize("fused_batch_size", [2, 3])
-@pytest.mark.parametrize(("upstream", "amp_scale"), [("mean_batch", 1.0), ("mean_batch", 1024.0), ("weighted", 1.0)])
-def test_flash_rnnt_clamp_matches_numba_across_chunks(fused_batch_size, upstream, amp_scale):
+@pytest.mark.parametrize(
+    ("objective_reduction", "amp_scale"), [("mean_batch", 1.0), ("mean_batch", 1024.0), ("weighted", 1.0)]
+)
+def test_flash_rnnt_clamp_matches_numba_across_chunks(fused_batch_size, objective_reduction, amp_scale):
     """Clamping applies to the unit-scale gradient, which autograd has already scaled.
 
     Dividing that scale back out has to survive batch chunking, source-time tiling, the loss
@@ -563,7 +565,7 @@ def test_flash_rnnt_clamp_matches_numba_across_chunks(fused_batch_size, upstream
     labels = torch.randint(0, NUM_LABELS, (batch, target_tokens), device="cuda")
 
     def objective(per_sample):
-        if upstream == "mean_batch":
+        if objective_reduction == "mean_batch":
             return per_sample.mean() * amp_scale
         weights = torch.tensor([0.5, 0.0, -2.0, 1.0, 0.25, -0.75], device="cuda")
         return (per_sample * weights).sum() * amp_scale

@@ -197,7 +197,7 @@ class RnntLogProbs(torch.autograd.Function):
         reuse_logits_for_grad: bool,
         loss_grad_scale: torch.Tensor | None,
     ):
-        """
+        """Log probabilities of the target and blank labels at every lattice position.
 
         Args:
             ctx: ctx object for storing the context
@@ -206,9 +206,12 @@ class RnntLogProbs(torch.autograd.Function):
             blank_id: id of the blank output
             source_lengths: optional tensor with lengths for source utterances
             target_lengths: optional tensor with lengths for targets
+            clamp: bound on the unit-scale gradient, disabled when not positive
+            reuse_logits_for_grad: write the gradient over ``logits`` rather than allocating for it
+            loss_grad_scale: per-sample loss gradient the clamp divides out and reapplies
 
         Returns:
-
+            Log probabilities for target and blank labels, both of size [B, T, U+1].
         """
         targets = targets.contiguous()
         device = logits.device
@@ -319,8 +322,8 @@ def rnnt_logprobs_triton(
         blank_id: id of the blank output
         source_lengths: optional tensor with lengths for source utterances
         target_lengths: optional tensor with lengths for targets
-        clamp: clamp the unit-scale standard RNN-T gradient before applying its
-            per-sample upstream scale
+        clamp: bound on the unit-scale RNN-T gradient, applied before ``loss_grad_scale`` is
+            reapplied; disabled when not positive
         reuse_logits_for_grad: overwrite logits with their gradient during backward; only safe for private,
             disposable logits; a second backward through the same graph raises
         loss_grad_scale: ``[B]`` float32 buffer holding the objective's gradient with respect to

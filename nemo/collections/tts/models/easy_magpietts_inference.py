@@ -15,7 +15,7 @@ import random
 import tempfile
 import time
 from collections import Counter
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, is_dataclass, replace
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -23,7 +23,7 @@ import numpy as np
 import soundfile as sf
 import torch
 from lightning.pytorch import Trainer
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -229,6 +229,106 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
     EasyMagpieTTSModel subclasses this to add training, validation, and data loading.
     """
+
+    @staticmethod
+    def _to_container(cfg_value):
+        if cfg_value is None:
+            return {}
+        if isinstance(cfg_value, DictConfig):
+            return OmegaConf.to_container(cfg_value, resolve=True)
+        return dict(cfg_value)
+
+    @classmethod
+    def _get_nemotron_h_config_dict(cls, cfg: DictConfig) -> Dict[str, Any]:
+        nemotron_h_config_dict = cls._to_container(cfg.get('nemotron_h_config', {}))
+        # Ensure hidden_size matches embedding_dim for compatibility.
+        if 'hidden_size' not in nemotron_h_config_dict:
+            nemotron_h_config_dict['hidden_size'] = cfg.embedding_dim
+        return nemotron_h_config_dict
+
+    @staticmethod
+    def _replace_config_values(config, values: Dict[str, Any]):
+        if is_dataclass(config):
+            return replace(config, **values)
+        if hasattr(config, "update"):
+            config.update(values)
+            return config
+        for key, value in values.items():
+            setattr(config, key, value)
+        return config
+
+    @staticmethod
+    @torch.no_grad()
+    def _initialize_automodel_scratch_parameters(module: nn.Module):
+        """Reset NemotronV3 tensors that some Automodel scratch-init paths leave uninitialized."""
+        for submodule in module.modules():
+            if all(hasattr(submodule, name) for name in ('A_log', 'D', 'in_proj', 'conv1d', 'norm', 'out_proj')):
+                submodule.in_proj.reset_parameters()
+                submodule.conv1d.reset_parameters()
+                submodule.out_proj.reset_parameters()
+                if hasattr(submodule.norm, 'weight'):
+                    submodule.norm.weight.fill_(1.0)
+
+                a_log = submodule.A_log
+                a_values = torch.arange(1, a_log.numel() + 1, device=a_log.device, dtype=torch.float32).log()
+                a_log.copy_(a_values.to(dtype=a_log.dtype).reshape_as(a_log))
+                submodule.D.fill_(1.0)
+                submodule.A_log._no_weight_decay = True
+                submodule.D._no_weight_decay = True
+
+            if all(hasattr(submodule, name) for name in ('q_proj', 'k_proj', 'v_proj', 'o_proj')):
+                submodule.q_proj.reset_parameters()
+                submodule.k_proj.reset_parameters()
+                submodule.v_proj.reset_parameters()
+                submodule.o_proj.reset_parameters()
+
+    @staticmethod
+    def _get_last_hidden_state(transformer_out):
+        last_hidden_state = getattr(transformer_out, 'last_hidden_state', None)
+        if last_hidden_state is not None:
+            return last_hidden_state
+
+        hidden_states = getattr(transformer_out, 'hidden_states', None)
+        if hidden_states is not None and len(hidden_states) > 0 and hidden_states[-1] is not None:
+            return hidden_states[-1]
+
+        raise AttributeError(
+            "Decoder output must expose `last_hidden_state` or a non-empty `hidden_states` tuple. "
+            "For causal-LM style decoders, call forward with `output_hidden_states=True`."
+        )
+
+    @staticmethod
+    def _get_automodel_cache_class():
+        from nemo_automodel.components.models.nemotron_v3.cache import NemotronHybridCache
+
+        return NemotronHybridCache
+
+    def _create_automodel_cache(self, inputs_embeds: torch.Tensor):
+        cache_cls = self._get_automodel_cache_class()
+        decoder_dtype = getattr(self.decoder, "dtype", None)
+        if decoder_dtype is None:
+            decoder_dtype = next(self.decoder.parameters()).dtype
+        return cache_cls(
+            self.decoder.config,
+            inputs_embeds.shape[0],
+            decoder_dtype,
+            inputs_embeds.device,
+        )
+
+    @staticmethod
+    def _clear_automodel_cache(cache) -> None:
+        for collection_name in ("conv_states", "ssm_states", "key_cache", "value_cache"):
+            collection = getattr(cache, collection_name, None)
+            if collection is not None:
+                collection.clear()
+        if hasattr(cache, "has_previous_state"):
+            cache.has_previous_state = False
+
+    def _release_streaming_cache(self, state: StreamingState) -> None:
+        if self.decoder_type in ("nemo_automodel", "automodel") and state.past_key_values is not None:
+            self._clear_automodel_cache(state.past_key_values)
+            state.past_key_values = None
+            state.cache_seq_len = 0
 
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
         self.world_size = 1
@@ -469,7 +569,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             self.phoneme_embeddings = nn.ModuleList(phoneme_embeddings)
             self.phoneme_final_proj = nn.Linear(cfg.hidden_dim, self.phoneme_vocab_size * self.phoneme_stacking_factor)
 
-        # Decoder backend selection - supports HuggingFace models or NemotronH
+        # Decoder backend selection - supports HuggingFace models, local NemotronH, or NeMo AutoModel.
         self.decoder_type = cfg.get('decoder_type', 'huggingface')  # backward compatible default
         logging.info(f"Using decoder type: {self.decoder_type}")
 
@@ -501,11 +601,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # NemotronH hybrid Mamba2/Attention backend
             from nemo.collections.tts.modules.nemotron_h_decoder import NemotronHConfig, NemotronHForCausalLM
 
-            # Build config from YAML parameters
-            nemotron_h_config_dict = dict(cfg.get('nemotron_h_config', {}))
-            # Ensure hidden_size matches embedding_dim for compatibility
-            if 'hidden_size' not in nemotron_h_config_dict:
-                nemotron_h_config_dict['hidden_size'] = cfg.embedding_dim
+            # Build config from YAML parameters.
+            nemotron_h_config_dict = self._get_nemotron_h_config_dict(cfg)
             nemotron_config = NemotronHConfig(**nemotron_h_config_dict)
             nemotron_model = NemotronHForCausalLM(nemotron_config)
             if self.disable_lm_text_head:
@@ -516,8 +613,71 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 f"NemotronH config: {nemotron_config.num_hidden_layers} layers, pattern={nemotron_config.hybrid_override_pattern[:20]}..."
             )
 
+        elif self.decoder_type in ('nemo_automodel', 'automodel'):
+            try:
+                from nemo_automodel import NeMoAutoModelForCausalLM
+            except ImportError as e:
+                raise ImportError(
+                    "`decoder_type='nemo_automodel'`/`'automodel'` requires `nemo_automodel`. "
+                    "Install NeMo with the `all` extra or add `nemo_automodel` to the environment."
+                ) from e
+
+            automodel_config_source = cfg.get('automodel_config_source', 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16')
+            self.transformer_backend_config = AutoConfig.from_pretrained(
+                automodel_config_source,
+                trust_remote_code=True,
+            )
+            self.transformer_backend_config = self._replace_config_values(
+                self.transformer_backend_config,
+                self._get_nemotron_h_config_dict(cfg),
+            )
+
+            automodel_kwargs = self._to_container(cfg.get('automodel_kwargs', {}))
+            logging.info("NeMo AutoModel kwargs: %s", automodel_kwargs)
+            # Some Automodel NemotronV3 builds leave mixer tensors from scratch init uninitialized after
+            # from_config(); reset those tensors before running Automodel's regular init/rescaling path.
+            with torch.device('cpu'):
+                automodel_model = NeMoAutoModelForCausalLM.from_config(
+                    self.transformer_backend_config, **automodel_kwargs
+                )
+            self._initialize_automodel_scratch_parameters(automodel_model)
+            buffer_device = (
+                torch.device(f'cuda:{torch.cuda.current_device()}')
+                if torch.cuda.is_available()
+                else torch.device('cpu')
+            )
+            automodel_dtype = next(
+                (
+                    param.dtype
+                    for param in automodel_model.parameters()
+                    if param.is_floating_point() and not param.is_meta
+                ),
+                torch.bfloat16,
+            )
+            if hasattr(automodel_model, 'initialize_weights'):
+                automodel_model.initialize_weights(buffer_device=buffer_device, dtype=automodel_dtype)
+            elif hasattr(getattr(automodel_model, 'model', None), 'initialize_weights'):
+                automodel_model.model.initialize_weights(buffer_device=buffer_device)
+            if self.disable_lm_text_head:
+                # The custom AutoModel CausalLM wrapper always calls lm_head, even
+                # when only hidden states are requested. Keep that wrapper contract
+                # without allocating or evaluating the vocabulary projection.
+                automodel_model.lm_head = nn.Identity()
+            self.decoder = automodel_model
+            if self.decoder is None:
+                raise AttributeError("NeMo AutoModel causal LM did not expose a `model` decoder.")
+            self.lm_text_head = None if self.disable_lm_text_head else getattr(automodel_model, 'lm_head', None)
+            logging.info(
+                f"NeMo AutoModel config: source={automodel_config_source}, "
+                f"hidden_size={self.transformer_backend_config.hidden_size}, "
+                f"num_hidden_layers={self.transformer_backend_config.num_hidden_layers}"
+            )
+
         else:
-            raise ValueError(f"Unknown decoder_type: {self.decoder_type}. Supported: 'huggingface', 'nemotron_h'")
+            raise ValueError(
+                f"Unknown decoder_type: {self.decoder_type}. "
+                "Supported: 'huggingface', 'nemotron_h', 'nemo_automodel', 'automodel'"
+            )
 
         self.activation_checkpointing = cfg.get("activation_checkpointing", False)
         if self.activation_checkpointing:
@@ -530,7 +690,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             elif hasattr(self.decoder, "gradient_checkpointing"):
                 self.decoder.gradient_checkpointing = True
 
-        if self.disable_lm_text_head and hasattr(self.decoder, 'lm_head'):
+        if (
+            self.disable_lm_text_head
+            and self.decoder_type not in ('nemo_automodel', 'automodel')
+            and hasattr(self.decoder, 'lm_head')
+        ):
             self.decoder.lm_head = None
 
         if self.disable_subword_embedding:
@@ -1013,7 +1177,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         return phoneme_embedding
 
     def forward(self, inputs_embeds, attention_mask, use_cache=False, past_key_values=None, cache_position=None):
-        # Only pass cache_position for NemotronH (HF transformers may not accept it)
         """Run the configured decoder backend.
 
         Args:
@@ -1026,6 +1189,19 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         Returns:
             Decoder backend output.
         """
+        if self.decoder_type in ('nemo_automodel', 'automodel') and use_cache and past_key_values is None:
+            past_key_values = self._create_automodel_cache(inputs_embeds)
+
+        decoder_kwargs = {
+            'inputs_embeds': inputs_embeds,
+            'attention_mask': attention_mask,
+            'use_cache': use_cache,
+            'past_key_values': past_key_values,
+        }
+        if self.decoder_type in ('nemo_automodel', 'automodel'):
+            decoder_kwargs['output_hidden_states'] = True
+            decoder_kwargs['cache_position'] = cache_position
+
         if self.decoder_type == 'nemotron_h':
             backend_out = self.decoder(
                 inputs_embeds=inputs_embeds,
@@ -1035,12 +1211,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 cache_position=cache_position,
             )
         else:
-            backend_out = self.decoder(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                use_cache=use_cache,
-                past_key_values=past_key_values,
-            )
+            backend_out = self.decoder(**decoder_kwargs)
         return backend_out
 
     def logits_to_audio_codes(self, all_code_logits, audio_codes_lens):
@@ -1603,15 +1774,18 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             # First forward pass to process context - only up to min_context_len
             cache_position = torch.arange(min_context_len, device=device)
+            past_kv = None
+            if self.decoder_type in ("nemo_automodel", "automodel"):
+                past_kv = self._create_automodel_cache(context_embedding[:, :min_context_len, :])
             transformer_out = self.forward(
                 inputs_embeds=context_embedding[:, :min_context_len, :],
                 attention_mask=None,
                 use_cache=True,
-                past_key_values=None,
+                past_key_values=past_kv,
                 cache_position=cache_position,
             )
 
-            last_hidden = transformer_out.last_hidden_state
+            last_hidden = self._get_last_hidden_state(transformer_out)
             past_kv = transformer_out.past_key_values
             current_cache_seq_len = min_context_len
 
@@ -1738,6 +1912,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if state.finished.all():
             return state, None, None
 
+        if self.decoder_type in ("nemo_automodel", "automodel") and state.past_key_values is None:
+            raise RuntimeError(
+                "Automodel streaming cache is unavailable; call streaming_init() before streaming_step()."
+            )
+
         grad_ctx = torch.inference_mode if use_inference_mode else torch.no_grad
         with grad_ctx():
             device = state.config.device
@@ -1760,8 +1939,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 cache_position=cache_position,
             )
 
-            state.last_hidden = transformer_out.last_hidden_state
-            state.past_key_values = transformer_out.past_key_values
+            state.last_hidden = self._get_last_hidden_state(transformer_out)
+            next_cache = transformer_out.past_key_values
+            if self.decoder_type in ("nemo_automodel", "automodel") and next_cache is None:
+                raise RuntimeError("Automodel decoder did not return the streaming cache.")
+            state.past_key_values = next_cache
             state.cache_seq_len += 1
 
             if prefill_like_step:
@@ -2275,6 +2457,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             phoneme_text_list = ["" for _ in range(batch_size)]
 
         if len(state.all_predictions) == 0:
+            self._release_streaming_cache(state)
             return StreamingFinalizeOutput(
                 audio=torch.zeros(batch_size, 0, device=device),
                 audio_len=torch.zeros(batch_size, dtype=torch.long, device=device),
@@ -2307,6 +2490,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             # Handle case where all items have zero-length predictions
             if max_len == 0:
+                self._release_streaming_cache(state)
                 return StreamingFinalizeOutput(
                     audio=torch.zeros(batch_size, 0, device=device),
                     audio_len=torch.zeros(batch_size, dtype=torch.long, device=device),
@@ -2335,6 +2519,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 predicted_codes_lens,
             )
 
+            self._release_streaming_cache(state)
             return StreamingFinalizeOutput(
                 audio=audio,
                 audio_len=audio_len,

@@ -118,11 +118,11 @@ if TRITON_AVAILABLE:
         log_likelihood = final_alpha + final_blank
         tl.store(losses_ptr + batch_idx, -log_likelihood * fastemit_scale)
         # The beta pass below walks the target axis in reverse, so each lane reads alpha values
-        # that a different lane wrote. This barrier publishes those stores; it is not a debug aid.
+        # that a different lane wrote. This orders those stores against the reads instead of
+        # leaning on the barriers the scan lowering happens to emit. It is not a debug aid.
         tl.debug_barrier()
 
-        reverse_idx = tl.arange(0, block_target)
-        symbols = max_target - reverse_idx
+        symbols = max_target - tl.arange(0, block_target)
         valid_symbol = valid_lengths & (symbols >= 0) & (symbols <= target_len)
         beta_next = tl.full((block_target,), -float("inf"), tl.float32)
 
@@ -147,11 +147,7 @@ if TRITON_AVAILABLE:
                 mask=active_time & (symbols >= 0) & (symbols < target_len),
                 other=-float("inf"),
             )
-            step = tl.where(
-                (reverse_idx > 0) & (symbols >= 0) & (symbols < target_len),
-                target,
-                -float("inf"),
-            )
+            step = tl.where((symbols >= 0) & (symbols < target_len), target, -float("inf"))
             beta, _ = tl.associative_scan((base, step), axis=0, combine_fn=_log_semiring_compose)
             beta = tl.where(valid_symbol, beta, -float("inf"))
 
@@ -254,7 +250,10 @@ class _RNNTLossTriton(torch.autograd.Function):
             max_target=max_target,
             fastemit_scale=fastemit_scale,
             block_target=block_target,
-            num_warps=8 if block_target >= 128 else 4,
+            # The scan wants one target state per lane: fewer warps make each lane walk several
+            # states in sequence, and more spend longer combining across warps than they save.
+            # The floor keeps a small target axis from launching too narrow to fill the device.
+            num_warps=min(max(block_target // 32, 4), 16),
         )
         # Every transcript in the batch is empty, so there are no target transitions to score.
         if max_target > 0:

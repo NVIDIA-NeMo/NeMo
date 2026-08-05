@@ -310,9 +310,10 @@ def validate_model_config(model) -> None:
         )
 
     local_transformer_type = str(cfg.get("local_transformer_type", "none"))
-    if local_transformer_type != "ar":
+    if local_transformer_type not in {"ar", "autoregressive"}:
         raise ValueError(
-            "The serving code currently requires local_transformer_type='ar'; extend EasyMagpieCodePredictor "
+            "The serving code currently requires local_transformer_type='autoregressive'; "
+            "extend EasyMagpieCodePredictor "
             f"to support '{local_transformer_type}'."
         )
 

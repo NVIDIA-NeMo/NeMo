@@ -205,7 +205,7 @@ def _validation_model():
     ("field", "value", "message"),
     [
         ("decoder_type", "huggingface", "Nemotron-H"),
-        ("local_transformer_type", "none", "local_transformer_type='ar'"),
+        ("local_transformer_type", "none", "local_transformer_type='autoregressive'"),
         ("hidden_dim", 8, "hidden_dim.*embedding_dim"),
     ],
 )
@@ -215,6 +215,13 @@ def test_validate_model_config_rejects_unsupported_model(field, value, message):
 
     with pytest.raises(ValueError, match=message):
         converter.validate_model_config(model)
+
+
+def test_validate_model_config_accepts_autoregressive_local_transformer():
+    model = _validation_model()
+    model.cfg.local_transformer_type = "autoregressive"
+
+    converter.validate_model_config(model)
 
 
 def test_validate_model_config_rejects_non_streaming_default_mode():

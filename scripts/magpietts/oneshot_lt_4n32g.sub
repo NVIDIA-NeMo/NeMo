@@ -21,7 +21,9 @@ set -euo pipefail
 #   sbatch scripts/magpietts/oneshot_lt_4n32g.sub
 : "${WANDB_API_KEY:?Export WANDB_API_KEY before submitting}"
 
-WORKSPACE="${WORKSPACE:-/lustre/fs12/portfolios/nemotron/users/vklimkov/oneshot_lt}"
+# /lustre/fsw/portfolios/nemotron maps to the cluster-local Lustre target
+# (fs11 on ORD and fs12 on Draco).
+WORKSPACE="${WORKSPACE:-/lustre/fsw/portfolios/nemotron/users/vklimkov/oneshot_lt}"
 SPEECH_REPO="${SPEECH_REPO:-${WORKSPACE}/Speech.git}"
 MODEL_CODE_COMMIT="ce489d910d60b7c4548adc48cdc38bdd955f5b03"
 NODE_CODE="/tmp/oneshot_lt_${SLURM_JOB_ID}/Speech"

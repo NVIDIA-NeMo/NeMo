@@ -21,7 +21,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from nemo.collections.asr.parts.triton.rnnt_joint import joint_hidden_state
-from nemo.collections.asr.parts.triton.rnnt_loss import MAX_TARGET_TOKENS, rnnt_loss_triton
+from nemo.collections.asr.parts.triton.rnnt_loss import rnnt_loss_triton
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 _DEFAULT_MAX_JOINT_ROWS = 200_000
@@ -61,12 +61,6 @@ class FlashRNNTLoss(torch.nn.Module):
     smallest value that still saturates the GPU. ``max_joint_rows`` independently
     sets the target row budget for the disposable workspace within each chunk.
 
-    ``max_target_tokens`` is a safety guard, not a compile-time reservation.
-    The actual padded target length selects the Triton scan width, so leaving
-    the guard at its maximum does not slow ordinary batches. Very large actual
-    target dimensions require new, increasingly expensive kernel compilations
-    and accumulate more float32 scan error.
-
     ``max_joint_rows`` budgets the flattened B * T * (U + 1) rows of one joint
     workspace tile. Peak workspace is the largest tile, so source time is divided
     into equal tiles rather than tiles filled to the budget, and tiles usually
@@ -79,20 +73,16 @@ class FlashRNNTLoss(torch.nn.Module):
         blank: int,
         fastemit_lambda: float = 0.0,
         clamp: float = -1.0,
-        max_target_tokens: int = MAX_TARGET_TOKENS,
         max_joint_rows: int = _DEFAULT_MAX_JOINT_ROWS,
     ):
         super().__init__()
         if fastemit_lambda < 0.0:
             raise ValueError("fastemit_lambda must be nonnegative")
-        if not 0 <= max_target_tokens <= MAX_TARGET_TOKENS:
-            raise ValueError(f"max_target_tokens must be in [0, {MAX_TARGET_TOKENS}]")
         if max_joint_rows < 1:
             raise ValueError("max_joint_rows must be positive")
         self.blank = blank
         self.fastemit_lambda = float(fastemit_lambda)
         self.clamp = float(clamp) if clamp > 0.0 else 0.0
-        self.max_target_tokens = max_target_tokens
         self.max_joint_rows = max_joint_rows
 
     def forward(
@@ -117,7 +107,6 @@ class FlashRNNTLoss(torch.nn.Module):
             fastemit_lambda=self.fastemit_lambda,
             clamp=self.clamp,
             max_samples_per_chunk=max_samples_per_chunk,
-            max_target_tokens=self.max_target_tokens,
             max_joint_rows=self.max_joint_rows,
         )
 
@@ -235,7 +224,6 @@ def _compute_flash_rnnt(
     fastemit_lambda: float,
     clamp: float,
     max_samples_per_chunk: int,
-    max_target_tokens: int,
     max_joint_rows: int,
 ) -> torch.Tensor:
     """Run exact RNN-T with a bounded vocabulary workspace recomputed in backward."""
@@ -264,11 +252,6 @@ def _compute_flash_rnnt(
     # Python slicing needs concrete shapes; synchronize once for the reduced
     # per-chunk maxima rather than materializing every sample length.
     chunk_maxima = length_pairs.view(num_chunks, max_samples_per_chunk, 2).amax(dim=1).tolist()
-    if chunk_maxima[-1][1] > max_target_tokens:
-        raise ValueError(
-            f"Batch target length {chunk_maxima[-1][1]} exceeds configured max_target_tokens={max_target_tokens}"
-        )
-
     inverse_order = torch.argsort(order)
     encoder = encoder.index_select(0, order)
     predictor = predictor.index_select(0, order)

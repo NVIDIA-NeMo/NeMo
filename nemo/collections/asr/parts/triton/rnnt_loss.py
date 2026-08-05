@@ -25,11 +25,6 @@ if TRITON_AVAILABLE:
     import triton.language as tl
 
 
-# One program scans U + 1 states in one power-of-two block. This is a hard
-# implementation bound, not a numerical-accuracy guarantee or a reserved size.
-MAX_TARGET_TOKENS = 16_383
-
-
 def _validate_transition_inputs(
     target_scores: torch.Tensor,
     blank_scores: torch.Tensor,
@@ -238,11 +233,6 @@ class _RNNTLossTriton(torch.autograd.Function):
         batch, max_source, max_target = target_scores.shape
         if fastemit_lambda < 0.0:
             raise ValueError("fastemit_lambda must be nonnegative")
-        if max_target > MAX_TARGET_TOKENS:
-            raise ValueError(
-                f"Triton RNN-T supports at most {MAX_TARGET_TOKENS} padded target tokens with its "
-                f"one-block Triton recurrence, got {max_target}"
-            )
         block_target = triton.next_power_of_2(max_target + 1)
         fastemit_scale = 1.0 + float(fastemit_lambda)
 

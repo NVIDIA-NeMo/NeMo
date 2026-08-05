@@ -400,8 +400,6 @@ class RNNTLoss(Loss):
                         flash_rnnt_kwargs:
                             fastemit_lambda: 0.0
                             clamp: -1.0
-                            # Safety guard only; actual padded U selects the compiled scan width.
-                            max_target_tokens: 16383
                             # Target B * T_tile * (U + 1) row budget; each tile keeps at least one T.
                             max_joint_rows: 200000
 

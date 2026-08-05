@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -18,6 +19,8 @@ from huggingface_hub import CONFIG_NAME, PyTorchModelHubMixin
 from huggingface_hub.hub_mixin import DataclassInstance
 from omegaconf import DictConfig, OmegaConf
 from transformers.utils import cached_file
+
+from nemo.utils import logging
 
 SAFETENSORS_SINGLE_FILE = "model.safetensors"
 LLM_BACKBONE_DIR = "llm_backbone"
@@ -127,6 +130,25 @@ class HFHubMixin(
             moe_mesh=moe_mesh,
             cached_file_kwargs=_cached_file_kwargs,
         )
+
+    def _save_pretrained(self, save_directory: Path) -> None:
+        """Save model weights and export tokenizer for offline inference."""
+        super()._save_pretrained(save_directory)
+
+        tokenizer = getattr(self, "tokenizer", None)
+        if tokenizer is None:
+            stt = getattr(self, "stt_model", None)
+            if stt is not None:
+                tokenizer = getattr(stt, "tokenizer", None)
+        if tokenizer is not None:
+            try:
+                llm_dir = Path(save_directory) / "llm_artifacts"
+                llm_dir.mkdir(parents=True, exist_ok=True)
+                inner = getattr(tokenizer, "tokenizer", tokenizer)
+                inner.save_pretrained(str(llm_dir))
+                logging.info(f"Saved LLM tokenizer to {llm_dir}")
+            except Exception as e:
+                warnings.warn(f"Failed to save LLM tokenizer: {e}. Inference will fall back to downloading from HF.")
 
     def save_pretrained(
         self,

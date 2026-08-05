@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import random
-import re
 from copy import deepcopy
 
 import torch
@@ -26,6 +25,7 @@ from lhotse.utils import ifnone
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.parts.precision import fp32_precision
+from nemo.collections.speechlm2.parts.text_utils import strip_timestamps
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.utils import logging
 
@@ -160,7 +160,7 @@ class DuplexEARTTSDataset(torch.utils.data.Dataset):
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
 
     def __getitem__(self, cuts: CutSet) -> dict:
-        cuts = cuts.transform_text(_strip_timestamps)
+        cuts = cuts.transform_text(strip_timestamps)
         # ensures fp32 audio load to avoid issues of duration mistakes on fp16 training
         with fp32_precision():
             source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
@@ -933,20 +933,6 @@ def build_token_channel(
                     tokens[eospos] = tokenizer.eos
 
     return tokens
-
-
-def _strip_timestamps(
-    text: str, _TIMESTAMP_PATTERN=re.compile(r"<\|\d+\|>"), _SPACE_PATTERN=re.compile(r"\s+")
-) -> str:
-    """
-    Strips timestamp tokens from text, e.g. turns:
-      '<|0|> Hey <|3|> <|3|> how <|5|> <|7|> are <|8|> <|8|> <|10|> you? <|12|>'
-      into:
-      'Hey how are you?'
-    """
-    # Regexp pattern args are cached compiled patterns (micro-optimization).
-    text = _TIMESTAMP_PATTERN.sub("", text)  # strip timestamp tokens if present
-    return _SPACE_PATTERN.sub(" ", text).strip()  # strip multi-whitespaces
 
 
 def sample_audio_segments_repeat(

@@ -17,10 +17,7 @@ import tarfile
 
 from lhotse.indexing import read_index
 
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    IndexedTarMemberReader,
-    create_tar_index,
-)
+from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader, create_tar_index
 
 
 def test_nemo_tar_index_sentinel_includes_trailing_record_padding(tmp_path):

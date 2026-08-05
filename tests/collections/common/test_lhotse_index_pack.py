@@ -19,24 +19,14 @@ import tarfile
 import pytest
 import yaml
 from click.testing import CliRunner
-from lhotse.index_pack import (
-    IndexPack,
-    IndexPackCollectionSpec,
-    index_pack_collection_key,
-    write_index_pack,
-)
+from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, index_pack_collection_key, write_index_pack
 from lhotse.indexing import create_jsonl_index
-
-from nemo.collections.common.data.lhotse import nemo_adapters, text_adapters
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    create_tar_index as create_nemo_tar_index,
-)
-from nemo.collections.common.data.lhotse.nemo_adapters import (
-    LazyNeMoIterator,
-    LazyNeMoTarredIterator,
-)
 from scripts.dataloading import convert_indexes_to_idxpack as converter
 from scripts.dataloading.convert_indexes_to_idxpack import main
+
+from nemo.collections.common.data.lhotse import nemo_adapters, text_adapters
+from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
+from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator, LazyNeMoTarredIterator
 
 
 def _make_native_tar_dataset(tmp_path):

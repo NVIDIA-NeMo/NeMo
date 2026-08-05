@@ -110,8 +110,7 @@ def _resolve_local_sidecar(path: str, indexes_root) -> Path:
     idx_path = index_file_path(path, indexes_root)
     if _is_remote_path(idx_path):
         raise ValueError(
-            "Index-pack conversion requires local .idx sidecars; "
-            f"resolved {path} to remote sidecar {idx_path}."
+            "Index-pack conversion requires local .idx sidecars; " f"resolved {path} to remote sidecar {idx_path}."
         )
     return Path(idx_path)
 
@@ -177,8 +176,7 @@ def _validate_native_tar_sidecar(path: str, indexes_root) -> Path:
         source_stat = Path(path).stat()
         if source_stat.st_mtime_ns > index_stat.st_mtime_ns:
             raise ValueError(
-                f"Source {path} is newer than native tar index {idx_path}. "
-                f"{_REBUILD_TAR_INDEXES_HINT}"
+                f"Source {path} is newer than native tar index {idx_path}. " f"{_REBUILD_TAR_INDEXES_HINT}"
             )
     return idx_path
 

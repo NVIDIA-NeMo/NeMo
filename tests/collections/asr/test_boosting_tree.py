@@ -49,6 +49,13 @@ def _case_variant_var_bpe_representation():
     )
 
 
+def _plain_var_bpe_representation(token_ids):
+    return VarBPERepresentation(
+        canonical_lengths=[1] * len(token_ids),
+        token_ids_with_merges=[[TokenWithLength(token_id=token_id)] for token_id in token_ids],
+    )
+
+
 class _RecordingVarBPETokenizer:
     vocab_size = 7
 
@@ -184,6 +191,30 @@ class TestGPUBoostingTreeModel:
         order2cnt, tbranches = GPUBoostingTreeModel._read_context_graph(context_graph=context_graph)
         assert order2cnt == {1: 4, 2: 2}
         assert len(tbranches) == 6
+
+    @pytest.mark.unit
+    def test_var_bpe_overlapping_phrase_uses_primary_path_for_fail_link(self):
+        """Test merged-token aliases do not hide canonical suffix fail links."""
+        context_graph = ContextGraph(context_score=1.0, depth_scaling=1.0)
+        context_graph.build_from_var_bpe(
+            token_ids=[
+                _case_variant_var_bpe_representation(),
+                _plain_var_bpe_representation([2, 7]),
+            ],
+            phrases=["ab", "bc"],
+            scores=[0.0, 0.0],
+            uniform_weights=False,
+            var_bpe_scoring_temp=0.0,
+        )
+
+        ab_final_node = context_graph.root.next[1].next[2]
+        b_node = context_graph.root.next[2]
+
+        assert ab_final_node.phrase == "ab"
+        assert b_node.next[7].phrase == "bc"
+        assert context_graph.root.next[5] is ab_final_node
+        assert context_graph.root.next[6] is ab_final_node
+        assert ab_final_node.fail is b_node
 
     @pytest.mark.unit
     def test_var_bpe_boosting_tree_scores_equivalent_paths(self):

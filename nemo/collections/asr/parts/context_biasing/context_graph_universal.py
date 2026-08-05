@@ -103,6 +103,7 @@ class ContextState:
         self.is_end = is_end
         self.level = level
         self.next: dict[int, "ContextState"] = {}
+        self.primary_next: dict[int, "ContextState"] = {}
         self.phrase = phrase
         self.ac_threshold = ac_threshold
         self.is_primary = is_primary
@@ -162,7 +163,7 @@ class ContextGraph:
         details of the algorithm.
         """
         queue = deque()
-        for token, node in self.root.next.items():
+        for token, node in self.root.primary_next.items():
             node.fail = self.root
             queue.append(node)
         visited_ids = set()
@@ -171,20 +172,20 @@ class ContextGraph:
             current_node = queue.popleft()
             if current_node.id in visited_ids:
                 continue
-            for token, node in current_node.next.items():
+            for token, node in current_node.primary_next.items():
                 if node.id in visited_ids or node.fail is not None:
                     continue
                 fail = current_node.fail
-                if token in fail.next:
-                    fail = fail.next[token]
+                if token in fail.primary_next:
+                    fail = fail.primary_next[token]
                 else:
                     fail = fail.fail
-                    while token not in fail.next:
+                    while token not in fail.primary_next:
                         fail = fail.fail
                         if fail.token == -1:  # root
                             break
-                    if token in fail.next:
-                        fail = fail.next[token]
+                    if token in fail.primary_next:
+                        fail = fail.primary_next[token]
                 node.fail = fail
                 # fill the output arc
                 output = node.fail
@@ -295,6 +296,7 @@ class ContextGraph:
                     if i == len(tokens) - 1:
                         node.next[token].phrase = phrase
                         node.next[token].ac_threshold = threshold
+                node.primary_next[token] = node.next[token]
                 node = node.next[token]
         self._fill_fail_output()
 
@@ -373,13 +375,13 @@ class ContextGraph:
 
             canonical_lengths, tokens_with_merges = var_bpe_representation
             token_scores = [0.0 for _ in range(len(tokens_with_merges))]
-            node_path_to_primary = [False for _ in range(len(tokens_with_merges))]
+            node_is_on_primary_path = [False for _ in range(len(tokens_with_merges))]
             primary_context_scores = [0.0 for _ in range(len(tokens_with_merges))]
-            primary_paths = [0 for _ in range(len(tokens_with_merges))]
+            primary_path_back_jumps = [0 for _ in range(len(tokens_with_merges))]
 
             k = 0
             for depth, cur_token_len in enumerate(canonical_lengths):
-                node_path_to_primary[k + cur_token_len - 1] = True
+                node_is_on_primary_path[k + cur_token_len - 1] = True
                 token_score = self._get_token_score(
                     depth=depth, uniform_weights=uniform_weights, context_score=context_score
                 )
@@ -389,7 +391,7 @@ class ContextGraph:
                 for t in range(k, k + cur_token_len):
                     token_scores[t] = token_score * probs[t - k]
                 primary_context_scores[k + cur_token_len - 1] = token_score
-                primary_paths[k + cur_token_len - 1] = cur_token_len
+                primary_path_back_jumps[k + cur_token_len - 1] = cur_token_len
                 k += cur_token_len
 
             cur_nodes = [self.root]
@@ -412,9 +414,10 @@ class ContextGraph:
                         level=i + 1,
                         phrase=phrase if is_end else "",
                         ac_threshold=threshold if is_end else 0.0,
-                        is_primary=node_path_to_primary[i],
+                        is_primary=node_is_on_primary_path[i],
                     )
                     node.next[token] = next_node
+                    node.primary_next[token] = next_node
 
                     for alt_token in token_group[1:]:
                         if alt_token.length == 1:
@@ -430,12 +433,14 @@ class ContextGraph:
                     if is_end:
                         next_node.output_score = node_score
                         next_node.is_end = is_end
-                    next_node.is_primary |= node_path_to_primary[i]
+                    next_node.is_primary |= node_is_on_primary_path[i]
+                    node.primary_next[token] = next_node
                     if i == len(tokens_with_merges) - 1:
                         next_node.phrase = phrase
                         next_node.ac_threshold = threshold
-                if node_path_to_primary[i]:
-                    ctx_node_score = cur_nodes[-primary_paths[i]].node_score + primary_context_scores[i]
+                if node_is_on_primary_path[i]:
+                    # fix node score if necessary
+                    ctx_node_score = cur_nodes[-primary_path_back_jumps[i]].node_score + primary_context_scores[i]
                     if ctx_node_score > next_node.node_score:
                         next_node.node_score = ctx_node_score
                         if is_end:

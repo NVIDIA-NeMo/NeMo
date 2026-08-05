@@ -94,9 +94,6 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             loss_kwargs=loss_kwargs,
             reduction=self.cfg.get("rnnt_reduction", "mean_batch"),
         )
-        if self.loss.requires_factorized_joint and not self.joint.fuse_loss_wer:
-            raise ValueError("loss_name='flash_rnnt' requires joint.fuse_loss_wer=true")
-
         if hasattr(self.cfg, 'spec_augment') and self._cfg.spec_augment is not None:
             self.spec_augmentation = EncDecRNNTModel.from_config_dict(self.cfg.spec_augment)
         else:

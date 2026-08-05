@@ -24,7 +24,6 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.inference.nmt.prompts import EuroLLMTranslatorPromptTemplate, PromptTemplate, QwenReasoningTranslatorPromptTemplate
-# from nemo.collections.asr.inference.nmt.prompts import EuroLLMTranslatorPromptTemplate, PromptTemplate
 
 try:
     from vllm import LLM, SamplingParams

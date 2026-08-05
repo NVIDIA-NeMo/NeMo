@@ -372,7 +372,6 @@ def compute_emotion_pair_metrics(emotion_model, gt_audio_path, pred_audio_path):
         result = emotion_model.compare_emotion_pair(
             audio_path_a=gt_audio_path,
             audio_path_b=pred_audio_path,
-            embedding_type="score_vector",
         )
         return float(result["emotion_similarity"]), float(result["top_emotion_match"])
     except Exception as e:

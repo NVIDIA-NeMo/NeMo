@@ -925,6 +925,15 @@ manifests. Unsupported data-bearing types raise instead of being silently
 omitted; types that need no sidecar (such as ``parquet``) are ignored. Other
 indexed adapters can continue to use loose sidecars.
 
+Native tar ``.idx`` files remain the headerless sequence of
+little-endian uint64 offsets; no format marker or companion sidecar is
+required. Before packing member offsets, the converter compares the final
+size sentinel with current local or remote object metadata. A matching
+index is accepted unchanged. A mismatch is rejected because it cannot safely
+describe the current source; rebuild it explicitly with
+``python scripts/dataloading/build_indexes.py --force`` (and the same
+``--indexes-root`` used for conversion, when applicable).
+
 At runtime, set a shared ``index_pack_root`` and declare the pack explicitly on
 each owning outer ``input_cfg`` entry:
 

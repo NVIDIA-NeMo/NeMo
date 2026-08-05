@@ -21,7 +21,11 @@ The input YAML may contain nested groups and transform wrappers. This initial
 integration packs the formats consumed by the indexed runtime: native NeMo
 manifests/tars, Nemotron text JSONL/tars, and ShareGPT JSONL manifests. No
 source manifest or tar is rescanned: the command consumes existing ``.idx``
-files, normally from ``--indexes-root``.
+files, normally from ``--indexes-root``. Native tar sidecars keep their
+headerless uint64 layout. The converter determines compatibility from
+the data itself: a sidecar is current exactly when its sentinel equals the
+physical local or remote source size. Stale sidecars fail before packing;
+rebuild them with build_indexes.py ``--force``.
 
 Example::
 
@@ -34,14 +38,18 @@ Example::
 from __future__ import annotations
 
 import logging
+import os
 import re
+import struct
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
 import click
 from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, write_index_pack
+from lhotse.indexing import index_file_path
 from omegaconf import DictConfig, ListConfig, OmegaConf
+
 from scripts.dataloading.build_indexes import (
     _NO_INDEX_TYPES,
     _TRANSFORM_TYPES,
@@ -80,6 +88,112 @@ def _add_collection(
             )
         return
     collections.append(candidate)
+
+
+_REBUILD_TAR_INDEXES_HINT = (
+    "Rebuild native tar indexes with: python scripts/dataloading/build_indexes.py "
+    "--force [--indexes-root INDEXES_ROOT] INPUT_CFG."
+)
+_URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://")
+_IN_BAND_NEMO_TAR_INDEX_MAGIC = b"NEMOTAR\0"
+
+# The source .idx format stays intentionally unversioned. Sentinel/source-size
+# equality is the semantic compatibility check; the output .idxpack already
+# has its own magic and version.
+
+
+def _is_remote_path(path) -> bool:
+    return bool(_URL_RE.match(str(path)))
+
+
+def _resolve_local_sidecar(path: str, indexes_root) -> Path:
+    idx_path = index_file_path(path, indexes_root)
+    if _is_remote_path(idx_path):
+        raise ValueError(
+            "Index-pack conversion requires local .idx sidecars; "
+            f"resolved {path} to remote sidecar {idx_path}."
+        )
+    return Path(idx_path)
+
+
+def _source_size(path: str) -> int:
+    if not _is_remote_path(path):
+        try:
+            return Path(path).stat().st_size
+        except FileNotFoundError as ex:
+            raise FileNotFoundError(f"Indexed source not found: {path}") from ex
+
+    try:
+        from lhotse.ais import AISRangeReader
+
+        with AISRangeReader(str(path)) as source:
+            return int(source.size)
+    except Exception as ex:
+        raise ValueError(
+            f"Could not determine the current size of remote tar source {path} "
+            f"from object metadata ({ex}). Strict conversion cannot safely use "
+            f"its sidecar. {_REBUILD_TAR_INDEXES_HINT}"
+        ) from ex
+
+
+def _read_raw_tar_sentinel(idx_path: Path) -> tuple[int, os.stat_result]:
+    try:
+        index_stat = idx_path.stat()
+    except FileNotFoundError as ex:
+        raise FileNotFoundError(f"Missing .idx sidecar: {idx_path}") from ex
+
+    if index_stat.st_size < 8 or index_stat.st_size % 8:
+        raise ValueError(
+            f"Invalid native tar index {idx_path}: size must be a positive "
+            f"multiple of 8 bytes, got {index_stat.st_size}. "
+            f"{_REBUILD_TAR_INDEXES_HINT}"
+        )
+
+    with idx_path.open("rb") as stream:
+        first_word = stream.read(8)
+        stream.seek(-8, os.SEEK_END)
+        (sentinel,) = struct.unpack("<Q", stream.read(8))
+
+    if first_word == _IN_BAND_NEMO_TAR_INDEX_MAGIC:
+        raise ValueError(
+            f"Native tar index {idx_path} uses the incompatible experimental "
+            f"in-band NEMOTAR header. {_REBUILD_TAR_INDEXES_HINT}"
+        )
+    return sentinel, index_stat
+
+
+def _validate_native_tar_sidecar(path: str, indexes_root) -> Path:
+    idx_path = _resolve_local_sidecar(path, indexes_root)
+    sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
+
+    source_size = _source_size(path)
+    if sentinel != source_size:
+        raise ValueError(
+            f"Native tar index {idx_path} has sentinel {sentinel}, but source "
+            f"{path} is {source_size} bytes. {_REBUILD_TAR_INDEXES_HINT}"
+        )
+
+    if not _is_remote_path(path):
+        source_stat = Path(path).stat()
+        if source_stat.st_mtime_ns > index_stat.st_mtime_ns:
+            raise ValueError(
+                f"Source {path} is newer than native tar index {idx_path}. "
+                f"{_REBUILD_TAR_INDEXES_HINT}"
+            )
+    return idx_path
+
+
+def _preflight_native_tar_sidecars(collections, indexes_root) -> None:
+    validated = set()
+    for collection in collections:
+        if collection.kind != NEMO_TAR or not collection.offsets_required:
+            continue
+        for path in collection.paths:
+            path = str(path)
+            if path in validated:
+                continue
+            _validate_native_tar_sidecar(path, indexes_root)
+            validated.add(path)
 
 
 def _discover_paths_collections(
@@ -232,7 +346,11 @@ def discover_pack_collections(
 @click.option(
     "--indexes-root",
     default=None,
-    help="Root of the existing mirrored .idx sidecars. Omit for sidecars next to sources.",
+    help=(
+        "Root of the existing mirrored .idx sidecars. Omit for sidecars next "
+        "to sources. Stale native tar indexes must be rebuilt with "
+        "build_indexes.py --force before conversion."
+    ),
 )
 @click.option("--overwrite", is_flag=True, help="Atomically replace an existing output pack.")
 @click.option(
@@ -252,7 +370,11 @@ def main(
     native_tar_paths_only: bool,
     dry_run: bool,
 ) -> None:
-    """Convert one INPUT_CFG dataset and its existing sidecars to one idxpack."""
+    """Convert one INPUT_CFG dataset and its existing sidecars to one idxpack.
+
+    Native tar indexes are validated against local or remote source metadata.
+    A stale sentinel must be rebuilt with build_indexes.py --force.
+    """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     config = OmegaConf.load(input_cfg)
     collections = discover_pack_collections(config)
@@ -274,12 +396,16 @@ def main(
                 f"paths={len(collection.paths)} offsets={collection.offsets_required} key={collection.key.hex()}"
             )
         return
-    write_index_pack(
-        output,
-        collections,
-        indexes_root=indexes_root,
-        overwrite=overwrite,
-    )
+    try:
+        _preflight_native_tar_sidecars(collections, indexes_root)
+        write_index_pack(
+            output,
+            collections,
+            indexes_root=indexes_root,
+            overwrite=overwrite,
+        )
+    except (FileNotFoundError, ValueError) as ex:
+        raise click.ClickException(str(ex)) from ex
     with IndexPack(output) as pack:
         click.echo(
             f"Wrote {output}: collections={pack.num_collections} "

@@ -13,18 +13,107 @@
 # limitations under the License.
 import io
 import json
+import struct
 import tarfile
 
 import pytest
 import yaml
 from click.testing import CliRunner
-from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, index_pack_collection_key, write_index_pack
+from lhotse.index_pack import (
+    IndexPack,
+    IndexPackCollectionSpec,
+    index_pack_collection_key,
+    write_index_pack,
+)
 from lhotse.indexing import create_jsonl_index
-from scripts.dataloading.convert_indexes_to_idxpack import main
 
 from nemo.collections.common.data.lhotse import nemo_adapters, text_adapters
-from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
-from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator, LazyNeMoTarredIterator
+from nemo.collections.common.data.lhotse.indexed_adapters import (
+    create_tar_index as create_nemo_tar_index,
+)
+from nemo.collections.common.data.lhotse.nemo_adapters import (
+    LazyNeMoIterator,
+    LazyNeMoTarredIterator,
+)
+from scripts.dataloading import convert_indexes_to_idxpack as converter
+from scripts.dataloading.convert_indexes_to_idxpack import main
+
+
+def _make_native_tar_dataset(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(json.dumps({"audio_filepath": "sample.wav"}) + "\n")
+    create_jsonl_index(manifest)
+
+    tar_path = tmp_path / "audio.tar"
+    with tarfile.open(tar_path, "w") as archive:
+        payload = b"audio"
+        info = tarfile.TarInfo("sample.wav")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    idx_path = tmp_path / "audio.tar.idx"
+    create_nemo_tar_index(tar_path, idx_path)
+    input_cfg = tmp_path / "dataset.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": str(manifest),
+                "tarred_audio_filepaths": str(tar_path),
+            }
+        )
+    )
+    return tar_path, idx_path, input_cfg
+
+
+def test_converter_accepts_current_headerless_native_tar_sidecar(tmp_path):
+    tar_path, idx_path, input_cfg = _make_native_tar_dataset(tmp_path)
+
+    output = tmp_path / "dataset.idxpack"
+    result = CliRunner().invoke(main, ["--output", str(output), str(input_cfg)])
+
+    assert result.exit_code == 0, result.output
+    assert idx_path.read_bytes()[:8] == struct.pack("<Q", 0)
+    with IndexPack(output) as pack:
+        key = index_pack_collection_key("tar", "nemo_tar", str(tar_path))
+        collection = pack.collection(key)
+        assert collection.locate(0).end == tar_path.stat().st_size
+
+
+def test_converter_rejects_native_tar_sentinel_mismatch(tmp_path):
+    tar_path, idx_path, input_cfg = _make_native_tar_dataset(tmp_path)
+    with idx_path.open("r+b") as stream:
+        stream.seek(-8, io.SEEK_END)
+        stream.write(struct.pack("<Q", tar_path.stat().st_size - 512))
+
+    result = CliRunner().invoke(
+        main,
+        ["--output", str(tmp_path / "dataset.idxpack"), str(input_cfg)],
+    )
+
+    assert result.exit_code != 0
+    assert "sentinel" in result.output
+    assert "build_indexes.py --force" in result.output
+
+
+def test_converter_validates_remote_native_tar_sentinel(tmp_path, monkeypatch):
+    tar_path, local_idx, _ = _make_native_tar_dataset(tmp_path)
+    remote_path = "ais://bucket/audio.tar"
+    remote_idx = converter._resolve_local_sidecar(remote_path, tmp_path)
+    remote_idx.parent.mkdir(parents=True, exist_ok=True)
+    remote_idx.write_bytes(local_idx.read_bytes())
+    monkeypatch.setattr(converter, "_source_size", lambda path: tar_path.stat().st_size + 1)
+
+    with pytest.raises(ValueError, match="sentinel"):
+        converter._validate_native_tar_sidecar(remote_path, tmp_path)
+
+
+def test_converter_rejects_experimental_in_band_header(tmp_path):
+    _, idx_path, _ = _make_native_tar_dataset(tmp_path)
+    idx_path.write_bytes(b"NEMOTAR\0" + idx_path.read_bytes())
+
+    with pytest.raises(ValueError, match="in-band NEMOTAR header"):
+        converter._read_raw_tar_sentinel(idx_path)
 
 
 def test_convert_input_cfg_sidecars_to_one_index_pack(tmp_path):

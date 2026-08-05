@@ -15,7 +15,12 @@ import io
 import struct
 import tarfile
 
-from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index
+from lhotse.indexing import read_index
+
+from nemo.collections.common.data.lhotse.indexed_adapters import (
+    IndexedTarMemberReader,
+    create_tar_index,
+)
 
 
 def test_nemo_tar_index_sentinel_includes_trailing_record_padding(tmp_path):
@@ -35,3 +40,14 @@ def test_nemo_tar_index_sentinel_includes_trailing_record_padding(tmp_path):
         stream.seek(-8, io.SEEK_END)
         (sentinel,) = struct.unpack("<Q", stream.read(8))
     assert sentinel == tar_path.stat().st_size
+
+    # The .idx remains exactly the raw uint64 layout. This is the same
+    # operation performed by older Lhotse readers.
+    offsets = read_index(idx_path)
+    assert offsets.tolist() == [0, tar_path.stat().st_size]
+    assert idx_path.read_bytes() == struct.pack("<QQ", 0, tar_path.stat().st_size)
+    assert not (tmp_path / "data.tar.idx.meta").exists()
+
+    reader = IndexedTarMemberReader(tar_path, idx_path, auto_create_index=False)
+    assert reader[0] == ("sample.json", b"sample")
+    reader.close()

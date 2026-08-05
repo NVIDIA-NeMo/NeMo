@@ -55,6 +55,7 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
 
@@ -1138,79 +1139,40 @@ def _parse_labels(labels: Optional[str]) -> Optional[list[str]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="LAION Empathic Insight Voice embeddings and similarity.")
+    parser.add_argument("--audio", type=str, required=True, help="Input audio path.")
+    parser.add_argument("--audio-b", type=str, default=None, help="Optional second audio path for pair comparison.")
+    parser.add_argument("--size", type=str, default="small", choices=["small", "large"], help="Model size.")
+    parser.add_argument("--device", type=str, default="cuda", help="Device for Whisper encoder.")
     parser.add_argument(
-        "--audio",
-        type=str,
-        required=True,
-        help="Input audio path.",
+        "--mlp-device", type=str, default=None, help="Device for MLP classifier heads. Defaults to --device."
     )
-    parser.add_argument(
-        "--audio-b",
-        type=str,
-        default=None,
-        help="Optional second audio path for similarity.",
-    )
-    parser.add_argument(
-        "--size",
-        type=str,
-        default="small",
-        choices=["small", "large"],
-        help="Model size.",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda",
-        help="Device for Whisper encoder.",
-    )
-    parser.add_argument(
-        "--mlp-device",
-        type=str,
-        default=None,
-        help="Device for MLP classifier heads. Defaults to --device.",
-    )
-    parser.add_argument(
-        "--cache-dir",
-        type=str,
-        default=None,
-        help="Optional Hugging Face cache directory.",
-    )
+    parser.add_argument("--cache-dir", type=str, default=None, help="Optional Hugging Face cache directory.")
     parser.add_argument(
         "--embedding-type",
         type=str,
         default="head_concat",
         choices=["head_concat", "head_mean", "score_vector"],
-        help="Emotion embedding type.",
+        help="Emotion embedding type used for optional pair comparison.",
     )
     parser.add_argument(
         "--labels",
         type=str,
         default=None,
-        help=(
-            "Comma-separated labels to use. "
-            "Example: anger,sadness,arousal. "
-            "If omitted, primary emotion labels are used for similarity."
-        ),
+        help="Comma-separated labels to use. If omitted, primary emotion labels are used.",
     )
     parser.add_argument(
         "--include-auxiliary",
         action="store_true",
-        help="Include auxiliary similarity labels when --labels is omitted.",
+        help="Include auxiliary labels for the single-audio embedding when --labels is omitted.",
     )
     parser.add_argument(
         "--load-all-classifiers",
         action="store_true",
         help="Eagerly load all known classifiers at startup.",
     )
-    parser.add_argument(
-        "--top-k",
-        type=int,
-        default=5,
-        help="Number of ranked emotions to return.",
-    )
+    parser.add_argument("--top-k", type=int, default=5, help="Number of ranked emotions to return.")
 
     args = parser.parse_args()
-
     labels = _parse_labels(args.labels)
 
     model = EmpathicInsightVoice.from_pretrained(
@@ -1231,8 +1193,7 @@ def main() -> None:
         return_raw_scores=True,
         include_auxiliary_for_embedding=args.include_auxiliary,
     )
-
-    printable: dict[str, Any] = {
+    output: dict[str, Any] = {
         "audio_path": result["audio_path"],
         "model_size": result["model_size"],
         "top_emotion": result["top_emotion"],
@@ -1243,50 +1204,14 @@ def main() -> None:
     }
 
     if args.audio_b is not None:
-        printable["audio_b"] = args.audio_b
-        printable["similarity"] = model.emotion_similarity(
+        output["comparison"] = model.compare_emotion_pair(
             audio_path_a=args.audio,
             audio_path_b=args.audio_b,
             labels=labels,
             embedding_type=args.embedding_type,
-            include_auxiliary=args.include_auxiliary,
         )
 
-    result = model.compare_emotion_pair(
-        audio_path_a=args.audio,
-        audio_path_b=args.audio_b,
-        embedding_type="head_concat",
-    )
-
-    result_score_vector = model.compare_emotion_pair(
-        audio_path_a=args.audio,
-        audio_path_b=args.audio_b,
-        embedding_type="score_vector",
-    )
-
-    result_score_mean = model.compare_emotion_pair(
-        audio_path_a=args.audio,
-        audio_path_b=args.audio_b,
-        embedding_type="head_mean",
-    )
-
-    print("embedding_type=head_concat")
-    print(result["audio_a_top_emotion"])
-    print(result["audio_b_top_emotion"])
-    print(result["top_emotion_match"])
-    print(result["emotion_similarity"])
-
-    print("embedding_type=score_vector")
-    print(result_score_vector["audio_a_top_emotion"])
-    print(result_score_vector["audio_b_top_emotion"])
-    print(result_score_vector["top_emotion_match"])
-    print(result_score_vector["emotion_similarity"])
-
-    print("embedding_type=head_mean")
-    print(result_score_mean["audio_a_top_emotion"])
-    print(result_score_mean["audio_b_top_emotion"])
-    print(result_score_mean["top_emotion_match"])
-    print(result_score_mean["emotion_similarity"])
+    print(json.dumps(output, indent=2))
 
 
 if __name__ == "__main__":

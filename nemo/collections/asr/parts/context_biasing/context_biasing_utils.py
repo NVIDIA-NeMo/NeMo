@@ -283,7 +283,7 @@ def compute_fscore(
         active_words = [x for x in key_words_stat if key_words_stat[x][1] > 0 or key_words_stat[x][2] > 0]
         max_len = max(len(x) for x in active_words) if active_words else 0
         logging.info("=" * 60)
-        logging.info("Per words statistic (word: correct/totall | false positive):\n")
+        logging.info("Per words statistic (word: correct/total | false positive):\n")
         for word in all_key_words_list:
             if key_words_stat[word][1] > 0 or key_words_stat[word][2] > 0:
                 false_positive = ""

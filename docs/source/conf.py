@@ -166,7 +166,7 @@ master_doc = "index"
 project = "NeMo-Speech"
 copyright = "2026, NVIDIA Corporation"
 author = "NVIDIA CORPORATION"
-release = "nightly"
+release = "3.0.0"
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the

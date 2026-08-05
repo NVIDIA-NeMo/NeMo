@@ -2,5 +2,11 @@
     {
         "version": "nightly",
         "url": "https://docs.nvidia.com/nemo/speech/nightly/"
+    },
+    {
+        "name": "3.0.0 (latest) · 26.07",
+        "version": "3.0.0",
+        "url": "https://docs.nvidia.com/nemo/speech/3.0.0/",
+        "preferred": true
     }
 ]

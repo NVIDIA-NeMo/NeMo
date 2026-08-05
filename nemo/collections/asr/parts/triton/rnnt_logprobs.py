@@ -83,7 +83,7 @@ def _rnnt_logprobs_bwd_kernel(
     blank_id: int,
     grad_target_scores_ptr,
     grad_blank_scores_ptr,
-    upstream_scale_ptr,
+    loss_grad_scale_ptr,
     clamp: float,
     CLAMP_GRAD: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -125,10 +125,10 @@ def _rnnt_logprobs_bwd_kernel(
     target_id = tl.load(targets_ptr + batch_i * (max_target_len_plus_1 - 1) + target_i, mask=target_i_valid, other=-1)
 
     if CLAMP_GRAD:
-        # Numba clamps the unit-scale per-sample gradient before multiplying by the loss
-        # reduction or AMP scale, so divide that scale out, clamp, and reapply it below.
-        upstream_scale = tl.load(upstream_scale_ptr + batch_i).to(tl.float32)
-        inverse_scale = tl.where(upstream_scale != 0.0, 1.0 / upstream_scale, 0.0)
+        # The reference kernel clamps the per-sample gradient at unit scale, before the loss
+        # reduction or AMP scale reaches it, so divide that scale out, clamp, and reapply below.
+        loss_grad_scale = tl.load(loss_grad_scale_ptr + batch_i).to(tl.float32)
+        inverse_scale = tl.where(loss_grad_scale != 0.0, 1.0 / loss_grad_scale, 0.0)
         blank_grad *= inverse_scale
         target_grad *= inverse_scale
 
@@ -140,7 +140,7 @@ def _rnnt_logprobs_bwd_kernel(
     grad += tl.where(col_offsets == target_id, target_grad, 0.0)
     if CLAMP_GRAD:
         grad = tl.maximum(tl.minimum(grad, clamp), -clamp)
-        grad *= upstream_scale
+        grad *= loss_grad_scale
     grad = tl.where(valid_state, grad, 0.0)
     tl.store(grad_logits_ptr + col_offsets, grad, mask=mask)
 
@@ -195,7 +195,7 @@ class RnntLogProbs(torch.autograd.Function):
         target_lengths: torch.Tensor | None,
         clamp: float,
         reuse_logits_for_grad: bool,
-        upstream_scale: torch.Tensor | None,
+        loss_grad_scale: torch.Tensor | None,
     ):
         """
 
@@ -250,7 +250,7 @@ class RnntLogProbs(torch.autograd.Function):
         ctx.reused_logits_consumed = False
         # Held outside save_for_backward: the loss fills it during its own backward, which
         # runs before ours because these scores are what it consumes.
-        ctx.upstream_scale = upstream_scale
+        ctx.loss_grad_scale = loss_grad_scale
         return target_scores, blank_scores
 
     @staticmethod
@@ -278,7 +278,7 @@ class RnntLogProbs(torch.autograd.Function):
         grad_logits = logits if ctx.reuse_logits_for_grad else torch.zeros_like(logits)
         # Any valid pointer will do when clamping is off: CLAMP_GRAD is a constexpr, so the
         # only branch that reads this argument is compiled out.
-        upstream_scale = ctx.upstream_scale if ctx.upstream_scale is not None else grad_blank_scores
+        loss_grad_scale = ctx.loss_grad_scale if ctx.loss_grad_scale is not None else grad_blank_scores
         _rnnt_logprobs_bwd_kernel[(logits.shape[0], logits.shape[1], logits.shape[2])](
             logits_ptr=logits,
             grad_logits_ptr=grad_logits,
@@ -291,7 +291,7 @@ class RnntLogProbs(torch.autograd.Function):
             blank_id=blank_id,
             grad_target_scores_ptr=grad_target_scores,
             grad_blank_scores_ptr=grad_blank_scores,
-            upstream_scale_ptr=upstream_scale,
+            loss_grad_scale_ptr=loss_grad_scale,
             clamp=clamp,
             CLAMP_GRAD=clamp > 0.0,
             BLOCK_SIZE=triton.next_power_of_2(logits.shape[-1]),
@@ -307,7 +307,7 @@ def rnnt_logprobs_triton(
     target_lengths: torch.Tensor | None = None,
     clamp: float = -1.0,
     reuse_logits_for_grad: bool = False,
-    upstream_scale: torch.Tensor | None = None,
+    loss_grad_scale: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Given logits, calculate log probabilities for blank and target labels needed for transducer loss calculation.
@@ -323,9 +323,10 @@ def rnnt_logprobs_triton(
             per-sample upstream scale
         reuse_logits_for_grad: overwrite logits with their gradient during backward; only safe for private,
             disposable logits; a second backward through the same graph raises
-        upstream_scale: ``[B]`` float32 buffer carrying each sample's upstream gradient, filled by
-            ``rnnt_loss_triton`` during its backward. Required when clamping, because the clamp
-            applies to the unit-scale gradient and autograd has already folded that scale in.
+        loss_grad_scale: ``[B]`` float32 buffer holding the objective's gradient with respect to
+            each per-sample loss, filled by ``rnnt_loss_triton``. Required only when clamping: the
+            clamp bounds the unit-scale gradient, and by this point autograd has folded that scale
+            in, so the backward divides it out, clamps, and reapplies it.
 
     Returns:
         Tuple of tensors with log probabilities for targets and blank labels, both of size [B, T, U+1].
@@ -333,15 +334,15 @@ def rnnt_logprobs_triton(
     """
     _validate_rnnt_logprobs_inputs(logits, targets, blank_id, source_lengths, target_lengths)
     if clamp > 0.0:
-        if upstream_scale is None:
-            raise ValueError("Clamping the RNN-T gradient requires upstream_scale")
-        if upstream_scale.shape != (logits.shape[0],) or upstream_scale.dtype != torch.float32:
+        if loss_grad_scale is None:
+            raise ValueError("Clamping the RNN-T gradient requires loss_grad_scale")
+        if loss_grad_scale.shape != (logits.shape[0],) or loss_grad_scale.dtype != torch.float32:
             raise ValueError(
-                f"upstream_scale must be a float32 tensor of shape ({logits.shape[0]},), "
-                f"got {tuple(upstream_scale.shape)} of {upstream_scale.dtype}"
+                f"loss_grad_scale must be a float32 tensor of shape ({logits.shape[0]},), "
+                f"got {tuple(loss_grad_scale.shape)} of {loss_grad_scale.dtype}"
             )
     return RnntLogProbs.apply(
-        logits, targets, blank_id, source_lengths, target_lengths, clamp, reuse_logits_for_grad, upstream_scale
+        logits, targets, blank_id, source_lengths, target_lengths, clamp, reuse_logits_for_grad, loss_grad_scale
     )
 
 

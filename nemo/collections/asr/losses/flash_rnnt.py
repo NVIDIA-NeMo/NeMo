@@ -123,7 +123,7 @@ def _chunk_scores(
     dropout_p: float,
     blank: int,
     clamp: float,
-    upstream_scale: torch.Tensor | None,
+    loss_grad_scale: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Calculate transition scores for one disposable joint chunk."""
     from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
@@ -138,7 +138,7 @@ def _chunk_scores(
         target_lengths=target_lengths,
         clamp=clamp,
         reuse_logits_for_grad=True,
-        upstream_scale=upstream_scale,
+        loss_grad_scale=loss_grad_scale,
     )
 
 
@@ -170,7 +170,7 @@ def _time_tiled_chunk_scores(
     blank: int,
     clamp: float,
     max_joint_rows: int,
-    upstream_scale: torch.Tensor | None,
+    loss_grad_scale: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Checkpoint one balanced source tile at a time."""
     source_steps = projected_encoder.shape[1]
@@ -183,7 +183,7 @@ def _time_tiled_chunk_scores(
 
     # Bound rather than passed: the loss fills this buffer during backward, and checkpoint
     # rejects a tensor argument whose version changed between forward and recomputation.
-    score_tile = partial(_chunk_scores, upstream_scale=upstream_scale)
+    score_tile = partial(_chunk_scores, loss_grad_scale=loss_grad_scale)
 
     target_score_tiles = []
     blank_score_tiles = []
@@ -260,9 +260,12 @@ def _compute_flash_rnnt(
     projected_encoder = joint.project_encoder(encoder)
     projected_predictor = joint.project_prednet(predictor)
 
-    # Clamping needs the unit-scale gradient; the loss backward publishes the per-sample
-    # scale autograd already folded in, so each chunk can divide it back out.
-    upstream_scale = torch.zeros(batch, device=encoder.device, dtype=torch.float32) if clamp > 0.0 else None
+    # The clamp bounds the gradient at unit scale: the reference kernel clamps while computing
+    # gradients in its forward, before autograd multiplies by the reduction and any AMP scale.
+    # Flash only reaches that gradient in the extraction backward, by which point the scale is
+    # already folded in, so the loss backward publishes that per-sample gradient here for the
+    # extraction to divide out, clamp, and reapply.
+    loss_grad_scale = torch.zeros(batch, device=encoder.device, dtype=torch.float32) if clamp > 0.0 else None
 
     source_steps = encoder.shape[1]
     target_states = predictor.shape[1]
@@ -286,7 +289,7 @@ def _compute_flash_rnnt(
             blank,
             clamp,
             max_joint_rows,
-            upstream_scale[begin:end] if upstream_scale is not None else None,
+            loss_grad_scale[begin:end] if loss_grad_scale is not None else None,
         )
         target_scores[begin:end, :max_source, : max_target + 1] = chunk_target_scores
         blank_scores[begin:end, :max_source, : max_target + 1] = chunk_blank_scores
@@ -297,6 +300,6 @@ def _compute_flash_rnnt(
         source_lengths,
         target_lengths,
         fastemit_lambda,
-        upstream_scale=upstream_scale,
+        loss_grad_scale=loss_grad_scale,
     )
     return losses.index_select(0, inverse_order)

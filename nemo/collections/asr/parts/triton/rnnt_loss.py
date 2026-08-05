@@ -214,7 +214,7 @@ class _RNNTLossTriton(torch.autograd.Function):
         source_lengths,
         target_lengths,
         fastemit_lambda,
-        upstream_scale,
+        loss_grad_scale,
     ):
         if not TRITON_AVAILABLE:
             raise RuntimeError("Triton is required for RNN-T CUDA training")
@@ -274,17 +274,17 @@ class _RNNTLossTriton(torch.autograd.Function):
         ctx.fastemit_scale = fastemit_scale
         # Held outside save_for_backward: it is written during backward, and the version
         # counter would reject a saved tensor that changed after forward.
-        ctx.upstream_scale = upstream_scale
+        ctx.loss_grad_scale = loss_grad_scale
         ctx.mark_non_differentiable(target_occupation, blank_occupation)
         return losses, target_occupation, blank_occupation
 
     @staticmethod
     def backward(ctx, grad_losses, _grad_target_occupation, _grad_blank_occupation):
         target_occupation, blank_occupation = ctx.saved_tensors
-        if ctx.upstream_scale is not None:
+        if ctx.loss_grad_scale is not None:
             # Publish this backward's per-sample scale for whoever produced the scores.
             # Score gradients feed this loss, so their backward always runs after ours.
-            ctx.upstream_scale.copy_(grad_losses.detach())
+            ctx.loss_grad_scale.copy_(grad_losses.detach())
         scale = grad_losses.float().reshape(-1, 1, 1)
         target_grad = -target_occupation * (scale * ctx.fastemit_scale)
         blank_grad = -blank_occupation * scale
@@ -297,17 +297,17 @@ def rnnt_loss_triton(
     source_lengths: torch.Tensor,
     target_lengths: torch.Tensor,
     fastemit_lambda: float = 0.0,
-    upstream_scale: torch.Tensor | None = None,
+    loss_grad_scale: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Return exact per-sample RNN-T losses from blank and target scores.
 
     Args:
-        upstream_scale: optional ``[B]`` float32 buffer. Backward writes the per-sample upstream
-            gradient into it, which lets a producer of the scores recover the unit scale its own
-            gradients were computed at. Gradient clamping needs that scale; see
-            ``rnnt_logprobs_triton``.
+        loss_grad_scale: optional ``[B]`` float32 buffer. Backward writes ``grad_losses`` into it --
+            the objective's gradient with respect to each per-sample loss, which the reduction and any
+            AMP scale determine -- so a producer of the scores can recover the unit scale its own
+            gradients were computed at. Only gradient clamping needs it; see ``rnnt_logprobs_triton``.
     """
     losses, _, _ = _RNNTLossTriton.apply(
-        target_scores, blank_scores, source_lengths, target_lengths, fastemit_lambda, upstream_scale
+        target_scores, blank_scores, source_lengths, target_lengths, fastemit_lambda, loss_grad_scale
     )
     return losses

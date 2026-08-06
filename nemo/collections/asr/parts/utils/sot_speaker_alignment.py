@@ -31,7 +31,7 @@ _SPEAKER_TOKEN_SPLIT_PATTERN = re.compile(r"(<spk:\d+>)")
 # effective frame duration is max(80 ms, utterance_duration / 1,200): short inputs
 # are never upsampled, and every coarse bin consumes at least one real input frame.
 # A one-hour session therefore uses 1,200 bins of 37 or 38 frames, or 3.0 seconds each.
-_DEFAULT_ALIGNMENT_FRAME_SECONDS = 0.08
+_unused_default_alignment_frame_seconds = 0.08
 _DEFAULT_MAX_ALIGNMENT_FRAMES = 1200
 
 __all__ = [

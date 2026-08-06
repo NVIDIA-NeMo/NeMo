@@ -14,3 +14,5 @@
   "uri": "https://nvidia.github.io/TensorRT-LLM/architecture/checkpoint.html",
   "info": "404 Client Error: Not Found for url: https://nvidia.github.io/TensorRT-LLM/architecture/checkpoint.html"
 }
+{ "filename": "asr/api.rst", "lineno": 11, "status": "broken", "code": 0, "uri": "https://librosa.org/doc/main/generated/librosa.effects.time_stretch.html", "info": "404 Client Error: Not Found for url: https://librosa.org/doc/main/generated/librosa.effects.time_stretch.html" }
+{ "filename": "tts/checkpoints.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_mixertts", "info": "404 Client Error: Not Found for url: https://catalog.ngc.nvidia.com/orgs/nvidia/nemo/models/tts_en_mixertts/-?_lr=1" }

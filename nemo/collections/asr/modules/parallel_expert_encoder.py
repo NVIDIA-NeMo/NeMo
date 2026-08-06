@@ -84,7 +84,7 @@ import os
 import re
 import shutil
 import tarfile
-from typing import Dict, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.distributed as dist

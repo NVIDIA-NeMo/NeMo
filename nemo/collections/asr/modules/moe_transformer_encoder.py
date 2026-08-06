@@ -34,11 +34,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from nemo.collections.asr.modules.transformer_encoder import (
-    FeedForward,
-    TransformerEncoder,
-    TransformerEncoderConfig,
-)
+from nemo.collections.asr.modules.transformer_encoder import FeedForward, TransformerEncoder, TransformerEncoderConfig
 
 __all__ = ['SwitchGate', 'MoEFeedForward', 'MoETransformerEncoder']
 

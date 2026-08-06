@@ -25,21 +25,11 @@ Verifies:
 7. Parameter count comparison (MoE vs dense)
 """
 
-import copy
-
 import pytest
 import torch
 
-from nemo.collections.asr.modules.moe_transformer_encoder import (
-    MoEFeedForward,
-    MoETransformerEncoder,
-    SwitchGate,
-)
-from nemo.collections.asr.modules.transformer_encoder import (
-    FeedForward,
-    TransformerEncoder,
-    TransformerEncoderConfig,
-)
+from nemo.collections.asr.modules.moe_transformer_encoder import MoEFeedForward, MoETransformerEncoder, SwitchGate
+from nemo.collections.asr.modules.transformer_encoder import FeedForward, TransformerEncoder, TransformerEncoderConfig
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -403,11 +393,8 @@ class TestStateDictRemapping:
                     if suffix.startswith("experts.") or suffix.startswith("router."):
                         continue
                     for expert in moe_ffn.experts:
-                        expert_param = dict(expert.named_parameters())
                         # The FeedForward has params like net.0.weight, net.0.bias, net.3.weight, net.3.bias
-                        flat_params = {}
-                        for n, p in expert.named_parameters():
-                            flat_params[n] = p
+                        flat_params = dict(expert.named_parameters())
                         if suffix in flat_params:
                             assert torch.allclose(
                                 flat_params[suffix], base_param.to(DEVICE)
@@ -625,7 +612,6 @@ def _reference_dispatch(moe_ff: MoEFeedForward, x: torch.Tensor) -> torch.Tensor
     """
     batch, seq, d = x.shape
     x_flat = x.reshape(-1, d)
-    num_tokens = x_flat.shape[0]
 
     gate_probs = moe_ff.router(x_flat)
     top_k_probs, top_k_indices = torch.topk(gate_probs, moe_ff.top_k, dim=-1)

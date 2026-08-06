@@ -312,6 +312,7 @@ class ContextGraph:
         ac_thresholds: Optional[list[float]] = None,
         uniform_weights: Optional[bool] = False,
         var_bpe_scoring_temp: float = 10.0,
+        var_bpe_penalize_subsplits: bool = True,
     ):
         """Build the ContextGraph from a list of token list.
         It first builds a graph based on trie from the given token lists,
@@ -353,6 +354,8 @@ class ContextGraph:
             10.0 - conservative default, assign ~100% to the last (intermediate) transition;
             0.0 - assign weight divided equally between all chars
             (low values 0.1 ... 2.0 can work better with beam search with small phrase lists)
+          var_bpe_penalize_subsplits:
+            penalize sub-splits for var-BPE; `True` is recommended value
 
         Note: The phrases would have shared states, the score of the shared states is
               the MAXIMUM value among all the tokens sharing this state.
@@ -407,11 +410,14 @@ class ContextGraph:
                 if token not in node.next:
                     self.num_nodes += 1
                     is_end = i == len(tokens_with_merges) - 1
-                    if node_is_on_primary_path[i]:
-                        node_score = acc_score
+                    if var_bpe_penalize_subsplits:
+                        if node_is_on_primary_path[i]:
+                            node_score = acc_score
+                        else:
+                            # penalize sub-splits, but the full path will still be equal to original score
+                            node_score = max(0.0, acc_score - node.node_score)
                     else:
-                        # penalize sub-splits, but the full path will still be equal to original score
-                        node_score = max(0.0, acc_score - node.node_score)
+                        node_score = acc_score
                     next_node = ContextState(
                         id=self.num_nodes,
                         token=token,

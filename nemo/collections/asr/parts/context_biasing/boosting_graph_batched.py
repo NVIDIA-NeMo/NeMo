@@ -87,6 +87,7 @@ class BoostingTreeModelConfig:
     # var_bpe_scoring_temp: 10.0 is default conservative for case_insensitive/var_bpe modes to prevent FA;
     # values 0.1 ... 2.0 can work better with small biasing lists with beam search
     var_bpe_scoring_temp: float = 10.0
+    var_bpe_penalize_subsplits: bool = True  # penalize sub-splits; `True` is recommended value
 
     @staticmethod
     def is_empty(cfg: "BoostingTreeModelConfig") -> bool:
@@ -654,6 +655,7 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
                 phrases=phrases,
                 uniform_weights=cfg.uniform_weights,
                 var_bpe_scoring_temp=cfg.var_bpe_scoring_temp,
+                var_bpe_penalize_subsplits=cfg.var_bpe_penalize_subsplits,
             )
         else:
             context_graph.build(

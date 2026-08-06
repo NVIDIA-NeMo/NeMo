@@ -463,8 +463,13 @@ class TestVariativeBPE:
         "bpe_mode,phrase",
         [("var_bpe", "hello"), ("case_insensitive", "Hello")],
     )
+    @pytest.mark.parametrize("var_bpe_penalize_subsplits", [True, False])
     def test_boosting_tree_from_config_sentencepiece_var_bpe_scores_split_and_merged_paths(
-        self, bpe_tokenizer, bpe_mode, phrase
+        self,
+        bpe_tokenizer,
+        bpe_mode: str,
+        phrase: str,
+        var_bpe_penalize_subsplits: bool,
     ):
         boosting_tree = GPUBoostingTreeModel.from_config(
             BoostingTreeModelConfig(
@@ -474,6 +479,7 @@ class TestVariativeBPE:
                 final_eos_score=0.0,
                 use_triton=False,
                 var_bpe_scoring_temp=0.0,
+                var_bpe_penalize_subsplits=var_bpe_penalize_subsplits,
             ),
             tokenizer=bpe_tokenizer,
         )
@@ -492,3 +498,7 @@ class TestVariativeBPE:
 
         assert boosting_scores[0, 0].item() == pytest.approx(1.0)
         assert boosting_scores.sum(dim=1).detach().tolist() == pytest.approx([1.0, 1.0])
+
+        if not var_bpe_penalize_subsplits:
+            expected_split_scores = [1.0 / len(split_ids)] * len(split_ids)
+            assert boosting_scores[1, : len(split_ids)].detach().tolist() == pytest.approx(expected_split_scores)

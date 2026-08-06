@@ -16,7 +16,6 @@ import numpy as np
 import pytest
 import torch
 
-import nemo.collections.asr.parts.utils.sot_speaker_alignment as sot_alignment
 from nemo.collections.asr.parts.utils.asr_multispeaker_utils import get_hidden_length_from_sample_length
 from nemo.collections.asr.parts.utils.sot_speaker_alignment import (
     collate_speaker_activity_targets,

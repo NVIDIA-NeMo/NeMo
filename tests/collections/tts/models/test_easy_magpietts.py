@@ -503,6 +503,7 @@ def test_process_batch_with_one_shot_flow_local_predictor():
             {
                 "local_transformer_type": "normalizing_flow",
                 "frame_stacking_factor": 2,
+                "local_flow_coupling_type": "spline",
                 "local_flow_hidden_dim": 16,
                 "local_flow_n_layers": 2,
                 "local_flow_n_flows": 2,
@@ -510,6 +511,7 @@ def test_process_batch_with_one_shot_flow_local_predictor():
             }
         )
     )
+    assert model.local_flow.coupling_type == "rational_quadratic_spline"
     batch = _toy_batch(model)
     audio_embedding = torch.randn(
         batch["audio_codes"].size(0),

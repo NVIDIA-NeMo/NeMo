@@ -666,6 +666,19 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 n_layers=int(cfg.get("local_flow_n_layers", 3)),
                 n_flows=int(cfg.get("local_flow_n_flows", 4)),
                 dropout=float(cfg.get("local_flow_dropout", 0.0)),
+                coupling_type=str(cfg.get("local_flow_coupling_type", "affine")),
+                spline_num_bins=int(cfg.get("local_flow_spline_num_bins", 8)),
+                spline_tail_bound=float(cfg.get("local_flow_spline_tail_bound", 5.0)),
+                spline_min_bin_width=float(cfg.get("local_flow_spline_min_bin_width", 1e-3)),
+                spline_min_bin_height=float(cfg.get("local_flow_spline_min_bin_height", 1e-3)),
+                spline_min_derivative=float(cfg.get("local_flow_spline_min_derivative", 1e-3)),
+                match_affine_parameter_count=bool(cfg.get("local_flow_match_affine_parameter_count", True)),
+            )
+            logging.info(
+                "Local flow coupling: %s; conditioner hidden channels: %d (requested affine-budget width: %d)",
+                self.local_flow.coupling_type,
+                self.local_flow.hidden_channels,
+                self.local_flow.requested_hidden_channels,
             )
 
     @property

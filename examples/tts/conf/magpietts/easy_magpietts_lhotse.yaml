@@ -82,14 +82,22 @@ model:
   local_transformer_n_heads: 12
   local_transformer_hidden_dim: 1536
 
-  # Pointwise conditional affine flow; each codec frame is transformed independently.
-  # At 12 fps with no stacking, the 1536-wide flow has approximately 123M parameters.
+  # Pointwise conditional flow; each codec frame is transformed independently.
+  # rational_quadratic_spline uses a narrower conditioner by default to match the
+  # parameter count of an affine flow with local_flow_hidden_dim.
   num_semantic_codebooks: 1
+  local_flow_coupling_type: affine  # affine or rational_quadratic_spline (alias: spline)
   local_flow_hidden_dim: 1536
   local_flow_n_flows: 4
   local_flow_n_layers: 3
   local_flow_dropout: 0.0
   local_flow_noise_scale: 1.0
+  local_flow_match_affine_parameter_count: true
+  local_flow_spline_num_bins: 8
+  local_flow_spline_tail_bound: 5.0
+  local_flow_spline_min_bin_width: 1.0e-3
+  local_flow_spline_min_bin_height: 1.0e-3
+  local_flow_spline_min_derivative: 1.0e-3
   local_flow_debug_loss_threshold: 100.0  # Set to null to disable event-driven spike diagnostics.
 
   cfg_unconditional_prob: 0.05

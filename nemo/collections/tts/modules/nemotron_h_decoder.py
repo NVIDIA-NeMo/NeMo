@@ -881,15 +881,17 @@ class NemotronHMamba2Mixer(nn.Module):
             A_cumsum = torch.cumsum(A_dt, dim=-1)
             L = torch.exp(segment_sum(A_dt))
 
-            G_intermediate = C[:, :, :, None, :, :] * B[:, :, None, :, :, :]
-            G = G_intermediate.sum(dim=-1)
-            M_intermediate = G[..., None] * L.permute(0, 2, 3, 4, 1)[..., None]
-            M = M_intermediate.sum(dim=-1)
-            Y_diag = (M[..., None] * hidden_states[:, :, None]).sum(dim=3)
+            G = torch.einsum("bcqhn,bckhn->bcqkh", C, B)
+            M = G * L.permute(0, 2, 3, 4, 1)
+
+            # Contract dimensions directly. The broadcasted multiply would
+            # materialize [B, chunks, Q, K, H, P], which
+            # is several GiB for the full-size TTS model before summing over K.
+            Y_diag = torch.einsum("bcqkh,bckhp->bcqhp", M, hidden_states)
 
             decay_states = torch.exp((A_cumsum[:, :, :, -1:] - A_cumsum))
             B_decay = B * decay_states.permute(0, -2, -1, 1)[..., None]
-            states = (B_decay[..., None, :] * hidden_states[..., None]).sum(dim=2)
+            states = torch.einsum("bckhn,bckhp->bchpn", B_decay, hidden_states)
 
             # This is the critical fix:
             # cached T > 1 prefill must start from the previous SSM state.
@@ -909,13 +911,12 @@ class NemotronHMamba2Mixer(nn.Module):
             states = torch.cat([previous_states, states], dim=1)
             decay_chunk = torch.exp(segment_sum(F.pad(A_cumsum[:, :, :, -1], (1, 0))))
             decay_chunk = decay_chunk.transpose(1, 3)
-            new_states = (decay_chunk[..., None, None] * states[:, :, None, ...]).sum(dim=1)
+            new_states = torch.einsum("bijh,bihpn->bjhpn", decay_chunk, states)
             states, ssm_state = new_states[:, :-1], new_states[:, -1]
 
             state_decay_out = torch.exp(A_cumsum)
-            C_times_states = C[..., None, :] * states[:, :, None, ...]
             state_decay_out_permuted = state_decay_out.permute(0, 2, 3, 1)
-            Y_off = C_times_states.sum(-1) * state_decay_out_permuted[..., None]
+            Y_off = torch.einsum("bckhn,bchpn->bckhp", C, states) * state_decay_out_permuted[..., None]
 
             y = Y_diag + Y_off
             y = y.reshape(batch_size, -1, self.num_heads, self.head_dim)

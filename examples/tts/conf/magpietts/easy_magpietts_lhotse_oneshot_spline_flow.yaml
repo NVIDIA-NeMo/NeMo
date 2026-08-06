@@ -1,0 +1,9 @@
+defaults:
+  - easy_magpietts_lhotse_oneshot_flow
+  - _self_
+
+name: EasyMagpie-OneShotSplineFlow
+
+model:
+  # Eight-bin rational-quadratic splines, parameter-matched to the affine recipe.
+  local_flow_coupling_type: rational_quadratic_spline

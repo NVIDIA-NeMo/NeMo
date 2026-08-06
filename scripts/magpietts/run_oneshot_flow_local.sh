@@ -9,6 +9,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 : "${TRAIN_INPUT_CFG:?Set TRAIN_INPUT_CFG to the Lhotse training input YAML}"
 : "${VAL_INPUT_CFG:?Set VAL_INPUT_CFG to the Lhotse validation input YAML}"
 
+CONFIG_NAME="${CONFIG_NAME:-easy_magpietts_lhotse_oneshot_flow}"
 MAX_STEPS="${MAX_STEPS:-10000}"
 VAL_CHECK_INTERVAL="${VAL_CHECK_INTERVAL:-1000}"
 TRAIN_BATCH_DURATION="${TRAIN_BATCH_DURATION:-10}"
@@ -79,5 +80,5 @@ fi
 
 cd "${REPO_ROOT}"
 exec python examples/tts/easy_magpietts.py \
-  --config-name=easy_magpietts_lhotse_oneshot_flow \
+  --config-name="${CONFIG_NAME}" \
   "${overrides[@]}"

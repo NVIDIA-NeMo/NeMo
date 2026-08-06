@@ -12,44 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Parallel Expert Encoder (PEE) for ASR / audio.
+"""Grouped-GEMM building blocks for Transformer encoder execution.
 
-A PEE hosts several independently-trained *whole* encoders ("experts") inside a
-single container module so they share one front-end, batching, and inference
-entry point. Unlike a Mixture-of-Experts layer, **PEE does not route** tokens to
-a sparse subset of experts: every expert preserves its own, unmodified inference
-path and produces its own output. The only thing borrowed from MoE is the
-*compute* trick -- the position-wise feed-forward (FFN) matmuls of
-shape-compatible experts are batched into a single grouped-GEMM instead of being
-issued as many small per-expert kernels.
+This module centralizes reusable code for combining compatible matrix
+multiplications across named Transformer encoders and MoE feed-forward experts:
 
-Concretely:
+* :func:`grouped_ffn_compute` executes stacked FFN weights with a batched GEMM
+  backend and provides a per-group loop as a reference implementation.
+* :class:`GroupedFeedForward` packages identically shaped FFNs in the stacked
+  parameter layout consumed by :func:`grouped_ffn_compute`.
+* :func:`bucket_ffns_by_shape` and :func:`pad_feedforward` reconcile
+  heterogeneous FFN widths through shape bucketing or structural zero padding.
+* :class:`GGEMMTransformerEncoder` exposes serial, grouped-FFN, and packed-head
+  execution paths for a mapping of Transformer encoders. Compatible FFN units
+  are combined without changing routing decisions or encoder outputs.
 
-- ``GGEMMTransformerEncoder`` -- a container that owns N expert encoders
-  (e.g. a multilingual-ASR :class:`MoETransformerEncoder`, a dense diarization
-  :class:`TransformerEncoder`, a dense sound-event :class:`TransformerEncoder`)
-  and exposes a per-expert forward that is bit-for-bit identical to running the
-  original encoder standalone.
-- ``GroupedFeedForward`` -- a numerically-exact, batched replacement for a list
-  of same-shape :class:`FeedForward` modules. It stacks the expert weights and
-  evaluates them with two batched matmuls (the portable grouped-GEMM stand-in
-  for a fused CUTLASS/Triton grouped-GEMM kernel).
-- Helpers to (a) **bucket** expert FFNs by shape so each grouped-GEMM call sees
-  a uniform ``(d_model, d_hidden)`` and (b) **zero-pad** a narrow expert FFN up
-  to a wider ``d_model`` when a single uniform grouped tensor is required.
-
-The bucketing / padding helpers exist specifically to reconcile the heterogeneous
-experts that motivate this module. On the PEE-v2 checkpoints the diarization
-(speaker) expert is deliberately half-width at ``d_model = 1024`` while the
-speech-MoE and sound experts run at ``d_model = 2048``, yet all three share the
-same FFN hidden size of ``1024`` and the same ``head_dim = 128``. See the
-module-level "Reconciling the half-width speaker FFN" note below and the project
-README for the design rationale.
-
-References:
-- "Parallel Expert Encoders" (motivation / theory).
-- "Bucketed Group-GEMM Multi-Expert Inference" (kernel / binding technique).
+``baddbmm`` is the portable grouped-GEMM implementation used here. The public
+layout and backend seam allow a fused CUTLASS or Triton implementation to be
+added without coupling this module to a particular model architecture or task.
 """
 
 import contextlib
@@ -85,7 +65,6 @@ __all__ = [
     'bucket_ffns_by_shape',
     'grouped_ffn_compute',
     'GROUPED_GEMM_BACKENDS',
-    'PEE_EXPERT_TASKS',
 ]
 
 # Available grouped-GEMM backends for the position-wise FFN of a shape bucket.
@@ -165,54 +144,29 @@ def grouped_ffn_compute(
     return F.dropout(out, p=drop_rate, training=training)
 
 
-# Known per-expert task / decoder families. PEE binds only the *encoders*; the
-# matching decoder (and the metric it produces) lives at the model level and is
-# restored from each expert's own ``.nemo`` checkpoint. ``expert_tasks`` on the
-# container records which family each expert belongs to so an eval harness can
-# pair the encoder output with the correct decoder and score:
-#
-#   - ``asr_tdt``    -> TDT decoder + joint -> WER
-#       (speech multilingual-ASR MoE expert; RNNT is also possible -- read the
-#        decoder type from the restored checkpoint config rather than assuming).
-#   - ``sound_rnnt`` -> RNNT decoder + joint -> WER
-#       (sound / emotion-recognition expert).
-#   - ``diarization`` -> Sortformer head (``sortformer_modules``) -> DER
-#       (speaker expert; note the Sortformer model also has an upstream
-#        FastConformer encoder and computes sigmoid speaker activities).
-PEE_EXPERT_TASKS = ('asr_tdt', 'sound_rnnt', 'diarization')
-
-
 # ---------------------------------------------------------------------------
-# Reconciling the half-width speaker FFN with the wide experts
+# Reconciling heterogeneous FFN widths
 # ---------------------------------------------------------------------------
 #
 # The grouped-GEMM batches FFN "units" that share the same ``(d_model, d_hidden)``
-# shape. On PEE-v2 the speech-MoE and sound experts contribute units of shape
-# ``(2048 -> 1024 -> 2048)``; the speaker's unit is ``(1024 -> 1024 -> 1024)``.
-# Two ways to make the speaker participate, both of which MUST preserve its exact
-# output (PEE's first principle):
+# shape. Two exact strategies allow units with different ``d_model`` values to
+# participate in grouped execution:
 #
-#   (A) PAD -- widen to (2048 -> 1024 -> 2048). Pad W1's input side with 1024 zero
-#       rows and W2's output side with 1024 zero columns; feed the 1024-d speaker
-#       activation in the top half (rest zero) and slice the top 1024 outputs
-#       back. Exact (the zeros are structural), one uniform grouped tensor, but
-#       2x the FFN FLOPs for that unit. ``pad_feedforward`` builds such a unit
-#       standalone; ``_unified_weights`` does the same padding inline.
+#   (A) PAD -- widen a narrow unit to the bucket's maximum ``d_model``. Pad W1's
+#       input rows, W2's output columns, the corresponding bias, and the activation
+#       with zeros; slice the result back to its native width. The structural zeros
+#       preserve the original result while allowing one uniform grouped tensor.
+#       ``pad_feedforward`` builds such a unit standalone; ``_unified_weights``
+#       performs the same transformation inline.
 #
-#   (B) BUCKET -- keep the native (1024 -> 1024 -> 1024) FFN and place it in a
-#       SEPARATE shape bucket (its own grouped-GEMM group). Exact, zero wasted
-#       compute, at the cost of one extra GEMM group. ``bucket_ffns_by_shape``
-#       implements the grouping.
+#   (B) BUCKET -- retain each native ``(d_model, d_hidden)`` shape and issue one
+#       grouped-GEMM call per shape bucket. This avoids padded FLOPs at the cost of
+#       additional launches. ``bucket_ffns_by_shape`` implements the grouping.
 #
-# (A) is what the fused paths use, and the choice is measured rather than assumed:
-# one padded speaker unit against 17 native-width ones wastes 2.10M MAC/token, or
-# 2.78% of the dense-mode FFN (3.57% under moe_mode='topk', where the bucket holds
-# only 2 dense units). Switching to (B) reclaims that but adds a bucket, i.e.
-# +2 baddbmm x n_layers launches; at 30 s / batch 4 the ~151 GFLOP saved is worth
-# 0.25-0.50 ms against 0.24-0.48 ms of added launch overhead -- a wash. So padding
-# stays while this workload is launch-bound. (B) becomes the better choice once a
-# ragged/variable-K grouped-GEMM kernel removes the padding without adding a
-# launch, which is the natural replacement at the ``grouped_ffn_compute`` seam.
+# The fused encoder paths use padding within each ``d_hidden`` bucket to minimize
+# launches. Shape bucketing remains available when avoiding padded work is more
+# important, and a ragged/variable-K backend can be added at the
+# ``grouped_ffn_compute`` seam.
 
 
 class GroupedFeedForward(nn.Module):
@@ -275,14 +229,13 @@ class GroupedFeedForward(nn.Module):
             nn.init.kaiming_uniform_(self.w2[e].t(), a=5**0.5)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Evaluate all experts on a per-expert batch.
+        """Evaluate all grouped FFNs on their corresponding token batches.
 
         Args:
             x: ``(E, T, d_model)`` -- the ``e``-th slice is the (dense) token
                batch for expert ``e``. Every expert sees the same number of
-               tokens ``T`` (the PEE setting: all experts process the same
-               frames). For ragged/routed token counts, pad to a common ``T`` or
-               use a true grouped-GEMM kernel with per-group offsets.
+               tokens ``T``. For ragged or routed token counts, pad to a common
+               ``T`` or use a grouped-GEMM backend with per-group offsets.
 
         Returns:
             ``(E, T, d_model)`` -- the stacked expert outputs.
@@ -389,11 +342,11 @@ def pad_feedforward(ffn: FeedForward, target_d_model: int) -> FeedForward:
 def bucket_ffns_by_shape(
     ffns: Sequence[FeedForward],
 ) -> Dict[Tuple[int, int], List[int]]:
-    """Group FFN indices by their ``(d_model, d_hidden)`` shape (option B).
+    """Group FFN indices by their ``(d_model, d_hidden)`` shape.
 
     Each returned bucket can be fused into one :class:`GroupedFeedForward` /
-    one grouped-GEMM call. Heterogeneous experts (e.g. the 1024-d speaker vs the
-    2048-d speech/sound experts) land in separate buckets with no wasted compute.
+    one grouped-GEMM call. Heterogeneous FFNs land in separate buckets, avoiding
+    the extra computation introduced by padding them to a common width.
 
     Returns:
         Mapping ``(d_model, d_hidden) -> [indices into ``ffns``]``.
@@ -424,54 +377,32 @@ def _causal_mask_mod():
 
 
 class GGEMMTransformerEncoder(nn.Module):
-    """Container hosting several whole expert encoders behind one entry point.
+    """Grouped-GEMM execution container for named Transformer encoders.
 
-    Every expert is a standalone NeMo encoder (``TransformerEncoder`` or
-    ``MoETransformerEncoder``) and keeps its own, unmodified inference path: a
-    ``forward(expert_name, ...)`` call is bit-for-bit identical to running that
-    encoder on its own. PEE adds no top-level router and never drops experts --
-    the grouped-GEMM batching (see :class:`GroupedFeedForward`) is purely a
-    compute optimization layered on top, not a change in semantics.
+    The container registers already-constructed encoders and provides several
+    execution strategies. :meth:`forward` delegates to one encoder unchanged;
+    :meth:`forward_all` is the serial reference; :meth:`forward_grouped` combines
+    compatible FFN units; and :meth:`forward_packed` additionally batches
+    compatible attention heads. Grouping changes how compatible matrix
+    multiplications are launched, not the encoders' routing decisions or outputs.
 
-    Experts may be heterogeneous in ``d_model`` and positional-encoding scheme;
-    they only need to share the front-end / frame rate so the same audio can be
-    fed to all of them. See the module docstring for how the speaker expert's
-    half-width 1024-d FFN is reconciled with the 2048-d experts.
-
-    Decoders are **not** held here. PEE binds encoders only; each expert's decoder
-    (RNNT/TDT joint for the speech / sound ASR experts, the Sortformer head for
-    the speaker expert) is a model-level component restored from that expert's
-    own ``.nemo``. The optional ``expert_tasks`` map records which decoder family
-    each expert belongs to (see :data:`PEE_EXPERT_TASKS`) so an eval harness can
-    route encoder outputs to the right decoder and compute WER / DER. The encoder
-    container itself never runs a decoder.
+    Encoders may differ in model width and positional encoding. The grouped
+    methods validate the additional compatibility they require, including a
+    common layer count and input frame rate, and reconcile compatible FFNs using
+    shape buckets and structural zero padding. Task-specific heads, fusion, and
+    checkpoint assembly belong to the model that owns this container.
 
     Args:
-        experts: Mapping ``role -> nn.Module`` of already-constructed expert
-            encoders (e.g. ``{"speech": MoETransformerEncoder(...), "speaker":
-            TransformerEncoder(...), "sound": TransformerEncoder(...)}``).
-        expert_tasks: Optional mapping ``role -> task`` (one of
-            :data:`PEE_EXPERT_TASKS`) recording each expert's decoder family for
-            downstream WER / DER evaluation. Pure metadata; does not affect the
-            encoder forward.
+        experts: Mapping from a stable name to an already-constructed
+            ``TransformerEncoder``-family module.
     """
 
-    def __init__(self, experts: Dict[str, nn.Module], expert_tasks: Optional[Dict[str, str]] = None):
+    def __init__(self, experts: Dict[str, nn.Module]):
         super().__init__()
         if not experts:
             raise ValueError("GGEMMTransformerEncoder requires at least one expert encoder.")
         self.experts = nn.ModuleDict(experts)
         self.expert_names: List[str] = list(experts.keys())
-
-        expert_tasks = dict(expert_tasks or {})
-        for role, task in expert_tasks.items():
-            if role not in self.experts:
-                raise KeyError(f"expert_tasks references unknown expert '{role}'.")
-            if task not in PEE_EXPERT_TASKS:
-                raise ValueError(
-                    f"expert_tasks['{role}'] = '{task}' is not a known task; " f"expected one of {PEE_EXPERT_TASKS}."
-                )
-        self.expert_tasks: Dict[str, str] = expert_tasks
 
         # Cache of pre-packed grouped-FFN weights for forward_grouped, keyed by
         # (layer_idx, bucket_names, dtype) -> (w1, b1, w2, b2) in bmm layout. Built
@@ -483,12 +414,13 @@ class GGEMMTransformerEncoder(nn.Module):
         self._packed_cache: Dict[Tuple[object, ...], Tuple[torch.Tensor, ...]] = {}
         # Runtime-dtype RoPE buffers keyed by the source buffer identity. The
         # Transformer encoders store cos/sin in model dtype (usually fp32), while
-        # q/k run in bf16 under autocast; caching avoids four casts per expert/layer.
+        # q/k may run in a lower-precision autocast dtype; caching avoids repeated
+        # buffer casts for every encoder layer.
         self._rope_cache: Dict[Tuple[object, ...], Tuple[torch.Tensor, torch.Tensor]] = {}
 
-        # SDPA fast-path toggle (README §4.2). When True (default) the packed /
-        # serial-SDPA attention paths (1) drop the additive mask for unpadded,
-        # non-causal groups so SDPA can dispatch FlashAttention-2, and (3) wrap
+        # SDPA fast-path toggle. When True (default) the packed /
+        # serial-SDPA attention paths drop the additive mask for unpadded,
+        # non-causal groups so SDPA can dispatch FlashAttention-2, and wrap
         # every SDPA call in ``sdpa_kernel([FLASH, EFFICIENT, MATH])`` to force the
         # fused backends. Set False to restore the legacy behaviour (always
         # materialize the padding mask; no backend hint) for A/B comparison.
@@ -519,19 +451,14 @@ class GGEMMTransformerEncoder(nn.Module):
 
     @property
     def expert_d_models(self) -> Dict[str, int]:
-        """``role -> d_model`` for every expert that exposes a ``d_model`` attr."""
+        """Return ``name -> d_model`` for encoders that expose ``d_model``."""
         return {name: m.d_model for name, m in self.experts.items() if hasattr(m, 'd_model')}
 
     def get_expert(self, expert_name: str) -> nn.Module:
-        """Return the expert encoder module for ``expert_name`` (for pairing with
-        its model-level decoder during eval)."""
+        """Return the encoder registered as ``expert_name``."""
         if expert_name not in self.experts:
             raise KeyError(f"Unknown expert '{expert_name}'. Available: {self.expert_names}.")
         return self.experts[expert_name]
-
-    def get_expert_task(self, expert_name: str) -> Optional[str]:
-        """Return the recorded decoder family for ``expert_name`` (or ``None``)."""
-        return self.expert_tasks.get(expert_name)
 
     def forward(self, expert_name: str, audio_signal, length, bypass_pre_encode: bool = False):
         """Run a single expert along its own (unmodified) inference path.
@@ -552,11 +479,10 @@ class GGEMMTransformerEncoder(nn.Module):
         return self.experts[expert_name](audio_signal, length, bypass_pre_encode=bypass_pre_encode)
 
     def forward_all(self, audio_signal, length, bypass_pre_encode: bool = False) -> Dict[str, object]:
-        """Run every expert on the same input and return a ``role -> output`` map.
+        """Run every encoder serially and return a ``name -> output`` mapping.
 
-        This is the reference (non-fused) multi-expert path. The grouped-GEMM
-        path will replace the per-expert FFN evaluation here with a single
-        bucketed grouped GEMM while leaving these outputs unchanged.
+        This is the non-grouped reference used to validate the grouped execution
+        paths. Each encoder receives the same input and runs its native forward.
         """
         return {
             name: self.experts[name](audio_signal, length, bypass_pre_encode=bypass_pre_encode)
@@ -567,16 +493,14 @@ class GGEMMTransformerEncoder(nn.Module):
     # Lockstep fused forward (grouped-GEMM FFN across experts)
     # -----------------------------------------------------------------------
     #
-    # Heterogeneous-expert reconciliation (README §3.1 / TODO #2):
+    # Heterogeneous-encoder reconciliation:
     #   * Attention, norms, and positional encoding stay **per-expert** -- each
     #     expert runs its own attention sub-block with its own d_model and
     #     positional scheme (``rel_pos`` vs ``rope``), so nothing is shared or
     #     approximated there.
-    #   * Only the position-wise FFN is fused, and only across experts whose
-    #     layer-``i`` FFN is a dense :class:`FeedForward` of identical
-    #     ``(d_model, d_hidden)`` (shape-bucketing, option B). Experts whose FFN
-    #     is a sparse ``MoEFeedForward`` (e.g. the speech expert) run their own
-    #     FFN sub-block -- their internal token-routed grouped-GEMM is separate.
+    #   * Position-wise FFNs are fused when they can be expressed as dense
+    #     :class:`FeedForward` units. ``MoEFeedForward`` contributes its routed
+    #     expert FFNs; unsupported FFN implementations retain their native path.
     #
     # The pre-/post-layer and per-sub-block logic below mirrors
     # ``TransformerEncoder.forward`` / ``forward_internal`` / ``TransformerBlock``
@@ -584,8 +508,7 @@ class GGEMMTransformerEncoder(nn.Module):
     # ``embed_norm``, ``layers[i].{norm1,attn,drop,norm2,ffn}``, ``final_norm``,
     # ``out_proj``). It does not modify the base encoder. ``allclose`` (not
     # bitwise) equivalence vs :meth:`forward_all` is asserted by
-    # :meth:`verify_grouped_equivalence` (see README §4.1 for why it is ULP-level,
-    # not bit-exact) -- run it in eval mode (dropout off).
+    # :meth:`verify_grouped_equivalence`; run it in eval mode (dropout off).
 
     @staticmethod
     def _prepend_prefix(
@@ -607,8 +530,7 @@ class GGEMMTransformerEncoder(nn.Module):
         ``'extend'``
             ``[prefix | x]``, so the prefixed expert grows to ``P + T`` while every
             other expert stays at ``T`` and gets right-padded with zeros to match.
-            Those pad frames are masked out, so their attention and FFN work is pure
-            waste -- 675/475 = 1.42x on PEE-v2.
+            Those pad frames are masked out but still add attention and FFN work.
 
         ``'replace'``
             ``[prefix | x[:, P:]]``, i.e. the cache *substitutes* for the expert's own
@@ -762,12 +684,11 @@ class GGEMMTransformerEncoder(nn.Module):
     ) -> Dict[str, Tuple[torch.Tensor, Optional[torch.Tensor], object, torch.Tensor]]:
         """Prepare every expert, batching compatible ``FeatureStacking`` projections.
 
-        All PEE-v2 experts consume the same 128-bin features with the same stacking
-        factor. Their learned projections have a common input width but heterogeneous
-        output widths (2048/1024/2048). In eval, this method stacks/pads their weights
-        once and evaluates one ``bmm`` over an expanded view of the common stacked
-        features. The wider padded output intentionally uses more workspace to turn
-        three small projection launches into one.
+        Compatible projections share a stacking factor and input width but may
+        have different output widths. In eval, this method stacks and pads their
+        weights once, then evaluates one ``bmm`` over an expanded view of the
+        common stacked features. The padded output uses additional workspace to
+        reduce the number of projection launches.
 
         Unsupported/training/bypass cases retain the original per-expert path.
         FlexAttention masks are also shared by experts with the same attention mode;
@@ -934,14 +855,10 @@ class GGEMMTransformerEncoder(nn.Module):
         return x, length.to(dtype=torch.int64)
 
     # -----------------------------------------------------------------------
-    # Unified FFN step: fuse EVERY expert's FFN -- the dense experts, the speech
-    # MoE's per-token experts (run dense, then recombined with the router top-k),
-    # AND the narrower speaker FFN (zero-padded up to the widest d_model) -- into
-    # one grouped GEMM per (d_hidden) bucket. On the PEE-v2 checkpoints this
-    # collapses the per-layer FFN to a single grouped GEMM over 18 units (16 MoE
-    # + sound + speaker), instead of 1 small GEMM + a 16-iteration MoE index_add
-    # loop. Under moe_mode='topk' the MoE leaves for its own capacity-padded call
-    # and the shared bucket holds the 2 dense units.
+    # Unified FFN step: fuse dense FFNs and MoE expert FFNs into one grouped GEMM
+    # per ``d_hidden`` bucket. Narrower units are structurally zero-padded to the
+    # bucket's widest ``d_model``. Under ``moe_mode='topk'``, routed MoE units use
+    # their own capacity-padded grouped call while dense units remain together.
     # -----------------------------------------------------------------------
     def _unified_weights(self, group, target_d: int, d_hidden: int, layer_idx: int, dtype: torch.dtype):
         """Stack the FFN weights of every unit in ``group`` into the grouped-bmm
@@ -996,9 +913,9 @@ class GGEMMTransformerEncoder(nn.Module):
         """FFN sub-block for layer ``layer_idx`` fusing *all* experts' FFNs.
 
         Builds one grouped GEMM per inner-width (``d_hidden``) bucket over every
-        FFN unit: dense experts contribute one unit, narrower experts are
-        zero-padded up to the bucket's widest ``d_model``, and the speech MoE is
-        handled per ``moe_mode``:
+        supported FFN unit. Dense encoders contribute one unit, narrower units
+        are zero-padded to the bucket's widest ``d_model``, and MoE FFNs are
+        handled according to ``moe_mode``:
 
         - ``'dense'`` (default): the MoE's ``num_experts`` experts join the shared
           bucket and run on *all* tokens, then are recombined with the router's
@@ -1026,8 +943,8 @@ class GGEMMTransformerEncoder(nn.Module):
                 state[n]['x'] = state[n]['x'] + layer.drop(ffn(layer.norm2(state[n]['x'])))
 
         if moe_mode == 'topk':
-            # Sparse MoE: compute only the routed top-k pairs in their own grouped
-            # call; dense experts (+ zero-padded speaker) stay in the shared bucket.
+            # Sparse MoE: compute only routed top-k pairs in a separate grouped
+            # call; dense units stay in their shared bucket.
             for p in plans:
                 if p['kind'] == 'moe':
                     self._moe_topk_ffn_step(encs, state, layer_idx, p, backend)
@@ -1202,18 +1119,17 @@ class GGEMMTransformerEncoder(nn.Module):
         backend: str = 'baddbmm',
         moe_mode: str = 'dense',
     ) -> Dict[str, object]:
-        """Lockstep multi-expert forward that fuses same-shape dense FFNs.
+        """Run encoders in lockstep while grouping compatible FFN units.
 
-        Drives all experts layer-by-layer: at each layer it runs every expert's
-        attention sub-block (per-expert, unchanged), then evaluates the
-        position-wise FFN of *every* expert in one grouped GEMM per ``d_hidden``
-        bucket (see :meth:`_unified_ffn_step`): the speech MoE's per-token experts
-        are run dense and recombined with the router top-k, and the narrower
-        speaker FFN is zero-padded up to the bucket's widest ``d_model``.
+        Each layer first runs the encoders' attention blocks independently, then
+        evaluates supported FFN units in one grouped GEMM per ``d_hidden`` bucket.
+        Dense FFNs contribute one unit, MoE FFNs contribute their expert units,
+        and narrower units are structurally zero-padded to the bucket width. See
+        :meth:`_unified_ffn_step` for the ``dense`` and ``topk`` MoE strategies.
 
-        Output matches :meth:`forward_all` (``role -> (x, length)``) to within
-        ULP tolerance (not bitwise; README §4.1). All experts must share
-        ``n_layers`` and consume the same ``audio_signal`` / ``length``.
+        The returned ``name -> (encoded, length)`` mapping is numerically
+        equivalent to :meth:`forward_all` in eval mode. All encoders must share
+        ``n_layers`` and consume the same ``audio_signal`` and ``length``.
 
         Args:
             audio_signal, length, bypass_pre_encode: as in :meth:`forward`.
@@ -1240,15 +1156,15 @@ class GGEMMTransformerEncoder(nn.Module):
             state[name] = {'x': x, 'pos_emb': pos_emb, 'block_mask': block_mask, 'length': ln}
 
         for i in range(n_layers):
-            # 1) per-expert attention sub-block (mirrors TransformerBlock line 1)
+            # Run each encoder's attention sub-block first.
             for name, e in encs.items():
                 layer = e.layers[i]
                 s = state[name]
                 s['x'] = s['x'] + layer.drop(
                     layer.attn(layer.norm1(s['x']), block_mask=s['block_mask'], pos_emb=s['pos_emb'])
                 )
-            # 2) FFN sub-block: fuse ALL experts' FFN units (dense + speech-MoE
-            #    experts + zero-padded speaker) into grouped GEMMs by d_hidden.
+            # Then fuse dense and MoE FFN units into grouped GEMMs by d_hidden,
+            # padding narrower units within each bucket.
             self._unified_ffn_step(encs, state, i, backend, moe_mode=moe_mode)
 
         return {
@@ -1256,10 +1172,10 @@ class GGEMMTransformerEncoder(nn.Module):
         }
 
     # -----------------------------------------------------------------------
-    # Fully-packed forward (BGG-MEI): batched-SDPA attention over packed heads
-    # + grouped FFN. This is the path that actually cuts kernel launches and
-    # avoids per-expert flex-attention (which does not compile for head_dim that
-    # the Triton flex template cannot fit in shared memory). See README §"Packed".
+    # Fully packed forward: batched-SDPA attention over packed heads plus grouped
+    # FFNs. This stays separate from forward_grouped so the per-encoder attention
+    # path remains an explicit reference and the SDPA kernel substitution remains
+    # visible to callers.
     # -----------------------------------------------------------------------
 
     @staticmethod
@@ -1313,17 +1229,16 @@ class GGEMMTransformerEncoder(nn.Module):
     ):
         """Additive attention mask for one packed-head group, honouring per-expert lengths.
 
-        When every expert in the group shares a length this is the usual
+        When every encoder in the group shares a length this is the usual
         ``(B, 1, 1, T)`` key-padding mask (or ``None`` when nothing needs masking, so
         SDPA can dispatch FlashAttention-2). When lengths differ -- the streaming case,
-        where the speaker carries a spkcache prefix and the others are right-padded to
-        match -- each expert's ``(B, 1, 1, T)`` mask is expanded over its own head count
+        where one encoder carries a cache prefix and the others are right-padded to
+        match -- each encoder's ``(B, 1, 1, T)`` mask is expanded over its own head count
         and concatenated on the head axis into ``(B, Hg, 1, T)``, which SDPA broadcasts
-        over queries. That is ``B*Hg*T`` elements (~108K at B=4/Hg=40/T=675) rather than
-        the ``B*Hg*T*T`` (~73M) a full query-major mask would need.
+        over queries. This keeps storage linear in sequence length instead of creating
+        a full query-by-key mask for every packed head.
 
-        Cached on ``state`` under the group key: lengths do not change across layers,
-        so the 24-layer loop builds this once.
+        The mask is cached on ``state`` because lengths do not change across layers.
         """
         cache = state.setdefault('_mask_cache', {})
         ckey = (gkey, causal, dtype)
@@ -1494,19 +1409,16 @@ class GGEMMTransformerEncoder(nn.Module):
         return_pre_encode: bool = False,
         prefix_mode: str = 'extend',
     ) -> Dict[str, object]:
-        """Lockstep multi-expert forward using batched-SDPA packed-head attention
-        and grouped FFN -- the launch-count-reducing path (BGG-MEI).
+        """Run encoders with packed-head SDPA and grouped FFNs.
 
-        Per layer: (1) every expert's attention is computed as one batched
+        Per layer, every encoder's attention is computed as one batched
         ``scaled_dot_product_attention`` per (head_dim, pos-scheme, attn_mode)
-        group over concatenated heads -- on PEE-v2 all three experts share
-        ``head_dim = 128``, so that is a single call over 40 heads (16 + 8 + 16)
-        with no padded head slots, since heads (not ``d_model``) are the packing
-        unit. Then (2) every expert's FFN is fused into one grouped GEMM per
-        ``d_hidden`` bucket (speech-MoE experts run dense + recombined, speaker
-        zero-padded; see :meth:`_unified_ffn_step`). Output matches
-        :meth:`forward_all` to ULP tolerance (README §4.1); attention switches from
-        flex to SDPA, so it is allclose, not bit-exact, vs the native flex path.
+        group over concatenated heads. Heads, rather than ``d_model``, are the
+        packing unit, so compatible encoders do not require padded head slots.
+        The FFN sub-block then uses one grouped GEMM per ``d_hidden`` bucket; see
+        :meth:`_unified_ffn_step`. The output is numerically equivalent to
+        :meth:`forward_all` in eval mode. Because attention switches from FlexAttention
+        to SDPA, equality is tolerance-based rather than bitwise.
 
         Args:
             prefix: Optional ``{name: (B, P, d_model)}`` of streaming-cache embeddings
@@ -1566,8 +1478,8 @@ class GGEMMTransformerEncoder(nn.Module):
 
         for i in range(n_layers):
             self._packed_attention_step(encs, state, i)
-            # FFN: fuse ALL experts' FFN units (dense + speech-MoE experts +
-            # zero-padded speaker) into grouped GEMMs by d_hidden.
+            # FFN: fuse dense and MoE units into grouped GEMMs by d_hidden,
+            # structurally padding narrower units within each bucket.
             self._unified_ffn_step(encs, state, i, backend, moe_mode=moe_mode)
 
         out = {
@@ -1578,14 +1490,15 @@ class GGEMMTransformerEncoder(nn.Module):
         return out
 
     def _sdpa_attention_single(self, e, layer_idx: int, s: dict) -> None:
-        """Run a single expert's attention via SDPA (same FlashAttention kernel as
-        :meth:`forward_packed`) but **without** head packing, applying out-proj +
-        residual in place on ``s``.
+        """Run one encoder's attention through SDPA without packing its heads.
+
+        Uses the same SDPA backend policy as :meth:`forward_packed`, then applies
+        the output projection and residual in place on ``s``.
 
         This is the per-expert analogue of :meth:`_packed_attention_step`; the two
-        produce ULP-identical attention. Its purpose is to provide a fair "serial
-        but FlashAttention" baseline so benchmarks can separate the flex->SDPA
-        kernel-swap win from the head-packing win (see :meth:`forward_serial_sdpa`).
+        produce numerically equivalent attention. It provides the serial-SDPA
+        reference used to isolate head packing from the attention backend change;
+        see :meth:`forward_serial_sdpa`.
         """
         layer = e.layers[layer_idx]
         attn = layer.attn
@@ -1610,39 +1523,29 @@ class GGEMMTransformerEncoder(nn.Module):
         s['x'] = s['x'] + layer.drop(o)
 
     def forward_serial_sdpa(self, audio_signal, length, bypass_pre_encode: bool = False) -> Dict[str, object]:
-        """Reference "serial, but FlashAttention" path: **expert-major** -- each
-        expert's full stack is run to completion before the next one starts
-        (``enc1.forward(); enc2.forward(); enc3.forward()`` order), exactly like
-        loading the three checkpoints separately. Per-expert SDPA attention (NOT
-        head-packed), each expert's own FFN -- no grouped GEMM, no head concat,
-        no cross-expert sharing, single stream.
+        """Run every encoder serially with SDPA attention and native FFNs.
 
-        This isolates the two effects conflated in ``forward_all`` (native flex)
-        vs :meth:`forward_packed` (packed SDPA + grouped FFN):
+        Each complete encoder stack runs before the next starts. Attention uses
+        SDPA without head packing, while FFNs run independently with no grouped
+        GEMM. Together with :meth:`forward_all` and :meth:`forward_packed`, this
+        reference separates two optimization effects:
 
-        - ``forward_all`` -> ``forward_serial_sdpa`` = the flex->SDPA **kernel
-          swap** (large only where flex falls back to eager, e.g. head_dim the
-          Triton flex template cannot fit in shared memory);
-        - ``forward_serial_sdpa`` -> ``forward_packed`` = the genuine BGG-MEI
-          **head-packing / launch-reduction** win.
+        * ``forward_all`` to ``forward_serial_sdpa`` changes the attention backend.
+        * ``forward_serial_sdpa`` to ``forward_packed`` adds head packing and
+          grouped FFN launch reduction.
 
-        Unlike the lockstep paths this does not require equal ``n_layers`` across
-        experts. Output matches :meth:`forward_all` to ULP tolerance (README
-        §4.1); since attention is SDPA rather than flex it is allclose, not
-        bit-exact.
+        Unlike lockstep execution, this path does not require equal ``n_layers``.
+        Its output is numerically equivalent to :meth:`forward_all` in eval mode,
+        but is not bitwise identical because the attention backend differs.
         """
         encs = {name: self.experts[name] for name in self.expert_names}
         for name, e in encs.items():
             if not hasattr(e, 'layers') or not hasattr(e, 'n_layers'):
                 raise TypeError(f"Expert '{name}' is not a flex TransformerEncoder-family module.")
 
-        # Expert-major: run each encoder's FULL stack (pre-encode -> all layers ->
-        # post) to completion before starting the next one. This mirrors the real
-        # deployment where the three checkpoints are loaded separately and called
-        # as enc1.forward(); enc2.forward(); enc3.forward() -- no interleaving and
-        # nothing shared across experts. The only difference vs each expert's
-        # native .forward() is that attention runs through SDPA instead of flex
-        # (we cannot edit the base encoder to switch its kernel).
+        # Expert-major: run each encoder's full stack to completion before starting
+        # the next. Nothing is shared across encoders; only the attention backend
+        # differs from each encoder's native forward.
         out: Dict[str, object] = {}
         prepared = self._experts_pre(encs, audio_signal, length, bypass_pre_encode, build_block_mask=False)
         for name, e in encs.items():
@@ -1666,11 +1569,10 @@ class GGEMMTransformerEncoder(nn.Module):
     def verify_grouped_equivalence(
         self, audio_signal, length, bypass_pre_encode: bool = False, backend: str = 'baddbmm'
     ) -> Dict[str, float]:
-        """Return ``role -> max|forward_all - forward_grouped|`` (run in eval mode).
+        """Measure grouped-FFN error against the serial reference by encoder name.
 
-        Use to confirm the lockstep fused path matches the per-expert reference to
-        within ULP tolerance (README §4.1). Forces eval mode so dropout is off and
-        the comparison is deterministic, restoring the prior mode afterwards.
+        Returns ``name -> max(abs(reference - grouped))``. The comparison runs in
+        eval mode so dropout is disabled and restores the previous mode afterward.
         """
         was_training = self.training
         self.eval()
@@ -1685,17 +1587,15 @@ class GGEMMTransformerEncoder(nn.Module):
     def _load_from_state_dict(
         self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
     ):
-        """Namespace per-expert checkpoint keys under ``experts.<role>.``.
+        """Namespace bare named-encoder keys under ``experts.<name>.``.
 
-        When merging standalone ``.nemo`` experts into one PEE container, each
-        source checkpoint's encoder keys (e.g. ``layers.0.ffn.net.0.weight``) are
-        relative to that encoder. If such un-namespaced keys are present for a
-        role that exists in this container, they are rewritten to
-        ``experts.<role>.layers.0.ffn.net.0.weight`` so the standard loader can
-        place them. Keys already namespaced under ``experts.`` are left untouched.
+        A state dict may identify a registered encoder as
+        ``<name>.layers.<layer>...`` instead of the container's canonical
+        ``experts.<name>.layers.<layer>...`` path. This hook rewrites those keys before
+        standard loading. Keys already below ``experts.`` remain unchanged.
         """
         already = re.compile(r'^' + re.escape(prefix) + r'experts\.')
-        bare_role = re.compile(
+        bare_expert = re.compile(
             r'^' + re.escape(prefix) + r'(' + '|'.join(re.escape(n) for n in self.expert_names) + r')\.'
         )
 
@@ -1704,11 +1604,11 @@ class GGEMMTransformerEncoder(nn.Module):
         for key in list(state_dict.keys()):
             if already.match(key):
                 continue
-            m = bare_role.match(key)
+            m = bare_expert.match(key)
             if m:
-                role = m.group(1)
+                name = m.group(1)
                 suffix = key[m.end() :]
-                keys_to_add[f"{prefix}experts.{role}.{suffix}"] = state_dict[key]
+                keys_to_add[f"{prefix}experts.{name}.{suffix}"] = state_dict[key]
                 keys_to_remove.append(key)
 
         # Loading new weights invalidates any pre-packed grouped-FFN cache.
@@ -1721,33 +1621,9 @@ class GGEMMTransformerEncoder(nn.Module):
         if keys_to_remove:
             print(
                 f"GGEMMTransformerEncoder: Namespaced {len(keys_to_remove)} bare expert keys "
-                f"under 'experts.<role>.' for roles {self.expert_names}."
+                f"under 'experts.<name>.' for experts {self.expert_names}."
             )
 
         return super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
         )
-
-    @staticmethod
-    def extract_encoder_state_dict(
-        full_state_dict: Dict[str, torch.Tensor], encoder_attr: str = 'encoder'
-    ) -> Dict[str, torch.Tensor]:
-        """Pull one encoder's parameters out of a full model ``.nemo`` state dict.
-
-        Each expert ships as a *full* model (preprocessor + encoder(s) + decoder),
-        so its checkpoint keys are prefixed by the submodule attribute name. This
-        strips the ``<encoder_attr>.`` prefix and returns only that encoder's
-        keys, ready to load into the corresponding PEE expert.
-
-        Args:
-            full_state_dict: ``model.state_dict()`` of the source expert.
-            encoder_attr: Attribute under which the encoder lives in the source
-                model. ``'encoder'`` for the ASR experts; ``'transformer_encoder'``
-                for the Sortformer speaker expert (whose ``encoder`` attribute is
-                the upstream FastConformer, not the PEE transformer encoder).
-
-        Returns:
-            ``{stripped_key: tensor}`` for the requested encoder only.
-        """
-        prefix = f"{encoder_attr}."
-        return {key[len(prefix) :]: value for key, value in full_state_dict.items() if key.startswith(prefix)}

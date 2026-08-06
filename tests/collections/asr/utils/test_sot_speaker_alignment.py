@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
 import pytest
 import torch
 
+import nemo.collections.asr.parts.utils.sot_speaker_alignment as sot_alignment
 from nemo.collections.asr.parts.utils.asr_multispeaker_utils import get_hidden_length_from_sample_length
 from nemo.collections.asr.parts.utils.sot_speaker_alignment import (
     collate_speaker_activity_targets,
@@ -88,6 +90,109 @@ def test_fix_speaker_activity_empty_text_is_noop():
     fixed = fix_speaker_activity("", activity, num_speakers=2)
 
     assert fixed is activity
+
+
+@pytest.mark.unit
+def test_dtw_cost_batch_streaming_matches_naive_reference():
+    activity = np.array(
+        [
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 1, 1],
+            [0, 0, 1],
+        ],
+        dtype=np.bool_,
+    )
+    spk_seq = np.array([0, 0, 2, 1], dtype=np.intp)
+    perm_batch = np.array([[0, 1, 2], [2, 0, 1], [1, 2, 0]], dtype=np.intp)
+    token_weights = np.array([0.5, 1.5, 2.0, 0.75], dtype=np.float32)
+
+    actual = sot_alignment.dtw_cost_batch(activity, spk_seq, perm_batch, num_speakers=3, token_weights=token_weights)
+
+    expected = []
+    activity_sum = np.maximum(np.count_nonzero(activity, axis=1), 1).astype(np.float32)
+    for perm in perm_batch:
+        permuted = activity[:, perm]
+        local = 1.0 - permuted[:, spk_seq].T.astype(np.float32) / activity_sum
+        local *= token_weights[:, np.newaxis]
+        costs = np.full(local.shape, np.inf, dtype=np.float32)
+        costs[0] = np.cumsum(local[0], dtype=np.float32)
+        for token_idx in range(1, local.shape[0]):
+            costs[token_idx, 0] = costs[token_idx - 1, 0] + local[token_idx, 0]
+            for frame_idx in range(1, local.shape[1]):
+                costs[token_idx, frame_idx] = local[token_idx, frame_idx] + min(
+                    costs[token_idx - 1, frame_idx],
+                    costs[token_idx - 1, frame_idx - 1],
+                    costs[token_idx, frame_idx - 1],
+                )
+        expected.append(costs[-1, -1] / sum(local.shape))
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.unit
+def test_coarsen_activity_uses_binary_majority_bins():
+    activity = np.array(
+        [
+            [1.0, 0.0],
+            [0.0, 0.0],
+            [0.0, 1.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+        ],
+        dtype=np.bool_,
+    )
+
+    coarse = sot_alignment._coarsen_activity_for_alignment(activity, max_frames=3)
+
+    assert coarse.dtype == np.bool_
+    np.testing.assert_array_equal(coarse, [[False, False], [False, True], [True, False]])
+    # Sequences at or below the bound avoid both a copy and any resolution loss.
+    assert sot_alignment._coarsen_activity_for_alignment(activity, max_frames=6) is activity
+
+
+@pytest.mark.unit
+def test_default_alignment_grid_has_80ms_floor_and_no_redundant_frames():
+    max_frames = sot_alignment._DEFAULT_MAX_ALIGNMENT_FRAMES
+    at_80ms_floor = np.zeros((max_frames, 2), dtype=np.bool_)
+
+    # 1,200 * 80 ms = 96 seconds: do not upsample or manufacture extra bins.
+    assert sot_alignment._coarsen_activity_for_alignment(at_80ms_floor, max_frames) is at_80ms_floor
+
+    # Immediately above the threshold, produce exactly 1,200 bins. Since there
+    # are 1,201 source frames, integer proportional boundaries are strictly
+    # increasing and each output bin consumes one or two real source frames.
+    just_above_floor = np.zeros((max_frames + 1, 2), dtype=np.bool_)
+    coarse = sot_alignment._coarsen_activity_for_alignment(just_above_floor, max_frames)
+    assert coarse.shape == (max_frames, 2)
+
+
+@pytest.mark.unit
+def test_fix_speaker_activity_caps_one_hour_alignment_at_1200_frames(monkeypatch):
+    base_frame_seconds = 0.08
+    duration_seconds = 3600
+    num_frames = round(duration_seconds / base_frame_seconds)
+    activity = torch.zeros(num_frames, 2)
+    activity[: num_frames // 2, 1] = 1.0
+    activity[num_frames // 2 :, 0] = 1.0
+
+    observed = {}
+    original_dtw_cost_batch = sot_alignment.dtw_cost_batch
+
+    def capture_alignment_shape(activity, *args, **kwargs):
+        observed["num_frames"] = activity.shape[0]
+        return original_dtw_cost_batch(activity, *args, **kwargs)
+
+    monkeypatch.setattr(sot_alignment, "dtw_cost_batch", capture_alignment_shape)
+    fixed = fix_speaker_activity("<spk:0> hello world <spk:1> yes now", activity, num_speakers=2)
+
+    assert observed["num_frames"] == 1200
+    assert duration_seconds / observed["num_frames"] == pytest.approx(3.0)
+    # Coarsening is alignment-only: the returned training target keeps all 45,000 frames.
+    assert fixed.shape == activity.shape
+    assert torch.equal(fixed, activity[:, [1, 0]])
 
 
 @pytest.mark.unit

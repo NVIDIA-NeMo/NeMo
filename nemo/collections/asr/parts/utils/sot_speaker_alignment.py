@@ -24,6 +24,16 @@ import torch
 SPEAKER_TOKEN_PATTERN = re.compile(r"<spk:(\d+)>")
 _SPEAKER_TOKEN_SPLIT_PATTERN = re.compile(r"(<spk:\d+>)")
 
+# SOT speaker alignment is only used to resolve the RTTM column permutation; the
+# full-resolution activity tensor is returned unchanged apart from that column
+# reorder. Bounding the DTW input to 1,200 frames keeps its
+# O(words * frames * permutations) cost stable for long-form sessions. The
+# effective frame duration is max(80 ms, utterance_duration / 1,200): short inputs
+# are never upsampled, and every coarse bin consumes at least one real input frame.
+# A one-hour session therefore uses 1,200 bins of 37 or 38 frames, or 3.0 seconds each.
+_DEFAULT_ALIGNMENT_FRAME_SECONDS = 0.08
+_DEFAULT_MAX_ALIGNMENT_FRAMES = 1200
+
 __all__ = [
     "SPEAKER_TOKEN_PATTERN",
     "collate_speaker_activity_targets",
@@ -173,31 +183,41 @@ def dtw_cost_batch(
     if num_tokens == 0 or num_frames == 0:
         return np.full(num_perms, np.float32(np.inf))
 
+    # Speaker activity is binary. Keep only this compact (P, T, N) view and
+    # construct one float32 local-cost row at a time; materializing the former
+    # (P, words, T) cube took multiple gigabytes on hour-long transcripts.
+    activity = np.asarray(activity, dtype=np.bool_)
     valid = spk_seq_arr < num_speakers
-    activity_permuted = activity[:, perm_batch].transpose(1, 0, 2)  # (P, T, N)
-    activity_sum = np.maximum(activity.sum(axis=1), 1.0).astype(np.float32)
+    activity_permuted = activity[:, perm_batch].transpose(1, 0, 2)  # (P, T, N), bool
+    activity_sum = np.maximum(np.count_nonzero(activity, axis=1), 1).astype(np.float32)
     cols = np.where(valid, spk_seq_arr, 0)
-    local = 1.0 - activity_permuted[:, :, cols].transpose(0, 2, 1) / activity_sum
-    local[:, ~valid, :] = 1.0
 
-    if token_weights is not None:
-        local = local * token_weights[np.newaxis, :, np.newaxis]
+    def local_cost_row(token_idx: int) -> np.ndarray:
+        if not valid[token_idx]:
+            local = np.ones((num_perms, num_frames), dtype=np.float32)
+        else:
+            selected = activity_permuted[:, :, cols[token_idx]]
+            local = 1.0 - selected.astype(np.float32) / activity_sum[np.newaxis, :]
+        if token_weights is not None:
+            local *= np.float32(token_weights[token_idx])
+        return local
 
-    inf = np.float32(np.inf)
-    prev_row = np.cumsum(local[:, 0, :], axis=1).astype(np.float32)
+    prev_row = np.cumsum(local_cost_row(0), axis=1, dtype=np.float32)
 
     for token_idx in range(1, num_tokens):
-        cur_row = np.full((num_perms, num_frames), inf, dtype=np.float32)
-        cur_row[:, 0] = prev_row[:, 0] + local[:, token_idx, 0]
-        for frame_idx in range(1, num_frames):
-            cur_row[:, frame_idx] = (
-                np.minimum(
-                    np.minimum(prev_row[:, frame_idx], prev_row[:, frame_idx - 1]),
-                    cur_row[:, frame_idx - 1],
-                )
-                + local[:, token_idx, frame_idx]
-            )
-        prev_row = cur_row
+        local = local_cost_row(token_idx)
+
+        # Vectorized equivalent of:
+        #   cur[j] = local[j] + min(prev[j], prev[j - 1], cur[j - 1])
+        # Unrolling the horizontal recurrence yields a prefix sum plus a prefix
+        # minimum, removing the Python loop over every activity frame.
+        local_prefix = np.cumsum(local, axis=1, dtype=np.float32)
+        candidates = np.empty_like(prev_row)
+        candidates[:, 0] = prev_row[:, 0]
+        np.minimum(prev_row[:, 1:], prev_row[:, :-1], out=candidates[:, 1:])
+        candidates[:, 1:] -= local_prefix[:, :-1]
+        np.minimum.accumulate(candidates, axis=1, out=candidates)
+        prev_row = local_prefix + candidates
 
     return prev_row[:, num_frames - 1] / (num_tokens + num_frames)
 
@@ -241,11 +261,41 @@ def dtw_cost(
     return float(costs[0])
 
 
+def _coarsen_activity_for_alignment(activity: np.ndarray, max_frames: Optional[int]) -> np.ndarray:
+    """Majority-pool binary activity into at most ``max_frames`` proportional bins.
+
+    Every source frame contributes to exactly one bin. A speaker is active in a
+    coarse bin only when active for more than half of its source frames, so very
+    short turns do not dominate alignment of hour-long sessions.
+    """
+    if max_frames is not None and max_frames <= 0:
+        raise ValueError(f"max_alignment_frames must be positive or None, got {max_frames}.")
+
+    activity = np.asarray(activity, dtype=np.bool_)
+    if max_frames is None or activity.shape[0] <= max_frames:
+        # Never upsample: this preserves the 80 ms floor and cannot create empty
+        # or duplicated alignment frames for short utterances.
+        return activity
+
+    num_frames, num_speakers = activity.shape
+    # Integer proportional boundaries produce exactly ``max_frames`` non-empty
+    # bins when num_frames > max_frames. For non-integral ratios, bin widths differ
+    # by at most one source frame.
+    edges = np.arange(max_frames + 1, dtype=np.int64) * num_frames // max_frames
+    cumulative = np.empty((num_frames + 1, num_speakers), dtype=np.uint32)
+    cumulative[0] = 0
+    np.cumsum(activity, axis=0, dtype=np.uint32, out=cumulative[1:])
+    bin_counts = cumulative[edges[1:]] - cumulative[edges[:-1]]
+    bin_widths = np.diff(edges).astype(np.uint32)
+    return bin_counts * 2 > bin_widths[:, np.newaxis]
+
+
 def fix_speaker_activity(
     cut_or_text,
     speaker_activity: torch.Tensor,
     num_speakers: int,
     max_permutable: Optional[int] = None,
+    max_alignment_frames: Optional[int] = _DEFAULT_MAX_ALIGNMENT_FRAMES,
 ) -> torch.Tensor:
     """Align RTTM speaker-activity columns with SOT speaker-token order.
 
@@ -255,6 +305,11 @@ def fix_speaker_activity(
         num_speakers (int): Number of speakers used to bound the permutation search.
         max_permutable (Optional[int]): Max active speakers to brute-force permute over;
             defaults to ``num_speakers + 1``.
+        max_alignment_frames (Optional[int]): Maximum number of activity frames passed
+            to DTW. Longer binary sequences are majority-pooled into this many proportional bins;
+            the default 1,200 frames corresponds to 96 seconds at the standard 80 ms
+            target rate, and therefore to 3.0-second bins for a one-hour session. Set
+            to ``None`` to disable coarsening. The returned tensor stays full-resolution.
 
     Returns:
         torch.Tensor: Shape ``(T, N)`` activity with columns reordered to match text speaker order.
@@ -274,7 +329,7 @@ def fix_speaker_activity(
     speakers_in_text = sorted(set(spk_seq))
     spk_seq_arr = np.array(spk_seq, dtype=np.intp)
     num_tokens = len(spk_seq_arr)
-    activity_np = speaker_activity.detach().cpu().numpy().astype(np.float32)
+    activity_np = speaker_activity.detach().cpu().numpy().astype(np.bool_, copy=False)
 
     token_counts = np.bincount(spk_seq_arr, minlength=num_activity_speakers).astype(np.float32)
     token_counts = np.maximum(token_counts, 1.0)
@@ -294,7 +349,8 @@ def fix_speaker_activity(
         perm_batch[:, :num_active] = perm_active
         perm_batch[:, num_active:] = np.arange(num_active, num_activity_speakers)
 
-        dtw_costs = dtw_cost_batch(activity_np, spk_seq_arr, perm_batch, num_activity_speakers, token_weights)
+        alignment_activity = _coarsen_activity_for_alignment(activity_np, max_alignment_frames)
+        dtw_costs = dtw_cost_batch(alignment_activity, spk_seq_arr, perm_batch, num_activity_speakers, token_weights)
         freq_costs = speaker_freq_cost_batch(text_freq, rttm_freq, perm_batch)
         best_perm = perm_batch[int(np.argmin(dtw_costs + freq_costs))].tolist()
     else:

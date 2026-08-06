@@ -232,6 +232,20 @@ class DPOSALMAutomodel(SALMAutomodel):
         self._expected_updates = int(self.cfg.dpo.expected_updates)
         if not 1 <= self._expected_updates <= 2 * int(self.cfg.dpo.source_shards):
             raise ValueError("DPO expected_updates must be within the finite two-pass schedule")
+        self._lr_scheduler_cfg = self.cfg.dpo.get("lr_scheduler", None)
+        if self._lr_scheduler_cfg is not None:
+            if str(self._lr_scheduler_cfg.name) != "linear":
+                raise ValueError("DPO lr_scheduler.name must be linear")
+            start_update = int(self._lr_scheduler_cfg.start_update)
+            end_update = int(self._lr_scheduler_cfg.end_update)
+            if not 1 <= start_update <= end_update == self._expected_updates:
+                raise ValueError(
+                    "DPO linear LR decay must start within the run and end on the final optimizer update"
+                )
+            if float(self._lr_scheduler_cfg.start_factor) != 1.0:
+                raise ValueError("DPO linear LR decay must start from the configured base learning rate")
+            if not 0.0 <= float(self._lr_scheduler_cfg.end_factor) <= 1.0:
+                raise ValueError("DPO linear LR end_factor must be within [0, 1]")
         self._output_root = Path(str(self.cfg.dpo.output_root))
         self._initial_checkpoint = Path(str(self.cfg.dpo.source_checkpoint))
         self._metrics: list[dict[str, Any]] = []
@@ -313,7 +327,18 @@ class DPOSALMAutomodel(SALMAutomodel):
         )
         if len(optimizer.param_groups) != 1 or len(optimizer.param_groups[0]["params"]) != 269:
             raise RuntimeError("AdamW does not own the declared 269-tensor DPO surface")
-        return optimizer
+        if self._lr_scheduler_cfg is None:
+            return optimizer
+        scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=float(self._lr_scheduler_cfg.start_factor),
+            end_factor=float(self._lr_scheduler_cfg.end_factor),
+            total_iters=int(self._lr_scheduler_cfg.end_update) - int(self._lr_scheduler_cfg.start_update) + 1,
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
+        }
 
     def on_fit_start(self) -> None:
         super().on_fit_start()
@@ -334,6 +359,7 @@ class DPOSALMAutomodel(SALMAutomodel):
                     "global_updates": self._expected_updates,
                     "explicit_passes": 2,
                     "checkpoint_steps": sorted(self._checkpoint_steps),
+                    "learning_rate_schedule": self._learning_rate_schedule_receipt(),
                     "surface": self._surface.__dict__,
                     "lora": False,
                 },
@@ -493,6 +519,46 @@ class DPOSALMAutomodel(SALMAutomodel):
             gradient_clip_algorithm="norm",
         )
 
+    def _learning_rate_schedule_receipt(self) -> dict[str, Any]:
+        base_lr = float(self.cfg.dpo.learning_rate)
+        if self._lr_scheduler_cfg is None:
+            return {"name": "constant", "base_learning_rate": base_lr}
+        start = int(self._lr_scheduler_cfg.start_update)
+        end = int(self._lr_scheduler_cfg.end_update)
+        decay_updates = end - start + 1
+        start_factor = float(self._lr_scheduler_cfg.start_factor)
+        end_factor = float(self._lr_scheduler_cfg.end_factor)
+        return {
+            "name": "torch.optim.lr_scheduler.LinearLR",
+            "base_learning_rate": base_lr,
+            "start_update": start,
+            "end_update": end,
+            "start_factor": start_factor,
+            "end_factor": end_factor,
+            "total_iters": decay_updates,
+            "step_timing": "after_optimizer_update",
+            "per_update": [
+                {
+                    "global_step": step,
+                    "learning_rate_before_update": base_lr
+                    * (
+                        start_factor
+                        if step <= start
+                        else start_factor
+                        + (end_factor - start_factor) * float(step - start) / float(decay_updates)
+                    ),
+                    "learning_rate_after_update": base_lr
+                    * (
+                        start_factor
+                        if step < start
+                        else start_factor
+                        + (end_factor - start_factor) * float(step - start + 1) / float(decay_updates)
+                    ),
+                }
+                for step in range(1, end + 1)
+            ],
+        }
+
     def training_step(self, batch: PreferenceBatch, batch_idx: int):
         del batch_idx
         if batch.global_step != len(self._metrics) + 1:
@@ -504,6 +570,7 @@ class DPOSALMAutomodel(SALMAutomodel):
         # bookkeeping advances ``trainer.global_step`` once per AdamW update.
         optimizer = self.optimizers()
         optimizer.zero_grad(set_to_none=True)
+        learning_rate_before_update = float(optimizer.param_groups[0]["lr"])
         self.eval()
         scale = float(self.cfg.dpo.world_size) / float(self.cfg.dpo.pairs_per_update)
         before = self._digest_surface()
@@ -555,6 +622,15 @@ class DPOSALMAutomodel(SALMAutomodel):
         self._write_selected_gradient_layout_receipt(batch.global_step)
         self._clip_selected_gradients(optimizer)
         optimizer.step()
+        if self._lr_scheduler_cfg is not None and (
+            int(self._lr_scheduler_cfg.start_update)
+            <= batch.global_step
+            <= int(self._lr_scheduler_cfg.end_update)
+        ):
+            # Lightning deliberately leaves scheduler stepping to the model in
+            # manual optimization. This is the registered native LinearLR.
+            self.lr_schedulers().step()
+        learning_rate_after_update = float(optimizer.param_groups[0]["lr"])
         optimizer.zero_grad(set_to_none=True)
         self._force_reshard()
         after = self._digest_surface()
@@ -571,6 +647,8 @@ class DPOSALMAutomodel(SALMAutomodel):
             "dpo_pass": batch.dpo_pass,
             "source_shard": batch.source_shard,
             "active_pairs": int(health[2].item()),
+            "learning_rate_before_update": learning_rate_before_update,
+            "learning_rate_after_update": learning_rate_after_update,
             "mean_loss": float(health[0].item() / health[2].item()),
             "mean_margin": float(health[1].item() / health[2].item()),
             "surface_digest_before": before,
@@ -597,10 +675,10 @@ class DPOSALMAutomodel(SALMAutomodel):
             dist.barrier()
         optimizer = self.optimizers().optimizer
         save({"state_dict": self.state_dict()}, checkpoint_id=str(destination / "model_weights.dcp"))
-        save(
-            {"model": self.state_dict(), "optimizer": optimizer.state_dict()},
-            checkpoint_id=str(destination / "training_state.dcp"),
-        )
+        training_state = {"model": self.state_dict(), "optimizer": optimizer.state_dict()}
+        if self._lr_scheduler_cfg is not None:
+            training_state["lr_scheduler"] = self.lr_schedulers().state_dict()
+        save(training_state, checkpoint_id=str(destination / "training_state.dcp"))
         if dist.is_initialized():
             dist.barrier()
         local_ready = all(

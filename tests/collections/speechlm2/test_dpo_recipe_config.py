@@ -175,3 +175,44 @@ def test_initial_margin_gate_accepts_only_exact_fp32_positive_zero():
     assert not _is_exact_fp32_positive_zero(torch.tensor(1e-45, dtype=torch.float32))
     assert not _is_exact_fp32_positive_zero(torch.tensor(float("nan"), dtype=torch.float32))
     assert not _is_exact_fp32_positive_zero(torch.tensor([0.0, 0.0], dtype=torch.float32))
+
+
+def test_native_linear_lr_decays_after_updates_16_through_20_without_a_zero_lr_update():
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.AdamW([parameter], lr=5e-6)
+    scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=1.0,
+        end_factor=0.0,
+        total_iters=5,
+    )
+
+    observed = []
+    for update in range(1, 21):
+        before = optimizer.param_groups[0]["lr"]
+        optimizer.step()
+        if 16 <= update <= 20:
+            scheduler.step()
+        observed.append((update, before, optimizer.param_groups[0]["lr"]))
+
+    assert all(before == pytest.approx(5e-6) for _, before, _ in observed[:16])
+    assert [before for _, before, _ in observed[15:]] == pytest.approx([5e-6, 4e-6, 3e-6, 2e-6, 1e-6])
+    assert [after for _, _, after in observed[15:]] == pytest.approx([4e-6, 3e-6, 2e-6, 1e-6, 0.0])
+    assert observed[-1][1] > 0.0 and observed[-1][2] == 0.0
+
+    class Harness:
+        cfg = SimpleNamespace(dpo=SimpleNamespace(learning_rate=5e-6))
+        _lr_scheduler_cfg = SimpleNamespace(
+            name="linear", start_update=16, end_update=20, start_factor=1.0, end_factor=0.0
+        )
+
+    receipt = DPOSALMAutomodel._learning_rate_schedule_receipt(Harness())
+    assert receipt["name"] == "torch.optim.lr_scheduler.LinearLR"
+    assert receipt["step_timing"] == "after_optimizer_update"
+    assert receipt["total_iters"] == 5
+    assert [row["learning_rate_before_update"] for row in receipt["per_update"][15:]] == pytest.approx(
+        [5e-6, 4e-6, 3e-6, 2e-6, 1e-6]
+    )
+    assert [row["learning_rate_after_update"] for row in receipt["per_update"][15:]] == pytest.approx(
+        [4e-6, 3e-6, 2e-6, 1e-6, 0.0]
+    )

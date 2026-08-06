@@ -44,6 +44,7 @@ def create_model(
     top_p: float = 1.0,
     repetition_penalty: float = 1.0,
     temperature: float = 1.0,
+    use_llm_cache: bool = False,
     **kwargs,
 ) -> ModelInterface:
     """
@@ -68,6 +69,8 @@ def create_model(
         top_p: Top-p (nucleus) sampling threshold. 1.0 disables it (greedy). Default: 1.0
         repetition_penalty: Penalty for repeated tokens. 1.0 disables it. Default: 1.0
         temperature: Temperature for sampling. 1.0 = no change, 0.0 = greedy. Default: 1.0
+        use_llm_cache: For "native_llm", keep a KV cache across decode steps instead of
+                      replaying the full history. Ignored by the other backends.
         **kwargs: Additional arguments passed to the backend constructor
 
     Returns:
@@ -99,6 +102,7 @@ def create_model(
             top_p=top_p,
             repetition_penalty=repetition_penalty,
             temperature=temperature,
+            use_llm_cache=use_llm_cache,
         )
 
     elif engine_type == "native_eartts":

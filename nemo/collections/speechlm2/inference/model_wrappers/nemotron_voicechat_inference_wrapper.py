@@ -191,6 +191,9 @@ class NemotronVoicechatInferenceWrapper:
         self.repetition_penalty = float(model_cfg.get("repetition_penalty", 1.0))
         self.temperature = float(model_cfg.get("temperature", 1.0))
 
+        # Native LLM KV cache (vLLM engines manage their own cache and ignore this).
+        self.use_llm_cache = bool(model_cfg.get("use_llm_cache", False))
+
         # Perception cache configuration
         self.use_perception_cache = bool(model_cfg.get("use_perception_cache", False))
         use_perception_cudagraph = bool(model_cfg.get("use_perception_cudagraph", False))
@@ -308,6 +311,7 @@ class NemotronVoicechatInferenceWrapper:
             top_p=self.top_p,
             repetition_penalty=self.repetition_penalty,
             temperature=self.temperature,
+            use_llm_cache=self.use_llm_cache,
         )
         logging.info(f"LLM backend: {type(self.model_llm_interface).__name__}")
 

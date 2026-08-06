@@ -47,6 +47,7 @@ class PyTorchLLM(ModelInterface):
         top_p: float = 1.0,
         repetition_penalty: float = 1.0,
         temperature: float = 1.0,
+        use_llm_cache: bool = False,
     ):
         """
         Initialize with an existing model.
@@ -62,6 +63,8 @@ class PyTorchLLM(ModelInterface):
                                Recommended value when enabling: 1.2
             temperature: Temperature for sampling. 1.0 = no change, <1.0 = sharper, >1.0 = flatter.
                         0.0 = greedy (argmax). Default: 1.0
+            use_llm_cache: Keep a KV cache across decode steps instead of replaying the
+                        whole history every step. See :meth:`create_cache`. Default: False
         """
         if special_token_ids is None:
             try:
@@ -79,6 +82,7 @@ class PyTorchLLM(ModelInterface):
         )
 
         self.model = model
+        self.use_llm_cache = use_llm_cache
 
         logging.debug(f"Special token IDs: {self.special_token_ids}")
 
@@ -94,19 +98,29 @@ class PyTorchLLM(ModelInterface):
             )
 
     def create_cache(self):
-        """Create an LLM KV cache appropriate for this model's backbone.
+        """Create an LLM KV cache, or None to replay the full history each step.
 
-        Returns a ``DynamicCache`` (standard transformer) or
-        ``None`` for Nemotron hybrid models, whose remote-code cache handling
-        is intentionally not patched in this inference path.
+        ``DynamicCache`` builds its per-layer state from ``config.layer_types``, which
+        covers NemotronH's hybrid mamba/attention stack as well as plain attention.
+        Needs transformers >= 5.13, which fixes Mamba2 chunked prefill (huggingface/
+        transformers#46741) for any forward with seq_len > 1 and a warm cache.
         """
-        pretrained_llm = str(self.model.stt_model.cfg.get("pretrained_llm", ""))
-        if "Nemotron" in pretrained_llm:
-            logging.info("Using no-cache mode for Nemotron (full history each step)")
+        if not self.use_llm_cache:
+            logging.info("LLM KV cache disabled: replaying full history each step")
             return None
+
+        stt_cfg = self.model.stt_model.cfg
+        cache_key = stt_cfg.get("cache_key", "cache_params")
+        if "Nemotron" in str(stt_cfg.get("pretrained_llm", "")) and cache_key != "past_key_values":
+            # transformers 5.x NemotronH takes the cache as `past_key_values`. With the
+            # older `cache_params` name it would be dropped, and the model would build a
+            # fresh cache every step, so fail loudly instead of decoding from position 0.
+            raise ValueError(
+                f"use_llm_cache needs cache_key='past_key_values' in the checkpoint config, got '{cache_key}'."
+            )
         from transformers import DynamicCache
 
-        return DynamicCache()
+        return DynamicCache(config=self.model.stt_model.llm.config)
 
     def __call__(
         self,

@@ -67,6 +67,9 @@ s2s:
   # ========================
   use_perception_cache: true                  # Enable cache-aware streaming for perception encoder
   use_perception_cudagraph: true              # Enable CUDA graph-accelerated perception encoder
+  use_llm_cache: false                        # Keep the LLM KV cache across steps (native engine only).
+                                              # False replays the whole history each step: O(n^2) and slow,
+                                              # but the only path validated so far for NemotronH.
 
   # TTS speedup flags (default to false; enable to speed up native inference)
   use_tts_torch_compile: false                # Compile TTS backbone with torch.compile (mode='default')

@@ -379,42 +379,53 @@ class StreamingS2SPipeline(S2SPipelineInterface):
         return outputs
 
     _WARMUP_FALLBACK_PROMPT = "Mock system prompt for warmup."
+    # We observed torch.compile recompiles up to step 4; 8 gives 2x headroom.
+    _WARMUP_NUM_CHUNKS = 8
 
-    def warmup(self, system_prompt: str | None = None) -> None:
+    def warmup(self, system_prompt: str | None = None, num_chunks: int | None = None) -> None:
         """Run a throwaway inference cycle to warm up the entire pipeline.
 
         The very first call through each stage incurs one-time overhead
         (e.g. CUDA graph compilation, memory pool allocation,
-        DynamicCache initialization, torch.compile).  Sending a silence
-        frame with ``is_first=True`` exercises the full path — prefill,
-        perception, LLM decode, TTS, and codec — so the first real
-        client request is fast.
+        DynamicCache initialization, torch.compile).  Pushing a run of
+        silence chunks exercises the full path — prefill, perception, LLM
+        decode, TTS, and codec — so the first real client request is fast.
 
         Args:
             system_prompt: Prompt text to use for warmup.  Falls back to
                 the YAML-configured ``self.system_prompt``, then to a
                 short fallback string so the LLM prefill path is always
                 exercised.
+            num_chunks: How many consecutive chunks to push through.  More
+                than one is needed because each autoregressive step can
+                trigger a fresh torch.compile.
         """
         prompt = system_prompt if system_prompt is not None else self.system_prompt
         if not prompt:
             prompt = self._WARMUP_FALLBACK_PROMPT
             logging.info(f"No system prompt configured — using fallback prompt for warmup: \"{prompt}\"")
 
+        if num_chunks is None:
+            num_chunks = self._WARMUP_NUM_CHUNKS
+        num_chunks = max(1, int(num_chunks))
+
         warmup_stream_id = -1
         chunk_samples = int(self.chunk_size_in_secs * self.input_sample_rate)
 
-        logging.info("Running pipeline warmup (prefill + one silence chunk)...")
+        logging.info(f"Running pipeline warmup (prefill + {num_chunks} silence chunks)...")
         t0 = time.time()
 
-        warmup_frame = Frame(
-            samples=torch.zeros(chunk_samples),
-            stream_id=warmup_stream_id,
-            is_first=True,
-            is_last=True,
-            options=S2SRequestOptions(system_prompt=prompt),
-        )
-        self.generate_step([warmup_frame])
+        for idx in range(num_chunks):
+            warmup_frame = Frame(
+                samples=torch.zeros(chunk_samples),
+                stream_id=warmup_stream_id,
+                is_first=idx == 0,
+                is_last=idx == num_chunks - 1,
+                options=S2SRequestOptions(system_prompt=prompt) if idx == 0 else None,
+            )
+            step_t0 = time.time()
+            self.generate_step([warmup_frame])
+            logging.info(f"  warmup chunk {idx + 1}/{num_chunks}: {(time.time() - step_t0) * 1000:.1f}ms")
 
         # Tear down everything so the engine is clean for real traffic
         self.reset_session()

@@ -19,6 +19,7 @@ CREATE_WANDB_LOGGER="${CREATE_WANDB_LOGGER:-true}"
 CREATE_CHECKPOINTS="${CREATE_CHECKPOINTS:-false}"
 RUN_NAME="${RUN_NAME:-easy-magpie-oneshot-flow-local}"
 EXP_DIR="${EXP_DIR:-${REPO_ROOT}/easy_magpie_oneshot_flow_runs}"
+SEED_MODEL="${SEED_MODEL:-}"
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
@@ -55,6 +56,14 @@ overrides=(
   "exp_manager.create_checkpoint_callback=${CREATE_CHECKPOINTS}"
   "exp_manager.resume_if_exists=false"
 )
+
+if [[ -n "${SEED_MODEL}" ]]; then
+  if [[ ! -f "${SEED_MODEL}" ]]; then
+    echo "SEED_MODEL does not exist: ${SEED_MODEL}" >&2
+    exit 1
+  fi
+  overrides+=("init_from_nemo_model=${SEED_MODEL}")
+fi
 
 if [[ "${CREATE_WANDB_LOGGER}" == "true" ]]; then
   : "${WANDB_PROJECT:?Set WANDB_PROJECT when CREATE_WANDB_LOGGER=true}"

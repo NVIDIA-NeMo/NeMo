@@ -16,9 +16,11 @@ import copy
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 from torch import nn
 
 from scripts.magpietts.create_easy_magpietts_oneshot_flow_seed import (
+    _defer_dataset_setup,
     transfer_backbone_and_semantic_projection,
 )
 
@@ -33,6 +35,22 @@ class _TinyEasyMagpie(nn.Module):
         self.num_all_tokens_per_codebook = 3
         self.final_proj = nn.Linear(4, 12)
         self.random_module = nn.Linear(4, 5)
+
+
+def test_seed_model_defers_all_configured_datasets():
+    cfg = OmegaConf.create(
+        {
+            "train_ds": {"dataset": {"input_cfg": [{"type": "lhotse_shar"}]}},
+            "validation_ds": {"dataset": {"input_cfg": [{"type": "nemo"}]}},
+            "test_ds": None,
+        }
+    )
+
+    _defer_dataset_setup(cfg)
+
+    assert cfg.train_ds.defer_setup is True
+    assert cfg.validation_ds.defer_setup is True
+    assert cfg.test_ds is None
 
 
 def test_transfers_only_backbone_and_semantic_projection_rows():

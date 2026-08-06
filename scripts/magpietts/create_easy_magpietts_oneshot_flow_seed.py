@@ -34,7 +34,6 @@ from typing import Any
 import torch
 from torch import nn
 
-
 DEFAULT_CONFIG_NAME = "easy_magpietts_lhotse_oneshot_flow"
 DEFAULT_OUTPUT_NAME = "easy_magpietts_oneshot_flow_seed.nemo"
 
@@ -236,6 +235,18 @@ def _compose_model_config(config_name: str, overrides: Sequence[str]):
     return cfg
 
 
+def _defer_dataset_setup(model_cfg: Any) -> None:
+    """Prevent ModelPT from constructing dataloaders for a weights-only seed."""
+
+    from omegaconf import open_dict
+
+    for dataset_name in ("train_ds", "validation_ds", "test_ds"):
+        dataset_cfg = model_cfg.get(dataset_name)
+        if dataset_cfg is not None:
+            with open_dict(dataset_cfg):
+                dataset_cfg.defer_setup = True
+
+
 def _parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
         description=(
@@ -272,6 +283,7 @@ def main() -> None:
 
     pl.seed_everything(args.random_seed, workers=True)
     cfg = _compose_model_config(args.config_name, overrides)
+    _defer_dataset_setup(cfg.model)
     model = EasyMagpieTTSModel(cfg=cfg.model, trainer=None)
     if model.local_transformer_type.value != "normalizing_flow":
         raise ValueError(

@@ -14,10 +14,10 @@
 
 """Build a fresh EasyMagpie one-shot-flow seed from a semantic checkpoint.
 
-The target model is initialized from the requested Hydra config. Only the
-Nemotron-H backbone (``decoder.*``) and the semantic rows of ``final_proj`` are
-then copied from the source checkpoint. All other target-model weights retain
-their fresh random initialization.
+The target model is initialized from the requested Hydra config. Every
+shape-compatible target tensor is copied from the source checkpoint. New
+one-shot-flow tensors without a source counterpart retain their fresh random
+initialization.
 """
 
 from __future__ import annotations
@@ -49,35 +49,49 @@ def _source_key_candidates(target_key: str) -> list[str]:
     return [f"{prefix}{base_key}" for base_key in base_keys for prefix in prefixes]
 
 
-def _get_source_tensor(source_state: Mapping[str, Any], target_key: str) -> tuple[str, torch.Tensor]:
+def _find_source_tensor(
+    source_state: Mapping[str, Any], target_key: str
+) -> tuple[str, torch.Tensor] | None:
     matches = [key for key in _source_key_candidates(target_key) if key in source_state]
     if not matches:
-        raise ValueError(
-            f"Source checkpoint is missing target tensor {target_key!r}. "
-            f"Tried keys: {_source_key_candidates(target_key)}"
-        )
+        return None
     if len(matches) > 1:
-        raise ValueError(f"Source checkpoint has ambiguous matches for {target_key!r}: {matches}")
+        raise ValueError(
+            f"Source checkpoint has ambiguous matches for {target_key!r}: {matches}"
+        )
 
     source_key = matches[0]
     tensor = source_state[source_key]
     if not isinstance(tensor, torch.Tensor):
-        raise TypeError(f"Source checkpoint entry {source_key!r} is {type(tensor).__name__}, not a tensor.")
+        raise TypeError(
+            f"Source checkpoint entry {source_key!r} is {type(tensor).__name__}, not a tensor."
+        )
     return source_key, tensor
 
 
-def transfer_backbone_and_semantic_projection(
+def _get_source_tensor(
+    source_state: Mapping[str, Any], target_key: str
+) -> tuple[str, torch.Tensor]:
+    match = _find_source_tensor(source_state, target_key)
+    if match is None:
+        raise ValueError(
+            f"Source checkpoint is missing target tensor {target_key!r}. "
+            f"Tried keys: {_source_key_candidates(target_key)}"
+        )
+    return match
+
+
+def transfer_compatible_pretrained_state(
     target_model: nn.Module,
     source_state: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Copy only the backbone and semantic-output rows into ``target_model``.
+    """Copy every shape-compatible source tensor into ``target_model``.
 
-    EasyMagpie packs codebook heads contiguously into ``final_proj``. Semantic
-    codebooks are first, so the transferable row count is::
-
-        num_semantic_codebooks * frame_stacking_factor * num_all_tokens_per_codebook
-
-    Every shape is validated before any target tensor is changed.
+    The target one-shot flow has no matching tensors in an autoregressive
+    source checkpoint, so those tensors remain freshly initialized. Backbone
+    tensors are mandatory. ``final_proj`` is copied in full when its shape
+    matches; otherwise only the semantic rows are copied after validating the
+    packed-codebook layout.
     """
 
     if getattr(target_model, "decoder_type", None) != "nemotron_h":
@@ -91,46 +105,86 @@ def transfer_backbone_and_semantic_projection(
         "frame_stacking_factor",
         "num_all_tokens_per_codebook",
     )
-    missing_attributes = [name for name in required_attributes if not hasattr(target_model, name)]
+    missing_attributes = [
+        name for name in required_attributes if not hasattr(target_model, name)
+    ]
     if missing_attributes:
-        raise ValueError(f"Target model is missing semantic-head metadata: {missing_attributes}")
+        raise ValueError(
+            f"Target model is missing semantic-head metadata: {missing_attributes}"
+        )
 
     target_state = target_model.state_dict()
     backbone_keys = sorted(key for key in target_state if key.startswith("decoder."))
     if not backbone_keys:
         raise ValueError("Target model state contains no decoder.* tensors.")
 
-    copy_plan: list[tuple[str, torch.Tensor, str, torch.Tensor]] = []
-    for target_key in backbone_keys:
-        source_key, source_tensor = _get_source_tensor(source_state, target_key)
-        target_tensor = target_state[target_key]
-        if source_tensor.shape != target_tensor.shape:
-            raise ValueError(
-                f"Backbone shape mismatch for {target_key!r}: "
-                f"source {tuple(source_tensor.shape)} vs target {tuple(target_tensor.shape)}."
-            )
-        copy_plan.append((target_key, target_tensor, source_key, source_tensor))
-
     projection_weight_key = "final_proj.weight"
     projection_bias_key = "final_proj.bias"
-    if projection_weight_key not in target_state or projection_bias_key not in target_state:
-        raise ValueError("Target model must have final_proj.weight and final_proj.bias tensors.")
+    projection_keys = {projection_weight_key, projection_bias_key}
+    if not projection_keys.issubset(target_state):
+        raise ValueError(
+            "Target model must have final_proj.weight and final_proj.bias tensors."
+        )
 
-    source_weight_key, source_weight = _get_source_tensor(source_state, projection_weight_key)
+    copy_plan: list[tuple[str, torch.Tensor, str, torch.Tensor]] = []
+    missing_source_keys: list[str] = []
+    shape_mismatches: dict[str, dict[str, Any]] = {}
+    used_source_keys: set[str] = set()
+    for target_key, target_tensor in target_state.items():
+        if target_key in projection_keys:
+            continue
+        match = _find_source_tensor(source_state, target_key)
+        if match is None:
+            missing_source_keys.append(target_key)
+            continue
+        source_key, source_tensor = match
+        if source_tensor.shape != target_tensor.shape:
+            if target_key.startswith("decoder."):
+                raise ValueError(
+                    f"Backbone shape mismatch for {target_key!r}: "
+                    f"source {tuple(source_tensor.shape)} vs target {tuple(target_tensor.shape)}."
+                )
+            shape_mismatches[target_key] = {
+                "source_key": source_key,
+                "source_shape": list(source_tensor.shape),
+                "target_shape": list(target_tensor.shape),
+            }
+            continue
+        copy_plan.append((target_key, target_tensor, source_key, source_tensor))
+        used_source_keys.add(source_key)
+
+    copied_target_keys = {target_key for target_key, _, _, _ in copy_plan}
+    missing_backbone_keys = sorted(set(backbone_keys) - copied_target_keys)
+    if missing_backbone_keys:
+        raise ValueError(
+            f"Source checkpoint is missing compatible backbone tensors: {missing_backbone_keys}"
+        )
+
+    source_weight_key, source_weight = _get_source_tensor(
+        source_state, projection_weight_key
+    )
     source_bias_key, source_bias = _get_source_tensor(source_state, projection_bias_key)
     target_weight = target_state[projection_weight_key]
     target_bias = target_state[projection_bias_key]
 
-    semantic_channels = int(target_model.num_semantic_codebooks) * int(target_model.frame_stacking_factor)
+    semantic_channels = int(target_model.num_semantic_codebooks) * int(
+        target_model.frame_stacking_factor
+    )
     tokens_per_codebook = int(target_model.num_all_tokens_per_codebook)
     semantic_rows = semantic_channels * tokens_per_codebook
 
     if semantic_rows <= 0:
-        raise ValueError(f"Computed a non-positive semantic projection size: {semantic_rows} rows.")
+        raise ValueError(
+            f"Computed a non-positive semantic projection size: {semantic_rows} rows."
+        )
     if source_weight.ndim != 2 or target_weight.ndim != 2:
-        raise ValueError("final_proj.weight must be a rank-2 tensor in both source and target models.")
+        raise ValueError(
+            "final_proj.weight must be a rank-2 tensor in both source and target models."
+        )
     if source_bias.ndim != 1 or target_bias.ndim != 1:
-        raise ValueError("final_proj.bias must be a rank-1 tensor in both source and target models.")
+        raise ValueError(
+            "final_proj.bias must be a rank-1 tensor in both source and target models."
+        )
     if source_weight.shape[1:] != target_weight.shape[1:]:
         raise ValueError(
             "Semantic projection input shape mismatch: "
@@ -138,11 +192,13 @@ def transfer_backbone_and_semantic_projection(
         )
     if source_weight.shape[0] != source_bias.shape[0]:
         raise ValueError(
-            "Source final projection weight/bias row mismatch: " f"{source_weight.shape[0]} vs {source_bias.shape[0]}."
+            "Source final projection weight/bias row mismatch: "
+            f"{source_weight.shape[0]} vs {source_bias.shape[0]}."
         )
     if target_weight.shape[0] != target_bias.shape[0]:
         raise ValueError(
-            "Target final projection weight/bias row mismatch: " f"{target_weight.shape[0]} vs {target_bias.shape[0]}."
+            "Target final projection weight/bias row mismatch: "
+            f"{target_weight.shape[0]} vs {target_bias.shape[0]}."
         )
     if source_weight.shape[0] < semantic_rows or target_weight.shape[0] < semantic_rows:
         raise ValueError(
@@ -155,28 +211,69 @@ def transfer_backbone_and_semantic_projection(
             f"codebook vocabulary size ({tokens_per_codebook})."
         )
 
+    projection_shapes_match = (
+        source_weight.shape == target_weight.shape
+        and source_bias.shape == target_bias.shape
+    )
+    projection_rows_copied = (
+        target_weight.shape[0] if projection_shapes_match else semantic_rows
+    )
+
     with torch.no_grad():
         for _, target_tensor, _, source_tensor in copy_plan:
-            target_tensor.copy_(source_tensor.to(device=target_tensor.device, dtype=target_tensor.dtype))
-        target_weight[:semantic_rows].copy_(
-            source_weight[:semantic_rows].to(device=target_weight.device, dtype=target_weight.dtype)
+            target_tensor.copy_(
+                source_tensor.to(device=target_tensor.device, dtype=target_tensor.dtype)
+            )
+        target_weight[:projection_rows_copied].copy_(
+            source_weight[:projection_rows_copied].to(
+                device=target_weight.device, dtype=target_weight.dtype
+            )
         )
-        target_bias[:semantic_rows].copy_(
-            source_bias[:semantic_rows].to(device=target_bias.device, dtype=target_bias.dtype)
+        target_bias[:projection_rows_copied].copy_(
+            source_bias[:projection_rows_copied].to(
+                device=target_bias.device, dtype=target_bias.dtype
+            )
         )
 
-    copied_backbone_numel = sum(target_tensor.numel() for _, target_tensor, _, _ in copy_plan)
-    untouched_keys = sorted(set(target_state) - set(backbone_keys) - {projection_weight_key, projection_bias_key})
+    used_source_keys.update((source_weight_key, source_bias_key))
+    copied_target_keys.update(projection_keys)
+    copied_tensor_keys = sorted(copied_target_keys)
+    copied_backbone_numel = sum(
+        target_tensor.numel()
+        for target_key, target_tensor, _, _ in copy_plan
+        if target_key.startswith("decoder.")
+    )
+    copied_non_backbone_numel = sum(
+        target_tensor.numel()
+        for target_key, target_tensor, _, _ in copy_plan
+        if not target_key.startswith("decoder.")
+    ) + projection_rows_copied * (target_weight.shape[1] + 1)
+    target_keys_left_random = sorted(set(missing_source_keys) | set(shape_mismatches))
+    unused_source_keys = sorted(set(source_state) - used_source_keys)
+
     return {
-        "backbone_tensor_count": len(copy_plan),
+        "backbone_tensor_count": len(backbone_keys),
         "backbone_parameter_count": copied_backbone_numel,
+        "compatible_tensor_count": len(copied_tensor_keys),
+        "compatible_parameter_count": copied_backbone_numel + copied_non_backbone_numel,
+        "non_backbone_tensor_count": len(copied_tensor_keys) - len(backbone_keys),
+        "non_backbone_parameter_count": copied_non_backbone_numel,
+        "copied_state_tensor_keys": copied_tensor_keys,
         "semantic_channels": semantic_channels,
         "tokens_per_codebook": tokens_per_codebook,
+        "projection_rows_copied": projection_rows_copied,
         "semantic_projection_rows_copied": semantic_rows,
-        "semantic_projection_source_keys": [source_weight_key, source_bias_key],
-        "acoustic_projection_rows_left_random": target_weight.shape[0] - semantic_rows,
-        "other_state_tensors_left_random": len(untouched_keys),
-        "other_state_tensor_keys": untouched_keys,
+        "acoustic_projection_rows_copied": max(
+            0, projection_rows_copied - semantic_rows
+        ),
+        "acoustic_projection_rows_left_random": target_weight.shape[0]
+        - projection_rows_copied,
+        "projection_source_keys": [source_weight_key, source_bias_key],
+        "target_state_tensors_left_random": len(target_keys_left_random),
+        "target_state_tensor_keys_left_random": target_keys_left_random,
+        "shape_mismatched_target_tensors": shape_mismatches,
+        "source_state_tensors_unused": len(unused_source_keys),
+        "source_state_tensor_keys_unused": unused_source_keys,
     }
 
 
@@ -193,35 +290,49 @@ def _resolve_checkpoint_file(checkpoint_path: str | Path) -> Path:
         if candidate.is_file():
             return candidate
 
-    candidates = sorted(candidate for suffix in ("*.nemo", "*.ckpt") for candidate in path.glob(suffix))
+    candidates = sorted(
+        candidate for suffix in ("*.nemo", "*.ckpt") for candidate in path.glob(suffix)
+    )
     if len(candidates) == 1:
         return candidates[0]
     if not candidates:
-        raise FileNotFoundError(f"No .nemo or .ckpt checkpoint found in directory: {path}")
-    raise ValueError(f"Checkpoint directory is ambiguous; specify one file explicitly: {candidates}")
+        raise FileNotFoundError(
+            f"No .nemo or .ckpt checkpoint found in directory: {path}"
+        )
+    raise ValueError(
+        f"Checkpoint directory is ambiguous; specify one file explicitly: {candidates}"
+    )
 
 
-def load_checkpoint_state(checkpoint_path: str | Path) -> tuple[Path, Mapping[str, Any]]:
+def load_checkpoint_state(
+    checkpoint_path: str | Path,
+) -> tuple[Path, Mapping[str, Any]]:
     """Load a NeMo archive, Lightning checkpoint, or extracted checkpoint directory."""
 
     checkpoint_file = _resolve_checkpoint_file(checkpoint_path)
     if checkpoint_file.suffix == ".nemo":
         from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 
-        with tempfile.TemporaryDirectory(prefix="easy_magpie_seed_source_") as extract_dir:
+        with tempfile.TemporaryDirectory(
+            prefix="easy_magpie_seed_source_"
+        ) as extract_dir:
             state = SaveRestoreConnector().extract_state_dict_from(
                 restore_path=str(checkpoint_file),
                 save_dir=extract_dir,
             )
     else:
         payload = torch.load(checkpoint_file, map_location="cpu", weights_only=False)
-        if isinstance(payload, Mapping) and isinstance(payload.get("state_dict"), Mapping):
+        if isinstance(payload, Mapping) and isinstance(
+            payload.get("state_dict"), Mapping
+        ):
             state = payload["state_dict"]
         else:
             state = payload
 
     if not isinstance(state, Mapping):
-        raise TypeError(f"Checkpoint {checkpoint_file} did not contain a state-dict mapping.")
+        raise TypeError(
+            f"Checkpoint {checkpoint_file} did not contain a state-dict mapping."
+        )
     return checkpoint_file, state
 
 
@@ -250,23 +361,51 @@ def _defer_dataset_setup(model_cfg: Any) -> None:
 def _parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
         description=(
-            "Initialize the EasyMagpie one-shot-flow config, copy only a source Nemotron-H backbone and semantic "
-            "projection, and save a reusable .nemo seed. Unrecognized arguments are treated as Hydra overrides."
+            "Initialize the EasyMagpie one-shot-flow config, copy every shape-compatible pretrained tensor, and "
+            "save a reusable .nemo seed. Unrecognized arguments are treated as Hydra overrides."
         )
     )
-    parser.add_argument("--source-checkpoint", required=True, help="Source .nemo/.ckpt file or checkpoint directory.")
-    parser.add_argument("--output-dir", required=True, help="Directory in which to create the seed and report.")
-    parser.add_argument("--output-name", default=DEFAULT_OUTPUT_NAME, help="Seed filename; must end in .nemo.")
-    parser.add_argument("--config-name", default=DEFAULT_CONFIG_NAME, help="Target EasyMagpie Hydra config name.")
-    parser.add_argument("--random-seed", type=int, default=1234, help="Seed used for all freshly initialized weights.")
-    parser.add_argument("--overwrite", action="store_true", help="Replace an existing output seed/report.")
+    parser.add_argument(
+        "--source-checkpoint",
+        required=True,
+        help="Source .nemo/.ckpt file or checkpoint directory.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory in which to create the seed and report.",
+    )
+    parser.add_argument(
+        "--output-name",
+        default=DEFAULT_OUTPUT_NAME,
+        help="Seed filename; must end in .nemo.",
+    )
+    parser.add_argument(
+        "--config-name",
+        default=DEFAULT_CONFIG_NAME,
+        help="Target EasyMagpie Hydra config name.",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=1234,
+        help="Seed used for all freshly initialized weights.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing output seed/report.",
+    )
     args, overrides = parser.parse_known_args()
     return args, overrides
 
 
 def main() -> None:
     args, overrides = _parse_args()
-    if not args.output_name.endswith(".nemo") or Path(args.output_name).name != args.output_name:
+    if (
+        not args.output_name.endswith(".nemo")
+        or Path(args.output_name).name != args.output_name
+    ):
         raise ValueError("--output-name must be a plain filename ending in .nemo.")
 
     output_dir = Path(args.output_dir).expanduser().resolve()
@@ -275,7 +414,9 @@ def main() -> None:
     if not args.overwrite:
         existing = [path for path in (output_path, report_path) if path.exists()]
         if existing:
-            raise FileExistsError(f"Refusing to overwrite existing seed artifacts: {existing}")
+            raise FileExistsError(
+                f"Refusing to overwrite existing seed artifacts: {existing}"
+            )
 
     import lightning.pytorch as pl
 
@@ -292,7 +433,7 @@ def main() -> None:
         )
 
     source_checkpoint, source_state = load_checkpoint_state(args.source_checkpoint)
-    transfer_report = transfer_backbone_and_semantic_projection(model, source_state)
+    transfer_report = transfer_compatible_pretrained_state(model, source_state)
     del source_state
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -312,7 +453,9 @@ def main() -> None:
         **transfer_report,
     }
     temporary_report = output_dir / f".{report_path.name}.{uuid.uuid4().hex}.tmp"
-    temporary_report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary_report.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     os.replace(temporary_report, report_path)
 
     print(json.dumps(report, indent=2, sort_keys=True))

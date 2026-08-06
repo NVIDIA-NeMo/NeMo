@@ -5,7 +5,7 @@ defaults:
 name: EasyMagpie-OneShotFlow
 
 # Optional full-model seed prepared by scripts/magpietts/create_easy_magpietts_oneshot_flow_seed.py.
-# The seed contains the pretrained Nemotron-H backbone and semantic head; all other weights were freshly initialized.
+# Every shape-compatible pretrained tensor is restored; only new one-shot-flow weights remain freshly initialized.
 init_from_nemo_model: null
 
 model:

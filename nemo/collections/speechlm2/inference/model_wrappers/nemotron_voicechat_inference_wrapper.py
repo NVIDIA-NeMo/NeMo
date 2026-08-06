@@ -17,7 +17,6 @@ import os
 import time
 
 import torch
-import torchaudio
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.audio.parts.utils.transforms import resample
@@ -34,6 +33,7 @@ from nemo.collections.speechlm2.inference.model_wrappers.perception_cache import
     PerceptionCacheManager,
     PerceptionCacheState,
 )
+from nemo.collections.speechlm2.models.duplex_ear_tts import load_audio_librosa
 from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceChat
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.speechlm2.parts.text_utils import (
@@ -415,7 +415,7 @@ class NemotronVoicechatInferenceWrapper:
             speaker_audio_lens = None
         else:
             with fp32_precision():
-                speaker_audio, speaker_sr = torchaudio.load(self.speaker_reference)
+                speaker_audio, speaker_sr = load_audio_librosa(self.speaker_reference)
                 speaker_audio = resample(speaker_audio, speaker_sr, self.model.tts_model.target_sample_rate)
             speaker_audio = speaker_audio.to(self.device)
             speaker_audio_lens = torch.tensor([speaker_audio.size(1)], device=self.device).long()

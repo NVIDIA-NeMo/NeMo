@@ -61,6 +61,7 @@ from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
 from vllm.utils.tensor_schema import TensorSchema, TensorShape
 
 from nemo.collections.speechlm2.vllm.salm.config import _AUDIO_PLACEHOLDER
+from nemo.utils import logging
 
 _SAMPLING_RATE = 16000
 _AUDIO_CHANNELS = 1
@@ -148,11 +149,44 @@ def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) 
 
     pe_encoder = ParallelExpertEncoderPT.load_from_nemo(pe_encoder_path, map_location="cpu", strict=True)
 
+    # The outgoing encoder's width is deliberately not a constraint. It is about to be
+    # discarded, and a bundle whose speech expert is wider than the pretrained ASR
+    # encoder is valid (for example, PEE-v2 is 2048-wide while Canary is 1024-wide).
+    # The unchanged mel frontend and downstream adapter/projection are the components
+    # that must agree with the replacement encoder.
     existing_d_model = int(getattr(perception.encoder, "d_model", -1))
     if existing_d_model > 0 and int(pe_encoder.d_model) != existing_d_model:
+        logging.info(
+            "ParallelExpertEncoder d_model=%d replaces a perception encoder of d_model=%d; "
+            "the outgoing encoder is discarded.",
+            int(pe_encoder.d_model),
+            existing_d_model,
+        )
+
+    perception_cfg = getattr(perception, "cfg", {})
+    preprocessor_cfg = perception_cfg.get("preprocessor", {}) if hasattr(perception_cfg, "get") else {}
+    pe_feat_in = int(getattr(pe_encoder, "_feat_in", -1) or -1)
+    mel_bins = preprocessor_cfg.get("features", None) if hasattr(preprocessor_cfg, "get") else None
+    if pe_feat_in > 0 and mel_bins is not None and int(mel_bins) != pe_feat_in:
         raise ValueError(
-            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match the existing "
-            f"perception encoder d_model={existing_d_model}."
+            f"ParallelExpertEncoder expects {pe_feat_in} mel bins but the vLLM perception "
+            f"preprocessor produces {int(mel_bins)}. The preprocessor is not replaced by "
+            "the mount, so these must agree."
+        )
+
+    adapter_cfg = perception_cfg.get("modality_adapter", {}) if hasattr(perception_cfg, "get") else {}
+    adapter_d_model = adapter_cfg.get("d_model", None) if hasattr(adapter_cfg, "get") else None
+    if adapter_d_model is not None and int(adapter_d_model) != int(pe_encoder.d_model):
+        raise ValueError(
+            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match "
+            f"vLLM perception modality_adapter.d_model={adapter_d_model}."
+        )
+
+    proj = getattr(perception, "proj", None)
+    if isinstance(proj, torch.nn.Linear) and int(proj.in_features) != int(pe_encoder.d_model):
+        raise ValueError(
+            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match "
+            f"vLLM perception proj.in_features={proj.in_features}."
         )
 
     # load_from_nemo restores onto CPU; copy the replaced encoder's device/dtype to avoid CPU/dtype mismatches.

@@ -221,10 +221,21 @@ def _set_encoder_activation_checkpointing(encoder: nn.Module, enabled: bool) -> 
     each entry in ``encoder.layers``. Missing attributes are skipped so
     non-Conformer architectures degrade gracefully. No-op when ``enabled`` is
     False.
+
+    Encoders that do not run their layers as ``encoder.layers[i](...)`` cannot be
+    checkpointed by wrapping submodules, so an encoder may implement
+    ``set_activation_checkpointing`` and own the policy itself. ParallelExpertEncoder
+    does: it fuses all three experts' layers into grouped GEMMs, and the wrapping below
+    would find no ``layers`` to wrap and silently leave every layer's activations live.
     """
     if not enabled:
         return
     from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+
+    own_policy = getattr(encoder, "set_activation_checkpointing", None)
+    if callable(own_policy):
+        own_policy(enabled)
+        return
 
     pre_encode = getattr(encoder, "pre_encode", None)
     # ConformerEncoder.forward dispatches on ``isinstance(pre_encode, nn.Linear)``

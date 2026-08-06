@@ -35,8 +35,10 @@ from nemo.collections.asr.modules.conv_asr import (  # noqa: F401
     ParallelConvASREncoder,
     SpeakerDecoder,
 )
+from nemo.collections.asr.modules.ggemm_transformer_encoder import GGEMMTransformerEncoder  # noqa: F401
 from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint  # noqa: F401
 from nemo.collections.asr.modules.lstm_decoder import LSTMDecoder  # noqa: F401
+from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerEncoder  # noqa: F401
 from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder  # noqa: F401
 from nemo.collections.asr.modules.rnn_encoder import RNNEncoder  # noqa: F401
 from nemo.collections.asr.modules.rnnt import (  # noqa: F401
@@ -65,6 +67,8 @@ __all__ = [
     'ConformerEncoder',
     'ConformerEncoderAdapter',
     'ConformerMultiLayerFeatureExtractor',
+    'GGEMMTransformerEncoder',
+    'MoETransformerEncoder',
     'ParallelExpertEncoder',
     'ConvASRDecoder',
     'ConvASRDecoderClassification',

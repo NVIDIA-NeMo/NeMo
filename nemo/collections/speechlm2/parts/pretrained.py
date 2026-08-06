@@ -270,14 +270,35 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         map_location="cpu",
         strict=True,
     )
+    if (spk_kernel_scale := model.cfg.get("spk_kernel_scale", None)) is not None:
+        pe_encoder.spk_kernel_scale = float(spk_kernel_scale)
 
-    existing_encoder = model.perception.encoder
-    existing_d_model = int(getattr(existing_encoder, "d_model", -1))
+    # The OUTGOING encoder's width is deliberately not a constraint. It is about to be
+    # discarded, and a bundle whose speech expert is wider than `pretrained_asr`'s encoder
+    # is the normal case: PEE-v2 ships a 2048-wide MoE while canary-1b-v2 is 1024. What
+    # has to agree is everything DOWNSTREAM of the encoder, which the two checks below
+    # cover, plus the mel front end, which is checked here.
+    existing_d_model = int(getattr(model.perception.encoder, "d_model", -1))
     if existing_d_model > 0 and int(pe_encoder.d_model) != existing_d_model:
+        logging.info(
+            "ParallelExpertEncoder d_model=%d replaces a perception encoder of d_model=%d; "
+            "the pretrained %s encoder weights just loaded into it are discarded.",
+            int(pe_encoder.d_model),
+            existing_d_model,
+            model.cfg.get("pretrained_asr", "ASR"),
+        )
+
+    # The preprocessor is NOT replaced, so its mel count must match what the speech expert
+    # was trained on. Nothing downstream would catch a mismatch: it surfaces as a shape
+    # error inside the expert's first convolution, far from the cause.
+    pe_feat_in = int(getattr(pe_encoder, "_feat_in", -1) or -1)
+    mel_bins = model.cfg.get("perception", {}).get("preprocessor", {}).get("features", None)
+    if pe_feat_in > 0 and mel_bins is not None and int(mel_bins) != pe_feat_in:
         raise ValueError(
-            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match the "
-            f"existing perception encoder d_model={existing_d_model}. Re-export the "
-            "PE bundle with a matching ASR encoder or use a matching perception config."
+            f"ParallelExpertEncoder expects {pe_feat_in} mel bins but the perception "
+            f"preprocessor produces {int(mel_bins)} (from pretrained_asr="
+            f"{model.cfg.get('pretrained_asr')!r}). The preprocessor is not replaced by "
+            "the mount, so these must agree."
         )
 
     adapter_cfg = model.cfg.get("perception", {}).get("modality_adapter", {})
@@ -315,15 +336,27 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         pass
 
     model.perception.encoder = pe_encoder
+    # `merge_sound_expert_to_asr` is a route, not an on/off switch: False means the CTC
+    # event tags are injected, which reads backwards as a bare bool in a log line.
+    if pe_encoder.merge_sound_expert_to_asr:
+        sound_route = "encoder states"
+    else:
+        sound_route = f"{int(pe_encoder.n_sound_events)} CTC event tags"
+        if int(pe_encoder.n_sound_styles):
+            sound_route += f" + {int(pe_encoder.n_sound_styles)} style tags"
     logging.info(
         "Mounted ParallelExpertEncoder from %s onto model.perception.encoder "
-        "(d_model=%d, n_spk=%d, freeze_diar=%s, freeze_asr=%s); "
+        "(d_model=%d, n_spk=%d, frozen: speech=%s speaker=%s sound=%s, "
+        "sound->ASR via %s, spk_kernel_scale=%g); "
         "perception preprocessor normalization disabled (was %r).",
         pe_encoder_path,
         int(pe_encoder.d_model),
         int(pe_encoder.n_spk),
-        bool(pe_encoder.freeze_diar),
-        bool(pe_encoder.freeze_asr),
+        bool(pe_encoder.freeze_speech),
+        bool(pe_encoder.freeze_speaker),
+        bool(pe_encoder.freeze_sound),
+        sound_route,
+        float(pe_encoder.spk_kernel_scale),
         prev_normalize,
     )
 

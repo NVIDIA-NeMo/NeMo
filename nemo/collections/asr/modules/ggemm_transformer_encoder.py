@@ -75,11 +75,7 @@ _SDPA_BACKENDS = [
 ]
 
 from nemo.collections.asr.modules.moe_transformer_encoder import MoEFeedForward
-from nemo.collections.asr.modules.transformer_encoder import (
-    FeedForward,
-    TransformerEncoder,
-    TransformerEncoderConfig,
-)
+from nemo.collections.asr.modules.transformer_encoder import FeedForward, TransformerEncoderConfig
 from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking
 
 __all__ = [
@@ -319,7 +315,6 @@ class GroupedFeedForward(nn.Module):
         if len(ffns) == 0:
             raise ValueError("from_feedforwards requires at least one FeedForward.")
         w1_0 = ffns[0].net[0]
-        w2_0 = ffns[0].net[3]
         d_model = w1_0.in_features
         d_hidden = w1_0.out_features
         for i, ff in enumerate(ffns):
@@ -682,9 +677,9 @@ class GGEMMTransformerEncoder(nn.Module):
         With ``prefix`` / ``t_max`` set, the streaming cache is prepended to the
         projected embeddings before the norm and the result is right-padded to a
         common ``t_max`` (see :meth:`_prepend_prefix` / :meth:`_right_pad_to`).
-        ``return_pre_encode`` additionally yields the projected chunk embeddings
-        (pre-prefix, pre-norm) so a caller can push them into its cache without
-        recomputing the projection.
+        The final return value contains the projected chunk embeddings (pre-prefix,
+        pre-norm) when ``return_pre_encode`` is true, so a caller can update its
+        cache without recomputing the projection; otherwise it is ``None``.
         """
         if not bypass_pre_encode and audio_signal.shape[-2] != expert._feat_in:
             raise ValueError(f"Expert expects feat_in={expert._feat_in} on dim -2, got {audio_signal.shape[-2]}.")
@@ -751,9 +746,8 @@ class GGEMMTransformerEncoder(nn.Module):
                 mask_mod = _padding_mask_mod(length)
             block_mask = create_block_mask(mask_mod, B=B, H=1, Q_LEN=T, KV_LEN=T, device=x.device)
         layer_pos_emb = pos_emb if expert.self_attention_model == "rel_pos" else None
-        if return_pre_encode:
-            return x, layer_pos_emb, block_mask, length, (x_proj, proj_length)
-        return x, layer_pos_emb, block_mask, length
+        pre_encode_out = (x_proj, proj_length) if return_pre_encode else None
+        return x, layer_pos_emb, block_mask, length, pre_encode_out
 
     def _experts_pre(
         self,
@@ -833,7 +827,7 @@ class GGEMMTransformerEncoder(nn.Module):
                 out = {n: (self._right_pad_to(v[0], t_max),) + tuple(v[1:]) for n, v in out.items()}
             if return_pre_encode:
                 return ({n: v[:4] for n, v in out.items()}, {n: v[4] for n, v in out.items()})
-            return out
+            return {n: v[:4] for n, v in out.items()}
 
         feat_in = encs[names[0]]._feat_in
         if audio_signal.shape[-2] != feat_in:

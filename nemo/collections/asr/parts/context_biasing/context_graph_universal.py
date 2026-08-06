@@ -407,7 +407,11 @@ class ContextGraph:
                 if token not in node.next:
                     self.num_nodes += 1
                     is_end = i == len(tokens_with_merges) - 1
-                    node_score = acc_score
+                    if node_is_on_primary_path[i]:
+                        node_score = acc_score
+                    else:
+                        # penalize sub-splits, but the full path will still be equal to original score
+                        node_score = max(0.0, acc_score - node.node_score)
                     next_node = ContextState(
                         id=self.num_nodes,
                         token=token,

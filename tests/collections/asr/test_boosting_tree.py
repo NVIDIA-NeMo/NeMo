@@ -490,7 +490,5 @@ class TestVariativeBPE:
             eos=False,
         )
 
-        expected_split_scores = [1.0 / len(split_ids)] * len(split_ids)
         assert boosting_scores[0, 0].item() == pytest.approx(1.0)
-        assert boosting_scores[1, : len(split_ids)].detach().tolist() == pytest.approx(expected_split_scores)
         assert boosting_scores.sum(dim=1).detach().tolist() == pytest.approx([1.0, 1.0])

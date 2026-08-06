@@ -40,6 +40,10 @@ from typing import Optional
 import numpy as np
 
 from nemo.collections.common.tokenizers.tokenizer_spec import VarBPERepresentation
+from nemo.core.utils.optional_libs import GRAPHVIZ_AVAILABLE, graphviz_required
+
+if GRAPHVIZ_AVAILABLE:
+    import graphviz
 
 
 def _softmax(x: np.ndarray):
@@ -452,12 +456,13 @@ class ContextGraph:
                 node = next_node
         self._fill_fail_output()
 
+    @graphviz_required
     def draw(
         self,
         title: Optional[str] = None,
         filename: Optional[str] = "",
         symbol_table: Optional[dict[int, str]] = None,
-    ) -> "Digraph":  # noqa
+    ) -> "graphviz.Digraph":  # noqa
         """Visualize a ContextGraph via graphviz.
 
         Render ContextGraph as an image via graphviz, and return the Digraph object;
@@ -481,13 +486,6 @@ class ContextGraph:
         Returns:
           A Diagraph from grahpviz.
         """
-
-        try:
-            import graphviz
-        except Exception:
-            print("You cannot use `to_dot` unless the graphviz package is installed.")
-            raise
-
         graph_attr = {
             "rankdir": "LR",
             "size": "8.5,11",

@@ -212,7 +212,15 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         save_distributed_checkpoint: bool = True,
         process_group_backend: Optional[str] = None,
         timeout: Optional[timedelta] = default_pg_timeout,
+        timeout_minutes: Optional[float] = None,
     ) -> None:
+        # YAML-friendly override that avoids NeMo's _target_ allowlist blocking
+        # datetime.timedelta. Pass `timeout_minutes: <N>` in the strategy config
+        # to extend the c10d/PG init timeout (default ~10-30 min depending on
+        # Lightning/PyTorch version), useful when rank-0 model loading from
+        # Lustre exceeds the default before reaching init_process_group.
+        if timeout_minutes is not None:
+            timeout = timedelta(minutes=timeout_minutes)
         super().__init__(
             # These are unused because we override setup_environment(),
             # but the base class requires them.

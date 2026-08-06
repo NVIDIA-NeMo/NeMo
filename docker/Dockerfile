@@ -42,7 +42,7 @@
 ARG BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:26.04-cuda13.2-devel-ubuntu24.04
 FROM ${BASE_IMAGE} AS base-image
 ARG BASE_IMAGE
-ARG UV_VERSION=0.11.14
+ARG UV_VERSION=0.11.27
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TRANSFORMERS_OFFLINE=0
@@ -58,6 +58,9 @@ ENV PATH="/root/.local/bin:${VIRTUAL_ENV}/bin:${PATH}"
 
 RUN <<"EOF" bash -ex
 apt-get update
+apt-get install -y --only-upgrade --no-install-recommends \
+    libssl3t64 \
+    openssl
 apt-get install -y \
     curl \
     git
@@ -122,7 +125,7 @@ uv pip install \
     orjson
 
 case "$(nemo-cuda-flavor)" in
-    cu12) torchcodec_index=https://download.pytorch.org/whl/cu126 ;;
+    cu12) torchcodec_index=https://download.pytorch.org/whl/cu129 ;;
     cu13) torchcodec_index=https://download.pytorch.org/whl/cu132 ;;
 esac
 uv pip install --index-url "${torchcodec_index}" torchcodec
@@ -131,13 +134,14 @@ EOF
 FROM base-image AS automodel-deps
 ARG GPU_TARGET=h100plus
 ARG DEEPEP_REPO=https://github.com/deepseek-ai/DeepEP.git
-ARG DEEPEP_REF=v1.2.1
+ARG DEEPEP_REF=7febc6e25660af0f54d95dd781ecdcd62265ecca
 ARG FLASH_ATTN_MAX_JOBS=8
 ARG FLASH_ATTN_NVCC_THREADS=1
 
 ENV PIP_NO_CACHE_DIR=1
 
 COPY external/patches/deepep_v1_a100_disable_nvshmem.patch /tmp/patches/
+COPY external/patches/automodel_inline_shared_experts.patch /tmp/patches/
 RUN <<"EOF" bash -euxo pipefail
 apt-get update
 apt-get install -y \
@@ -221,6 +225,29 @@ uv sync \
     --group test
 nemo-install-cuda-python
 
+automodel_site_packages="$(
+    python - <<'PY'
+from pathlib import Path
+
+import nemo_automodel
+
+print(Path(nemo_automodel.__file__).resolve().parent.parent)
+PY
+)"
+patch --batch --forward --fuzz=0 \
+    -d "${automodel_site_packages}" \
+    -p1 \
+    < /tmp/patches/automodel_inline_shared_experts.patch
+python - <<'PY'
+import inspect
+
+from nemo_automodel.components.moe.layers import MoE
+
+source = inspect.getsource(MoE.forward)
+assert "_shared_experts_stream" not in source
+assert "computed inline on the main" in source
+PY
+
 if [[ "${GPU_TARGET}" == "a100" ]]; then
     git clone "${DEEPEP_REPO}" /opt/automodel-src/DeepEP
     git -C /opt/automodel-src/DeepEP checkout -f "${DEEPEP_REF}"
@@ -228,7 +255,6 @@ if [[ "${GPU_TARGET}" == "a100" ]]; then
     TORCH_CUDA_ARCH_LIST="${DEEPEP_TORCH_CUDA_ARCH_LIST}" \
         uv pip install \
         --no-build-isolation \
-        --no-deps \
         /opt/automodel-src/DeepEP
 fi
 
@@ -270,6 +296,15 @@ EOF
 FROM base-image
 COPY --from=automodel-deps /opt/venv /opt/venv
 
+# Prefer the locked wheel libraries so PyTorch and compiled extensions resolve one CUDA runtime stack.
+ENV PYTHON_SITE_PACKAGES="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages" \
+    CUDNN_HOME="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/cudnn" \
+    CURAND_HOME="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/curand" \
+    NVRTC_HOME="${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/nvidia/cuda_nvrtc" \
+    NVTE_FRAMEWORK=pytorch
+ENV LD_LIBRARY_PATH="${PYTHON_SITE_PACKAGES}/torch/lib:${PYTHON_SITE_PACKAGES}/nvidia/cublas/lib:${PYTHON_SITE_PACKAGES}/nvidia/cuda_cupti/lib:${PYTHON_SITE_PACKAGES}/nvidia/cuda_nvrtc/lib:${PYTHON_SITE_PACKAGES}/nvidia/cuda_runtime/lib:${PYTHON_SITE_PACKAGES}/nvidia/cudnn/lib:${PYTHON_SITE_PACKAGES}/nvidia/cufft/lib:${PYTHON_SITE_PACKAGES}/nvidia/cufile/lib:${PYTHON_SITE_PACKAGES}/nvidia/curand/lib:${PYTHON_SITE_PACKAGES}/nvidia/cusolver/lib:${PYTHON_SITE_PACKAGES}/nvidia/cusparse/lib:${PYTHON_SITE_PACKAGES}/nvidia/cusparselt/lib:${PYTHON_SITE_PACKAGES}/nvidia/nccl/lib:${PYTHON_SITE_PACKAGES}/nvidia/nvjitlink/lib:${PYTHON_SITE_PACKAGES}/nvidia/nvshmem/lib:${PYTHON_SITE_PACKAGES}/nvidia/nvtx/lib:${LD_LIBRARY_PATH}"
+
+ARG NVIDIA_BUILD_ID
 ENV NVIDIA_BUILD_ID=${NVIDIA_BUILD_ID:-<unknown>}
 LABEL com.nvidia.build.id="${NVIDIA_BUILD_ID}"
 ARG NVIDIA_BUILD_REF

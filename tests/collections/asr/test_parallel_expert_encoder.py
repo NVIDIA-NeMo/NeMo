@@ -227,8 +227,25 @@ def test_forward_online_output_length_telescopes(win, n_frames):
 
 
 # ----------------------------------------------------------------------------- #
-# ParallelExpertEncoderPT.is_pe_nemo
+# ParallelExpertEncoderPT checkpoint helpers
 # ----------------------------------------------------------------------------- #
+@pytest.mark.unit
+def test_extract_encoder_state_dict_selects_requested_expert_encoder():
+    state = {
+        "encoder.layers.0.weight": torch.tensor([1.0]),
+        "transformer_encoder.layers.0.weight": torch.tensor([2.0]),
+        "decoder.weight": torch.tensor([3.0]),
+    }
+
+    asr_encoder = ParallelExpertEncoderPT.extract_encoder_state_dict(state)
+    speaker_encoder = ParallelExpertEncoderPT.extract_encoder_state_dict(state, "transformer_encoder")
+
+    assert set(asr_encoder) == {"layers.0.weight"}
+    assert asr_encoder["layers.0.weight"] is state["encoder.layers.0.weight"]
+    assert set(speaker_encoder) == {"layers.0.weight"}
+    assert speaker_encoder["layers.0.weight"] is state["transformer_encoder.layers.0.weight"]
+
+
 def write_nemo(path, *, target=None, include_cfg=True):
     with tarfile.open(path, "w") as tf:
         if include_cfg:
@@ -458,6 +475,11 @@ def test_pe_encoder_builds_and_wires_all_three_experts():
     assert isinstance(enc.pee.experts["speech"], _MOE_ENCODER_CLS)
     assert isinstance(enc.pee.experts["speaker"], _TF_ENCODER_CLS)
     assert isinstance(enc.pee.experts["sound"], _TF_ENCODER_CLS)
+    # Decoder/head metadata belongs to PEE, not the generic GGEMM container.
+    assert enc.get_expert_task("speech") == "asr_tdt"
+    assert enc.get_expert_task("speaker") == "diarization"
+    assert enc.get_expert_task("sound") == "sound_rnnt"
+    assert not hasattr(enc.pee, "expert_tasks")
     # The speech expert is the backbone: it drives the drop-in ConformerEncoder props.
     assert enc.d_model == _ASR_D_MODEL
     assert enc.subsampling_factor == _SUBSAMPLING_FACTOR

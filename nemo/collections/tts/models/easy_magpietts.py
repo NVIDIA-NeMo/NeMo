@@ -932,7 +932,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             raise ValueError("normalizing_flow requires the codec encoder output for backbone teacher forcing.")
 
         semantic_codes = audio_codes
-        _, acoustic_embedding = self._codec_helper.split_prequantized_embedding(
+        _, acoustic_embedding = self._codec_helper.split_continuous_embedding(
             audio_embedding,
             num_semantic_codebooks=self.num_semantic_codebooks,
         )
@@ -1471,7 +1471,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 semantic_codes,
                 audio_codes_lens,
             )
-            _, acoustic_embedding = self._codec_helper.split_prequantized_embedding(
+            _, acoustic_embedding = self._codec_helper.split_continuous_embedding(
                 audio_embedding,
                 num_semantic_codebooks=self.num_semantic_codebooks,
             )
@@ -1724,7 +1724,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     )
                 )
                 semantic_user_audio = user_audio_codes
-                _, acoustic_user_audio = self._codec_helper.split_prequantized_embedding(
+                _, acoustic_user_audio = self._codec_helper.split_continuous_embedding(
                     user_audio_embedding,
                     num_semantic_codebooks=self.num_semantic_codebooks,
                 )

@@ -1320,7 +1320,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                             )
                         )
                         semantic_user_audio = user_audio_codes
-                        _, acoustic_user_audio = model._codec_helper.split_prequantized_embedding(
+                        _, acoustic_user_audio = model._codec_helper.split_continuous_embedding(
                             user_audio_embedding,
                             num_semantic_codebooks=model.num_semantic_codebooks,
                         )

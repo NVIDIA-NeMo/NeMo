@@ -66,7 +66,7 @@ model:
   use_text_conditioning_encoder: true # If true, distilbert will be used to encode context_text if provided.
   context_duration_min: 5.0
   context_duration_max: 5.0
-  # normalizing_flow needs target waveforms to build the pre-quantization target; set this false.
+  # normalizing_flow needs target waveforms to build the continuous FSQ-compressed target; set this false.
   load_cached_codes_if_available: true
   
   embedding_dim: 1536

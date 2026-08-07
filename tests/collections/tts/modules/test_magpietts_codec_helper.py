@@ -43,7 +43,7 @@ def test_codec_helper_decodes_semantic_tokens_with_continuous_acoustics():
     audio = torch.randn(1, 2400)
     audio_lens = torch.tensor([2400])
     codes, codes_lens, embedding = helper.audio_to_codes_and_embedding(audio, audio_lens)
-    _, acoustic = helper.split_prequantized_embedding(embedding)
+    _, acoustic = helper.split_continuous_embedding(embedding)
 
     with (
         patch.object(
@@ -74,13 +74,14 @@ def test_codec_helper_decodes_semantic_tokens_with_continuous_acoustics():
     torch.testing.assert_close(decoder_input[:, 5:], acoustic)
 
 
-def test_codec_helper_returns_and_splits_prequantized_embedding():
+def test_codec_helper_returns_and_splits_continuous_fsq_embedding():
     torch.manual_seed(42)
     codec = _semantic_acoustic_codec()
     helper = CodecHelper(codec)
     audio = torch.randn(2, 2400)
     audio_lens = torch.tensor([2400, 1920])
 
+    raw_embedding, raw_embedding_lens = helper.audio_to_prequantized_embedding(audio, audio_lens)
     codes, codes_lens, embedding = helper.audio_to_codes_and_embedding(audio, audio_lens)
     with patch.object(
         codec.vector_quantizer.fsqs[1],
@@ -90,13 +91,21 @@ def test_codec_helper_returns_and_splits_prequantized_embedding():
         semantic_codes, semantic_lens, semantic_embedding = helper.audio_to_semantic_codes_and_embedding(
             audio, audio_lens, num_semantic_codebooks=1
         )
-    semantic, acoustic = helper.split_prequantized_embedding(embedding)
+    semantic, acoustic = helper.split_continuous_embedding(embedding)
     dequantized = codec.dequantize(tokens=codes, tokens_len=codes_lens)
+
+    expected_groups = []
+    for raw_group, fsq_group in zip(raw_embedding.chunk(codec.num_codebooks, dim=1), codec.vector_quantizer.fsqs):
+        scale = (fsq_group.num_levels // 2).to(raw_group.dtype)
+        expected_groups.append(fsq_group.compress(inputs=raw_group, input_len=raw_embedding_lens) / scale)
+    expected_embedding = torch.cat(expected_groups, dim=1)
 
     assert semantic.shape == (2, 5, embedding.size(2))
     assert acoustic.shape == (2, 35, embedding.size(2))
     torch.testing.assert_close(semantic_codes, codes[:, :1])
     torch.testing.assert_close(semantic_lens, codes_lens)
     torch.testing.assert_close(semantic_embedding, embedding)
+    torch.testing.assert_close(embedding, expected_embedding)
+    assert not torch.allclose(raw_embedding, embedding)
     assert not torch.allclose(embedding, dequantized)
     assert not hasattr(helper, "acoustic_embedding_to_codes")

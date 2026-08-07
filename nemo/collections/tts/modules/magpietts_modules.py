@@ -396,20 +396,49 @@ class CodecHelper:
 
     def audio_to_codes(self, audio, audio_len, sample_rate=None):
         """Encode audio waveforms into codec codes."""
-        codes, codes_len, _ = self.audio_to_codes_and_embedding(audio, audio_len, sample_rate=sample_rate)
-        return codes, codes_len
+        embedding, embedding_len = self.audio_to_prequantized_embedding(audio, audio_len, sample_rate=sample_rate)
+        with torch.no_grad(), torch.autocast(device_type=audio.device.type, enabled=False):
+            codes = self.codec_model.quantize(encoded=embedding, encoded_len=embedding_len)
+        return codes, embedding_len
 
-    def audio_to_embedding(self, audio, audio_len, sample_rate=None):
-        """Return the continuous codec encoder output before any quantization."""
+    def audio_to_prequantized_embedding(self, audio, audio_len, sample_rate=None):
+        """Return raw codec encoder logits before FSQ compression and rounding."""
         self.codec_model.eval()
         with torch.no_grad(), torch.autocast(device_type=audio.device.type, enabled=False):
             return self.codec_model.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
 
+    def _continuous_fsq_embedding(
+        self,
+        prequantized_embedding: torch.Tensor,
+        embedding_len: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply each FSQ group's bounded compression and normalization, without rounding."""
+        quantizer_groups = self._independent_quantizer_groups()
+        grouped_inputs = prequantized_embedding.chunk(self.codec_model.num_codebooks, dim=1)
+        continuous_groups = []
+        for group_input, quantizer_group in zip(grouped_inputs, quantizer_groups):
+            compress = getattr(quantizer_group, "compress", None)
+            num_levels = getattr(quantizer_group, "num_levels", None)
+            if compress is None or num_levels is None:
+                raise ValueError("Continuous acoustic embeddings require grouped finite scalar quantizers (FSQ).")
+            scale = (num_levels // 2).to(device=group_input.device, dtype=group_input.dtype)
+            compressed = compress(inputs=group_input.float(), input_len=embedding_len)
+            continuous_groups.append((compressed / scale).to(group_input.dtype))
+        return torch.cat(continuous_groups, dim=1)
+
+    def audio_to_embedding(self, audio, audio_len, sample_rate=None):
+        """Return normalized continuous FSQ values after compression but before rounding."""
+        embedding, embedding_len = self.audio_to_prequantized_embedding(audio, audio_len, sample_rate=sample_rate)
+        return self._continuous_fsq_embedding(embedding, embedding_len), embedding_len
+
     def audio_to_codes_and_embedding(self, audio, audio_len, sample_rate=None):
-        """Return all codec tokens and the continuous encoder output for legacy discrete models."""
-        embedding, embedding_len = self.audio_to_embedding(audio, audio_len, sample_rate=sample_rate)
+        """Return all codec tokens and normalized continuous pre-rounding FSQ values."""
+        prequantized_embedding, embedding_len = self.audio_to_prequantized_embedding(
+            audio, audio_len, sample_rate=sample_rate
+        )
         with torch.no_grad(), torch.autocast(device_type=audio.device.type, enabled=False):
-            codes = self.codec_model.quantize(encoded=embedding, encoded_len=embedding_len)
+            codes = self.codec_model.quantize(encoded=prequantized_embedding, encoded_len=embedding_len)
+            embedding = self._continuous_fsq_embedding(prequantized_embedding, embedding_len)
         return codes, embedding_len, embedding
 
     def _independent_quantizer_groups(self):
@@ -439,16 +468,21 @@ class CodecHelper:
                 f"num_semantic_codebooks must be in [1, {self.codec_model.num_codebooks - 1}], "
                 f"got {num_semantic_codebooks}."
             )
-        embedding, embedding_len = self.audio_to_embedding(audio, audio_len, sample_rate=sample_rate)
+        prequantized_embedding, embedding_len = self.audio_to_prequantized_embedding(
+            audio, audio_len, sample_rate=sample_rate
+        )
         quantizer_groups = self._independent_quantizer_groups()
         group_dim = self._embedding_dim_per_codebook()
         semantic_indices = []
         with torch.no_grad(), torch.autocast(device_type=audio.device.type, enabled=False):
             for group_index in range(num_semantic_codebooks):
-                group_input = embedding[:, group_index * group_dim : (group_index + 1) * group_dim].float()
+                group_input = prequantized_embedding[
+                    :, group_index * group_dim : (group_index + 1) * group_dim
+                ].float()
                 semantic_indices.append(
                     quantizer_groups[group_index].encode(inputs=group_input, input_len=embedding_len)
                 )
+            embedding = self._continuous_fsq_embedding(prequantized_embedding, embedding_len)
         semantic_codes = torch.cat(semantic_indices, dim=0).permute(1, 0, 2).contiguous()
         return semantic_codes, embedding_len, embedding
 
@@ -463,12 +497,12 @@ class CodecHelper:
             )
         return codebook_dim // num_codebooks
 
-    def split_prequantized_embedding(
+    def split_continuous_embedding(
         self,
         embedding: torch.Tensor,
         num_semantic_codebooks: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Split a codec encoder output into its semantic and acoustic channel groups."""
+        """Split continuous, compressed FSQ values into semantic and acoustic groups."""
         if not 0 < num_semantic_codebooks < self.codec_model.num_codebooks:
             raise ValueError(
                 f"num_semantic_codebooks must be in [1, {self.codec_model.num_codebooks - 1}], "
@@ -480,6 +514,14 @@ class CodecHelper:
 
         semantic_dim = num_semantic_codebooks * self._embedding_dim_per_codebook()
         return embedding[:, :semantic_dim], embedding[:, semantic_dim:]
+
+    def split_prequantized_embedding(
+        self,
+        embedding: torch.Tensor,
+        num_semantic_codebooks: int = 1,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Deprecated alias for :meth:`split_continuous_embedding`."""
+        return self.split_continuous_embedding(embedding, num_semantic_codebooks)
 
     def semantic_codes_to_embedding(
         self,

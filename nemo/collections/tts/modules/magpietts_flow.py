@@ -462,7 +462,7 @@ class PointwiseCouplingBlock(nn.Module):
 
 
 class OneShotLocalFlow(nn.Module):
-    """Conditional pointwise flow over a pre-quantization acoustic codec embedding."""
+    """Conditional pointwise flow over a continuous FSQ-compressed acoustic codec embedding."""
 
     def __init__(
         self,

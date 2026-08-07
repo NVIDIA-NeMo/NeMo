@@ -748,13 +748,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                         audio, audio_len, self.num_semantic_codebooks
                     )
                 )
-                _, sil_acoustic = self._codec_helper.split_prequantized_embedding(
+                _, sil_acoustic = self._codec_helper.split_continuous_embedding(
                     sil_embedding, num_semantic_codebooks=self.num_semantic_codebooks
                 )
             else:
-                sil_codes_raw, sil_codes_lens, sil_embedding = self._codec_helper.audio_to_codes_and_embedding(
-                    audio, audio_len
-                )
+                sil_codes_raw, sil_codes_lens = self._codec_helper.audio_to_codes(audio, audio_len)
 
             frames_raw = sil_codes_raw[0].transpose(0, 1)
             combos_raw = [tuple(frame.tolist()) for frame in frames_raw]
@@ -1472,7 +1470,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     "or context_audio_embedding."
                 )
             semantic_context = context_audio_codes
-            _, acoustic_context = self._codec_helper.split_prequantized_embedding(
+            _, acoustic_context = self._codec_helper.split_continuous_embedding(
                 context_audio_embedding,
                 num_semantic_codebooks=self.num_semantic_codebooks,
             )
@@ -2862,7 +2860,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
                 if self.local_transformer_type == LocalTransformerType.FLOW:
                     semantic_codes = gt_audio_codes
-                    _, acoustic_embedding = self._codec_helper.split_prequantized_embedding(
+                    _, acoustic_embedding = self._codec_helper.split_continuous_embedding(
                         gt_audio_embedding,
                         num_semantic_codebooks=self.num_semantic_codebooks,
                     )

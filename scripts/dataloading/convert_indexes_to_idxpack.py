@@ -230,6 +230,25 @@ def _require_scalar_spec(value, field: str) -> None:
         )
 
 
+def _is_nonempty_flat_path_list(value) -> bool:
+    return (
+        isinstance(value, (list, tuple, ListConfig))
+        and bool(value)
+        and all(isinstance(item, (str, Path)) for item in value)
+    )
+
+
+def _require_scalar_or_flat_path_list(value, field: str) -> None:
+    if isinstance(value, (str, Path)):
+        return
+    if _is_nonempty_flat_path_list(value):
+        return
+    raise ValueError(
+        f"Packed native NeMo {field} must be a string/Path or a non-empty flat "
+        "list of strings/Paths; nested and weighted list forms are not supported."
+    )
+
+
 def _shard_number(path: str) -> int | None:
     matches = re.findall(r"\d+", Path(path).stem)
     return int(matches[-1]) if matches else None
@@ -254,6 +273,29 @@ def _validate_native_pair(manifests: list[str], tars: list[str]) -> None:
             "Native NeMo manifest/tar shards are not positionally aligned: "
             f"manifest ids={manifest_ids}, tar ids={tar_ids}"
         )
+
+
+def _expand_flat_native_pairs(manifest_specs, tar_specs) -> tuple[list[str], list[str]]:
+    if len(manifest_specs) != len(tar_specs):
+        raise ValueError(
+            "Packed native NeMo flat lists require one tar path spec per "
+            f"manifest path spec: manifests={len(manifest_specs)}, tars={len(tar_specs)}"
+        )
+
+    manifests: list[str] = []
+    tars: list[str] = []
+    for position, (manifest_spec, tar_spec) in enumerate(zip(manifest_specs, tar_specs)):
+        pair_manifests = _expand_jsonl(manifest_spec)
+        pair_tars = _expand_tars(tar_spec)
+        if len(pair_manifests) != len(pair_tars):
+            raise ValueError(
+                "Packed native NeMo flat lists require each positional manifest/tar "
+                f"pair to expand to the same number of shards; position={position}, "
+                f"manifests={len(pair_manifests)}, tars={len(pair_tars)}"
+            )
+        manifests.extend(pair_manifests)
+        tars.extend(pair_tars)
+    return manifests, tars
 
 
 def discover_pack_collections(
@@ -305,8 +347,34 @@ def discover_pack_collections(
 
     if typ in {"nemo", "nemo_tarred", "share_gpt", *_TRANSFORM_TYPES} and entry.get("manifest_filepath") is not None:
         raw = entry.get("manifest_filepath")
-        _require_scalar_spec(raw, "manifest_filepath")
-        manifests = _expand_jsonl(raw)
+        if typ == "share_gpt":
+            _require_scalar_spec(raw, "manifest_filepath")
+        else:
+            _require_scalar_or_flat_path_list(raw, "manifest_filepath")
+        raw_tars = entry.get("tarred_audio_filepaths")
+        if raw_tars is None:
+            manifests = _expand_jsonl(raw)
+            tars = None
+        else:
+            if typ == "share_gpt":
+                raise NotImplementedError(
+                    "Packed ShareGPT supports JSONL manifests with direct/remote "
+                    "audio paths, not paired audio tar files."
+                )
+            _require_scalar_or_flat_path_list(raw_tars, "tarred_audio_filepaths")
+            manifest_is_flat_list = _is_nonempty_flat_path_list(raw)
+            tar_is_flat_list = _is_nonempty_flat_path_list(raw_tars)
+            if manifest_is_flat_list != tar_is_flat_list:
+                raise ValueError(
+                    "Packed native NeMo manifest_filepath and tarred_audio_filepaths "
+                    "must both use scalar path specs or both use non-empty flat lists."
+                )
+            if manifest_is_flat_list:
+                manifests, tars = _expand_flat_native_pairs(raw, raw_tars)
+            else:
+                manifests = _expand_jsonl(raw)
+                tars = _expand_tars(raw_tars)
+                _validate_native_pair(manifests, tars)
         _add_collection(
             collections,
             role="manifest",
@@ -314,16 +382,7 @@ def discover_pack_collections(
             source_spec=raw,
             paths=manifests,
         )
-        if entry.get("tarred_audio_filepaths") is not None:
-            if typ == "share_gpt":
-                raise NotImplementedError(
-                    "Packed ShareGPT supports JSONL manifests with direct/remote "
-                    "audio paths, not paired audio tar files."
-                )
-            raw_tars = entry.get("tarred_audio_filepaths")
-            _require_scalar_spec(raw_tars, "tarred_audio_filepaths")
-            tars = _expand_tars(raw_tars)
-            _validate_native_pair(manifests, tars)
+        if tars is not None:
             _add_collection(
                 collections,
                 role="tar",

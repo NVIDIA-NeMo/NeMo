@@ -28,7 +28,7 @@ model:
   context_duration_min: 3.0
   context_duration_max: 10.0
 
-  # The flow target is the codec encoder output before quantization.
+  # The flow target and autoregressive acoustic input are codec encoder outputs before quantization.
   load_cached_codes_if_available: false
   local_transformer_type: normalizing_flow
   frame_stacking_factor: 1

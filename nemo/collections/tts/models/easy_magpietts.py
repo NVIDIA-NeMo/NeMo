@@ -410,6 +410,81 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         return wandb_audio_log
 
+    def log_val_flow_audio_example(self, batch):
+        """Log teacher-forced flow predictions without constructing acoustic codec tokens."""
+        max_decoder_steps = (
+            int(batch['audio_lens'].max().item()) // (self.codec_model_samples_per_frame * self.frame_stacking_factor)
+            + 2
+        )
+        infer_output = self.infer_batch(
+            batch=batch,
+            max_decoder_steps=max_decoder_steps,
+            temperature=0.0,
+            topk=1,
+            use_cfg=False,
+            cfg_scale=1.0,
+            use_local_transformer_for_inference=True,
+            phoneme_input_type='gt',
+            phoneme_sampling_method='argmax',
+            use_teacher_forced=True,
+            use_inference_mode=True,
+        )
+
+        wandb_audio_log = {}
+        context_audio = batch.get('context_audio')
+        context_audio_lens = batch.get('context_audio_lens')
+        target_audio = batch['audio']
+        target_audio_lens = batch['audio_lens']
+        for logger in self.loggers:
+            is_wandb = isinstance(logger, WandbLogger)
+            is_tb = isinstance(logger, TensorBoardLogger)
+            if not is_wandb and not is_tb:
+                raise ValueError(
+                    f"Invalid logger type for audio logging: {type(logger)}. "
+                    "Only `WandbLogger` and `TensorBoardLogger` are supported."
+                )
+
+            for idx in range(min(3, infer_output.predicted_audio.size(0))):
+                prediction = infer_output.predicted_audio[idx, : infer_output.predicted_audio_lens[idx]]
+                target = target_audio[idx, : target_audio_lens[idx]]
+                context = None
+                if context_audio is not None:
+                    context = context_audio[idx, : context_audio_lens[idx]]
+
+                if is_wandb:
+                    key = f"Audio_TeacherForcedFlow/Example_{idx}"
+                    wandb_audio_log[key] = []
+                    if context is not None:
+                        wandb_audio_log[key].append(
+                            wandb.Audio(
+                                context.float().detach().cpu().numpy(),
+                                sample_rate=self.sample_rate,
+                                caption="context",
+                            )
+                        )
+                    wandb_audio_log[key].append(
+                        wandb.Audio(
+                            prediction.float().detach().cpu().numpy(),
+                            sample_rate=self.output_sample_rate,
+                            caption="prediction_teacher_forced_flow",
+                        )
+                    )
+                    wandb_audio_log[key].append(
+                        wandb.Audio(
+                            target.float().detach().cpu().numpy(),
+                            sample_rate=self.sample_rate,
+                            caption="target",
+                        )
+                    )
+                elif is_tb:
+                    logger.experiment.add_audio(
+                        f'Example_{idx}/prediction_teacher_forced_flow',
+                        prediction,
+                        global_step=self.global_step,
+                        sample_rate=self.output_sample_rate,
+                    )
+        return wandb_audio_log
+
     def prepare_text_channel_embeddings(
         self,
         text: torch.Tensor,
@@ -843,6 +918,133 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             loss_agent_mask,
         )
 
+    def prepare_flow_audio_channel_embeddings(
+        self,
+        audio_codes: torch.Tensor,
+        audio_codes_lens: torch.Tensor,
+        audio_embedding: torch.Tensor,
+        delay: torch.Tensor,
+        speech_eos_mask: Optional[torch.Tensor] = None,
+        agent_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """Prepare teacher-forced semantic tokens plus continuous acoustic states."""
+        if audio_embedding is None:
+            raise ValueError("normalizing_flow requires the codec encoder output for backbone teacher forcing.")
+
+        semantic_codes = audio_codes
+        _, acoustic_embedding = self._codec_helper.split_prequantized_embedding(
+            audio_embedding,
+            num_semantic_codebooks=self.num_semantic_codebooks,
+        )
+        semantic_sequence, acoustic_sequence, sequence_lens = self.prepare_flow_audio_state_sequence(
+            semantic_codes=semantic_codes,
+            codes_lens=audio_codes_lens,
+            acoustic_embedding=acoustic_embedding,
+            bos_id=self.audio_bos_id,
+            eos_id=self.audio_eos_id,
+            num_eos_tokens=1 if speech_eos_mask is None else 0,
+        )
+
+        semantic_before_speech_eos = None
+        acoustic_before_speech_eos = None
+        if speech_eos_mask is not None:
+            semantic_before_speech_eos = semantic_sequence.clone()
+            acoustic_before_speech_eos = acoustic_sequence.clone()
+            batch_size, mask_steps = speech_eos_mask.shape
+            shifted_mask = torch.zeros((batch_size, mask_steps + 2), dtype=torch.bool, device=audio_codes.device)
+            shifted_mask[:, 2:] = speech_eos_mask
+            overlap = min(shifted_mask.size(1), semantic_sequence.size(2))
+            frame_mask = shifted_mask[:, :overlap]
+            semantic_sequence[:, :, :overlap] = torch.where(
+                frame_mask.unsqueeze(1),
+                torch.full_like(semantic_sequence[:, :, :overlap], self.audio_eos_id),
+                semantic_sequence[:, :, :overlap],
+            )
+            acoustic_sequence[:, :, :overlap] = torch.where(
+                frame_mask.unsqueeze(1),
+                torch.zeros_like(acoustic_sequence[:, :, :overlap]),
+                acoustic_sequence[:, :, :overlap],
+            )
+
+        target_lens = sequence_lens - 1
+        semantic_targets = semantic_sequence[:, :, 1:]
+        semantic_inputs = semantic_sequence[:, :, :-1]
+        acoustic_inputs = acoustic_sequence[:, :, :-1]
+
+        if speech_eos_mask is not None and self.training:
+            drop_sample_prob = float(self.cfg.get("drop_eos_from_audio_input_sample_prob", 0.0))
+            drop_frame_prob = float(self.cfg.get("drop_eos_from_audio_input_frame_prob", 0.5))
+            if drop_sample_prob > 0.0 and drop_frame_prob > 0.0:
+                eos_frame_mask = (semantic_inputs == self.audio_eos_id).any(dim=1)
+                sample_mask = torch.rand(semantic_inputs.size(0), device=semantic_inputs.device) < drop_sample_prob
+                restore_mask = (
+                    eos_frame_mask
+                    & sample_mask.unsqueeze(1)
+                    & (torch.rand_like(eos_frame_mask.float()) < drop_frame_prob)
+                )
+                semantic_inputs = torch.where(
+                    restore_mask.unsqueeze(1), semantic_before_speech_eos[:, :, :-1], semantic_inputs
+                )
+                acoustic_inputs = torch.where(
+                    restore_mask.unsqueeze(1), acoustic_before_speech_eos[:, :, :-1], acoustic_inputs
+                )
+
+        loss_agent_mask = None
+        if agent_mask is not None:
+            target_steps = semantic_targets.size(2)
+            if agent_mask.size(1) < target_steps:
+                agent_mask = torch.nn.functional.pad(agent_mask.bool(), (0, target_steps - agent_mask.size(1)))
+            else:
+                agent_mask = agent_mask[:, :target_steps].bool()
+            valid = get_mask_from_lengths(target_lens, x=semantic_targets).bool().to(semantic_targets.device)
+            target_agent_mask = agent_mask.to(semantic_targets.device) & valid
+            eos_any = (semantic_targets == self.audio_eos_id).any(dim=1) & valid
+            eos_prev = torch.zeros_like(eos_any)
+            eos_prev[:, :-1] = eos_any[:, 1:]
+            target_agent_mask = target_agent_mask | eos_prev | eos_any
+            loss_agent_mask = target_agent_mask
+
+            input_agent_mask = torch.zeros_like(target_agent_mask)
+            input_agent_mask[:, 1:] = target_agent_mask[:, :-1]
+            input_agent_mask[:, 0] = True
+            input_valid = torch.zeros_like(valid)
+            input_valid[:, 1:] = valid[:, :-1]
+            input_valid[:, 0] = valid[:, 0]
+
+            if self.cfg.get("use_user_speaking_token", False):
+                input_non_agent = (~input_agent_mask) & input_valid
+                target_non_agent = (~target_agent_mask) & valid
+                semantic_inputs = torch.where(
+                    input_non_agent.unsqueeze(1),
+                    torch.full_like(semantic_inputs, self.audio_user_speaking_id),
+                    semantic_inputs,
+                )
+                acoustic_inputs = acoustic_inputs.masked_fill(input_non_agent.unsqueeze(1), 0.0)
+                semantic_targets = torch.where(
+                    target_non_agent.unsqueeze(1),
+                    torch.full_like(semantic_targets, self.audio_user_speaking_id),
+                    semantic_targets,
+                )
+
+            if self.cfg.get("use_user_speaking_end_token", False):
+                user_to_agent = torch.zeros_like(target_agent_mask)
+                user_to_agent[:, 1:] = target_agent_mask[:, 1:] & (~target_agent_mask[:, :-1]) & valid[:, 1:]
+                semantic_inputs = torch.where(
+                    user_to_agent.unsqueeze(1),
+                    torch.full_like(semantic_inputs, self.audio_user_speaking_end_id),
+                    semantic_inputs,
+                )
+                acoustic_inputs = acoustic_inputs.masked_fill(user_to_agent.unsqueeze(1), 0.0)
+
+        audio_embedded = self.embed_flow_audio_state(semantic_inputs, acoustic_inputs)
+        max_delay = delay.max().item()
+        zero_delay = audio_embedded.new_zeros(audio_embedded.size(0), max_delay, audio_embedded.size(2))
+        channel_embedding, channel_lens = self.join_embeddings_temporally(
+            embeddings=[zero_delay, audio_embedded],
+            lengths=[delay, target_lens],
+        )
+        return channel_embedding, channel_lens, semantic_targets, target_lens, loss_agent_mask
+
     def slice_sequence_embeddings(self, sequence_embeddings, context_lens, target_lens):
         """
         Slices sequence embeddings to get the predicted embeddings for the target sequence.
@@ -882,6 +1084,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         context_audio_codes_lens: torch.Tensor,
         audio_embedding: Optional[torch.Tensor] = None,
         audio_embedding_lens: Optional[torch.Tensor] = None,
+        context_audio_embedding: Optional[torch.Tensor] = None,
         phoneme_tokens: Optional[torch.Tensor] = None,
         phoneme_tokens_lens: Optional[torch.Tensor] = None,
         phoneme_turn_dropout: Optional[torch.Tensor] = None,
@@ -962,6 +1165,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 context_text_tokens_lens=context_text_tokens_lens,
                 context_audio_codes=context_audio_codes,
                 context_audio_codes_lens=context_audio_codes_lens,
+                context_audio_embedding=context_audio_embedding,
                 training_mode=selected_training_mode,
                 dropout_conditional_input=dropout_conditional_input,
             )
@@ -1044,12 +1248,23 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             audio_codes_target,
             audio_codes_lens_target,
             agent_mask,
-        ) = self.prepare_audio_channel_embeddings(
-            audio_codes=audio_codes,
-            audio_codes_lens=audio_codes_lens,
-            delay=audio_delay,
-            speech_eos_mask=speech_eos_mask,
-            agent_mask=agent_mask,
+        ) = (
+            self.prepare_flow_audio_channel_embeddings(
+                audio_codes=audio_codes,
+                audio_codes_lens=audio_codes_lens,
+                audio_embedding=audio_embedding,
+                delay=audio_delay,
+                speech_eos_mask=speech_eos_mask,
+                agent_mask=agent_mask,
+            )
+            if self.local_transformer_type == LocalTransformerType.FLOW
+            else self.prepare_audio_channel_embeddings(
+                audio_codes=audio_codes,
+                audio_codes_lens=audio_codes_lens,
+                delay=audio_delay,
+                speech_eos_mask=speech_eos_mask,
+                agent_mask=agent_mask,
+            )
         )
 
         # 6. Sum the channel embeddings element-wise
@@ -1213,17 +1428,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         # Compute codebook loss
         if self.local_transformer_type == LocalTransformerType.FLOW:
-            semantic_channels = self.num_semantic_codebooks * self.frame_stacking_factor
-            semantic_logits = logits.view(
-                logits.size(0),
-                logits.size(1),
-                self.num_audio_codebooks * self.frame_stacking_factor,
-                self.num_all_tokens_per_codebook,
-            )[:, :, :semantic_channels]
-            semantic_logits = semantic_logits.reshape(semantic_logits.size(0), semantic_logits.size(1), -1)
             codebook_loss, _ = self.compute_loss(
-                semantic_logits,
-                audio_codes_target[:, :semantic_channels],
+                logits,
+                audio_codes_target,
                 audio_codes_lens_target,
                 agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
             )
@@ -1259,7 +1466,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             if not torch.equal(audio_embedding_lens.to(audio_codes_lens.device), audio_codes_lens):
                 raise ValueError("Pre-quantization embedding lengths must match target codec-code lengths.")
 
-            semantic_codes = audio_codes[:, : self.num_semantic_codebooks]
+            semantic_codes = audio_codes
             semantic_embedding = self._codec_helper.semantic_codes_to_embedding(
                 semantic_codes,
                 audio_codes_lens,
@@ -1407,7 +1614,18 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         )
 
     def training_step(self, batch, batch_idx):
-        if 'context_audio_codes' in batch:
+        context_audio_embedding = None
+        if self.local_transformer_type == LocalTransformerType.FLOW:
+            if 'context_audio' not in batch:
+                raise ValueError(
+                    "normalizing_flow requires raw context audio; set model.load_cached_codes_if_available=false."
+                )
+            context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
+                self._codec_helper.audio_to_semantic_codes_and_embedding(
+                    batch['context_audio'], batch['context_audio_lens'], self.num_semantic_codebooks
+                )
+            )
+        elif 'context_audio_codes' in batch:
             context_audio_codes = batch['context_audio_codes']
             context_audio_codes_lens = batch['context_audio_codes_lens']
         else:
@@ -1424,8 +1642,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 raise ValueError(
                     "normalizing_flow requires target audio; set model.load_cached_codes_if_available=false."
                 )
-            audio_codes, audio_codes_lens, audio_embedding = self._codec_helper.audio_to_codes_and_embedding(
-                batch['audio'], batch['audio_lens']
+            audio_codes, audio_codes_lens, audio_embedding = self._codec_helper.audio_to_semantic_codes_and_embedding(
+                batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
             )
             audio_embedding_lens = audio_codes_lens
         elif 'audio_codes' in batch:
@@ -1499,27 +1717,50 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 if silence_mask.any():
                     user_audio[silence_mask] = 0.0
 
-            user_audio_codes, user_audio_codes_lens = self._codec_helper.audio_to_codes(
-                user_audio,
-                user_audio_lens,
-            )
+            if self.local_transformer_type == LocalTransformerType.FLOW:
+                user_audio_codes, user_audio_codes_lens, user_audio_embedding = (
+                    self._codec_helper.audio_to_semantic_codes_and_embedding(
+                        user_audio, user_audio_lens, self.num_semantic_codebooks
+                    )
+                )
+                semantic_user_audio = user_audio_codes
+                _, acoustic_user_audio = self._codec_helper.split_prequantized_embedding(
+                    user_audio_embedding,
+                    num_semantic_codebooks=self.num_semantic_codebooks,
+                )
+                valid_frames = get_mask_from_lengths(user_audio_codes_lens, x=acoustic_user_audio).unsqueeze(1)
+                acoustic_user_audio = acoustic_user_audio * valid_frames.to(acoustic_user_audio.dtype)
+                semantic_user_audio, user_audio_codes_lens = self.stack_codes(
+                    semantic_user_audio,
+                    user_audio_codes_lens,
+                    self.audio_bos_id,
+                    self.audio_eos_id,
+                    self.frame_stacking_factor,
+                    self.num_semantic_codebooks,
+                )
+                acoustic_user_audio = self.stack_codec_embeddings(acoustic_user_audio, self.frame_stacking_factor)
+                user_audio_embedded = self.embed_flow_audio_state(semantic_user_audio, acoustic_user_audio)
+            else:
+                user_audio_codes, user_audio_codes_lens = self._codec_helper.audio_to_codes(
+                    user_audio,
+                    user_audio_lens,
+                )
 
-            if self._codec_converter is not None:
-                user_audio_codes = self._codec_converter.convert_original_to_new(
-                    audio_tokens=user_audio_codes,
-                    audio_lens=user_audio_codes_lens,
-                ).long()
+                if self._codec_converter is not None:
+                    user_audio_codes = self._codec_converter.convert_original_to_new(
+                        audio_tokens=user_audio_codes,
+                        audio_lens=user_audio_codes_lens,
+                    ).long()
 
-            user_audio_codes, user_audio_codes_lens = self.stack_codes(
-                user_audio_codes,
-                user_audio_codes_lens,
-                self.audio_bos_id,
-                self.audio_eos_id,
-                self.frame_stacking_factor,
-                self.num_audio_codebooks,
-            )
-
-            user_audio_embedded = self.embed_audio_tokens(user_audio_codes)
+                user_audio_codes, user_audio_codes_lens = self.stack_codes(
+                    user_audio_codes,
+                    user_audio_codes_lens,
+                    self.audio_bos_id,
+                    self.audio_eos_id,
+                    self.frame_stacking_factor,
+                    self.num_audio_codebooks,
+                )
+                user_audio_embedded = self.embed_audio_tokens(user_audio_codes)
 
             B = batch["text"].shape[0]
             T = batch["text"].shape[1]
@@ -1634,6 +1875,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_audio_codes_lens=context_audio_codes_lens,
             audio_embedding=audio_embedding,
             audio_embedding_lens=audio_embedding_lens,
+            context_audio_embedding=context_audio_embedding,
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             phoneme_turn_dropout=batch.get('phoneme_turn_dropout'),
@@ -1710,7 +1952,18 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             f"world_size: {self.trainer.world_size}, "
             f"batch_idx: {batch_idx}"
         )
-        if 'context_audio_codes' in batch:
+        context_audio_embedding = None
+        if self.local_transformer_type == LocalTransformerType.FLOW:
+            if 'context_audio' not in batch:
+                raise ValueError(
+                    "normalizing_flow requires raw context audio; set model.load_cached_codes_if_available=false."
+                )
+            context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
+                self._codec_helper.audio_to_semantic_codes_and_embedding(
+                    batch['context_audio'], batch['context_audio_lens'], self.num_semantic_codebooks
+                )
+            )
+        elif 'context_audio_codes' in batch:
             context_audio_codes = batch['context_audio_codes']
             context_audio_codes_lens = batch['context_audio_codes_lens']
         else:
@@ -1727,8 +1980,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 raise ValueError(
                     "normalizing_flow requires target audio; set model.load_cached_codes_if_available=false."
                 )
-            audio_codes, audio_codes_lens, audio_embedding = self._codec_helper.audio_to_codes_and_embedding(
-                batch['audio'], batch['audio_lens']
+            audio_codes, audio_codes_lens, audio_embedding = self._codec_helper.audio_to_semantic_codes_and_embedding(
+                batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
             )
             audio_embedding_lens = audio_codes_lens
         elif 'audio_codes' in batch:
@@ -1750,6 +2003,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_audio_codes_lens=context_audio_codes_lens,
             audio_embedding=audio_embedding,
             audio_embedding_lens=audio_embedding_lens,
+            context_audio_embedding=context_audio_embedding,
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             mode="val",
@@ -1771,12 +2025,21 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             # Prepare dictionary for aggregated wandb logging
             wandb_log_dict = {}
 
-            # Get audio data for logging
-            wandb_log_dict.update(
-                self.log_val_audio_example(
-                    logits, audio_codes_target, audio_codes_lens_target, context_audio_codes, context_audio_codes_lens
+            # Flow predictions must be decoded from semantic tokens plus the
+            # continuous acoustic embedding produced by the flow. The legacy
+            # logger decodes a full set of discrete codec codebooks.
+            if self.local_transformer_type == LocalTransformerType.FLOW:
+                wandb_log_dict.update(self.log_val_flow_audio_example(batch))
+            else:
+                wandb_log_dict.update(
+                    self.log_val_audio_example(
+                        logits,
+                        audio_codes_target,
+                        audio_codes_lens_target,
+                        context_audio_codes,
+                        context_audio_codes_lens,
+                    )
                 )
-            )
 
             # Perform single wandb log call if wandb is active and there is data
             for logger in self.loggers:
@@ -1816,19 +2079,24 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             # Save predicted and context audio, collect paths for metrics
             predicted_audio_paths = []
             context_audio_paths = []
+            generated_wandb_log = {}
 
-            context_audio_codes_cleaned, context_audio_codes_lens_cleaned = remove_special_tokens(
-                codes=context_audio_codes,
-                codes_len=context_audio_codes_lens,
-            )
-            context_audio_codes_cleaned, context_audio_codes_lens_cleaned = self._prepare_codes_for_decode(
-                context_audio_codes_cleaned,
-                context_audio_codes_lens_cleaned,
-            )
-            context_audio_cleaned, context_audio_lens_cleaned, _ = self._codec_helper.codes_to_audio(
-                context_audio_codes_cleaned,
-                context_audio_codes_lens_cleaned,
-            )
+            if self.local_transformer_type == LocalTransformerType.FLOW:
+                context_audio_cleaned = batch["context_audio"]
+                context_audio_lens_cleaned = batch["context_audio_lens"]
+            else:
+                context_audio_codes_cleaned, context_audio_codes_lens_cleaned = remove_special_tokens(
+                    codes=context_audio_codes,
+                    codes_len=context_audio_codes_lens,
+                )
+                context_audio_codes_cleaned, context_audio_codes_lens_cleaned = self._prepare_codes_for_decode(
+                    context_audio_codes_cleaned,
+                    context_audio_codes_lens_cleaned,
+                )
+                context_audio_cleaned, context_audio_lens_cleaned, _ = self._codec_helper.codes_to_audio(
+                    context_audio_codes_cleaned,
+                    context_audio_codes_lens_cleaned,
+                )
 
             for idx in range(infer_output.predicted_audio.size(0)):
                 audio_np = infer_output.predicted_audio[idx].float().detach().cpu().numpy()
@@ -1838,12 +2106,14 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 if batch_idx == 0 and self.global_rank == 0 and idx < 3:
                     for logger in self.loggers:
                         if isinstance(logger, WandbLogger):
-                            logger.experiment.log(
-                                {
-                                    f"Audio_Generated/Example_{idx}": wandb.Audio(
-                                        audio_np, sample_rate=self.output_sample_rate, caption="generated"
-                                    )
-                                }
+                            generated_wandb_log[f"Audio_Generated/Example_{idx}"] = wandb.Audio(
+                                audio_np,
+                                sample_rate=self.output_sample_rate,
+                                caption=(
+                                    "generated_free_running_flow"
+                                    if self.local_transformer_type == LocalTransformerType.FLOW
+                                    else "generated"
+                                ),
                             )
                         elif isinstance(logger, TensorBoardLogger):
                             logger.experiment.add_audio(
@@ -1866,6 +2136,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     ctx_path = os.path.join(audio_dir, f'rank{self.global_rank}_batch{batch_idx}_idx{idx}_context.wav')
                     sf.write(ctx_path, ctx_audio_np, self.output_sample_rate)
                     context_audio_paths.append(ctx_path)
+
+            for logger in self.loggers:
+                if isinstance(logger, WandbLogger) and generated_wandb_log:
+                    logger.experiment.log(generated_wandb_log)
 
             # Compute metrics if we have audio paths
             if predicted_audio_paths and context_audio_paths:

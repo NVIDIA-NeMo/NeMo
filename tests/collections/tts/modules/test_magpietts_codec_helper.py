@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import patch
+
 import pytest
 import torch
 
 from nemo.collections.tts.models.audio_codec import AudioCodecModel
 from nemo.collections.tts.modules.magpietts_modules import CodecHelper
 from tests.collections.tts.models.test_audio_codec import create_codec_config
-
 
 pytestmark = pytest.mark.unit
 
@@ -35,6 +36,44 @@ def _semantic_acoustic_codec():
     return AudioCodecModel(cfg=codec_cfg).eval()
 
 
+def test_codec_helper_decodes_semantic_tokens_with_continuous_acoustics():
+    torch.manual_seed(42)
+    codec = _semantic_acoustic_codec()
+    helper = CodecHelper(codec)
+    audio = torch.randn(1, 2400)
+    audio_lens = torch.tensor([2400])
+    codes, codes_lens, embedding = helper.audio_to_codes_and_embedding(audio, audio_lens)
+    _, acoustic = helper.split_prequantized_embedding(embedding)
+
+    with (
+        patch.object(
+            codec,
+            "quantize",
+            side_effect=AssertionError("continuous acoustic embeddings must not be quantized"),
+        ),
+        patch.object(
+            codec,
+            "dequantize",
+            side_effect=AssertionError("semantic decode must not construct placeholder acoustic tokens"),
+        ),
+        patch.object(
+            codec.vector_quantizer.fsqs[1],
+            "decode",
+            side_effect=AssertionError("semantic decode must not touch acoustic quantizer groups"),
+        ),
+    ):
+        decoded_audio, decoded_lens, decoder_input = helper.semantic_and_acoustic_embedding_to_audio(
+            semantic_codes=codes[:, :1],
+            acoustic_embedding=acoustic,
+            codes_len=codes_lens,
+        )
+
+    assert decoded_audio.shape[0] == 1
+    assert decoded_lens.shape == (1,)
+    assert decoder_input.shape == embedding.shape
+    torch.testing.assert_close(decoder_input[:, 5:], acoustic)
+
+
 def test_codec_helper_returns_and_splits_prequantized_embedding():
     torch.manual_seed(42)
     codec = _semantic_acoustic_codec()
@@ -43,12 +82,21 @@ def test_codec_helper_returns_and_splits_prequantized_embedding():
     audio_lens = torch.tensor([2400, 1920])
 
     codes, codes_lens, embedding = helper.audio_to_codes_and_embedding(audio, audio_lens)
+    with patch.object(
+        codec.vector_quantizer.fsqs[1],
+        "encode",
+        side_effect=AssertionError("semantic encode must not touch acoustic quantizer groups"),
+    ):
+        semantic_codes, semantic_lens, semantic_embedding = helper.audio_to_semantic_codes_and_embedding(
+            audio, audio_lens, num_semantic_codebooks=1
+        )
     semantic, acoustic = helper.split_prequantized_embedding(embedding)
-    reconstructed = helper.acoustic_embedding_to_codes(codes[:, :1], acoustic, codes_lens)
     dequantized = codec.dequantize(tokens=codes, tokens_len=codes_lens)
 
     assert semantic.shape == (2, 5, embedding.size(2))
     assert acoustic.shape == (2, 35, embedding.size(2))
+    torch.testing.assert_close(semantic_codes, codes[:, :1])
+    torch.testing.assert_close(semantic_lens, codes_lens)
+    torch.testing.assert_close(semantic_embedding, embedding)
     assert not torch.allclose(embedding, dequantized)
-    for batch_idx, length in enumerate(codes_lens.tolist()):
-        assert torch.equal(reconstructed[batch_idx, :, :length], codes[batch_idx, :, :length])
+    assert not hasattr(helper, "acoustic_embedding_to_codes")

@@ -131,6 +131,7 @@ class StreamingState:
     past_key_values: Optional[Tuple]
     cache_seq_len: int
     all_predictions: List[torch.Tensor]
+    all_acoustic_predictions: List[torch.Tensor]
     all_phoneme_predictions: List[torch.Tensor]
     context_audio_codes: torch.Tensor
     context_audio_codes_lens: torch.Tensor
@@ -149,6 +150,7 @@ class StreamingState:
     text_finished: torch.Tensor
     last_phoneme_tokens: Optional[torch.Tensor]
     last_audio_codes: Optional[torch.Tensor]
+    last_acoustic_embedding: Optional[torch.Tensor]
     audio_prediction_start_idx: torch.Tensor
     audio_prediction_end_idx: torch.Tensor
     phoneme_prediction_start_idx: torch.Tensor
@@ -166,10 +168,11 @@ class StreamingFinalizeOutput:
 
     audio: torch.Tensor  # (B, max_audio_len) generated audio waveform
     audio_len: torch.Tensor  # (B,) length of audio per batch item
-    audio_codes: torch.Tensor  # (B, num_codebooks, T) generated audio codes
+    audio_codes: torch.Tensor  # Discrete models: all codebooks; flow: semantic tokens only
     audio_codes_len: torch.Tensor  # (B,) length of codes per batch item
     phoneme_tokens: List[List[int]]  # List of phoneme token sequences per batch item
     phoneme_text: List[str]  # Decoded phoneme strings per batch item
+    acoustic_embeddings: Optional[torch.Tensor] = None  # (B, D_acoustic, T), flow models only
 
 
 @dataclass
@@ -184,6 +187,7 @@ class InferBatchOutput:
     predicted_phoneme_tokens: Optional[torch.Tensor] = None  # (B, phoneme_stacking_factor, T_phoneme_steps)
     predicted_phoneme_tokens_lens: Optional[torch.Tensor] = None  # (B,) number of valid phoneme steps per item
     phoneme_prediction_start_idx: Optional[torch.Tensor] = None  # (B,) start index into predicted_phoneme_tokens
+    predicted_acoustic_embeddings: Optional[torch.Tensor] = None  # (B, D_acoustic, T), flow models only
 
 
 @dataclass
@@ -409,11 +413,26 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self._codec_converter = codec_converter
         self._codec_helper = CodecHelper(self._codec_model, self._codec_converter)
 
+        self.local_transformer_type = LocalTransformerType(cfg.get('local_transformer_type', 'none').lower())
+        logging.info(f"Local transformer type: {self.local_transformer_type}")
+        if self.local_transformer_type == LocalTransformerType.FLOW:
+            if self._codec_converter is not None:
+                raise ValueError("normalizing_flow does not support model.vector_quantizer conversion.")
+            self.num_semantic_codebooks = int(cfg.get("num_semantic_codebooks", 1))
+            if not 0 < self.num_semantic_codebooks < self.num_audio_codebooks:
+                raise ValueError(
+                    f"num_semantic_codebooks must be in [1, {self.num_audio_codebooks - 1}], "
+                    f"got {self.num_semantic_codebooks}."
+                )
+            self.num_predicted_audio_codebooks = self.num_semantic_codebooks
+        else:
+            self.num_predicted_audio_codebooks = self.num_audio_codebooks
+
         # Audio embedding dimension - can be smaller than hidden_dim to reduce parameters
         self.audio_embedding_dim = cfg.get('audio_embedding_dim', cfg.hidden_dim)
 
         audio_embeddings = []
-        for _ in range(self.num_audio_codebooks * self.frame_stacking_factor):
+        for _ in range(self.num_predicted_audio_codebooks * self.frame_stacking_factor):
             audio_embeddings.append(nn.Embedding(self.num_all_tokens_per_codebook, self.audio_embedding_dim))
         self.audio_embeddings = nn.ModuleList(audio_embeddings)
 
@@ -587,11 +606,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         self.final_proj = nn.Linear(
             self.audio_embedding_dim,
-            self.num_audio_codebooks * self.num_all_tokens_per_codebook * self.frame_stacking_factor,
+            self.num_predicted_audio_codebooks * self.num_all_tokens_per_codebook * self.frame_stacking_factor,
         )
 
-        self.local_transformer_type = LocalTransformerType(cfg.get('local_transformer_type', 'none').lower())
-        logging.info(f"Local transformer type: {self.local_transformer_type}")
         if self.local_transformer_type not in (LocalTransformerType.NO_LT, LocalTransformerType.FLOW):
             local_transformer_hidden_dim = cfg.get('local_transformer_hidden_dim', 256)
             if local_transformer_hidden_dim != cfg.hidden_dim:
@@ -642,16 +659,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             )
 
         elif self.local_transformer_type == LocalTransformerType.FLOW:
-            if self._codec_converter is not None:
-                raise ValueError("normalizing_flow does not support model.vector_quantizer conversion.")
-
-            self.num_semantic_codebooks = int(cfg.get("num_semantic_codebooks", 1))
-            if not 0 < self.num_semantic_codebooks < self.num_audio_codebooks:
-                raise ValueError(
-                    f"num_semantic_codebooks must be in [1, {self.num_audio_codebooks - 1}], "
-                    f"got {self.num_semantic_codebooks}."
-                )
-
             embedding_dim_per_codebook = self._codec_helper._embedding_dim_per_codebook()
             self.semantic_codec_embedding_dim = self.num_semantic_codebooks * embedding_dim_per_codebook
             self.acoustic_codec_embedding_dim = (
@@ -659,6 +666,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             ) * embedding_dim_per_codebook
             stacked_semantic_dim = self.semantic_codec_embedding_dim * self.frame_stacking_factor
             stacked_acoustic_dim = self.acoustic_codec_embedding_dim * self.frame_stacking_factor
+            self.flow_acoustic_in_projection = nn.Linear(stacked_acoustic_dim, cfg.embedding_dim)
             self.local_flow = OneShotLocalFlow(
                 acoustic_channels=stacked_acoustic_dim,
                 condition_channels=cfg.hidden_dim + stacked_semantic_dim,
@@ -690,6 +698,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
     def codec_sil_codes_unconverted(self):
         """Return the representative silence codes in the original codec codebook space."""
         return self._codec_sil_codes_buffer_unconverted
+
+    @property
+    def codec_sil_acoustic_embedding(self):
+        """Return one continuous acoustic codec frame representing silence."""
+        return self._codec_sil_acoustic_embedding_buffer
 
     def restore_from_pretrained_checkpoint(self, checkpoint_path):
         """
@@ -724,11 +737,26 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         audio_len = torch.tensor([audio.size(-1)], dtype=torch.long, device=codec_device)
 
         with torch.no_grad():
-            sil_codes_raw, sil_codes_lens = self._codec_helper.audio_to_codes(audio, audio_len)
+            sil_acoustic = None
+            if self.local_transformer_type == LocalTransformerType.FLOW:
+                sil_codes_raw, sil_codes_lens, sil_embedding = (
+                    self._codec_helper.audio_to_semantic_codes_and_embedding(
+                        audio, audio_len, self.num_semantic_codebooks
+                    )
+                )
+                _, sil_acoustic = self._codec_helper.split_prequantized_embedding(
+                    sil_embedding, num_semantic_codebooks=self.num_semantic_codebooks
+                )
+            else:
+                sil_codes_raw, sil_codes_lens, sil_embedding = self._codec_helper.audio_to_codes_and_embedding(
+                    audio, audio_len
+                )
 
             frames_raw = sil_codes_raw[0].transpose(0, 1)
             combos_raw = [tuple(frame.tolist()) for frame in frames_raw]
             most_common_raw, _ = Counter(combos_raw).most_common(1)[0]
+            representative_frame = combos_raw.index(most_common_raw)
+            sil_acoustic_frame = sil_acoustic[0, :, representative_frame].clone() if sil_acoustic is not None else None
             sil_tensor_unconverted = torch.tensor(most_common_raw, device=codec_device, dtype=torch.long)
 
             if self._codec_converter is not None:
@@ -745,9 +773,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if not hasattr(self, "_codec_sil_codes_buffer"):
             self.register_buffer("_codec_sil_codes_buffer", sil_tensor_converted, persistent=False)
             self.register_buffer("_codec_sil_codes_buffer_unconverted", sil_tensor_unconverted, persistent=False)
+            if sil_acoustic_frame is not None:
+                self.register_buffer("_codec_sil_acoustic_embedding_buffer", sil_acoustic_frame, persistent=False)
         else:
             self._codec_sil_codes_buffer.copy_(sil_tensor_converted)
             self._codec_sil_codes_buffer_unconverted.copy_(sil_tensor_unconverted)
+            if sil_acoustic_frame is not None:
+                self._codec_sil_acoustic_embedding_buffer.copy_(sil_acoustic_frame)
 
     def streaming_prefill(
         self,
@@ -789,13 +821,17 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # -----------------------
             # AUDIO CHANNEL: previous-token input during profile
             # -----------------------
-            C = self.num_audio_codebooks
             S = self.frame_stacking_factor
-
-            sil_codes = self.codec_sil_codes.to(device=device, dtype=torch.long)  # (C,)
+            is_flow = self.local_transformer_type == LocalTransformerType.FLOW
+            C = self.num_semantic_codebooks if is_flow else self.num_audio_codebooks
+            sil_codes = self.codec_sil_codes[:C].to(device=device, dtype=torch.long)
 
             # Keep all_predictions as real silence so decoded waveform has silence during profile.
             sil_codes_unstacked = sil_codes.view(1, C, 1).expand(B, C, T * S).contiguous()
+            sil_acoustic_unstacked = None
+            if is_flow:
+                sil_acoustic = self.codec_sil_acoustic_embedding.to(device=device)
+                sil_acoustic_unstacked = sil_acoustic.view(1, -1, 1).expand(B, -1, T * S).contiguous()
 
             if self.cfg.get("use_user_speaking_token", False):
                 # Match training: during non-agent/user-speaking regions, the audio INPUT token
@@ -816,7 +852,17 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     num_codebooks=C,
                 )  # (B, C*S, T)
 
-            audio_emb = self.embed_audio_tokens(profile_audio_stacked)
+            if is_flow:
+                if self.cfg.get("use_user_speaking_token", False):
+                    profile_acoustic_stacked = sil_acoustic_unstacked.new_zeros(
+                        B, self.acoustic_codec_embedding_dim * S, T
+                    )
+                else:
+                    profile_acoustic_stacked = self.stack_codec_embeddings(sil_acoustic_unstacked, S)
+                audio_emb = self.embed_flow_audio_state(profile_audio_stacked, profile_acoustic_stacked)
+            else:
+                profile_acoustic_stacked = None
+                audio_emb = self.embed_audio_tokens(profile_audio_stacked)
 
             # Match training channel sum: text + audio profile-token/silence input.
             combined_emb = text_emb + audio_emb
@@ -866,6 +912,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             state.all_predictions.append(
                 sil_codes_unstacked
             )  # keep silence so that in the target audio user will be silence
+            if sil_acoustic_unstacked is not None:
+                state.all_acoustic_predictions.append(sil_acoustic_unstacked)
             if self.cfg.get("use_user_speaking_token", False):
                 state.last_audio_codes = torch.full(
                     (B, C * S),
@@ -875,6 +923,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 )
             else:
                 state.last_audio_codes = profile_audio_stacked[:, :, -1].contiguous()
+            if profile_acoustic_stacked is not None:
+                state.last_acoustic_embedding = profile_acoustic_stacked[:, :, -1].contiguous()
 
             return state
 
@@ -991,6 +1041,91 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         audio_embedding = self.audio_in_projection(audio_embedding)
         return audio_embedding
 
+    def embed_flow_audio_state(
+        self,
+        semantic_codes: torch.Tensor,
+        acoustic_embedding: torch.Tensor,
+    ) -> torch.Tensor:
+        """Embed one or more flow audio states for the backbone input channel."""
+        if self.local_transformer_type != LocalTransformerType.FLOW:
+            raise RuntimeError("embed_flow_audio_state is only valid for normalizing-flow models.")
+
+        expected_semantic_channels = self.num_semantic_codebooks * self.frame_stacking_factor
+        expected_acoustic_channels = self.acoustic_codec_embedding_dim * self.frame_stacking_factor
+        if semantic_codes.size(1) != expected_semantic_channels:
+            raise ValueError(
+                f"Expected {expected_semantic_channels} stacked semantic channels, got {semantic_codes.size(1)}."
+            )
+        if acoustic_embedding.size(1) != expected_acoustic_channels:
+            raise ValueError(
+                f"Expected {expected_acoustic_channels} stacked acoustic channels, "
+                f"got {acoustic_embedding.size(1)}."
+            )
+        if semantic_codes.size(0) != acoustic_embedding.size(0) or semantic_codes.size(2) != acoustic_embedding.size(
+            2
+        ):
+            raise ValueError("Semantic codes and acoustic embeddings must have matching batch and time dimensions.")
+
+        semantic_input = self.embed_audio_tokens(semantic_codes)
+        acoustic_input = self.flow_acoustic_in_projection(acoustic_embedding.transpose(1, 2))
+        special_frame = (semantic_codes >= self.codebook_size).any(dim=1, keepdim=False).unsqueeze(-1)
+        acoustic_input = acoustic_input.masked_fill(special_frame, 0.0)
+        return semantic_input + acoustic_input
+
+    def prepare_flow_audio_state_sequence(
+        self,
+        semantic_codes: torch.Tensor,
+        codes_lens: torch.Tensor,
+        acoustic_embedding: torch.Tensor,
+        bos_id: int,
+        eos_id: int,
+        num_eos_tokens: int = 1,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Add specials and stack a semantic-token/continuous-acoustic state sequence."""
+        if semantic_codes.size(1) != self.num_semantic_codebooks:
+            raise ValueError(
+                f"Expected {self.num_semantic_codebooks} semantic codebooks, got {semantic_codes.size(1)}."
+            )
+        if acoustic_embedding.size(1) != self.acoustic_codec_embedding_dim:
+            raise ValueError(
+                f"Expected acoustic embedding dimension {self.acoustic_codec_embedding_dim}, "
+                f"got {acoustic_embedding.size(1)}."
+            )
+        if semantic_codes.size(2) != acoustic_embedding.size(2):
+            raise ValueError("Semantic codes and acoustic embeddings must have matching frame counts.")
+
+        valid_mask = get_mask_from_lengths(codes_lens, x=acoustic_embedding).unsqueeze(1)
+        acoustic_embedding = acoustic_embedding * valid_mask.to(acoustic_embedding.dtype)
+        semantic_with_specials, sequence_lens = add_special_tokens(
+            codes=semantic_codes,
+            codes_len=codes_lens,
+            bos_id=bos_id,
+            eos_id=eos_id,
+            num_eos_tokens=num_eos_tokens,
+        )
+        semantic_stacked, sequence_lens = self.stack_codes(
+            semantic_with_specials,
+            sequence_lens,
+            bos_id,
+            eos_id,
+            self.frame_stacking_factor,
+            self.num_semantic_codebooks,
+        )
+
+        acoustic_tail = acoustic_embedding.new_zeros(
+            acoustic_embedding.size(0), acoustic_embedding.size(1), num_eos_tokens
+        )
+        acoustic_content = torch.cat([acoustic_embedding, acoustic_tail], dim=2)
+        acoustic_stacked = self.stack_codec_embeddings(acoustic_content, self.frame_stacking_factor)
+        acoustic_bos = acoustic_stacked.new_zeros(acoustic_stacked.size(0), acoustic_stacked.size(1), 1)
+        acoustic_stacked = torch.cat([acoustic_bos, acoustic_stacked], dim=2)
+        acoustic_stacked = acoustic_stacked[:, :, : semantic_stacked.size(2)]
+        if acoustic_stacked.size(2) < semantic_stacked.size(2):
+            acoustic_stacked = torch.nn.functional.pad(
+                acoustic_stacked, (0, semantic_stacked.size(2) - acoustic_stacked.size(2))
+            )
+        return semantic_stacked, acoustic_stacked, sequence_lens
+
     def embed_text_tokens(
         self,
         text_tokens: torch.Tensor,
@@ -1097,7 +1232,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             Predicted audio codes shaped ``(B, C, T)``.
         """
         all_preds = []
-        for idx in range(self.num_audio_codebooks * self.frame_stacking_factor):
+        if all_code_logits.size(-1) % self.num_all_tokens_per_codebook != 0:
+            raise ValueError("Packed audio logits are not divisible by the per-codebook vocabulary size.")
+        num_channels = all_code_logits.size(-1) // self.num_all_tokens_per_codebook
+        for idx in range(num_channels):
             si = idx * self.num_all_tokens_per_codebook
             ei = si + self.num_all_tokens_per_codebook
             codebook_logits = all_code_logits[:, :, si:ei]
@@ -1129,7 +1267,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             Sampled stacked audio-code tokens shaped ``(B, C)``.
         """
         all_preds = []
-        for idx in range(self.num_audio_codebooks * self.frame_stacking_factor):
+        if all_code_logits_t.size(-1) % self.num_all_tokens_per_codebook != 0:
+            raise ValueError("Packed audio logits are not divisible by the per-codebook vocabulary size.")
+        num_channels = all_code_logits_t.size(-1) // self.num_all_tokens_per_codebook
+        for idx in range(num_channels):
             si = idx * self.num_all_tokens_per_codebook
             ei = si + self.num_all_tokens_per_codebook
             codebook_logits = all_code_logits_t[:, si:ei]  # (B, num_tokens_per_codebook)
@@ -1263,6 +1404,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         context_text_tokens_lens: torch.Tensor,
         context_audio_codes: Optional[torch.Tensor] = None,
         context_audio_codes_lens: Optional[torch.Tensor] = None,
+        context_audio_embedding: Optional[torch.Tensor] = None,
         context_audio: Optional[torch.Tensor] = None,
         context_audio_lens: Optional[torch.Tensor] = None,
         training_mode: Optional[TrainingMode] = None,
@@ -1277,6 +1419,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             context_text_tokens: Context text token IDs for speaker/style conditioning (B, L)
             context_text_tokens_lens: Length of context text for each batch item (B,)
             context_audio_codes: Pre-computed audio codes for context audio (B, C, T').
+                Flow models accept semantic codebooks only and also require context_audio_embedding.
                 If None, will be computed from context_audio.
             context_audio_codes_lens: Length of context audio codes (B,).
                 Required if context_audio_codes is provided.
@@ -1307,31 +1450,56 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if context_audio_codes is None:
             if context_audio is None:
                 raise ValueError("Either context_audio_codes or context_audio must be provided")
-            context_audio_codes, context_audio_codes_lens = self._codec_helper.audio_to_codes(
-                context_audio, context_audio_lens
+            if self.local_transformer_type == LocalTransformerType.FLOW:
+                context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
+                    self._codec_helper.audio_to_semantic_codes_and_embedding(
+                        context_audio, context_audio_lens, self.num_semantic_codebooks
+                    )
+                )
+            else:
+                context_audio_codes, context_audio_codes_lens = self._codec_helper.audio_to_codes(
+                    context_audio, context_audio_lens
+                )
+
+        if self.local_transformer_type == LocalTransformerType.FLOW:
+            if context_audio_embedding is None:
+                raise ValueError(
+                    "normalizing_flow context requires the codec encoder output; provide raw context audio "
+                    "or context_audio_embedding."
+                )
+            semantic_context = context_audio_codes
+            _, acoustic_context = self._codec_helper.split_prequantized_embedding(
+                context_audio_embedding,
+                num_semantic_codebooks=self.num_semantic_codebooks,
             )
-
-        if self._codec_converter is not None:
-            context_audio_codes = self._codec_converter.convert_original_to_new(
-                audio_tokens=context_audio_codes, audio_lens=context_audio_codes_lens
-            ).long()
-
-        context_audio_codes, context_audio_codes_lens = add_special_tokens(
-            codes=context_audio_codes,
-            codes_len=context_audio_codes_lens,
-            bos_id=self.context_audio_bos_id,
-            eos_id=self.context_audio_eos_id,
-        )
-
-        context_audio_codes, context_audio_codes_lens = self.stack_codes(
-            context_audio_codes,
-            context_audio_codes_lens,
-            self.context_audio_bos_id,
-            self.context_audio_eos_id,
-            self.frame_stacking_factor,
-            self.num_audio_codebooks,
-        )
-        context_audio_embedded = self.embed_audio_tokens(context_audio_codes)  # (B, T', E)
+            context_audio_codes, acoustic_context, context_audio_codes_lens = self.prepare_flow_audio_state_sequence(
+                semantic_codes=semantic_context,
+                codes_lens=context_audio_codes_lens,
+                acoustic_embedding=acoustic_context,
+                bos_id=self.context_audio_bos_id,
+                eos_id=self.context_audio_eos_id,
+            )
+            context_audio_embedded = self.embed_flow_audio_state(context_audio_codes, acoustic_context)
+        else:
+            if self._codec_converter is not None:
+                context_audio_codes = self._codec_converter.convert_original_to_new(
+                    audio_tokens=context_audio_codes, audio_lens=context_audio_codes_lens
+                ).long()
+            context_audio_codes, context_audio_codes_lens = add_special_tokens(
+                codes=context_audio_codes,
+                codes_len=context_audio_codes_lens,
+                bos_id=self.context_audio_bos_id,
+                eos_id=self.context_audio_eos_id,
+            )
+            context_audio_codes, context_audio_codes_lens = self.stack_codes(
+                context_audio_codes,
+                context_audio_codes_lens,
+                self.context_audio_bos_id,
+                self.context_audio_eos_id,
+                self.frame_stacking_factor,
+                self.num_audio_codebooks,
+            )
+            context_audio_embedded = self.embed_audio_tokens(context_audio_codes)
         batch_size = context_audio_embedded.size(0)
         if self.use_speaker_encoder:
             if (
@@ -1522,8 +1690,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         topk: int,
         use_cfg: bool,
         cfg_scale: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Sample semantic tokens, then generate all acoustic groups in one flow pass."""
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sample semantic tokens and a continuous acoustic state in one flow pass."""
         semantic_channels = self.num_semantic_codebooks * self.frame_stacking_factor
         sampled_parallel = self.sample_codes_from_logits(all_code_logits_t, temperature=temperature, topk=topk)
         if temperature <= 0.0:
@@ -1540,7 +1708,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         semantic_codes_argmax = argmax_parallel[:, :semantic_channels].view_as(semantic_codes)
 
         semantic_special = (semantic_codes >= self.codebook_size).any(dim=1)
-        semantic_special_argmax = (semantic_codes_argmax >= self.codebook_size).any(dim=1)
         safe_semantic_codes = semantic_codes.masked_fill(semantic_special.unsqueeze(1), 0)
         codes_len = torch.full(
             (batch_size,),
@@ -1569,24 +1736,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             self.frame_stacking_factor,
             self.acoustic_codec_embedding_dim,
         )
-        audio_codes = self._codec_helper.acoustic_embedding_to_codes(
-            safe_semantic_codes, acoustic_embedding, codes_len
+        acoustic_embedding = acoustic_embedding.masked_fill(semantic_special.unsqueeze(1), 0.0)
+        return (
+            semantic_codes.reshape(batch_size, -1),
+            semantic_codes_argmax.reshape(batch_size, -1),
+            acoustic_embedding,
         )
-        audio_codes[:, : self.num_semantic_codebooks] = semantic_codes
-        audio_codes = torch.where(
-            semantic_special.unsqueeze(1),
-            semantic_codes[:, :1].expand(-1, self.num_audio_codebooks, -1),
-            audio_codes,
-        )
-
-        argmax_codes = audio_codes.clone()
-        argmax_codes[:, : self.num_semantic_codebooks] = semantic_codes_argmax
-        argmax_codes = torch.where(
-            semantic_special_argmax.unsqueeze(1),
-            semantic_codes_argmax[:, :1].expand(-1, self.num_audio_codebooks, -1),
-            argmax_codes,
-        )
-        return audio_codes.reshape(batch_size, -1), argmax_codes.reshape(batch_size, -1)
 
     def _sample_audio_codes(
         self,
@@ -1597,7 +1752,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         use_local_transformer_for_inference: bool,
         use_cfg: bool,
         cfg_scale: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Sample audio codes from logits using either local transformer or parallel sampling.
 
@@ -1643,7 +1798,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             else:
                 all_codes_next_argmax = self.sample_codes_from_logits(all_code_logits_t, temperature=0.01)
 
-        return audio_codes_next, all_codes_next_argmax
+        return audio_codes_next, all_codes_next_argmax, None
 
     def streaming_init(
         self,
@@ -1651,6 +1806,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         context_audio_codes_lens: torch.Tensor,
         context_text_tokens: torch.Tensor,
         context_text_tokens_lens: torch.Tensor,
+        context_audio_embedding: Optional[torch.Tensor] = None,
+        gt_audio_input_embeddings: Optional[torch.Tensor] = None,
         inference_mode: Optional[str] = None,
         use_cfg: bool = False,
         cfg_scale: float = 1.0,
@@ -1729,6 +1886,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     context_text_tokens_lens=context_text_tokens_lens,
                     context_audio_codes=context_audio_codes,
                     context_audio_codes_lens=context_audio_codes_lens,
+                    context_audio_embedding=context_audio_embedding,
                     training_mode=selected_training_mode,
                     dropout_conditional_input=False,
                 )
@@ -1793,7 +1951,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # Process GT audio codes if provided (for teacher forcing)
             gt_audio_embeddings = None
             gt_audio_lens_state = None
-            if gt_audio_codes is not None and gt_audio_codes_lens is not None:
+            if gt_audio_input_embeddings is not None and gt_audio_codes_lens is not None:
+                gt_audio_embeddings = gt_audio_input_embeddings
+                gt_audio_lens_state = gt_audio_codes_lens
+            elif gt_audio_codes is not None and gt_audio_codes_lens is not None:
                 gt_audio_embeddings = self.embed_audio_tokens(gt_audio_codes)  # (B, T', E)
                 gt_audio_lens_state = gt_audio_codes_lens
 
@@ -1817,6 +1978,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 past_key_values=past_kv,
                 cache_seq_len=current_cache_seq_len,
                 all_predictions=[],
+                all_acoustic_predictions=[],
                 all_phoneme_predictions=[],
                 context_audio_codes=context_audio_codes,
                 context_audio_codes_lens=context_audio_codes_lens,
@@ -1835,6 +1997,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 text_finished=torch.zeros(batch_size, dtype=torch.bool, device=device),
                 last_phoneme_tokens=None,
                 last_audio_codes=None,
+                last_acoustic_embedding=None,
                 audio_prediction_start_idx=torch.full((batch_size,), -1, dtype=torch.long, device=device),
                 audio_prediction_end_idx=torch.full((batch_size,), -1, dtype=torch.long, device=device),
                 phoneme_prediction_start_idx=torch.full((batch_size,), -1, dtype=torch.long, device=device),
@@ -2151,17 +2314,41 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 has_last_audio = needs_audio & ~first_audio_step & (state.last_audio_codes is not None)
 
                 if first_audio_step.any():
-                    audio_bos = torch.full(
-                        (batch_size, self.num_audio_codebooks * self.frame_stacking_factor, 1),
-                        self.audio_bos_id,
-                        device=device,
-                    ).long()
-                    audio_bos_emb = self.embed_audio_tokens(audio_bos)  # (B, 1, E)
+                    if self.local_transformer_type == LocalTransformerType.FLOW:
+                        semantic_bos = torch.full(
+                            (batch_size, self.num_semantic_codebooks * self.frame_stacking_factor, 1),
+                            self.audio_bos_id,
+                            dtype=torch.long,
+                            device=device,
+                        )
+                        acoustic_bos = torch.zeros(
+                            batch_size,
+                            self.acoustic_codec_embedding_dim * self.frame_stacking_factor,
+                            1,
+                            device=device,
+                            dtype=next(self.local_flow.parameters()).dtype,
+                        )
+                        audio_bos_emb = self.embed_flow_audio_state(semantic_bos, acoustic_bos)
+                    else:
+                        audio_bos = torch.full(
+                            (batch_size, self.num_audio_codebooks * self.frame_stacking_factor, 1),
+                            self.audio_bos_id,
+                            device=device,
+                        ).long()
+                        audio_bos_emb = self.embed_audio_tokens(audio_bos)
                     first_mask = first_audio_step.view(batch_size, 1, 1).float()
                     audio_emb = audio_emb + audio_bos_emb * first_mask
 
                 if has_last_audio.any() and state.last_audio_codes is not None:
-                    last_audio_emb = self.embed_audio_tokens(state.last_audio_codes.unsqueeze(2))  # (B, 1, E)
+                    if self.local_transformer_type == LocalTransformerType.FLOW:
+                        if state.last_acoustic_embedding is None:
+                            raise RuntimeError("Flow inference is missing its previous continuous acoustic state.")
+                        last_audio_emb = self.embed_flow_audio_state(
+                            state.last_audio_codes.unsqueeze(2),
+                            state.last_acoustic_embedding.unsqueeze(2),
+                        )
+                    else:
+                        last_audio_emb = self.embed_audio_tokens(state.last_audio_codes.unsqueeze(2))
                     last_mask = has_last_audio.view(batch_size, 1, 1).float()
                     audio_emb = audio_emb + last_audio_emb * last_mask
 
@@ -2269,17 +2456,34 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     state.audio_prediction_start_idx,
                 )
 
-            audio_codes_next_stacked, all_codes_next_argmax = self._predict_audio_codes(state)  # (B, C*S)
+            audio_codes_next_stacked, all_codes_next_argmax, acoustic_embedding_next = self._predict_audio_codes(state)
 
             S = self.frame_stacking_factor
-            C = self.num_audio_codebooks
-            audio_codes_unstacked = audio_codes_next_stacked.view(batch_size, C, S)  # (B, C, S)
+            C = (
+                self.num_semantic_codebooks
+                if self.local_transformer_type == LocalTransformerType.FLOW
+                else self.num_audio_codebooks
+            )
+            audio_codes_unstacked = audio_codes_next_stacked.view(batch_size, C, S)
+
+            if self.local_transformer_type == LocalTransformerType.FLOW and acoustic_embedding_next is None:
+                raise RuntimeError("Flow inference did not return a continuous acoustic state.")
 
             if state.last_audio_codes is None:
                 state.last_audio_codes = audio_codes_next_stacked
             else:
                 update_mask = needs_audio.view(batch_size, 1).expand_as(audio_codes_next_stacked)
                 state.last_audio_codes = torch.where(update_mask, audio_codes_next_stacked, state.last_audio_codes)
+
+            if acoustic_embedding_next is not None:
+                acoustic_stacked = acoustic_embedding_next.reshape(batch_size, -1)
+                if state.last_acoustic_embedding is None:
+                    state.last_acoustic_embedding = acoustic_stacked
+                else:
+                    acoustic_update_mask = needs_audio.view(batch_size, 1).expand_as(acoustic_stacked)
+                    state.last_acoustic_embedding = torch.where(
+                        acoustic_update_mask, acoustic_stacked, state.last_acoustic_embedding
+                    )
 
             # EOS detection (skip in teacher-forced mode)
             if state.gt_audio_embeddings is None:
@@ -2307,6 +2511,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     )
 
             state.all_predictions.append(audio_codes_unstacked)
+            if acoustic_embedding_next is not None:
+                state.all_acoustic_predictions.append(acoustic_embedding_next)
             audio_codes_next = audio_codes_unstacked
 
         # Force-finish items when GT audio is exhausted (teacher forcing)
@@ -2355,7 +2561,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         # (B, phoneme_stacking_factor)
         return pred_phoneme_tokens
 
-    def _predict_audio_codes(self, state: StreamingState) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _predict_audio_codes(self, state: StreamingState) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Predict audio codes from the last hidden state."""
         actual_batch_size = state.config.batch_size
         last_hidden = state.last_hidden
@@ -2373,7 +2579,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             )
 
         # Sample audio codes
-        audio_codes_next, all_codes_next_argmax = self._sample_audio_codes(
+        audio_codes_next, all_codes_next_argmax, acoustic_embedding_next = self._sample_audio_codes(
             last_hidden=last_hidden,
             all_code_logits_t=all_code_logits_t,
             temperature=state.config.temperature,
@@ -2383,7 +2589,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             cfg_scale=state.config.cfg_scale,
         )
 
-        return audio_codes_next, all_codes_next_argmax
+        return audio_codes_next, all_codes_next_argmax, acoustic_embedding_next
 
     def streaming_finalize(
         self,
@@ -2433,7 +2639,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             return StreamingFinalizeOutput(
                 audio=torch.zeros(batch_size, 0, device=device),
                 audio_len=torch.zeros(batch_size, dtype=torch.long, device=device),
-                audio_codes=torch.zeros(batch_size, self.num_audio_codebooks, 0, device=device),
+                audio_codes=torch.zeros(batch_size, self.num_predicted_audio_codebooks, 0, device=device),
                 audio_codes_len=torch.zeros(batch_size, dtype=torch.long, device=device),
                 phoneme_tokens=phoneme_tokens_list,
                 phoneme_text=phoneme_text_list,
@@ -2445,6 +2651,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             all_codes = torch.cat(state.all_predictions, dim=-1)  # (B, C, T_total_frames)
             total_frames = all_codes.size(-1)
             num_codebooks = all_codes.size(1)
+            all_acoustic = None
+            if self.local_transformer_type == LocalTransformerType.FLOW:
+                if len(state.all_acoustic_predictions) != len(state.all_predictions):
+                    raise RuntimeError("Flow semantic and acoustic prediction histories have different lengths.")
+                all_acoustic = torch.cat(state.all_acoustic_predictions, dim=-1)
+                if all_acoustic.size(-1) != total_frames:
+                    raise RuntimeError("Flow semantic and acoustic prediction histories are not frame-aligned.")
 
             # Start and end indices are in frames (not steps)
             # If start_idx is -1, item never started audio predictions - use 0
@@ -2473,22 +2686,47 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             # Create padded output tensor and slice each item's valid predictions
             predicted_codes = torch.zeros(batch_size, num_codebooks, max_len, dtype=all_codes.dtype, device=device)
+            predicted_acoustic = None
+            if all_acoustic is not None:
+                predicted_acoustic = torch.zeros(
+                    batch_size, all_acoustic.size(1), max_len, dtype=all_acoustic.dtype, device=device
+                )
             for i in range(batch_size):
                 start = start_indices[i].item()
                 end = end_indices[i].item()
                 length = end - start
                 if length > 0:
                     predicted_codes[i, :, :length] = all_codes[i, :, start:end]
+                    if predicted_acoustic is not None:
+                        predicted_acoustic[i, :, :length] = all_acoustic[i, :, start:end]
 
-            # No need to remove EOS - end_indices already point to the frame before EOS
-            # Decode to audio (codes are already unstacked: B, C, T)
-            predicted_codes, predicted_codes_lens = self._prepare_codes_for_decode(
-                predicted_codes, predicted_codes_lens
-            )
-            audio, audio_len, decoded_codes = self._codec_helper.codes_to_audio(
-                predicted_codes,
-                predicted_codes_lens,
-            )
+            # End indices already point to the frame before semantic EOS.
+            if predicted_acoustic is not None:
+                special = (predicted_codes >= self.codebook_size).any(dim=1)
+                predicted_codes = predicted_codes.masked_fill(special.unsqueeze(1), 0)
+                predicted_acoustic = predicted_acoustic.masked_fill(special.unsqueeze(1), 0.0)
+                if predicted_codes_lens.min() < 4:
+                    padded_len = max(4, predicted_codes.size(2))
+                    predicted_codes = torch.nn.functional.pad(
+                        predicted_codes, (0, padded_len - predicted_codes.size(2))
+                    )
+                    predicted_acoustic = torch.nn.functional.pad(
+                        predicted_acoustic, (0, padded_len - predicted_acoustic.size(2))
+                    )
+                    predicted_codes_lens = torch.clamp(predicted_codes_lens, min=4)
+                audio, audio_len, _ = self._codec_helper.semantic_and_acoustic_embedding_to_audio(
+                    semantic_codes=predicted_codes,
+                    acoustic_embedding=predicted_acoustic,
+                    codes_len=predicted_codes_lens,
+                )
+            else:
+                predicted_codes, predicted_codes_lens = self._prepare_codes_for_decode(
+                    predicted_codes, predicted_codes_lens
+                )
+                audio, audio_len, _ = self._codec_helper.codes_to_audio(
+                    predicted_codes,
+                    predicted_codes_lens,
+                )
 
             return StreamingFinalizeOutput(
                 audio=audio,
@@ -2497,6 +2735,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 audio_codes_len=predicted_codes_lens,
                 phoneme_tokens=phoneme_tokens_list,
                 phoneme_text=phoneme_text_list,
+                acoustic_embeddings=predicted_acoustic,
             )
 
     def infer_batch(
@@ -2531,8 +2770,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 - phoneme_tokens (optional): GT phoneme tokens (B, L'')
                 - phoneme_tokens_lens (optional): Lengths (B,)
                 For teacher forcing (use_teacher_forced=True), also requires:
-                - audio_codes / audio_codes_lens: GT audio codes (B, C, T) OR
-                - audio / audio_lens: Raw audio waveforms to encode
+                - audio_codes / audio_codes_lens: GT audio codes (B, C, T) for discrete models, OR
+                - audio / audio_lens: Raw audio waveforms (required for flow teacher forcing)
             max_decoder_steps: Maximum number of decoder steps.
             temperature: Sampling temperature for audio codes. Use 0.0 for argmax.
             topk: Top-k sampling parameter.
@@ -2559,14 +2798,28 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             context_text_tokens_lens = batch['context_text_tokens_lens']
 
             # Handle context audio - either use codes directly or encode from audio
-            if 'context_audio_codes' in batch:
+            context_audio_embedding = None
+            if self.local_transformer_type == LocalTransformerType.FLOW:
+                if 'context_audio' in batch:
+                    context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
+                        self._codec_helper.audio_to_semantic_codes_and_embedding(
+                            batch['context_audio'],
+                            batch['context_audio_lens'],
+                            self.num_semantic_codebooks,
+                        )
+                    )
+                elif 'context_audio_codes' in batch and 'context_audio_embedding' in batch:
+                    context_audio_codes = batch['context_audio_codes']
+                    context_audio_codes_lens = batch['context_audio_codes_lens']
+                    context_audio_embedding = batch['context_audio_embedding']
+                else:
+                    raise ValueError("Flow inference requires raw context audio or its continuous codec embedding.")
+            elif 'context_audio_codes' in batch:
                 context_audio_codes = batch['context_audio_codes']
                 context_audio_codes_lens = batch['context_audio_codes_lens']
             else:
-                context_audio = batch['context_audio']
-                context_audio_lens = batch['context_audio_lens']
                 context_audio_codes, context_audio_codes_lens = self._codec_helper.audio_to_codes(
-                    context_audio, context_audio_lens
+                    batch['context_audio'], batch['context_audio_lens']
                 )
 
             # Optional GT phoneme tokens for teacher forcing
@@ -2576,45 +2829,71 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # Prepare GT audio codes for teacher forcing if requested
             gt_audio_codes_for_init = None
             gt_audio_codes_lens_for_init = None
+            gt_audio_input_embeddings = None
+            gt_audio_output_lens = None
             if use_teacher_forced:
                 # Force GT phoneme input and argmax sampling
                 phoneme_input_type = 'gt'
                 temperature = 0.0
 
-                # Get GT audio codes
-                if 'audio_codes' in batch:
+                gt_audio_embedding = None
+                if self.local_transformer_type == LocalTransformerType.FLOW:
+                    if 'audio' not in batch:
+                        raise ValueError("Flow teacher forcing requires raw target audio.")
+                    gt_audio_codes, gt_audio_codes_lens, gt_audio_embedding = (
+                        self._codec_helper.audio_to_semantic_codes_and_embedding(
+                            batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
+                        )
+                    )
+                    gt_audio_output_lens = gt_audio_codes_lens
+                elif 'audio_codes' in batch:
                     gt_audio_codes = batch['audio_codes']
                     gt_audio_codes_lens = batch['audio_codes_lens']
                 elif 'audio' in batch:
-                    gt_audio = batch['audio']
-                    gt_audio_lens = batch['audio_lens']
-                    gt_audio_codes, gt_audio_codes_lens = self._codec_helper.audio_to_codes(gt_audio, gt_audio_lens)
+                    gt_audio_codes, gt_audio_codes_lens = self._codec_helper.audio_to_codes(
+                        batch['audio'], batch['audio_lens']
+                    )
                 else:
                     raise ValueError("Teacher forcing requires 'audio_codes' or 'audio' in batch")
 
-                # Convert and add special tokens, then stack
-                if self._codec_converter is not None:
-                    gt_audio_codes = self._codec_converter.convert_original_to_new(
-                        audio_tokens=gt_audio_codes, audio_lens=gt_audio_codes_lens
-                    ).long()
-
-                gt_audio_codes_processed, gt_audio_codes_lens_processed = add_special_tokens(
-                    codes=gt_audio_codes,
-                    codes_len=gt_audio_codes_lens,
-                    bos_id=self.audio_bos_id,
-                    eos_id=self.audio_eos_id,
-                )
-                gt_audio_codes_processed, gt_audio_codes_lens_processed = self.stack_codes(
-                    gt_audio_codes_processed,
-                    gt_audio_codes_lens_processed,
-                    self.audio_bos_id,
-                    self.audio_eos_id,
-                    self.frame_stacking_factor,
-                    self.num_audio_codebooks,
-                )
-
-                # Input portion: all tokens except the last (teacher forcing shift)
-                gt_audio_codes_for_init = gt_audio_codes_processed[:, :, :-1]
+                if self.local_transformer_type == LocalTransformerType.FLOW:
+                    semantic_codes = gt_audio_codes
+                    _, acoustic_embedding = self._codec_helper.split_prequantized_embedding(
+                        gt_audio_embedding,
+                        num_semantic_codebooks=self.num_semantic_codebooks,
+                    )
+                    semantic_sequence, acoustic_sequence, gt_audio_codes_lens_processed = (
+                        self.prepare_flow_audio_state_sequence(
+                            semantic_codes=semantic_codes,
+                            codes_lens=gt_audio_codes_lens,
+                            acoustic_embedding=acoustic_embedding,
+                            bos_id=self.audio_bos_id,
+                            eos_id=self.audio_eos_id,
+                        )
+                    )
+                    gt_audio_input_embeddings = self.embed_flow_audio_state(
+                        semantic_sequence[:, :, :-1], acoustic_sequence[:, :, :-1]
+                    )
+                else:
+                    if self._codec_converter is not None:
+                        gt_audio_codes = self._codec_converter.convert_original_to_new(
+                            audio_tokens=gt_audio_codes, audio_lens=gt_audio_codes_lens
+                        ).long()
+                    gt_audio_codes_processed, gt_audio_codes_lens_processed = add_special_tokens(
+                        codes=gt_audio_codes,
+                        codes_len=gt_audio_codes_lens,
+                        bos_id=self.audio_bos_id,
+                        eos_id=self.audio_eos_id,
+                    )
+                    gt_audio_codes_processed, gt_audio_codes_lens_processed = self.stack_codes(
+                        gt_audio_codes_processed,
+                        gt_audio_codes_lens_processed,
+                        self.audio_bos_id,
+                        self.audio_eos_id,
+                        self.frame_stacking_factor,
+                        self.num_audio_codebooks,
+                    )
+                    gt_audio_codes_for_init = gt_audio_codes_processed[:, :, :-1]
                 gt_audio_codes_lens_for_init = gt_audio_codes_lens_processed - 1
 
             batch_size = text.size(0)
@@ -2625,6 +2904,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 context_audio_codes_lens=context_audio_codes_lens,
                 context_text_tokens=context_text_tokens,
                 context_text_tokens_lens=context_text_tokens_lens,
+                context_audio_embedding=context_audio_embedding,
+                gt_audio_input_embeddings=gt_audio_input_embeddings,
                 use_cfg=use_cfg,
                 cfg_scale=cfg_scale,
                 use_local_transformer=use_local_transformer_for_inference,
@@ -2674,6 +2955,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             tts_generation_time = time.time() - generation_start_time
 
+            if gt_audio_output_lens is not None and state.all_predictions:
+                generated_frames = sum(prediction.size(-1) for prediction in state.all_predictions)
+                requested_end = torch.clamp(state.audio_prediction_start_idx, min=0) + gt_audio_output_lens
+                state.audio_prediction_end_idx = torch.minimum(
+                    requested_end,
+                    torch.full_like(requested_end, generated_frames),
+                )
+
             # Finalize and decode audio
             finalize_output = self.streaming_finalize(state, use_inference_mode=use_inference_mode)
 
@@ -2722,6 +3011,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 predicted_phoneme_tokens=predicted_phoneme_tokens,
                 predicted_phoneme_tokens_lens=predicted_phoneme_tokens_lens,
                 phoneme_prediction_start_idx=phoneme_prediction_start_idx_out,
+                predicted_acoustic_embeddings=finalize_output.acoustic_embeddings,
             )
 
     @staticmethod
@@ -2838,6 +3128,18 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             'context_audio_codes': context_audio_codes,
             'context_audio_codes_lens': context_audio_codes_lens,
         }
+        if context_audio_file_path is not None and context_audio_file_path.strip() != "":
+            batch['context_audio'] = context_audio
+            batch['context_audio_lens'] = context_audio_lens
+        elif self.local_transformer_type == LocalTransformerType.FLOW:
+            batch['context_audio_embedding'] = torch.zeros(
+                1,
+                self._codec_model.vector_quantizer.codebook_dim,
+                0,
+                device=device,
+                dtype=next(self._codec_model.parameters()).dtype,
+            )
+
         phoneme_input_type = 'pred'
         if gt_phoneme_text is not None:
             if self.phoneme_tokenizer is None:

@@ -42,7 +42,7 @@ from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
 from nemo.collections.tts.data.text_to_speech_dataset import ChunkedTTSInferenceDataset, MagpieTTSDataset
-from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
+from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters, LocalTransformerType
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.parts.utils.tts_dataset_utils import normalize_volume, stack_tensors
 from nemo.utils import logging
@@ -1202,7 +1202,13 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
 
             wav = batch["context_audio"]
             wav_len = batch["context_audio_lengths"]
-            codes, codes_lens = model._codec_helper.audio_to_codes(wav, wav_len)
+            context_audio_embedding = None
+            if model.local_transformer_type == LocalTransformerType.FLOW:
+                codes, codes_lens, context_audio_embedding = model._codec_helper.audio_to_semantic_codes_and_embedding(
+                    wav, wav_len, model.num_semantic_codebooks
+                )
+            else:
+                codes, codes_lens = model._codec_helper.audio_to_codes(wav, wav_len)
 
             # add language on context if needed
             use_lang = bool(getattr(model, "add_language_to_context_text", False))
@@ -1245,6 +1251,7 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             state = model.streaming_init(
                 context_audio_codes=codes,
                 context_audio_codes_lens=codes_lens,
+                context_audio_embedding=context_audio_embedding,
                 context_text_tokens=ctx_toks,
                 context_text_tokens_lens=ctx_toks_lens,
                 use_cfg=self.config.use_cfg,
@@ -1306,26 +1313,55 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                         min_len=min_user_audio_len,
                     )
 
-                    user_audio_codes, user_audio_codes_lens = model._codec_helper.audio_to_codes(
-                        user_audio, user_audio_lens
-                    )
+                    if model.local_transformer_type == LocalTransformerType.FLOW:
+                        user_audio_codes, user_audio_codes_lens, user_audio_embedding = (
+                            model._codec_helper.audio_to_semantic_codes_and_embedding(
+                                user_audio, user_audio_lens, model.num_semantic_codebooks
+                            )
+                        )
+                        semantic_user_audio = user_audio_codes
+                        _, acoustic_user_audio = model._codec_helper.split_prequantized_embedding(
+                            user_audio_embedding,
+                            num_semantic_codebooks=model.num_semantic_codebooks,
+                        )
+                        valid_frames = torch.arange(
+                            acoustic_user_audio.size(2), device=acoustic_user_audio.device
+                        ).unsqueeze(0) < user_audio_codes_lens.unsqueeze(1)
+                        acoustic_user_audio = acoustic_user_audio * valid_frames.unsqueeze(1).to(
+                            acoustic_user_audio.dtype
+                        )
+                        semantic_user_audio, user_audio_codes_lens = model.stack_codes(
+                            semantic_user_audio,
+                            user_audio_codes_lens,
+                            model.audio_bos_id,
+                            model.audio_eos_id,
+                            model.frame_stacking_factor,
+                            model.num_semantic_codebooks,
+                        )
+                        acoustic_user_audio = model.stack_codec_embeddings(
+                            acoustic_user_audio, model.frame_stacking_factor
+                        )
+                        user_audio_embedded = model.embed_flow_audio_state(semantic_user_audio, acoustic_user_audio)
+                    else:
+                        user_audio_codes, user_audio_codes_lens = model._codec_helper.audio_to_codes(
+                            user_audio, user_audio_lens
+                        )
 
-                    if model._codec_converter is not None:
-                        user_audio_codes = model._codec_converter.convert_original_to_new(
-                            audio_tokens=user_audio_codes,
-                            audio_lens=user_audio_codes_lens,
-                        ).long()
+                        if model._codec_converter is not None:
+                            user_audio_codes = model._codec_converter.convert_original_to_new(
+                                audio_tokens=user_audio_codes,
+                                audio_lens=user_audio_codes_lens,
+                            ).long()
 
-                    user_audio_codes, user_audio_codes_lens = model.stack_codes(
-                        user_audio_codes,
-                        user_audio_codes_lens,
-                        model.audio_bos_id,
-                        model.audio_eos_id,
-                        model.frame_stacking_factor,
-                        model.num_audio_codebooks,
-                    )
-
-                    user_audio_embedded = model.embed_audio_tokens(user_audio_codes)
+                        user_audio_codes, user_audio_codes_lens = model.stack_codes(
+                            user_audio_codes,
+                            user_audio_codes_lens,
+                            model.audio_bos_id,
+                            model.audio_eos_id,
+                            model.frame_stacking_factor,
+                            model.num_audio_codebooks,
+                        )
+                        user_audio_embedded = model.embed_audio_tokens(user_audio_codes)
                     real_start = 0
                     real_end = int(user_audio_codes_lens[0].item())
                     user_audio_embedded = user_audio_embedded[:, real_start:real_end]
@@ -1455,7 +1491,12 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             eos_id = getattr(model, "audio_eos_id", -1)
             speaking_id = getattr(model, "audio_user_speaking_id", -1)
             speaking_end_id = getattr(model, "audio_user_speaking_end_id", -1)
-            sil_injection = codec_sil_codes.view(1, -1, 1)
+            predicted_codebooks = (
+                model.num_semantic_codebooks
+                if model.local_transformer_type == LocalTransformerType.FLOW
+                else model.num_audio_codebooks
+            )
+            sil_injection = codec_sil_codes[:predicted_codebooks].view(1, -1, 1)
 
             for step_idx in range(len(state.all_predictions)):
                 pred = state.all_predictions[step_idx]
@@ -1463,6 +1504,10 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                 frame_mask = mask.any(dim=1, keepdim=True)
                 if frame_mask.any():
                     state.all_predictions[step_idx] = torch.where(frame_mask, sil_injection.expand_as(pred), pred)
+                    if model.local_transformer_type == LocalTransformerType.FLOW:
+                        state.all_acoustic_predictions[step_idx] = state.all_acoustic_predictions[
+                            step_idx
+                        ].masked_fill(frame_mask, 0.0)
 
             state.audio_prediction_end_idx.fill_(-1)
             generated_codes = None

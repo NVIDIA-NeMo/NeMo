@@ -518,16 +518,22 @@ def test_process_batch_with_one_shot_flow_local_predictor():
         model._codec_model.vector_quantizer.codebook_dim,
         batch["audio_codes"].size(2),
     )
+    context_audio_embedding = torch.randn(
+        batch["context_audio_codes"].size(0),
+        model._codec_model.vector_quantizer.codebook_dim,
+        batch["context_audio_codes"].size(2),
+    )
 
     output = model.process_batch(
         text=batch["text"],
         text_lens=batch["text_lens"],
         context_text_tokens=batch["context_text_tokens"],
         context_text_tokens_lens=batch["context_text_tokens_lens"],
-        audio_codes=batch["audio_codes"],
+        audio_codes=batch["audio_codes"][:, : model.num_semantic_codebooks],
         audio_codes_lens=batch["audio_codes_lens"],
-        context_audio_codes=batch["context_audio_codes"],
+        context_audio_codes=batch["context_audio_codes"][:, : model.num_semantic_codebooks],
         context_audio_codes_lens=batch["context_audio_codes_lens"],
+        context_audio_embedding=context_audio_embedding,
         audio_embedding=audio_embedding,
         audio_embedding_lens=batch["audio_codes_lens"],
         mode="val",
@@ -539,9 +545,74 @@ def test_process_batch_with_one_shot_flow_local_predictor():
     assert torch.isfinite(output.codebook_loss)
     assert torch.isfinite(output.local_transformer_loss)
     assert output.local_transformer_logits is None
+    semantic_channels = model.num_semantic_codebooks * model.frame_stacking_factor
+    assert output.logits.shape[-1] == semantic_channels * model.num_all_tokens_per_codebook
+    assert output.audio_codes_target.shape[1] == semantic_channels
+    assert output.context_audio_codes.shape[1] == semantic_channels
 
 
-def test_one_shot_flow_sampling_returns_all_codec_groups():
+def test_one_shot_flow_allocates_only_semantic_token_heads():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "normalizing_flow",
+                "frame_stacking_factor": 2,
+                "local_flow_hidden_dim": 16,
+                "local_flow_n_layers": 2,
+                "local_flow_n_flows": 2,
+            }
+        )
+    )
+
+    semantic_channels = model.num_semantic_codebooks * model.frame_stacking_factor
+    assert len(model.audio_embeddings) == semantic_channels
+    assert model.final_proj.out_features == semantic_channels * model.num_all_tokens_per_codebook
+
+
+def test_one_shot_flow_teacher_forcing_uses_previous_continuous_acoustic_embedding():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "normalizing_flow",
+                "frame_stacking_factor": 2,
+                "local_flow_hidden_dim": 16,
+                "local_flow_n_layers": 2,
+                "local_flow_n_flows": 2,
+            }
+        )
+    )
+    codes = _toy_codes(model, batch_size=1, num_frames=4)[:, : model.num_semantic_codebooks]
+    codes_lens = torch.tensor([4], dtype=torch.long)
+    delay = torch.tensor([0], dtype=torch.long)
+    full_dim = model._codec_model.vector_quantizer.codebook_dim
+    semantic_dim = model.semantic_codec_embedding_dim
+    first_embedding = torch.zeros(1, full_dim, 4)
+    second_embedding = first_embedding.clone()
+    second_embedding[:, semantic_dim:] = 1.0
+    with torch.no_grad():
+        model.flow_acoustic_in_projection.weight.fill_(0.125)
+        model.flow_acoustic_in_projection.bias.zero_()
+
+    first_inputs, _, first_targets, target_lens, _ = model.prepare_flow_audio_channel_embeddings(
+        audio_codes=codes,
+        audio_codes_lens=codes_lens,
+        audio_embedding=first_embedding,
+        delay=delay,
+    )
+    second_inputs, _, second_targets, second_lens, _ = model.prepare_flow_audio_channel_embeddings(
+        audio_codes=codes,
+        audio_codes_lens=codes_lens,
+        audio_embedding=second_embedding,
+        delay=delay,
+    )
+
+    torch.testing.assert_close(first_targets, second_targets)
+    torch.testing.assert_close(target_lens, second_lens)
+    assert first_targets.shape[1] == model.num_semantic_codebooks * model.frame_stacking_factor
+    assert not torch.allclose(first_inputs[:, 1:], second_inputs[:, 1:])
+
+
+def test_one_shot_flow_sampling_returns_semantic_codes_and_continuous_acoustics():
     _seed_everything()
     model = _make_easy_magpie_model(
         tiny_easy_magpie_cfg(
@@ -555,25 +626,146 @@ def test_one_shot_flow_sampling_returns_all_codec_groups():
         )
     )
     last_hidden = torch.randn(2, 1, model.cfg.hidden_dim)
-    logits = torch.randn(
+    semantic_channels = model.num_semantic_codebooks * model.frame_stacking_factor
+    logits = torch.randn(2, semantic_channels * model.num_all_tokens_per_codebook)
+
+    assert not hasattr(model._codec_helper, "acoustic_embedding_to_codes")
+    with patch.object(
+        model._codec_model,
+        "quantize",
+        side_effect=AssertionError("flow sampling must not create acoustic codec tokens"),
+    ):
+        sampled, argmax, acoustic_embedding = model._sample_audio_codes(
+            last_hidden=last_hidden,
+            all_code_logits_t=logits,
+            temperature=0.7,
+            topk=20,
+            use_local_transformer_for_inference=True,
+            use_cfg=False,
+            cfg_scale=1.0,
+        )
+
+    expected_semantic_shape = (2, semantic_channels)
+    assert sampled.shape == expected_semantic_shape
+    assert argmax.shape == expected_semantic_shape
+    assert acoustic_embedding.shape == (
         2,
-        model.num_audio_codebooks * model.frame_stacking_factor * model.num_all_tokens_per_codebook,
+        model.acoustic_codec_embedding_dim,
+        model.frame_stacking_factor,
     )
-
-    sampled, argmax = model._sample_audio_codes(
-        last_hidden=last_hidden,
-        all_code_logits_t=logits,
-        temperature=0.7,
-        topk=20,
-        use_local_transformer_for_inference=True,
-        use_cfg=False,
-        cfg_scale=1.0,
-    )
-
-    expected_shape = (2, model.num_audio_codebooks * model.frame_stacking_factor)
-    assert sampled.shape == expected_shape
-    assert argmax.shape == expected_shape
     assert sampled.dtype == torch.long
+    assert acoustic_embedding.is_floating_point()
+
+
+def test_one_shot_flow_teacher_forced_inference_decodes_continuous_acoustics_directly():
+    _seed_everything()
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "normalizing_flow",
+                "frame_stacking_factor": 2,
+                "local_flow_hidden_dim": 16,
+                "local_flow_n_layers": 2,
+                "local_flow_n_flows": 2,
+            }
+        )
+    )
+    text, text_lens = _padded_token_tensor(model, ["abc"])
+    context_text, context_text_lens = _padded_token_tensor(model, ["hi"])
+    batch = {
+        "text": text,
+        "text_lens": text_lens,
+        "context_text_tokens": context_text,
+        "context_text_tokens_lens": context_text_lens,
+        "context_audio": torch.randn(1, 960),
+        "context_audio_lens": torch.tensor([960], dtype=torch.long),
+        "audio": torch.randn(1, 960),
+        "audio_lens": torch.tensor([960], dtype=torch.long),
+    }
+
+    assert not hasattr(model._codec_helper, "acoustic_embedding_to_codes")
+    with patch.object(
+        model._codec_helper,
+        "codes_to_audio",
+        side_effect=AssertionError("flow inference must decode the continuous representation directly"),
+    ):
+        output = model.infer_batch(
+            batch=batch,
+            max_decoder_steps=8,
+            temperature=0.0,
+            topk=1,
+            use_local_transformer_for_inference=True,
+            use_teacher_forced=True,
+        )
+
+    assert output.predicted_audio_lens.item() > 0
+    assert output.predicted_codes.shape[1] == model.num_semantic_codebooks
+    assert output.predicted_acoustic_embeddings.shape[1] == model.acoustic_codec_embedding_dim
+    assert output.predicted_acoustic_embeddings.shape[-1] == output.predicted_codes.shape[-1]
+
+
+def test_one_shot_flow_free_running_inference_feeds_generated_acoustics_back():
+    _seed_everything()
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "normalizing_flow",
+                "frame_stacking_factor": 2,
+                "local_flow_hidden_dim": 16,
+                "local_flow_n_layers": 2,
+                "local_flow_n_flows": 2,
+            }
+        )
+    )
+    text, text_lens = _padded_token_tensor(model, ["abc"])
+    context_text, context_text_lens = _padded_token_tensor(model, ["hi"])
+    batch = {
+        "text": text,
+        "text_lens": text_lens,
+        "context_text_tokens": context_text,
+        "context_text_tokens_lens": context_text_lens,
+        "context_audio": torch.randn(1, 960),
+        "context_audio_lens": torch.tensor([960], dtype=torch.long),
+    }
+    with torch.no_grad():
+        model.final_proj.weight.zero_()
+        model.final_proj.bias.fill_(-100.0)
+        for channel in range(model.num_semantic_codebooks * model.frame_stacking_factor):
+            model.final_proj.bias[channel * model.num_all_tokens_per_codebook] = 100.0
+
+    def sample_ones(condition, lengths, noise_scale):
+        del lengths, noise_scale
+        return torch.ones(
+            condition.size(0),
+            model.acoustic_codec_embedding_dim * model.frame_stacking_factor,
+            condition.size(2),
+            device=condition.device,
+            dtype=condition.dtype,
+        )
+
+    original_embed_flow_audio_state = model.embed_flow_audio_state
+    assert not hasattr(model._codec_helper, "acoustic_embedding_to_codes")
+    with (
+        patch.object(model.local_flow, "sample", side_effect=sample_ones),
+        patch.object(model, "embed_flow_audio_state", wraps=original_embed_flow_audio_state) as embed_mock,
+    ):
+        output = model.infer_batch(
+            batch=batch,
+            max_decoder_steps=2,
+            temperature=0.0,
+            topk=1,
+            use_local_transformer_for_inference=True,
+        )
+
+    expected_channels = model.acoustic_codec_embedding_dim * model.frame_stacking_factor
+    feedback_inputs = [
+        call.args[1] for call in embed_mock.call_args_list if call.args[1].shape == (1, expected_channels, 1)
+    ]
+    assert any(torch.equal(value, torch.ones_like(value)) for value in feedback_inputs)
+    assert torch.equal(
+        output.predicted_acoustic_embeddings,
+        torch.ones_like(output.predicted_acoustic_embeddings),
+    )
 
 
 def test_one_shot_flow_logs_explicit_wandb_loss_aliases():
@@ -656,6 +848,48 @@ def test_training_step_smoke(model, toy_batch):
     assert loss.ndim == 0
     assert torch.isfinite(loss)
     assert loss.item() > 0
+
+
+def test_flow_validation_routes_teacher_forced_audio_to_flow_logger(tmp_path):
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "normalizing_flow",
+                "local_flow_hidden_dim": 16,
+                "local_flow_n_layers": 2,
+                "local_flow_n_flows": 2,
+            }
+        )
+    )
+    batch = _toy_batch(model)
+    batch["context_audio"] = torch.randn(2, 960)
+    batch["context_audio_lens"] = torch.tensor([960, 720], dtype=torch.long)
+    batch["audio"] = torch.randn(2, 960)
+    batch["audio_lens"] = torch.tensor([960, 720], dtype=torch.long)
+    object.__setattr__(
+        model,
+        "_trainer",
+        SimpleNamespace(
+            world_size=1,
+            global_rank=0,
+            local_rank=0,
+            log_dir=str(tmp_path),
+            current_epoch=0,
+            loggers=[],
+        ),
+    )
+
+    with (
+        patch.object(model, "log_val_flow_audio_example", return_value={}) as flow_logger,
+        patch.object(
+            model,
+            "log_val_audio_example",
+            side_effect=AssertionError("flow validation must not use discrete codec decoding"),
+        ),
+    ):
+        model.validation_step(batch, batch_idx=0)
+
+    flow_logger.assert_called_once_with(batch)
 
 
 def test_validation_step_smoke(model, toy_batch, tmp_path):

@@ -43,6 +43,8 @@ def _make_easy_mock_model(local_transformer_type):
     model.eos_id = 0
     model.text_conditioning_tokenizer_name = "text_ce_tokenizer"
     model.data_num_audio_codebooks = 4
+    model._codec_model.vector_quantizer.codebook_dim = 40
+    model._codec_model.parameters.side_effect = lambda: iter([torch.zeros(1)])
     model.infer_batch.return_value = SimpleNamespace(
         predicted_audio=torch.zeros(1, 1), predicted_audio_lens=torch.zeros(1, dtype=torch.long)
     )

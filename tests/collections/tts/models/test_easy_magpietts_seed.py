@@ -17,12 +17,11 @@ import copy
 import pytest
 import torch
 from omegaconf import OmegaConf
-from torch import nn
-
 from scripts.magpietts.create_easy_magpietts_oneshot_flow_seed import (
     _defer_dataset_setup,
     transfer_compatible_pretrained_state,
 )
+from torch import nn
 
 
 class _TinyEasyMagpie(nn.Module):
@@ -33,7 +32,7 @@ class _TinyEasyMagpie(nn.Module):
         self.num_semantic_codebooks = 1
         self.frame_stacking_factor = 2
         self.num_all_tokens_per_codebook = 3
-        self.final_proj = nn.Linear(4, 12)
+        self.final_proj = nn.Linear(4, 6)
         self.conditioning_module = nn.Linear(4, 5)
         self.local_flow = nn.Linear(4, 6)
 
@@ -57,11 +56,7 @@ def test_seed_model_defers_all_configured_datasets():
 def test_transfers_every_compatible_tensor_and_leaves_new_flow_random():
     torch.manual_seed(1)
     source = _TinyEasyMagpie()
-    source_state = {
-        key: value
-        for key, value in source.state_dict().items()
-        if not key.startswith("local_flow.")
-    }
+    source_state = {key: value for key, value in source.state_dict().items() if not key.startswith("local_flow.")}
     torch.manual_seed(2)
     target = _TinyEasyMagpie()
     initial_target_state = copy.deepcopy(target.state_dict())
@@ -76,8 +71,8 @@ def test_transfers_every_compatible_tensor_and_leaves_new_flow_random():
             torch.testing.assert_close(value, source_state[key])
 
     assert report["semantic_projection_rows_copied"] == 6
-    assert report["projection_rows_copied"] == 12
-    assert report["acoustic_projection_rows_copied"] == 6
+    assert report["projection_rows_copied"] == 6
+    assert report["acoustic_projection_rows_copied"] == 0
     assert report["acoustic_projection_rows_left_random"] == 0
     assert report["compatible_tensor_count"] == len(target_state) - 2
     assert report["target_state_tensor_keys_left_random"] == [
@@ -89,11 +84,7 @@ def test_transfers_every_compatible_tensor_and_leaves_new_flow_random():
 def test_accepts_lightning_model_prefix_and_backbone_name():
     source = _TinyEasyMagpie()
     source_state = {
-        (
-            f"model.backbone.{key.removeprefix('decoder.')}"
-            if key.startswith("decoder.")
-            else f"model.{key}"
-        ): value
+        (f"model.backbone.{key.removeprefix('decoder.')}" if key.startswith("decoder.") else f"model.{key}"): value
         for key, value in source.state_dict().items()
     }
     target = _TinyEasyMagpie()
@@ -118,30 +109,20 @@ def test_validates_all_backbone_shapes_before_copying():
         torch.testing.assert_close(value, initial_target_state[key])
 
 
-def test_copies_only_semantic_projection_rows_when_full_shape_differs():
+def test_copies_only_semantic_projection_rows_from_legacy_full_head():
     source = _TinyEasyMagpie()
     target = _TinyEasyMagpie()
-    initial_target_state = copy.deepcopy(target.state_dict())
     source_state = dict(source.state_dict())
-    source_state["final_proj.weight"] = source_state["final_proj.weight"][:6]
-    source_state["final_proj.bias"] = source_state["final_proj.bias"][:6]
+    source_state["final_proj.weight"] = torch.randn(12, 4)
+    source_state["final_proj.bias"] = torch.randn(12)
 
     report = transfer_compatible_pretrained_state(target, source_state)
 
-    torch.testing.assert_close(
-        target.final_proj.weight[:6], source_state["final_proj.weight"]
-    )
-    torch.testing.assert_close(
-        target.final_proj.bias[:6], source_state["final_proj.bias"]
-    )
-    torch.testing.assert_close(
-        target.final_proj.weight[6:], initial_target_state["final_proj.weight"][6:]
-    )
-    torch.testing.assert_close(
-        target.final_proj.bias[6:], initial_target_state["final_proj.bias"][6:]
-    )
+    torch.testing.assert_close(target.final_proj.weight, source_state["final_proj.weight"][:6])
+    torch.testing.assert_close(target.final_proj.bias, source_state["final_proj.bias"][:6])
     assert report["projection_rows_copied"] == 6
-    assert report["acoustic_projection_rows_left_random"] == 6
+    assert report["acoustic_projection_rows_copied"] == 0
+    assert report["acoustic_projection_rows_left_random"] == 0
 
 
 def test_rejects_incompatible_semantic_vocabulary_packing():

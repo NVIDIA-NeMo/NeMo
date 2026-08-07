@@ -399,15 +399,58 @@ class CodecHelper:
         codes, codes_len, _ = self.audio_to_codes_and_embedding(audio, audio_len, sample_rate=sample_rate)
         return codes, codes_len
 
-    def audio_to_codes_and_embedding(self, audio, audio_len, sample_rate=None):
-        """Return codec tokens and the continuous encoder output immediately before quantization."""
+    def audio_to_embedding(self, audio, audio_len, sample_rate=None):
+        """Return the continuous codec encoder output before any quantization."""
         self.codec_model.eval()
         with torch.no_grad(), torch.autocast(device_type=audio.device.type, enabled=False):
-            embedding, embedding_len = self.codec_model.encode_audio(
-                audio=audio, audio_len=audio_len, sample_rate=sample_rate
-            )
+            return self.codec_model.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
+
+    def audio_to_codes_and_embedding(self, audio, audio_len, sample_rate=None):
+        """Return all codec tokens and the continuous encoder output for legacy discrete models."""
+        embedding, embedding_len = self.audio_to_embedding(audio, audio_len, sample_rate=sample_rate)
+        with torch.no_grad(), torch.autocast(device_type=audio.device.type, enabled=False):
             codes = self.codec_model.quantize(encoded=embedding, encoded_len=embedding_len)
         return codes, embedding_len, embedding
+
+    def _independent_quantizer_groups(self):
+        """Return one independently callable quantizer module per codec codebook."""
+        vector_quantizer = self.codec_model.vector_quantizer
+        groups = getattr(vector_quantizer, "fsqs", None)
+        if groups is None:
+            groups = getattr(vector_quantizer, "rvqs", None)
+        num_groups = getattr(vector_quantizer, "num_groups", None)
+        if groups is None or num_groups != self.codec_model.num_codebooks or len(groups) != num_groups:
+            raise ValueError(
+                "One-shot flow requires a grouped codec with one independently addressable quantizer group "
+                "per codebook so semantic tokens can be computed without quantizing acoustic groups."
+            )
+        return groups
+
+    def audio_to_semantic_codes_and_embedding(
+        self,
+        audio: torch.Tensor,
+        audio_len: torch.Tensor,
+        num_semantic_codebooks: int,
+        sample_rate=None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Encode audio and quantize only the leading semantic groups."""
+        if not 0 < num_semantic_codebooks < self.codec_model.num_codebooks:
+            raise ValueError(
+                f"num_semantic_codebooks must be in [1, {self.codec_model.num_codebooks - 1}], "
+                f"got {num_semantic_codebooks}."
+            )
+        embedding, embedding_len = self.audio_to_embedding(audio, audio_len, sample_rate=sample_rate)
+        quantizer_groups = self._independent_quantizer_groups()
+        group_dim = self._embedding_dim_per_codebook()
+        semantic_indices = []
+        with torch.no_grad(), torch.autocast(device_type=audio.device.type, enabled=False):
+            for group_index in range(num_semantic_codebooks):
+                group_input = embedding[:, group_index * group_dim : (group_index + 1) * group_dim].float()
+                semantic_indices.append(
+                    quantizer_groups[group_index].encode(inputs=group_input, input_len=embedding_len)
+                )
+        semantic_codes = torch.cat(semantic_indices, dim=0).permute(1, 0, 2).contiguous()
+        return semantic_codes, embedding_len, embedding
 
     def _embedding_dim_per_codebook(self) -> int:
         vector_quantizer = self.codec_model.vector_quantizer
@@ -443,32 +486,32 @@ class CodecHelper:
         semantic_codes: torch.Tensor,
         codes_len: torch.Tensor,
     ) -> torch.Tensor:
-        """Dequantize leading semantic codebooks without requiring acoustic tokens."""
-        batch_size, num_semantic_codebooks, num_frames = semantic_codes.shape
-        if num_semantic_codebooks >= self.codec_model.num_codebooks:
-            raise ValueError("Semantic codes must be a strict subset of codec codebooks.")
+        """Dequantize only leading semantic groups without constructing acoustic tokens."""
+        num_semantic_codebooks = semantic_codes.size(1)
+        if not 0 < num_semantic_codebooks < self.codec_model.num_codebooks:
+            raise ValueError("Semantic codes must be a non-empty strict subset of codec codebooks.")
 
-        placeholder = torch.zeros(
-            batch_size,
-            self.codec_model.num_codebooks,
-            num_frames,
-            dtype=semantic_codes.dtype,
-            device=semantic_codes.device,
-        )
-        placeholder[:, :num_semantic_codebooks] = semantic_codes
+        quantizer_groups = self._independent_quantizer_groups()
+        grouped_indices = semantic_codes.permute(1, 0, 2).contiguous()
+        semantic_embeddings = []
         self.codec_model.eval()
         with torch.no_grad():
-            dequantized = self.codec_model.dequantize(tokens=placeholder, tokens_len=codes_len)
-        semantic_dim = num_semantic_codebooks * self._embedding_dim_per_codebook()
-        return dequantized[:, :semantic_dim]
+            for group_index in range(num_semantic_codebooks):
+                semantic_embeddings.append(
+                    quantizer_groups[group_index].decode(
+                        indices=grouped_indices[group_index : group_index + 1],
+                        input_len=codes_len,
+                    )
+                )
+        return torch.cat(semantic_embeddings, dim=1)
 
-    def acoustic_embedding_to_codes(
+    def compose_semantic_acoustic_embedding(
         self,
         semantic_codes: torch.Tensor,
         acoustic_embedding: torch.Tensor,
         codes_len: torch.Tensor,
     ) -> torch.Tensor:
-        """Quantize a predicted pre-quantization acoustic embedding into codec tokens."""
+        """Compose the codec decoder input without quantizing the acoustic representation."""
         semantic_embedding = self.semantic_codes_to_embedding(semantic_codes, codes_len)
         expected_acoustic_dim = (
             self.codec_model.num_codebooks - semantic_codes.size(1)
@@ -477,15 +520,27 @@ class CodecHelper:
             raise ValueError(
                 f"Expected acoustic embedding dimension {expected_acoustic_dim}, got {acoustic_embedding.size(1)}."
             )
+        return torch.cat([semantic_embedding, acoustic_embedding.to(semantic_embedding.dtype)], dim=1)
 
-        acoustic_embedding = acoustic_embedding.to(semantic_embedding.dtype)
-        combined_embedding = torch.cat([semantic_embedding, acoustic_embedding], dim=1)
+    def semantic_and_acoustic_embedding_to_audio(
+        self,
+        semantic_codes: torch.Tensor,
+        acoustic_embedding: torch.Tensor,
+        codes_len: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Decode semantic tokens plus a continuous acoustic embedding directly to audio."""
+        combined_embedding = self.compose_semantic_acoustic_embedding(
+            semantic_codes=semantic_codes,
+            acoustic_embedding=acoustic_embedding,
+            codes_len=codes_len,
+        )
         self.codec_model.eval()
         with torch.no_grad(), torch.autocast(device_type=combined_embedding.device.type, enabled=False):
-            codes = self.codec_model.quantize(encoded=combined_embedding, encoded_len=codes_len)
-        codes = codes.to(semantic_codes.dtype)
-        codes[:, : semantic_codes.size(1)] = semantic_codes
-        return codes
+            audio, audio_len = self.codec_model.decode_audio(
+                inputs=combined_embedding.to(self.codec_model.dtype),
+                input_len=codes_len,
+            )
+        return audio, audio_len, combined_embedding
 
     def codes_to_audio(self, codes, codes_len):
         """Decode codec codes back into audio waveforms.

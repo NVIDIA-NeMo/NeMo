@@ -49,8 +49,7 @@ class EuroLLMTranslatorPromptTemplate(PromptTemplate):
     PROMPT_TEMPLATE = (
         "<|im_start|>system\n<|im_end|>\n"
         "<|im_start|>user\n"
-        "Translate the following {src_lang} source text to {tgt_lang}.\n"
-        # "Translate the following {src_lang} source text to {tgt_lang}. Always output text in the {tgt_lang} language:\n"
+        "Translate the following {src_lang} source text to {tgt_lang}. Always output text in the {tgt_lang} language:\n"
         "{src_lang}: {src_text}\n"
         "{tgt_lang}: <|im_end|>\n"
         "<|im_start|>assistant\n"
@@ -102,18 +101,22 @@ class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
     Chat-style prompt template for Qwen Reasoning model to perform translation.
     Thinking is disabled by appending the empty think block (<think>\\n\\n</think>\\n\\n)
     after <|im_start|>assistant\\n, matching the tokenizer.apply_chat_template(..., enable_thinking=False) behavior.
+
+    The system and user prompts reproduce those used in the NVIDIA NeMo team's IWSLT 2026 submission:
+    Grigoryan, Bataev, Andrusenko, et al. (2026), "NeMo@IWSLT 2026: Cascaded System for Simultaneous
+    Speech Translation" (https://aclanthology.org/2026.iwslt-1.23.pdf).
     """
 
-    SYSTEM_MESSAGE = """
-            You are a professional machine translation assistant.
-            Translate the input text into the target language.
-            - Output only the translation.
-            - Do not complete or extend the text.
-            - The input may be incomplete. Preserve incompleteness.
-            - Do not infer missing content.
-            - Stop immediately after translating.
-            - Preserve named entities, numbers, punctuation, and formatting.
-        """
+    SYSTEM_MESSAGE = (
+        "You are a professional machine translation assistant.\n"
+        "Translate the input text into the target language.\n"
+        "- Output only the translation.\n"
+        "- Do not complete or extend the text.\n"
+        "- The input may be incomplete; preserve incompleteness.\n"
+        "- Do not infer missing content.\n"
+        "- Stop immediately after translating.\n"
+        "- Preserve named entities, numbers, punctuation, and formatting."
+    )
 
     # Empty think block appended so model goes straight to answer (enable_thinking=False behavior)
     _THINK_DISABLED_SUFFIX = "<think>\n\n</think>\n\n"

@@ -415,6 +415,27 @@ def test_pee_prepare_inputs_routes_spk_targets_as_spk_targets(dummy_pe_encoder):
 
 
 @pytest.mark.unit
+def test_pee_prepare_inputs_sends_audio_free_batch_through_the_fsdp_sync_path(dummy_pe_encoder):
+    """A text-only batch carries no spk_targets, which is also how a Sortformer-predicted
+    batch looks, so routing must additionally check for audio. Only the CP/chunking path
+    all-reduces audio presence across the perception FSDP group and substitutes a dummy
+    row; calling the sharded perception directly would leave this rank one collective out
+    of step with every rank whose batch does contain audio, hanging training."""
+    model = _make_pee_routing_test_model(dummy_pe_encoder)
+    batch = {
+        "audios": torch.zeros(0, 16000),
+        "audio_lens": torch.zeros(0, dtype=torch.long),
+        "input_ids": torch.tensor([[10, 11]], dtype=torch.long),
+        "loss_mask": torch.tensor([[False, True]], dtype=torch.bool),
+    }
+
+    calls_before = len(model.perception.spk_targets_calls)
+    model.prepare_inputs(batch)
+
+    assert len(model.perception.spk_targets_calls) == calls_before
+
+
+@pytest.mark.unit
 def test_prepare_inputs_ignores_spk_targets_without_pee(dummy_pe_encoder):
     model = _make_pee_routing_test_model(dummy_pe_encoder)
     model.perception.encoder = torch.nn.Identity()

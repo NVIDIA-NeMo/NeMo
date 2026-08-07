@@ -131,14 +131,11 @@ class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
         tgt_prefix: str,
         src_context: str = "",
         tgt_context: str = "",
-        use_system: bool = True,
     ) -> str:
         """
         Generate a translation prompt in Qwen3 chat format (thinking disabled).
         Args:
             src_lang, tgt_lang, src_prefix, tgt_prefix, src_context, tgt_context: same as other templates.
-            system_content: Override system message; used only if use_system is True.
-            use_system: If True, prepend system message (default). Set False for user-only prompt.
         Returns:
             str: Formatted prompt string.
         """
@@ -151,14 +148,12 @@ class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
         )
         assistant_text = f"{cls._THINK_DISABLED_SUFFIX}{tgt_text}"
 
-        if use_system:
-            system_block = f"<|im_start|>system\n{cls.SYSTEM_MESSAGE}<|im_end|>\n"
-            return (
-                system_block
-                + f"<|im_start|>user\n{user_content}<|im_end|>\n"
-                + f"<|im_start|>assistant\n{assistant_text}"
-            )
-        return f"<|im_start|>system\n<|im_end|>\n<|im_start|>user\n{user_content}<|im_end|>\n<|im_start|>assistant\n{assistant_text}"
+        system_block = f"<|im_start|>system\n{cls.SYSTEM_MESSAGE}<|im_end|>\n"
+        return (
+            system_block
+            + f"<|im_start|>user\n{user_content}<|im_end|>\n"
+            + f"<|im_start|>assistant\n{assistant_text}"
+        )
 
     @classmethod
     def messages(
@@ -169,7 +164,6 @@ class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
         tgt_prefix: str,
         src_context: str = "",
         tgt_context: str = "",
-        use_system: bool = True,
     ):
         """
         Return chat messages for tokenizer.apply_chat_template().
@@ -180,12 +174,11 @@ class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
         user_content = cls.USER_CONTENT_TEMPLATE.format(
             src_lang=src_lang, tgt_lang=tgt_lang, src_text=src_text, tgt_text=tgt_text
         )
-        msgs = [{"role": "user", "content": user_content}, {"role": "assistant", "content": tgt_text}]
-        if use_system:
-            msgs.insert(0, {"role": "system", "content": cls.SYSTEM_MESSAGE})
-        else:
-            msgs.insert(0, {"role": "system", "content": ""})
-        return msgs
+        return [
+            {"role": "system", "content": cls.SYSTEM_MESSAGE},
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": tgt_text},
+        ]
 
     @classmethod
     def extract(cls, response: str) -> str:

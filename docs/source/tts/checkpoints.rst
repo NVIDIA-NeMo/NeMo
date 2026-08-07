@@ -127,14 +127,6 @@ This section summarizes a full list of available NeMo TTS models that have been 
 * :code:`curl -LO '<CHECKPOINT_URL_IN_THE_TABLE>'`
 
 
-Speech/Text Aligners
-^^^^^^^^^^^^^^^^^^^^
-
-.. csv-table::
-   :file: data/ngc_models_aligner.csv
-   :align: left
-   :header-rows: 1
-
 Mel-Spectrogram Generators
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. csv-table::
@@ -146,13 +138,6 @@ Vocoders
 ^^^^^^^^
 .. csv-table::
    :file: data/ngc_models_vocoder.csv
-   :align: left
-   :header-rows: 1
-
-End2End models
-^^^^^^^^^^^^^^
-.. csv-table::
-   :file: data/ngc_models_e2e.csv
    :align: left
    :header-rows: 1
 

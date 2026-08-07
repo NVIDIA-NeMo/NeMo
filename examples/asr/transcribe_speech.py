@@ -36,6 +36,7 @@ from nemo.collections.asr.parts.utils.transcribe_utils import (
     prepare_audio_data,
     restore_transcription_order,
     setup_model,
+    wire_confidence_cfg,
     write_transcription,
 )
 from nemo.core.config import hydra_runner
@@ -206,6 +207,8 @@ class TranscriptionConfig:
 
     extract_nbest: bool = False  # Extract n-best hypotheses from the model
 
+    confidence: bool = False  # output token and word confidence in the manifest
+
     calculate_rtfx: bool = False
     warmup_steps: int = 0  # by default - no warmup
     run_steps: int = 1  # by default - single run
@@ -290,6 +293,11 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
 
     if cfg.timestamps:
         cfg.return_hypotheses = True
+
+    if cfg.confidence:
+        cfg.return_hypotheses = True
+        wire_confidence_cfg(cfg.rnnt_decoding, enabled=True)
+        wire_confidence_cfg(cfg.ctc_decoding, enabled=True)
 
     # Check whether model and decoder type match
     if isinstance(asr_model, EncDecCTCModel):
@@ -465,6 +473,7 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         filepaths=filepaths,
         compute_langs=compute_langs,
         timestamps=cfg.timestamps,
+        confidence=cfg.confidence,
     )
     logging.info(f"Finished writing predictions to {output_filename}!")
 

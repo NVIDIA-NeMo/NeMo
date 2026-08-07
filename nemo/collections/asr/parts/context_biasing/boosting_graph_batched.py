@@ -585,7 +585,7 @@ class GPUBoostingTreeModel(NGramGPULanguageModel):
             raise ValueError("Both file and phrases specified, use only one")
         elif cfg.key_phrases_file:
             with open(cfg.key_phrases_file, "r", encoding="utf-8") as f:
-                phrase_items_list = [PhraseItem(line.strip(), cfg.source_lang) for line in f]
+                phrase_items_list = [PhraseItem(line, cfg.source_lang) for raw_line in f if (line := raw_line.strip())]
         elif cfg.key_phrases_list or cfg.key_phrase_items_list:
             phrase_items_list = []
             if cfg.key_phrases_list:

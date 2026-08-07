@@ -667,6 +667,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             stacked_semantic_dim = self.semantic_codec_embedding_dim * self.frame_stacking_factor
             stacked_acoustic_dim = self.acoustic_codec_embedding_dim * self.frame_stacking_factor
             self.flow_acoustic_in_projection = nn.Linear(stacked_acoustic_dim, cfg.embedding_dim)
+            # This path has no counterpart in the pretrained discrete model. Start it as an
+            # exact no-op so loading the pretrained backbone does not inject a random residual.
+            nn.init.zeros_(self.flow_acoustic_in_projection.weight)
+            nn.init.zeros_(self.flow_acoustic_in_projection.bias)
             self.local_flow = OneShotLocalFlow(
                 acoustic_channels=stacked_acoustic_dim,
                 condition_channels=cfg.hidden_dim + stacked_semantic_dim,

@@ -567,6 +567,14 @@ def test_one_shot_flow_allocates_only_semantic_token_heads():
     semantic_channels = model.num_semantic_codebooks * model.frame_stacking_factor
     assert len(model.audio_embeddings) == semantic_channels
     assert model.final_proj.out_features == semantic_channels * model.num_all_tokens_per_codebook
+    torch.testing.assert_close(
+        model.flow_acoustic_in_projection.weight,
+        torch.zeros_like(model.flow_acoustic_in_projection.weight),
+    )
+    torch.testing.assert_close(
+        model.flow_acoustic_in_projection.bias,
+        torch.zeros_like(model.flow_acoustic_in_projection.bias),
+    )
 
 
 def test_one_shot_flow_teacher_forcing_uses_previous_continuous_acoustic_embedding():

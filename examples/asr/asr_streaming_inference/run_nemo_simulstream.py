@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -274,8 +273,8 @@ def main():
             try:
                 Path(temp_wav_list).unlink()
                 logging.info(f"Cleaned up temporary wav list: {temp_wav_list}")
-            except Exception:
-                pass
+            except OSError as e:
+                logging.warning(f"Failed to clean up temporary wav list {temp_wav_list}: {e}")
 
 
 if __name__ == '__main__':

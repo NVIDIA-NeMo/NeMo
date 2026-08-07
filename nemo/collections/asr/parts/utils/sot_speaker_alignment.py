@@ -31,8 +31,8 @@ _SPEAKER_TOKEN_SPLIT_PATTERN = re.compile(r"(<spk:\d+>)")
 # effective frame duration is max(80 ms, utterance_duration / 1,200): short inputs
 # are never upsampled, and every coarse bin consumes at least one real input frame.
 # A one-hour session therefore uses 1,200 bins of 37 or 38 frames, or 3.0 seconds each.
-_unused_default_alignment_frame_seconds = 0.08
-_DEFAULT_MAX_ALIGNMENT_FRAMES = 1200
+_DEFAULT_ALIGNMENT_FRAME_SECONDS = 0.08
+_DEFAULT_MAX_ALIGNMENT_FRAMES = int(round(96.0 / _DEFAULT_ALIGNMENT_FRAME_SECONDS))
 
 __all__ = [
     "SPEAKER_TOKEN_PATTERN",
@@ -410,6 +410,8 @@ def collate_speaker_activity_targets(
     Args:
         speaker_activities (list[torch.Tensor]): Per-example ``(T, N)`` activity tensors.
         audio_lens (torch.Tensor): Shape ``(B,)`` per-example audio sample lengths.
+            Retained for API compatibility; target lengths are taken from the
+            generated activity tensors themselves.
         num_speakers (int): Number of speaker columns to pad/truncate the targets to.
         num_sample_per_mel_frame (int): Audio samples per mel frame.
         num_mel_frame_per_target_frame (int): Mel frames per output target frame.
@@ -420,7 +422,6 @@ def collate_speaker_activity_targets(
             ``(B, T, num_speakers)`` and ``target_length`` is ``(B,)``.
     """
     from lhotse.dataset.collation import collate_matrices
-    from nemo.collections.asr.parts.utils.asr_multispeaker_utils import get_hidden_length_from_sample_length
 
     # `collate_matrices` pads the time axis (dim 0) to the batch max but requires a
     # uniform speaker axis (dim 1). `speaker_to_target` emits one column per speaker
@@ -439,10 +440,10 @@ def collate_speaker_activity_targets(
         normalized.append(activity)
 
     targets = collate_matrices(normalized).to(dtype)
-    target_length = torch.tensor(
-        [
-            get_hidden_length_from_sample_length(al, num_sample_per_mel_frame, num_mel_frame_per_target_frame)
-            for al in audio_lens
-        ]
-    )
+    # These tensors have already been generated on the target-frame grid. Their
+    # actual time dimensions are therefore the authoritative valid lengths.
+    # Recomputing them from loaded audio lengths can differ by a few frames after
+    # resampling/augmentation or duration rounding and can exceed the collated
+    # tensor's time dimension.
+    target_length = torch.tensor([activity.shape[0] for activity in normalized], dtype=torch.long)
     return targets, target_length

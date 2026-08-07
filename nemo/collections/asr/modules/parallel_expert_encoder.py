@@ -91,6 +91,7 @@ import torch.distributed as dist
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 from tqdm import tqdm
 
 from nemo.collections.asr.modules.ggemm_transformer_encoder import GGEMMTransformerEncoder
@@ -786,6 +787,10 @@ class ParallelExpertEncoder(nn.Module):
 
         self.moe_mode = moe_mode
         self.fused_forward_in_training = bool(fused_forward_in_training)
+        # PEE owns this opt-in so the native TransformerEncoder path remains
+        # unchanged. When enabled, the per-expert training forwards are
+        # recomputed during backward at the expert boundary.
+        self.activation_checkpointing = False
         self.ggemm_backend = ggemm_backend
         if online_prefix_mode not in ('replace', 'extend'):
             raise ValueError(f"online_prefix_mode must be 'replace' or 'extend', got {online_prefix_mode!r}.")
@@ -1041,25 +1046,44 @@ class ParallelExpertEncoder(nn.Module):
         return self.expert_tasks.get(expert_name)
 
     def set_activation_checkpointing(self, enabled: bool) -> None:
-        """Recompute each expert's layers in backward instead of storing them.
+        """Recompute each trainable expert in backward instead of storing activations.
 
         SALM's generic helper wraps ``encoder.layers[i]`` in ``checkpoint_wrapper``,
         which finds nothing here: this module holds no ``layers`` of its own, they live
-        one level down in ``pee.experts[role]``. So it owns the policy instead, and
-        forwards to each expert. Takes effect on the per-expert training path; the fused
-        inference path (:meth:`GGEMMTransformerEncoder.forward_packed`) never calls the
-        layer modules and is deliberately left alone.
+        one level down in ``pee.experts[role]``. PEE therefore owns an explicit,
+        default-off policy and checkpoints each trainable expert's native forward as a
+        unit. This keeps ``TransformerEncoder`` behavior and state-dict structure
+        untouched. The fused inference path
+        (:meth:`GGEMMTransformerEncoder.forward_packed`) is deliberately left alone.
         """
-        for expert in self.pee.experts.values():
-            if hasattr(expert, 'activation_checkpointing'):
-                expert.activation_checkpointing = bool(enabled)
+        self.activation_checkpointing = bool(enabled)
         if enabled and self.fused_forward_in_training:
             logging.warning(
                 "set_activation_checkpointing(True) with fused_forward_in_training=True has "
                 "no effect: the fused path runs the layers itself instead of calling the "
-                "layer modules, so there is nothing to recompute. Leave "
+                "experts' native forwards, so there is nothing to recompute. Leave "
                 "fused_forward_in_training at its default False to get the memory back."
             )
+
+    def _forward_all_training(self, audio_signal, length):
+        """Run native expert forwards, optionally checkpointed at the PEE boundary."""
+        if not self.activation_checkpointing or not torch.is_grad_enabled():
+            return self.pee.forward_all(audio_signal, length)
+
+        outputs = {}
+        for name in self.pee.expert_names:
+            expert = self.pee.experts[name]
+            if any(parameter.requires_grad for parameter in expert.parameters()):
+                outputs[name] = checkpoint(
+                    expert,
+                    audio_signal,
+                    length,
+                    bypass_pre_encode=False,
+                    use_reentrant=False,
+                )
+            else:
+                outputs[name] = expert(audio_signal, length, bypass_pre_encode=False)
+        return outputs
 
     # freeze/unfreeze parity (plain nn.Module re-exposing the standalone helpers).
     def freeze(self) -> None:
@@ -1446,11 +1470,17 @@ class ParallelExpertEncoder(nn.Module):
             run_diarization = bool(use_diarization.any())
 
         signal, signal_length = self._prepare_input(audio_signal, length)
-        with torch.set_grad_enabled(not (self.freeze_speech and self.freeze_speaker and self.freeze_sound)):
+        # Respect an enclosing no_grad/inference_mode context. PEE only narrows
+        # gradient tracking when every expert is frozen; it must never turn
+        # gradients back on behind the caller's back.
+        track_gradients = torch.is_grad_enabled() and not (
+            self.freeze_speech and self.freeze_speaker and self.freeze_sound
+        )
+        with torch.set_grad_enabled(track_gradients):
             if self.training and not self.fused_forward_in_training:
                 # Each expert follows its native path with no cross-expert stacking;
                 # the speech MoE dispatches only its routed pairs.
-                packed = self.pee.forward_all(signal, signal_length)
+                packed = self._forward_all_training(signal, signal_length)
             else:
                 packed = self.pee.forward_packed(
                     signal, signal_length, backend=self.ggemm_backend, moe_mode=self.moe_mode
@@ -1462,7 +1492,7 @@ class ParallelExpertEncoder(nn.Module):
         diarization_preds = None
         if run_diarization:
             speaker_encoded, speaker_len = packed['speaker']
-            with torch.set_grad_enabled(not self.freeze_speaker):
+            with torch.set_grad_enabled(track_gradients and not self.freeze_speaker):
                 diarization_preds = self._speaker_head(speaker_encoded, speaker_len)
             if spk_targets is None:
                 spk_targets = diarization_preds
@@ -1585,6 +1615,9 @@ class ParallelExpertEncoder(nn.Module):
         sound_chunks: List[torch.Tensor] = []
         diar_chunks: List[torch.Tensor] = []
         asr_encoded_len = torch.zeros_like(signal_length)
+        track_gradients = torch.is_grad_enabled() and not (
+            self.freeze_speech and self.freeze_speaker and self.freeze_sound
+        )
 
         for chunk_idx in tqdm(
             range(num_chunks),
@@ -1626,7 +1659,7 @@ class ParallelExpertEncoder(nn.Module):
             window = signal[:, :, ext_stt:enc_end]
             window_length = (signal_length - ext_stt).clamp(min=0, max=enc_end - ext_stt)
 
-            with torch.set_grad_enabled(not (self.freeze_speech and self.freeze_speaker and self.freeze_sound)):
+            with torch.set_grad_enabled(track_gradients):
                 packed, pre_encode = self.pee.forward_packed(
                     window,
                     window_length,
@@ -1654,7 +1687,7 @@ class ParallelExpertEncoder(nn.Module):
 
             if run_streaming_diar:
                 speaker_encoded, speaker_len = packed['speaker']
-                with torch.set_grad_enabled(not self.freeze_speaker):
+                with torch.set_grad_enabled(track_gradients and not self.freeze_speaker):
                     # Predictions span [spkcache | fifo | lc + chunk + rc], which is
                     # exactly the layout `streaming_update` documents.
                     preds = self._speaker_head(speaker_encoded, speaker_len)

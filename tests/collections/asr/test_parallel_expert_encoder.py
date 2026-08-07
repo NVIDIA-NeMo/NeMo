@@ -542,32 +542,82 @@ def test_pe_encoder_uses_separate_training_and_inference_compute_paths(monkeypat
 
     enc.train()
     with torch.no_grad():
-        enc(mels, lengths, spk_targets=spk_targets)
+        train_output, _ = enc(mels, lengths, spk_targets=spk_targets)
     assert calls == ["forward_all"]
+    assert train_output.requires_grad is False
 
     calls.clear()
     enc.eval()
     with torch.no_grad():
-        enc(mels, lengths, spk_targets=spk_targets)
+        eval_output, _ = enc(mels, lengths, spk_targets=spk_targets)
     assert calls == ["forward_packed"]
+    assert eval_output.requires_grad is False
 
 
 @pytest.mark.unit
-def test_pe_encoder_activation_checkpointing_reaches_each_expert():
-    """PEE owns checkpointing because its expert layers are nested one level down."""
+def test_pe_encoder_activation_checkpointing_is_pee_local(monkeypatch):
+    """PEE owns checkpointing without changing the native expert implementation."""
+    from torch.utils.checkpoint import checkpoint as torch_checkpoint
+
     enc = build_toy_pe_encoder().train()
+    checkpointed = []
+
+    def record_checkpoint(function, *args, **kwargs):
+        checkpointed.append(function)
+        return torch_checkpoint(function, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "nemo.collections.asr.modules.parallel_expert_encoder.checkpoint",
+        record_checkpoint,
+    )
+    for expert in enc.pee.experts.values():
+        parameter = next(expert.parameters())
+
+        def lightweight_forward(audio_signal, length, bypass_pre_encode=False, *, _expert=expert, _p=parameter):
+            del bypass_pre_encode
+            encoded_length = torch.div(length, _SUBSAMPLING_FACTOR, rounding_mode="floor")
+            encoded = _p.reshape(-1)[0] * audio_signal.new_ones(
+                audio_signal.shape[0], _expert.d_model, int(encoded_length.max())
+            )
+            return encoded, encoded_length
+
+        monkeypatch.setattr(expert, "forward", lightweight_forward)
     enc.set_activation_checkpointing(True)
 
-    assert all(expert.activation_checkpointing for expert in enc.pee.experts.values())
+    assert enc.activation_checkpointing is True
+    assert all(not hasattr(expert, "activation_checkpointing") for expert in enc.pee.experts.values())
 
     mels = torch.randn(1, _MEL_FEATURES, 64)
     lengths = torch.tensor([64])
-    spk_targets = torch.zeros(1, 8, _N_SPK)
-    output, _ = enc(mels, lengths, spk_targets=spk_targets)
-    output.sum().backward()
+    outputs = enc._forward_all_training(mels, lengths)
 
-    assert any(param.grad is not None for param in enc.pee.experts["speech"].parameters())
-    assert any(param.grad is not None for param in enc.pee.experts["sound"].parameters())
+    assert checkpointed == [enc.pee.experts["speech"], enc.pee.experts["sound"]]
+    assert set(outputs) == {"speech", "speaker", "sound"}
+    assert all(torch.isfinite(output).all() for output, _ in outputs.values())
+    sum(output.float().sum() for output, _ in outputs.values()).backward()
+    assert any(parameter.grad is not None for parameter in enc.pee.experts["speech"].parameters())
+    assert any(parameter.grad is not None for parameter in enc.pee.experts["sound"].parameters())
+    assert all(parameter.grad is None for parameter in enc.pee.experts["speaker"].parameters())
+
+
+@pytest.mark.unit
+@pytest.mark.run_only_on('GPU')
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE checkpoint test requires CUDA")
+def test_pe_encoder_activation_checkpointing_real_cuda_backward():
+    """Checkpoint real native expert/FlexAttention forwards without modifying them."""
+    enc = build_toy_pe_encoder().train().cuda()
+    enc.set_activation_checkpointing(True)
+
+    mels = torch.randn(1, _MEL_FEATURES, 64, device="cuda")
+    lengths = torch.tensor([64], device="cuda")
+    spk_targets = torch.zeros(1, 8, _N_SPK, device="cuda")
+    output, _ = enc(mels, lengths, spk_targets=spk_targets)
+    output.float().sum().backward()
+
+    assert torch.isfinite(output).all()
+    assert any(parameter.grad is not None for parameter in enc.pee.experts["speech"].parameters())
+    assert any(parameter.grad is not None for parameter in enc.pee.experts["sound"].parameters())
+    assert all(parameter.grad is None for parameter in enc.pee.experts["speaker"].parameters())
 
 
 @pytest.mark.unit

@@ -35,6 +35,9 @@ class _TinyEasyMagpie(nn.Module):
         self.final_proj = nn.Linear(4, 6)
         self.conditioning_module = nn.Linear(4, 5)
         self.local_flow = nn.Linear(4, 6)
+        self.flow_acoustic_in_projection = nn.Linear(3, 4)
+        nn.init.zeros_(self.flow_acoustic_in_projection.weight)
+        nn.init.zeros_(self.flow_acoustic_in_projection.bias)
 
 
 def test_seed_model_defers_all_configured_datasets():
@@ -53,10 +56,14 @@ def test_seed_model_defers_all_configured_datasets():
     assert cfg.test_ds is None
 
 
-def test_transfers_every_compatible_tensor_and_leaves_new_flow_random():
+def test_transfers_compatible_tensors_and_reports_new_flow_initialization():
     torch.manual_seed(1)
     source = _TinyEasyMagpie()
-    source_state = {key: value for key, value in source.state_dict().items() if not key.startswith("local_flow.")}
+    source_state = {
+        key: value
+        for key, value in source.state_dict().items()
+        if not key.startswith(("local_flow.", "flow_acoustic_in_projection."))
+    }
     torch.manual_seed(2)
     target = _TinyEasyMagpie()
     initial_target_state = copy.deepcopy(target.state_dict())
@@ -65,7 +72,7 @@ def test_transfers_every_compatible_tensor_and_leaves_new_flow_random():
     target_state = target.state_dict()
 
     for key, value in target_state.items():
-        if key.startswith("local_flow."):
+        if key.startswith(("local_flow.", "flow_acoustic_in_projection.")):
             torch.testing.assert_close(value, initial_target_state[key])
         else:
             torch.testing.assert_close(value, source_state[key])
@@ -74,8 +81,18 @@ def test_transfers_every_compatible_tensor_and_leaves_new_flow_random():
     assert report["projection_rows_copied"] == 6
     assert report["acoustic_projection_rows_copied"] == 0
     assert report["acoustic_projection_rows_left_random"] == 0
-    assert report["compatible_tensor_count"] == len(target_state) - 2
+    assert report["compatible_tensor_count"] == len(target_state) - 4
     assert report["target_state_tensor_keys_left_random"] == [
+        "local_flow.bias",
+        "local_flow.weight",
+    ]
+    assert report["target_state_tensor_keys_left_zero_initialized"] == [
+        "flow_acoustic_in_projection.bias",
+        "flow_acoustic_in_projection.weight",
+    ]
+    assert report["target_state_tensor_keys_left_initialized"] == [
+        "flow_acoustic_in_projection.bias",
+        "flow_acoustic_in_projection.weight",
         "local_flow.bias",
         "local_flow.weight",
     ]

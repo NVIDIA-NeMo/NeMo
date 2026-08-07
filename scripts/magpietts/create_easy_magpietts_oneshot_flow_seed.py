@@ -16,7 +16,7 @@
 
 The target model is initialized from the requested Hydra config. Every
 shape-compatible target tensor is copied from the source checkpoint. New
-one-shot-flow tensors without a source counterpart retain their fresh random
+one-shot-flow tensors without a source counterpart retain their constructor
 initialization.
 """
 
@@ -248,7 +248,21 @@ def transfer_compatible_pretrained_state(
         for target_key, target_tensor, _, _ in copy_plan
         if not target_key.startswith("decoder.")
     ) + projection_rows_copied * (target_weight.shape[1] + 1)
-    target_keys_left_random = sorted(set(missing_source_keys) | set(shape_mismatches))
+    target_keys_left_initialized = sorted(set(missing_source_keys) | set(shape_mismatches))
+    target_keys_left_zero_initialized = sorted(
+        key for key in target_keys_left_initialized if key.startswith("flow_acoustic_in_projection.")
+    )
+    nonzero_zero_initialized_keys = [
+        key for key in target_keys_left_zero_initialized if torch.count_nonzero(target_state[key]).item() != 0
+    ]
+    if nonzero_zero_initialized_keys:
+        raise RuntimeError(
+            "Expected unmatched continuous acoustic input projection tensors to remain zero-initialized, "
+            f"but found nonzero values in: {nonzero_zero_initialized_keys}."
+        )
+    target_keys_left_random = sorted(
+        set(target_keys_left_initialized) - set(target_keys_left_zero_initialized)
+    )
     unused_source_keys = sorted(set(source_state) - used_source_keys)
 
     return {
@@ -269,6 +283,10 @@ def transfer_compatible_pretrained_state(
         "acoustic_projection_rows_left_random": target_weight.shape[0]
         - projection_rows_copied,
         "projection_source_keys": [source_weight_key, source_bias_key],
+        "target_state_tensors_left_initialized": len(target_keys_left_initialized),
+        "target_state_tensor_keys_left_initialized": target_keys_left_initialized,
+        "target_state_tensors_left_zero_initialized": len(target_keys_left_zero_initialized),
+        "target_state_tensor_keys_left_zero_initialized": target_keys_left_zero_initialized,
         "target_state_tensors_left_random": len(target_keys_left_random),
         "target_state_tensor_keys_left_random": target_keys_left_random,
         "shape_mismatched_target_tensors": shape_mismatches,

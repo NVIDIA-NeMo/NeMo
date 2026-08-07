@@ -151,18 +151,17 @@ class TestForwardPass:
 
     def test_gradients_flow(self):
         """Gradients should flow through MoE layers."""
-        moe = _make_moe_encoder(self_attention_model="rope")
-        audio, lengths = _make_input()
-        out, _ = moe(audio, lengths)
-        loss = out.sum()
+        moe = _make_moe_encoder()
+        moe_ffn = moe.layers[moe.moe_layer_indices[0]].ffn
+        assert isinstance(moe_ffn, MoEFeedForward)
+
+        hidden = torch.randn(BATCH, 8, D_MODEL, device=DEVICE)
+        loss = moe_ffn(hidden).sum()
         loss.backward()
 
-        has_grad = False
-        for name, param in moe.named_parameters():
-            if 'expert' in name and param.grad is not None:
-                has_grad = True
-                break
-        assert has_grad, "No gradients reached expert parameters"
+        assert any(
+            param.grad is not None for param in moe_ffn.experts.parameters()
+        ), "No gradients reached expert parameters"
 
 
 # ---------------------------------------------------------------------------
@@ -259,19 +258,22 @@ class TestAuxiliaryLoss:
 
     def test_aux_loss_backprop(self):
         """Auxiliary loss should be differentiable."""
-        moe = _make_moe_encoder(self_attention_model="rope")
-        audio, lengths = _make_input()
-        moe(audio, lengths)
+        moe = _make_moe_encoder()
+        hidden = torch.randn(BATCH, 8, D_MODEL, device=DEVICE)
+
+        # Populate every MoE layer's auxiliary loss without involving the
+        # unrelated attention path, whose FlexAttention CPU backward is not
+        # implemented in the PyTorch version used by CPU CI.
+        for layer_idx in moe.moe_layer_indices:
+            moe.layers[layer_idx].ffn(hidden)
+
         aux_loss = moe.get_moe_auxiliary_loss()
+        assert aux_loss is not None
         aux_loss.backward()
 
-        router_has_grad = False
-        for name, param in moe.named_parameters():
-            if 'router' in name or 'w_gate' in name:
-                if param.grad is not None:
-                    router_has_grad = True
-                    break
-        assert router_has_grad, "Auxiliary loss gradients should reach router parameters"
+        assert (
+            moe.omni_router.w_gate.weight.grad is not None
+        ), "Auxiliary loss gradients should reach router parameters"
 
 
 # ---------------------------------------------------------------------------

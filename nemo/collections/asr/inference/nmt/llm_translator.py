@@ -17,13 +17,16 @@ import os
 import string
 from typing import Final
 
+import torch
 from huggingface_hub import snapshot_download
 from huggingface_hub.utils import LocalEntryNotFoundError
-
-import torch
 from omegaconf import DictConfig, OmegaConf
 
-from nemo.collections.asr.inference.nmt.prompts import EuroLLMTranslatorPromptTemplate, PromptTemplate, QwenReasoningTranslatorPromptTemplate
+from nemo.collections.asr.inference.nmt.prompts import (
+    EuroLLMTranslatorPromptTemplate,
+    PromptTemplate,
+    QwenReasoningTranslatorPromptTemplate,
+)
 
 try:
     from vllm import LLM, SamplingParams
@@ -177,8 +180,10 @@ class LLMTranslator:
         if model_name == "Qwen/Qwen3-4B-Instruct-2507":
             return EuroLLMTranslatorPromptTemplate
 
-        if model_name in TRANSLATION_MODELS_BY_SERIES["qwen3.5"] or \
-            model_name in TRANSLATION_MODELS_BY_SERIES["qwen3"] :
+        if (
+            model_name in TRANSLATION_MODELS_BY_SERIES["qwen3.5"]
+            or model_name in TRANSLATION_MODELS_BY_SERIES["qwen3"]
+        ):
             return QwenReasoningTranslatorPromptTemplate
 
     def load_model(self, llm_params: dict) -> LLM:
@@ -197,7 +202,7 @@ class LLMTranslator:
             local_path = self._get_local_model_path(self.model_name)
             if local_path is not None and os.path.exists(local_path):
                 logging.info(f"Loading LLM from local cache path: {local_path}")
-                model_name=local_path
+                model_name = local_path
             else:
                 logging.info(f"Loading LLM from model name: {self.model_name}")
                 model_name = self.model_name
@@ -222,7 +227,9 @@ class LLMTranslator:
                 local_files_only=True,
             )
         except LocalEntryNotFoundError:
-            logging.warning(f"Model {repo_id} is not found in the local cache. Downloading from HuggingFace model hub.")
+            logging.warning(
+                f"Model {repo_id} is not found in the local cache. Downloading from HuggingFace model hub."
+            )
             return None
 
     def translate_batch(

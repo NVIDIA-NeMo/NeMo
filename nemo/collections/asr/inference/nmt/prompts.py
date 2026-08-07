@@ -100,12 +100,11 @@ class EuroLLMTranslatorPromptTemplate(PromptTemplate):
 class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
     """
     Chat-style prompt template for Qwen Reasoning model to perform translation.
-    Thinking is disabled by appending the empty think block (<think>\\n\\n</think>\\n\\n) 
+    Thinking is disabled by appending the empty think block (<think>\\n\\n</think>\\n\\n)
     after <|im_start|>assistant\\n, matching the tokenizer.apply_chat_template(..., enable_thinking=False) behavior.
     """
 
-    SYSTEM_MESSAGE = (
-        """
+    SYSTEM_MESSAGE = """
             You are a professional machine translation assistant.
             Translate the input text into the target language.
             - Output only the translation.
@@ -115,15 +114,12 @@ class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
             - Stop immediately after translating.
             - Preserve named entities, numbers, punctuation, and formatting.
         """
-    )
 
     # Empty think block appended so model goes straight to answer (enable_thinking=False behavior)
     _THINK_DISABLED_SUFFIX = "<think>\n\n</think>\n\n"
 
     USER_CONTENT_TEMPLATE = (
-        "Translate the following {src_lang} source text to {tgt_lang}:\n"
-        "{src_lang}: {src_text}\n"
-        "{tgt_lang}: "
+        "Translate the following {src_lang} source text to {tgt_lang}:\n" "{src_lang}: {src_text}\n" "{tgt_lang}: "
     )
 
     @classmethod
@@ -150,11 +146,12 @@ class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
         tgt_text = f"{tgt_context} {tgt_prefix}"
         src_text = re.sub(r"\s+", " ", src_text).strip()
         tgt_text = re.sub(r"\s+", " ", tgt_text).strip()
-        user_content = cls.USER_CONTENT_TEMPLATE.format(src_lang=src_lang, tgt_lang=tgt_lang, src_text=src_text, tgt_text=tgt_text)
+        user_content = cls.USER_CONTENT_TEMPLATE.format(
+            src_lang=src_lang, tgt_lang=tgt_lang, src_text=src_text, tgt_text=tgt_text
+        )
         assistant_text = f"{cls._THINK_DISABLED_SUFFIX}{tgt_text}"
 
         if use_system:
-            system = cls.SYSTEM_MESSAGE
             system_block = f"<|im_start|>system\n{cls.SYSTEM_MESSAGE}<|im_end|>\n"
             return (
                 system_block
@@ -180,7 +177,9 @@ class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
         """
         src_text = re.sub(r"\s+", " ", f"{src_context} {src_prefix}".strip()).strip()
         tgt_text = re.sub(r"\s+", " ", f"{tgt_context} {tgt_prefix}".strip()).strip()
-        user_content = cls.USER_CONTENT_TEMPLATE.format(src_lang=src_lang, tgt_lang=tgt_lang, src_text=src_text, tgt_text=tgt_text)
+        user_content = cls.USER_CONTENT_TEMPLATE.format(
+            src_lang=src_lang, tgt_lang=tgt_lang, src_text=src_text, tgt_text=tgt_text
+        )
         msgs = [{"role": "user", "content": user_content}, {"role": "assistant", "content": tgt_text}]
         if use_system:
             msgs.insert(0, {"role": "system", "content": cls.SYSTEM_MESSAGE})

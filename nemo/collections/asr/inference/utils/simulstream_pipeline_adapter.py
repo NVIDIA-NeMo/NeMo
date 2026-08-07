@@ -534,9 +534,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
                 logging.info(f"WER manifest: {output_manifest_w_wer}")
                 logging.info(f"WER summary: {metrics_summary_path}")
             else:
-                logging.warning(
-                    "WER calculation skipped because ground-truth text is unavailable in output manifest."
-                )
+                logging.warning("WER calculation skipped because ground-truth text is unavailable in output manifest.")
         except Exception as e:
             logging.warning(f"Failed to calculate WER: {e}")
         finally:

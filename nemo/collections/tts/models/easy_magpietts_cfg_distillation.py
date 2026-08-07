@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Optional, Self
+from typing import Callable, Optional, Self
 
 import numpy as np
 import soundfile as sf
@@ -92,7 +92,7 @@ class _DefaultParams:
     # Weight assigned to truncated samples when computing the loss (used to down-weight rejected rollouts).
     rejection_weight: Optional[float] = 0.1
     # Target mixing weight for the backbone distillation loss in the final total loss.
-    backbone_loss_weight: float = 1.0
+    backbone_loss_weight: float = 0.5
     # Weight coefficient for the phoneme-channel loss contribution in the final total loss.
     phonemes_loss_weight: float = 0.01
     # Whether to save rejected teacher rollouts for debugging.
@@ -187,6 +187,8 @@ class _StudentOutput:
     logits_backbone: Tensor
     logits: Optional[Tensor]
     logits_phonemes: Optional[Tensor]
+    audio_codes_gt_lt: Optional[Tensor]
+    audio_codes_lens_gt_lt: Optional[Tensor]
 
 
 def _lt_sample_autoregressive(
@@ -250,13 +252,10 @@ def _lt_sample_autoregressive(
         next_local_transformer_input = model.local_transformer_in_projection(next_local_transformer_input)
         local_transformer_input = torch.cat([local_transformer_input, next_local_transformer_input], dim=1)
 
-    predicted_codes = torch.cat(predicted_codes, dim=1)
-    predicted_logits = torch.cat(predicted_logits, dim=1)
-    dims = (-1, model.frame_stacking_factor, model.num_audio_codebooks)
-    predicted_codes = predicted_codes.reshape(*dims).permute(0, 2, 1)
-
-    predicted_codes = predicted_codes[:bs]
-    predicted_logits = predicted_logits[:bs]
+    # EasyMagpie LT heads are already ordered as C*S independent stacked channels.
+    predicted_codes = torch.cat(predicted_codes, dim=1)[:bs]
+    predicted_codes = predicted_codes.view(bs, model.num_audio_codebooks, model.frame_stacking_factor)
+    predicted_logits = torch.cat(predicted_logits, dim=1)[:bs]
 
     return predicted_codes, predicted_logits
 
@@ -989,7 +988,10 @@ class _TeacherInferenceEngine:
 
         return _PhonemeTokensStep(tokens_t=tokens_t, logits_t=logits_t)
 
-    def _predict_audio_codes(self, state: _StreamingState) -> _AudioCodesStep:
+    def _predict_audio_codes(
+        self,
+        state: _StreamingState,
+    ) -> _AudioCodesStep:
         bs = state.batch_size
         last_hidden = state.last_hidden
         temp = state.temperature
@@ -1002,6 +1004,7 @@ class _TeacherInferenceEngine:
         cond_logits = code_logits_t[:bs]
         uncond_logits = code_logits_t[bs:]
         logits_t_backbone = cfg_scale * cond_logits + (1.0 - cfg_scale) * uncond_logits
+
         codes_t_backbone = self.model.sample_codes_from_logits(logits_t_backbone, temperature=temp, topk=topk)
         codes_t_argmax_backbone = (
             codes_t_backbone
@@ -1018,9 +1021,8 @@ class _TeacherInferenceEngine:
             use_kv_cache=True,
             sanitize_logits=True,
         )
-        codes_t = codes_t.permute(0, 2, 1).reshape(bs, -1)
-        # As in the pre-training stage, we do not use greedy sampling for LT.
-        codes_t_argmax = codes_t
+        codes_t = codes_t.reshape(bs, -1)
+        codes_t_argmax = codes_t if temp <= 0.0 else self.model.sample_codes_from_logits(logits_t, temperature=0.01)
 
         return _AudioCodesStep(
             codes_t_backbone=codes_t_backbone,
@@ -1538,9 +1540,10 @@ class _PreparedStudentInput:
 
     embeds: Tensor
     lens: Tensor
-    audio_codes_gt: Tensor
     audio_codes_lens_gt: Tensor
     phoneme_tokens_lens_stacked: Optional[Tensor] = None
+    audio_codes_gt_lt: Optional[Tensor] = None
+    audio_codes_lens_gt_lt: Optional[Tensor] = None
 
 
 @dataclass
@@ -1632,7 +1635,6 @@ def _combine_channels(
     return _PreparedStudentInput(
         embeds=combined_channel,
         lens=combined_lens,
-        audio_codes_gt=batch_audio.codes_gt,
         audio_codes_lens_gt=batch_audio.codes_lens_gt,
     )
 
@@ -2084,6 +2086,10 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         for k, v in defaults.items():
             setattr(self, k, self.cfg.get(k, v))
 
+    @property
+    def num_lt_codebooks(self) -> int:
+        return self.num_audio_codebooks * self.frame_stacking_factor
+
     def _init_losses(self) -> None:
         if self.audio_alpha != 1.0:
             self._codes_kl_criterion = KLDivergenceLoss(
@@ -2091,17 +2097,32 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
                 num_tokens_per_codebook=self.num_all_tokens_per_codebook,
                 frame_stacking_factor=self.frame_stacking_factor,
             )
+            self._lt_codes_kl_criterion = KLDivergenceLoss(
+                num_codebooks=self.num_lt_codebooks,
+                num_tokens_per_codebook=self.num_all_tokens_per_codebook,
+                frame_stacking_factor=1,
+            )
         if self.audio_alpha != 0.0:
             self._codes_ce_criterion = CodesCrossEntropyLoss(
                 num_codebooks=self.num_audio_codebooks,
                 num_tokens_per_codebook=self.num_all_tokens_per_codebook,
                 frame_stacking_factor=self.frame_stacking_factor,
             )
+            self._lt_codes_ce_criterion = CodesCrossEntropyLoss(
+                num_codebooks=self.num_lt_codebooks,
+                num_tokens_per_codebook=self.num_all_tokens_per_codebook,
+                frame_stacking_factor=1,
+            )
         if self.audio_beta != 0.0:
             self._codes_nrmse_criterion = NRMSELogitsLoss(
                 num_codebooks=self.num_audio_codebooks,
                 num_tokens_per_codebook=self.num_all_tokens_per_codebook,
                 frame_stacking_factor=self.frame_stacking_factor,
+            )
+            self._lt_codes_nrmse_criterion = NRMSELogitsLoss(
+                num_codebooks=self.num_lt_codebooks,
+                num_tokens_per_codebook=self.num_all_tokens_per_codebook,
+                frame_stacking_factor=1,
             )
         if self.phonemes_loss_weight:
             self._phonemes_ce_criterion = CodesCrossEntropyLoss(
@@ -2360,6 +2381,13 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         batch_audio = self._prepare_audio(batch, delay=batch_delays.audio)
         batch_combined = _combine_channels(batch_context, batch_text, batch_phonemes, batch_audio)
 
+        _, audio_codes_gt_lt, audio_codes_lens_gt_lt = self._process_audio_input(
+            audio_codes=batch["audio_codes_teacher"],
+            audio_codes_lens=batch["audio_codes_lens_teacher"],
+        )
+        batch_combined.audio_codes_gt_lt = audio_codes_gt_lt
+        batch_combined.audio_codes_lens_gt_lt = audio_codes_lens_gt_lt
+
         if self.phoneme_tokenizer is not None and batch_phonemes.tokens_stacked is not None:
             batch_combined.phoneme_tokens_lens_stacked = batch_phonemes.tokens_lens_stacked
 
@@ -2387,13 +2415,13 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         )
         pred_embeddings_audio = self.audio_out_projection(pred_embeddings)
         logits_backbone = self.final_proj(pred_embeddings_audio)
-        logits = None
+        # logits = None
 
-        # logits = self._lt_helper.compute_logits(
-        #     dec_out=pred_embeddings,
-        #     audio_codes_target=batch_combined.audio_codes_gt,
-        #     targets_offset_by_one=False,
-        # )
+        logits = self._lt_helper.compute_logits(
+            dec_out=pred_embeddings,
+            audio_codes_target=batch_combined.audio_codes_gt_lt,
+            targets_offset_by_one=False,
+        )
         if self.phoneme_tokenizer is not None and batch_combined.phoneme_tokens_lens_stacked is not None:
             pred_embeddings_phoneme = self.slice_sequence_embeddings(
                 sequence_embeddings=transformer_out.last_hidden_state,
@@ -2406,6 +2434,8 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             logits_backbone=logits_backbone,
             logits=logits,
             logits_phonemes=logits_phonemes,
+            audio_codes_gt_lt=batch_combined.audio_codes_gt_lt,
+            audio_codes_lens_gt_lt=batch_combined.audio_codes_lens_gt_lt,
         )
 
     def _update_batch(
@@ -2416,6 +2446,15 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         batch["audio_codes_teacher"] = teacher_output.codes
         batch["audio_codes_lens_teacher"] = teacher_output.lens
         return batch
+
+    def _get_kl_criterion(self, mode: _LossMode) -> Callable:
+        return self._lt_codes_kl_criterion if mode == _LossMode.main else self._codes_kl_criterion
+
+    def _get_ce_criterion(self, mode: _LossMode) -> Callable:
+        return self._lt_codes_ce_criterion if mode == _LossMode.main else self._codes_ce_criterion
+
+    def _get_nrmse_criterion(self, mode: _LossMode) -> Callable:
+        return self._lt_codes_nrmse_criterion if mode == _LossMode.main else self._codes_nrmse_criterion
 
     def _compute_codes_loss_helper(
         self,
@@ -2429,7 +2468,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         output: dict[str, Tensor] = {}
 
         if self.audio_alpha != 1.0:
-            kl_loss = self._codes_kl_criterion(
+            kl_loss = self._get_kl_criterion(mode)(
                 student_logits=student_logits,
                 teacher_logits=teacher_logits,
                 mask=mask,
@@ -2441,7 +2480,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             output[_get_loss_key(_LossKey.kl_loss, mode)] = kl_loss
 
         if self.audio_alpha != 0.0:
-            ce_loss = self._codes_ce_criterion(
+            ce_loss = self._get_ce_criterion(mode)(
                 predicted_logits=student_logits,
                 target_codes=teacher_codes,
                 mask=mask,
@@ -2454,7 +2493,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         loss = (1 - self.audio_alpha) * kl_term + self.audio_alpha * ce_term
 
         if self.audio_beta > 0.0:
-            nrmse_loss = self._codes_nrmse_criterion(
+            nrmse_loss = self._get_nrmse_criterion(mode)(
                 student_logits=student_logits,
                 teacher_logits=teacher_logits,
                 mask=mask,
@@ -2505,32 +2544,34 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
         student_output: _StudentOutput,
     ) -> dict[str, Tensor]:
         codes_mask = get_mask_from_lengths(teacher_output.lens)
+        lt_codes_mask = get_mask_from_lengths(student_output.audio_codes_lens_gt_lt)
+
         output = self._compute_codes_loss_helper(
             teacher_logits=teacher_output.logits,
-            teacher_codes=teacher_output.codes,
-            student_logits=student_output.logits_backbone, # For student use only backbone.
-            mask=codes_mask,
+            teacher_codes=student_output.audio_codes_gt_lt,
+            student_logits=student_output.logits,
+            mask=lt_codes_mask,
             sample_weights=teacher_output.sample_weights,
             mode=_LossMode.main,
         )
         main_loss_key = _get_loss_key(key=_LossKey.loss, mode=_LossMode.main)
         output["loss"] = output[main_loss_key]
 
-        # backbone_weight = self.backbone_loss_weight
+        backbone_weight = self.backbone_loss_weight
 
-        # if backbone_weight > 0.0:
-        #     backbone_output = self._compute_codes_loss_helper(
-        #         teacher_logits=teacher_output.logits_backbone,
-        #         teacher_codes=teacher_output.codes_backbone,
-        #         student_logits=student_output.logits_backbone,
-        #         mask=codes_mask,
-        #         sample_weights=teacher_output.sample_weights,
-        #         mode=_LossMode.backbone,
-        #     )
-        #     output.update(backbone_output)
-        #     backbone_key = _get_loss_key(key=_LossKey.loss, mode=_LossMode.backbone)
-        #     output["loss"] = (1 - backbone_weight) * output["loss"] + backbone_weight * output[backbone_key]
-        #     del output[backbone_key]
+        if backbone_weight > 0.0:
+            backbone_output = self._compute_codes_loss_helper(
+                teacher_logits=teacher_output.logits_backbone,
+                teacher_codes=teacher_output.codes_backbone,
+                student_logits=student_output.logits_backbone,
+                mask=codes_mask,
+                sample_weights=teacher_output.sample_weights,
+                mode=_LossMode.backbone,
+            )
+            output.update(backbone_output)
+            backbone_key = _get_loss_key(key=_LossKey.loss, mode=_LossMode.backbone)
+            output["loss"] = (1 - backbone_weight) * output["loss"] + backbone_weight * output[backbone_key]
+            del output[backbone_key]
 
         if self.phonemes_loss_weight and student_output.logits_phonemes is not None:
             phonemes_output = self._compute_phoneme_loss_guidance(
@@ -2816,7 +2857,7 @@ class EasyMagpieCFGDistillation(EasyMagpieTTSModel):
             max_decoder_steps=self.max_decoder_steps,
             temperature=self.rollout_temperature,
             topk=self.rollout_topk,
-            use_local_transformer_for_inference=False,
+            use_local_transformer_for_inference=True,
             use_cfg=False,
         )
 

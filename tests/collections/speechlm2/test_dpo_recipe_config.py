@@ -216,3 +216,39 @@ def test_native_linear_lr_decays_after_updates_16_through_20_without_a_zero_lr_u
     assert [row["learning_rate_after_update"] for row in receipt["per_update"][15:]] == pytest.approx(
         [4e-6, 3e-6, 2e-6, 1e-6, 0.0]
     )
+
+
+def test_native_step_lr_divides_after_updates_16_through_19_and_anchors_update_20():
+    parameter = torch.nn.Parameter(torch.tensor(1.0))
+    optimizer = torch.optim.AdamW([parameter], lr=2.5e-6)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.2)
+
+    observed = []
+    for update in range(1, 21):
+        before = optimizer.param_groups[0]["lr"]
+        optimizer.step()
+        if 16 <= update <= 19:
+            scheduler.step()
+        observed.append((update, before, optimizer.param_groups[0]["lr"]))
+
+    assert all(before == pytest.approx(2.5e-6) for _, before, _ in observed[:16])
+    assert [before for _, before, _ in observed[15:]] == pytest.approx(
+        [2.5e-6, 5e-7, 1e-7, 2e-8, 4e-9]
+    )
+    assert [after for _, _, after in observed[15:]] == pytest.approx([5e-7, 1e-7, 2e-8, 4e-9, 4e-9])
+
+    class Harness:
+        cfg = SimpleNamespace(dpo=SimpleNamespace(learning_rate=2.5e-6))
+        _expected_updates = 20
+        _lr_scheduler_cfg = SimpleNamespace(name="step", start_update=16, end_update=19, gamma=0.2)
+
+    receipt = DPOSALMAutomodel._learning_rate_schedule_receipt(Harness())
+    assert receipt["name"] == "torch.optim.lr_scheduler.StepLR"
+    assert receipt["step_timing"] == "after_optimizer_update"
+    assert receipt["gamma"] == 0.2
+    assert [row["learning_rate_before_update"] for row in receipt["per_update"][15:]] == pytest.approx(
+        [2.5e-6, 5e-7, 1e-7, 2e-8, 4e-9]
+    )
+    assert [row["learning_rate_after_update"] for row in receipt["per_update"][15:]] == pytest.approx(
+        [5e-7, 1e-7, 2e-8, 4e-9, 4e-9]
+    )

@@ -234,18 +234,27 @@ class DPOSALMAutomodel(SALMAutomodel):
             raise ValueError("DPO expected_updates must be within the finite two-pass schedule")
         self._lr_scheduler_cfg = self.cfg.dpo.get("lr_scheduler", None)
         if self._lr_scheduler_cfg is not None:
-            if str(self._lr_scheduler_cfg.name) != "linear":
-                raise ValueError("DPO lr_scheduler.name must be linear")
+            scheduler_name = str(self._lr_scheduler_cfg.name)
+            if scheduler_name not in {"linear", "step"}:
+                raise ValueError("DPO lr_scheduler.name must be linear or step")
             start_update = int(self._lr_scheduler_cfg.start_update)
             end_update = int(self._lr_scheduler_cfg.end_update)
-            if not 1 <= start_update <= end_update == self._expected_updates:
-                raise ValueError(
-                    "DPO linear LR decay must start within the run and end on the final optimizer update"
-                )
-            if float(self._lr_scheduler_cfg.start_factor) != 1.0:
-                raise ValueError("DPO linear LR decay must start from the configured base learning rate")
-            if not 0.0 <= float(self._lr_scheduler_cfg.end_factor) <= 1.0:
-                raise ValueError("DPO linear LR end_factor must be within [0, 1]")
+            if scheduler_name == "linear":
+                if not 1 <= start_update <= end_update == self._expected_updates:
+                    raise ValueError(
+                        "DPO linear LR decay must start within the run and end on the final optimizer update"
+                    )
+                if float(self._lr_scheduler_cfg.start_factor) != 1.0:
+                    raise ValueError("DPO linear LR decay must start from the configured base learning rate")
+                if not 0.0 <= float(self._lr_scheduler_cfg.end_factor) <= 1.0:
+                    raise ValueError("DPO linear LR end_factor must be within [0, 1]")
+            else:
+                if not 1 <= start_update <= end_update < self._expected_updates:
+                    raise ValueError(
+                        "DPO step LR decay must occur within the run and leave a final update at the decayed rate"
+                    )
+                if not 0.0 < float(self._lr_scheduler_cfg.gamma) <= 1.0:
+                    raise ValueError("DPO step LR gamma must be within (0, 1]")
         self._output_root = Path(str(self.cfg.dpo.output_root))
         self._initial_checkpoint = Path(str(self.cfg.dpo.source_checkpoint))
         self._metrics: list[dict[str, Any]] = []
@@ -329,12 +338,19 @@ class DPOSALMAutomodel(SALMAutomodel):
             raise RuntimeError("AdamW does not own the declared 269-tensor DPO surface")
         if self._lr_scheduler_cfg is None:
             return optimizer
-        scheduler = torch.optim.lr_scheduler.LinearLR(
-            optimizer,
-            start_factor=float(self._lr_scheduler_cfg.start_factor),
-            end_factor=float(self._lr_scheduler_cfg.end_factor),
-            total_iters=int(self._lr_scheduler_cfg.end_update) - int(self._lr_scheduler_cfg.start_update) + 1,
-        )
+        if str(self._lr_scheduler_cfg.name) == "linear":
+            scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=float(self._lr_scheduler_cfg.start_factor),
+                end_factor=float(self._lr_scheduler_cfg.end_factor),
+                total_iters=int(self._lr_scheduler_cfg.end_update) - int(self._lr_scheduler_cfg.start_update) + 1,
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=1,
+                gamma=float(self._lr_scheduler_cfg.gamma),
+            )
         return {
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
@@ -525,6 +541,27 @@ class DPOSALMAutomodel(SALMAutomodel):
             return {"name": "constant", "base_learning_rate": base_lr}
         start = int(self._lr_scheduler_cfg.start_update)
         end = int(self._lr_scheduler_cfg.end_update)
+        if str(self._lr_scheduler_cfg.name) == "step":
+            gamma = float(self._lr_scheduler_cfg.gamma)
+            return {
+                "name": "torch.optim.lr_scheduler.StepLR",
+                "base_learning_rate": base_lr,
+                "start_update": start,
+                "end_update": end,
+                "step_size": 1,
+                "gamma": gamma,
+                "step_timing": "after_optimizer_update",
+                "per_update": [
+                    {
+                        "global_step": step,
+                        "learning_rate_before_update": base_lr
+                        * gamma ** max(0, min(step - start, end - start + 1)),
+                        "learning_rate_after_update": base_lr
+                        * gamma ** max(0, min(step - start + 1, end - start + 1)),
+                    }
+                    for step in range(1, self._expected_updates + 1)
+                ],
+            }
         decay_updates = end - start + 1
         start_factor = float(self._lr_scheduler_cfg.start_factor)
         end_factor = float(self._lr_scheduler_cfg.end_factor)
@@ -628,7 +665,7 @@ class DPOSALMAutomodel(SALMAutomodel):
             <= int(self._lr_scheduler_cfg.end_update)
         ):
             # Lightning deliberately leaves scheduler stepping to the model in
-            # manual optimization. This is the registered native LinearLR.
+            # manual optimization. This is the registered native scheduler.
             self.lr_schedulers().step()
         learning_rate_after_update = float(optimizer.param_groups[0]["lr"])
         optimizer.zero_grad(set_to_none=True)

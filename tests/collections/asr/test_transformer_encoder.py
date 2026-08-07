@@ -15,6 +15,7 @@
 import numpy as np
 import pytest
 import torch
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 
 from nemo.collections.asr.modules.transformer_encoder import (
     FeatureStacking,
@@ -46,14 +47,23 @@ class TestTransformerEncoderConfig:
     @pytest.mark.unit
     def test_custom_config(self):
         cfg = TransformerEncoderConfig(
-            feat_in=128, d_model=1280, n_heads=16, n_layers=32, qk_norm=True, self_attention_model="abs_pos"
+            feat_in=128,
+            d_model=1280,
+            n_heads=16,
+            n_layers=32,
+            qk_norm=True,
+            self_attention_model="rope",
+            rope_base=500000.0,
+            rotary_fraction=0.5,
         )
         assert cfg.feat_in == 128
         assert cfg.d_model == 1280
         assert cfg.n_heads == 16
         assert cfg.n_layers == 32
         assert cfg.qk_norm is True
-        assert cfg.self_attention_model == "abs_pos"
+        assert cfg.self_attention_model == "rope"
+        assert cfg.rope_base == 500000.0
+        assert cfg.rotary_fraction == 0.5
 
 
 class TestFeatureStacking:
@@ -106,6 +116,55 @@ class TestFeatureStacking:
         out, out_lengths = stacking(x, lengths)
         assert out.shape == (B, stacking.compute_num_out_frames(T), 256)
         assert out_lengths[0].item() == stacking.compute_num_out_frames(T)
+
+
+class TestRotaryPositionalEncoding:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("rotary_fraction", [0.0, -0.1, 1.1])
+    def test_invalid_rotary_fraction_raises(self, rotary_fraction):
+        with pytest.raises(ValueError, match="rotary_fraction must be in"):
+            RotaryPositionalEncoding(d_k=16, rotary_fraction=rotary_fraction)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("d_k", "rotary_fraction"),
+        [
+            (16, 0.05),  # int(16 * 0.05) == 0
+            (18, 0.5),  # int(18 * 0.5) == 9
+        ],
+    )
+    def test_invalid_effective_rotary_dim_raises(self, d_k, rotary_fraction):
+        with pytest.raises(ValueError, match="Effective rotary dim"):
+            RotaryPositionalEncoding(d_k=d_k, rotary_fraction=rotary_fraction)
+
+    @pytest.mark.unit
+    def test_partial_rotation_preserves_tail_and_norm(self):
+        rope = RotaryPositionalEncoding(d_k=8, rotary_fraction=0.5, max_len=4)
+        rope.extend_pe(length=4, device=torch.device("cpu"), dtype=torch.float32)
+        q = torch.randn(2, 3, 4, 8)
+        k = torch.randn(2, 3, 4, 8)
+
+        q_rot, k_rot = rope(q, k)
+
+        torch.testing.assert_close(q_rot[..., 4:], q[..., 4:])
+        torch.testing.assert_close(k_rot[..., 4:], k[..., 4:])
+        torch.testing.assert_close(q_rot[..., :4].norm(dim=-1), q[..., :4].norm(dim=-1))
+        torch.testing.assert_close(k_rot[..., :4].norm(dim=-1), k[..., :4].norm(dim=-1))
+        # Position zero has angle zero and therefore remains unchanged.
+        torch.testing.assert_close(q_rot[:, :, 0], q[:, :, 0])
+        torch.testing.assert_close(k_rot[:, :, 0], k[:, :, 0])
+
+    @pytest.mark.unit
+    def test_query_cache_offset_matches_full_sequence_positions(self):
+        rope = RotaryPositionalEncoding(d_k=8, max_len=4)
+        rope.extend_pe(length=4, device=torch.device("cpu"), dtype=torch.float32)
+        full_q = torch.randn(1, 2, 4, 8)
+
+        full_q_rot, full_k_rot = rope(full_q, full_q)
+        cached_q_rot, cached_k_rot = rope(full_q[:, :, -2:], full_q)
+
+        torch.testing.assert_close(cached_q_rot, full_q_rot[:, :, -2:])
+        torch.testing.assert_close(cached_k_rot, full_k_rot)
 
 
 class TestBypassPreEncode:
@@ -499,7 +558,7 @@ class TestSelfAttentionModel:
         assert model.self_attention_model == "rel_pos"
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("mode", ["abs_pos", "rel_pos", "no_pos", "rope"])
+    @pytest.mark.parametrize("mode", ["abs_pos", "rel_pos", "rope", "no_pos"])
     def test_valid_modes_are_accepted(self, mode):
         model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=mode)
         assert model.self_attention_model == mode
@@ -536,9 +595,9 @@ class TestSelfAttentionModel:
             assert attn.pos_bias_v.shape == (n_heads, head_dim)
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("mode", ["abs_pos", "no_pos", "rope"])
+    @pytest.mark.parametrize("mode", ["abs_pos", "rope", "no_pos"])
     def test_non_rel_pos_modes_have_no_rel_params(self, mode):
-        """abs_pos, no_pos and rope modes must not allocate the rel-pos parameters."""
+        """Non-relative modes must not allocate the rel-pos parameters."""
         model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, self_attention_model=mode)
         for layer in model.layers:
             attn = layer.attn
@@ -555,7 +614,7 @@ class TestSelfAttentionModel:
         assert model.max_audio_length == model.pos_emb_max_len
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("mode", ["abs_pos", "rel_pos", "no_pos", "rope", None])
+    @pytest.mark.parametrize("mode", ["abs_pos", "rel_pos", "rope", "no_pos", None])
     def test_forward_each_mode_cpu(self, mode):
         """Each ``self_attention_model`` choice (including ``None``) must produce a valid forward."""
         model = TransformerEncoder(
@@ -645,3 +704,72 @@ class TestSelfAttentionModel:
 
         assert out.shape == (B, 64, T // 4)
         assert not torch.isnan(out).any()
+
+    @pytest.mark.unit
+    def test_rope_padding_does_not_affect_valid_output(self):
+        """Masked padding keys must not change valid RoPE encoder outputs."""
+        model = TransformerEncoder(
+            feat_in=32,
+            d_model=64,
+            n_heads=4,
+            n_layers=2,
+            drop_rate=0.0,
+            dropout_pre_encoder=0.0,
+            self_attention_model="rope",
+        ).eval()
+        valid = torch.randn(1, 5, 64)
+        padded = torch.cat((valid, torch.randn(1, 3, 64)), dim=1)
+        lengths = torch.tensor([5])
+
+        with torch.no_grad():
+            out_valid, valid_lengths = model(valid, lengths, bypass_pre_encode=True)
+            out_padded, padded_lengths = model(padded, lengths, bypass_pre_encode=True)
+
+        assert valid_lengths.tolist() == padded_lengths.tolist() == [5]
+        torch.testing.assert_close(out_padded[:, :, :5], out_valid, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.unit
+    def test_rope_causal_mask_blocks_future_frames(self):
+        """Changing future embeddings must not affect past outputs in causal RoPE mode."""
+        model = TransformerEncoder(
+            feat_in=32,
+            d_model=64,
+            n_heads=4,
+            n_layers=2,
+            drop_rate=0.0,
+            dropout_pre_encoder=0.0,
+            self_attention_model="rope",
+            attn_mode="causal",
+        ).eval()
+        x_a = torch.randn(1, 8, 64)
+        x_b = x_a.clone()
+        x_b[:, 4:] = torch.randn_like(x_b[:, 4:])
+        lengths = torch.tensor([8])
+
+        with torch.no_grad():
+            out_a, _ = model(x_a, lengths, bypass_pre_encode=True)
+            out_b, _ = model(x_b, lengths, bypass_pre_encode=True)
+
+        torch.testing.assert_close(out_a[:, :, :4], out_b[:, :, :4], atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.unit
+    def test_rope_forward_with_checkpoint_wrapped_feature_stacking(self):
+        """The pre-encoder type dispatch must work through PyTorch's checkpoint wrapper."""
+        model = TransformerEncoder(
+            feat_in=16,
+            d_model=64,
+            n_heads=4,
+            n_layers=1,
+            drop_rate=0.0,
+            dropout_pre_encoder=0.0,
+            self_attention_model="rope",
+        ).eval()
+        model.pre_encode = checkpoint_wrapper(model.pre_encode)
+        audio = torch.randn(2, 16, 32)
+        lengths = torch.tensor([32, 24])
+
+        with torch.no_grad():
+            out, out_lengths = model(audio, lengths)
+
+        assert out.shape == (2, 64, 8)
+        assert out_lengths.tolist() == [8, 6]

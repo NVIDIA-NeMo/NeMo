@@ -21,10 +21,12 @@ import yaml
 from click.testing import CliRunner
 from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, index_pack_collection_key, write_index_pack
 from lhotse.indexing import create_jsonl_index
+from omegaconf import OmegaConf
 from scripts.dataloading import convert_indexes_to_idxpack as converter
 from scripts.dataloading.convert_indexes_to_idxpack import main
 
 from nemo.collections.common.data.lhotse import nemo_adapters, text_adapters
+from nemo.collections.common.data.lhotse.cutset import read_nemo_manifest
 from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator, LazyNeMoTarredIterator
 
@@ -144,6 +146,117 @@ def test_convert_input_cfg_sidecars_to_one_index_pack(tmp_path):
         collection = pack.collection(key)
         assert len(collection) == 3
         assert pack.num_segments == 2
+
+
+def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(tmp_path, monkeypatch):
+    manifests = []
+    declared_tar_paths = []
+    expected_texts = []
+    for position, (manifest_id, tar_id) in enumerate(((3076, 2), (4100, 0), (5200, 1))):
+        manifest = tmp_path / f"manifest_{manifest_id}.jsonl"
+        member = f"sample-{position}.wav"
+        text = f"text-{position}"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "audio_filepath": member,
+                    "duration": 1.0,
+                    "text": text,
+                    "lang": "en",
+                }
+            )
+            + "\n"
+        )
+        create_jsonl_index(manifest)
+        manifests.append(str(manifest))
+        declared_tar_paths.append(f"ais://bucket/audio_{tar_id}.tar")
+        expected_texts.append(text)
+
+    input_cfg = tmp_path / "flat-lists.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": manifests,
+                "tarred_audio_filepaths": declared_tar_paths,
+            }
+        )
+    )
+    output = tmp_path / "flat-lists.idxpack"
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            "--native-tar-paths-only",
+            str(input_cfg),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    with IndexPack(output) as pack:
+        manifest_collection = pack.collection(index_pack_collection_key("manifest", "jsonl", manifests))
+        tar_collection = pack.collection(index_pack_collection_key("tar", "nemo_tar", declared_tar_paths))
+        assert manifest_collection.sequence_count == 3
+        assert tar_collection.sequence_count == 3
+        assert [tar_collection.path_for_shard(idx) for idx in range(3)] == declared_tar_paths
+
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+    config = OmegaConf.create(
+        {
+            "manifest_filepath": manifests,
+            "tarred_audio_filepaths": declared_tar_paths,
+            "indexed": True,
+            "index_pack": str(output),
+            "force_finite": True,
+        }
+    )
+    cuts, is_tarred = read_nemo_manifest(config)
+    cuts = list(cuts)
+    assert is_tarred
+    assert [cut.supervisions[0].text for cut in cuts] == expected_texts
+    assert [cut.recording.sources[0].source for cut in cuts] == [
+        f"{tar_path}/sample-{position}.wav" for position, tar_path in enumerate(declared_tar_paths)
+    ]
+
+
+def test_converter_rejects_mixed_scalar_and_flat_native_pairs(tmp_path):
+    input_cfg = tmp_path / "mixed-path-forms.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo_tarred",
+                "manifest_filepath": [str(tmp_path / "manifest.jsonl")],
+                "tarred_audio_filepaths": str(tmp_path / "audio.tar"),
+            }
+        )
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--dry-run", "--output", str(tmp_path / "mixed.idxpack"), str(input_cfg)],
+    )
+    assert result.exit_code != 0
+    assert "must both use scalar path specs or both use non-empty flat lists" in str(result.exception)
+
+
+def test_converter_rejects_nested_native_manifest_lists(tmp_path):
+    input_cfg = tmp_path / "nested-lists.yaml"
+    input_cfg.write_text(
+        yaml.safe_dump(
+            {
+                "type": "nemo",
+                "manifest_filepath": [[str(tmp_path / "manifest.jsonl"), 0.5]],
+            }
+        )
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--dry-run", "--output", str(tmp_path / "nested.idxpack"), str(input_cfg)],
+    )
+    assert result.exit_code != 0
+    assert "nested and weighted list forms are not supported" in str(result.exception)
 
 
 def test_lazy_nemo_iterator_uses_pack_without_expanding_shards(tmp_path, monkeypatch):

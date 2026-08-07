@@ -273,17 +273,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         cp_mesh, cp_size, _ = get_cp_mesh(device_mesh)
         fsdp_sync_group = get_perception_fsdp_group(device_mesh)
 
-        # Source audio encoding.
-        # Input audio: (B, T_samples)
-        # Audio embeddings: (B, T, H)
+        # Source audio encoding. Input audio: (B, T_samples), audio embeddings: (B, T, H).
         # Routing uses valid targets for RTTM rows, a -1 sentinel for non-RTTM
         # training rows, and None when no batch targets exist.
         # PEE=true,  RTTM exists: Valid RTTM targets use chunking/CP and offline PEE fusion.
         # PEE=true,  RTTM absent: -1 rows use chunking/CP and offline PEE diarization.
         # PEE=false, RTTM absent: The regular encoder runs through optional chunking/CP without speaker targets.
         # PEE=false, RTTM exists: RTTM is ignored and the regular encoder runs through optional chunking/CP.
+        # Audio-free batches must take the branch below, whose audio-presence all-reduce keeps FSDP ranks in step.
         dummy_audio_loss = None
-        if self._uses_ext_spk_tgts() and spk_targets is None:
+        if self._uses_ext_spk_tgts() and spk_targets is None and batch["audios"].shape[0] > 0:
             self._warn_parallel_expert_encoder_inference_compatibility(cp_size)
             audio_embs, audio_emb_lens = self.perception(
                 input_signal=batch["audios"], input_signal_length=batch["audio_lens"]

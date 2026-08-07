@@ -63,9 +63,7 @@ def test_fix_speaker_activity_swaps_simple_two_speaker_permutation():
         ]
     )
 
-    fixed = sot_alignment.fix_speaker_activity(
-        "<spk:0> hello world <spk:1> yes now", activity, num_speakers=2
-    )
+    fixed = sot_alignment.fix_speaker_activity("<spk:0> hello world <spk:1> yes now", activity, num_speakers=2)
 
     expected = torch.tensor(
         [
@@ -181,9 +179,7 @@ def test_fix_speaker_activity_caps_one_hour_alignment_at_1200_frames(monkeypatch
         return original_dtw_cost_batch(activity, *args, **kwargs)
 
     monkeypatch.setattr(sot_alignment, "dtw_cost_batch", capture_alignment_shape)
-    fixed = sot_alignment.fix_speaker_activity(
-        "<spk:0> hello world <spk:1> yes now", activity, num_speakers=2
-    )
+    fixed = sot_alignment.fix_speaker_activity("<spk:0> hello world <spk:1> yes now", activity, num_speakers=2)
 
     assert observed["num_frames"] == 1200
     assert duration_seconds / observed["num_frames"] == pytest.approx(3.0)

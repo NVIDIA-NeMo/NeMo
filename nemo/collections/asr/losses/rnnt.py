@@ -391,7 +391,7 @@ class RNNTLoss(Loss):
                 model:
                     joint:
                         fuse_loss_wer: true
-                        # Maximum samples per Flash chunk, not the number of chunks.
+                        # Required by the fused joint step; this loss does not read it.
                         fused_batch_size: 4
                         jointnet:
                             dropout: 0.1
@@ -400,14 +400,12 @@ class RNNTLoss(Loss):
                         flash_rnnt_kwargs:
                             fastemit_lambda: 0.0
                             clamp: -1.0
-                            # Target B * T_tile * (U + 1) row budget; each tile keeps at least one T.
+                            # Rows per lattice tile; sets peak workspace.
                             max_joint_rows: 200000
 
-            ``fused_batch_size`` controls sorting and trimming granularity. A chunk costs what its
-            longest member costs, so prefer the smallest value that still saturates the GPU.
-            ``max_joint_rows`` sets a workspace budget by dividing source time into balanced tiles;
-            it trades peak memory for kernel launches without changing what is computed. A tile
-            cannot be shorter than one source step.
+            ``max_joint_rows`` is the only knob on cost and does not change what is computed.
+            Rows are packed rather than padded to a rectangle, so a tile costs the same whatever mix
+            of utterance lengths falls inside it.
 
         Warning:
             In the case that GPU memory is exhausted in order to compute RNNTLoss, it might cause
@@ -487,7 +485,6 @@ class RNNTLoss(Loss):
         targets: torch.Tensor,
         input_lengths: torch.Tensor,
         target_lengths: torch.Tensor,
-        max_samples_per_chunk: int,
     ) -> torch.Tensor:
         """Run Flash RNN-T before the joint network materializes dense logits."""
         if not self.requires_factorized_joint:
@@ -502,7 +499,6 @@ class RNNTLoss(Loss):
             targets=targets,
             source_lengths=input_lengths,
             target_lengths=target_lengths,
-            max_samples_per_chunk=max_samples_per_chunk,
         )
         return self.reduce(losses, target_lengths) if self.reduction is not None else losses
 

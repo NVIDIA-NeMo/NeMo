@@ -15,12 +15,12 @@
 import pytest
 import torch
 
-from nemo.collections.asr.losses.flash_rnnt import FlashRNNTLoss, _balanced_time_tile_size
+from nemo.collections.asr.losses.flash_rnnt import FlashRNNTLoss
 from nemo.collections.asr.losses.rnnt import NUMBA_RNNT_AVAILABLE, RNNTLoss
 from nemo.collections.asr.losses.rnnt_pytorch import RNNTLossPytorch
 from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint
 from nemo.collections.asr.modules.rnnt import RNNTJoint
-from nemo.collections.asr.parts.triton.rnnt_joint import joint_hidden_state
+from nemo.collections.asr.parts.triton.rnnt_joint import _PackedJoint, lattice_layout, packed_positions
 from nemo.collections.asr.parts.triton.rnnt_loss import rnnt_loss_triton
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
@@ -39,6 +39,23 @@ VOCAB = NUM_LABELS + 1
 if TRITON_AVAILABLE:
     # This module imports Triton at the top level, so only reach for it once Triton is known good.
     from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_torch, rnnt_logprobs_triton
+
+
+def _joint_hidden_state(encoder, predictor, activation, dropout_p=0.0):
+    """Dense ``[B, T, U + 1, H]`` joint state from the packed kernels.
+
+    Giving every sample the full source and transcript extent makes the packed row order the same
+    as a dense reshape, so the kernels can be compared elementwise against an eager broadcast add.
+    """
+    batch, source_steps, hidden_size = encoder.shape
+    target_states = predictor.shape[1]
+    source_lengths = torch.full((batch,), source_steps, device=encoder.device, dtype=torch.int32)
+    target_lengths = torch.full((batch,), target_states - 1, device=encoder.device, dtype=torch.int32)
+    offsets, states, total_rows = lattice_layout(source_lengths, target_lengths, source_steps, target_states)
+    hidden = _PackedJoint.apply(
+        encoder, predictor, offsets, states, source_lengths, 0, total_rows, activation, dropout_p
+    )
+    return hidden.view(batch, source_steps, target_states, hidden_size)
 
 
 def _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, blank, fastemit_lambda=0.0, clamp=-1.0):
@@ -68,6 +85,67 @@ def _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, blank, fast
         fastemit_lambda=fastemit_lambda,
         loss_grad_scale=loss_grad_scale,
     )
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+def test_packed_rows_run_frame_major_within_a_sample():
+    """Rows advance through transcript states first, then frames, with samples laid end to end.
+
+    Everything downstream reads this ordering: the scatter back to the score planes addresses rows
+    by it, and a lattice with no padding is expected to be a dense reshape of the same rows.
+    """
+    source_lengths = torch.tensor([3, 1, 2], device="cuda")
+    target_lengths = torch.tensor([2, 0, 1], device="cuda")
+    frames, target_states = 3, 3
+    offsets, states, total_rows = lattice_layout(source_lengths, target_lengths, frames, target_states)
+
+    sizes = source_lengths * (target_lengths + 1)
+    assert total_rows == int(sizes.sum())
+    torch.testing.assert_close(states.long(), target_lengths + 1)
+    torch.testing.assert_close(offsets[1:].long(), sizes.cumsum(0))
+
+    # Sample 0 fills its 3x3 plane, sample 1 contributes one row, sample 2 a 2x2 corner.
+    expected = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 18, 19, 21, 22], device="cuda")
+    positions = packed_positions(offsets, states, total_rows, frames, target_states)
+    torch.testing.assert_close(positions, expected)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+def test_packed_rows_of_a_full_lattice_are_a_dense_reshape():
+    """With every sample at full extent nothing is padded, so packed order is dense order."""
+    batch, frames, target_states = 4, 5, 3
+    source_lengths = torch.full((batch,), frames, device="cuda")
+    target_lengths = torch.full((batch,), target_states - 1, device="cuda")
+    offsets, states, total_rows = lattice_layout(source_lengths, target_lengths, frames, target_states)
+
+    positions = packed_positions(offsets, states, total_rows, frames, target_states)
+    torch.testing.assert_close(positions, torch.arange(total_rows, device="cuda"))
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.parametrize("axis", ["source", "target"])
+def test_flash_rnnt_rejects_lengths_past_the_states_they_index(axis):
+    """A length beyond its tensor would be read, not masked, so it has to be refused up front."""
+    joint = _make_joint(4)
+    joint.set_loss(RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt"))
+    joint.set_wer(object())
+    encoder, predictor, source_lengths, target_lengths, labels = _end_to_end_batch()
+    if axis == "source":
+        source_lengths = source_lengths + encoder.shape[2]
+    else:
+        target_lengths = target_lengths + predictor.shape[2]
+
+    with pytest.raises(ValueError, match="lengths reach beyond the states they index"):
+        joint(
+            encoder_outputs=encoder,
+            decoder_outputs=predictor,
+            encoder_lengths=source_lengths,
+            transcripts=labels,
+            transcript_lengths=target_lengths,
+        )
 
 
 @pytest.mark.unit
@@ -311,7 +389,7 @@ def test_flash_rnnt_join_matches_the_eager_broadcast_add(activation, dtype):
         activate = {"relu": torch.relu, "sigmoid": torch.sigmoid, "tanh": torch.tanh}[activation]
         return activate(leaf_encoder.unsqueeze(2) + leaf_predictor.unsqueeze(1))
 
-    fused_hidden, fused_gradients = forward_and_gradients(lambda e, p: joint_hidden_state(e, p, activation))
+    fused_hidden, fused_gradients = forward_and_gradients(lambda e, p: _joint_hidden_state(e, p, activation))
     eager_hidden, eager_gradients = forward_and_gradients(eager)
 
     atol, rtol = (1e-6, 1e-5) if dtype == torch.float32 else (3e-2, 3e-2)
@@ -346,7 +424,6 @@ def test_flash_rnnt_requires_triton(monkeypatch):
             targets=torch.zeros(batch, target_tokens, dtype=torch.long),
             source_lengths=torch.full((batch,), source_steps, dtype=torch.long),
             target_lengths=torch.full((batch,), target_tokens, dtype=torch.long),
-            max_samples_per_chunk=1,
         )
 
 
@@ -528,21 +605,20 @@ def _make_joint(fused_batch_size, activation="relu", log_softmax=False, dropout=
     not CUDA_TRITON_AVAILABLE or not NUMBA_RNNT_AVAILABLE,
     reason="CUDA, Triton, and Numba RNN-T are required",
 )
-@pytest.mark.parametrize("fused_batch_size", [2, 3])
 @pytest.mark.parametrize(
     ("objective_reduction", "amp_scale"), [("mean_batch", 1.0), ("mean_batch", 1024.0), ("weighted", 1.0)]
 )
-def test_flash_rnnt_clamp_matches_numba_across_chunks(fused_batch_size, objective_reduction, amp_scale):
+def test_flash_rnnt_clamp_matches_numba_across_tiles(objective_reduction, amp_scale):
     """Clamping applies to the unit-scale gradient, which autograd has already scaled.
 
-    Dividing that scale back out has to survive batch chunking, source-time tiling, the loss
-    reduction and the AMP scale at once, so compare against warprnnt_numba, which clamps the same
-    unit-scale gradient, rather than against another Triton path sharing the same plumbing.
+    Dividing that scale back out has to survive tiling, the loss reduction and the AMP scale at
+    once, so compare against warprnnt_numba, which clamps the same unit-scale gradient, rather than
+    against another Triton path sharing the same plumbing.
     """
     from nemo.collections.asr.parts.numba.rnnt_loss import RNNTLossNumba
 
     torch.manual_seed(23)
-    joint = _make_joint(fused_batch_size)
+    joint = _make_joint(4)
     for parameter in joint.parameters():
         torch.nn.init.normal_(parameter, std=0.3)
     batch, source_steps, target_tokens = 6, 9, 5
@@ -553,8 +629,6 @@ def test_flash_rnnt_clamp_matches_numba_across_chunks(fused_batch_size, objectiv
         loss_name="flash_rnnt",
         loss_kwargs={"fastemit_lambda": 0.01, "clamp": 0.02, "max_joint_rows": max_joint_rows},
     )
-    # A budget that stopped splitting source time would leave the scale plumbing untested.
-    assert _balanced_time_tile_size(source_steps, fused_batch_size, target_tokens + 1, max_joint_rows) < source_steps
     joint.set_loss(flash_loss)
     joint.set_wer(object())
 
@@ -601,7 +675,7 @@ def test_flash_rnnt_clamp_matches_numba_across_chunks(fused_batch_size, objectiv
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 @pytest.mark.parametrize("hidden_size", [6, 8, 1536])
-def test_joint_hidden_state_dropout_mask_agrees_across_kernels(hidden_size):
+def test_joint_dropout_mask_agrees_across_kernels(hidden_size):
     """The forward and both backward kernels must reach the same verdict on every element.
 
     Nothing stores the mask and the three kernels walk the joint grid along different axes, so each
@@ -621,7 +695,7 @@ def test_joint_hidden_state_dropout_mask_agrees_across_kernels(hidden_size):
     encoder = torch.ones(batch, source_steps, hidden_size, device="cuda", requires_grad=True)
     predictor = torch.zeros(batch, target_states, hidden_size, device="cuda", requires_grad=True)
 
-    hidden = joint_hidden_state(encoder, predictor, "relu", dropout_p)
+    hidden = _joint_hidden_state(encoder, predictor, "relu", dropout_p)
     forward_mask = hidden != 0.0
 
     for target_index in range(target_states):
@@ -645,57 +719,113 @@ def test_joint_hidden_state_dropout_mask_agrees_across_kernels(hidden_size):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-def test_joint_hidden_state_rejects_invalid_dropout():
-    batch, source_steps, target_states, hidden_size = 1, 2, 3, JOINT_HIDDEN
-    encoder = torch.randn(batch, source_steps, hidden_size, device="cuda")
-    predictor = torch.randn(batch, target_states, hidden_size, device="cuda")
-    with pytest.raises(ValueError, match=r"dropout_p must be in \[0, 1\)"):
-        joint_hidden_state(encoder, predictor, "relu", dropout_p=1.0)
+def test_flash_rnnt_rejects_invalid_joint_dropout():
+    joint = _make_joint(4, dropout=1.0)
+    joint.set_loss(RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt"))
+    joint.set_wer(object())
+    encoder, predictor, source_lengths, target_lengths, labels = _end_to_end_batch()
+    with pytest.raises(ValueError, match=r"joint dropout must be in \[0, 1\)"):
+        joint(
+            encoder_outputs=encoder,
+            decoder_outputs=predictor,
+            encoder_lengths=source_lengths,
+            transcripts=labels,
+            transcript_lengths=target_lengths,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.parametrize("max_joint_rows", [10_000, 13])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_flash_rnnt_tile_budget_equivalence(dtype, max_joint_rows):
+    """The tile budget bounds the workspace without changing the answer.
+
+    The small budget is coprime with every sample's lattice, so tiles start and end inside a sample
+    and each backward has to bound itself to the sample it landed in rather than to a whole one.
+    """
+    torch.manual_seed(23)
+    reference_joint = _make_joint(4).to(dtype)
+    packed_joint = _make_joint(4).to(dtype)
+    packed_joint.load_state_dict(reference_joint.state_dict())
+    reference_joint.set_loss(RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt"))
+    packed_joint.set_loss(
+        RNNTLoss(
+            num_classes=NUM_LABELS,
+            reduction="mean_batch",
+            loss_name="flash_rnnt",
+            loss_kwargs={"max_joint_rows": max_joint_rows},
+        )
+    )
+    reference_joint.set_wer(object())
+    packed_joint.set_wer(object())
+
+    encoder, predictor, source_lengths, target_lengths, labels = _end_to_end_batch(dtype)
+    packed_encoder = encoder.detach().clone().requires_grad_(True)
+    packed_predictor = predictor.detach().clone().requires_grad_(True)
+
+    reference_value = reference_joint(
+        encoder_outputs=encoder,
+        decoder_outputs=predictor,
+        encoder_lengths=source_lengths,
+        transcripts=labels,
+        transcript_lengths=target_lengths,
+    )[0]
+    packed_value = packed_joint(
+        encoder_outputs=packed_encoder,
+        decoder_outputs=packed_predictor,
+        encoder_lengths=source_lengths,
+        transcripts=labels,
+        transcript_lengths=target_lengths,
+    )[0]
+    reference_gradients = torch.autograd.grad(reference_value, (encoder, predictor, *reference_joint.parameters()))
+    packed_gradients = torch.autograd.grad(
+        packed_value, (packed_encoder, packed_predictor, *packed_joint.parameters())
+    )
+
+    atol, rtol = (2e-5, 2e-4) if dtype == torch.float32 else (2e-2, 2e-2)
+    torch.testing.assert_close(packed_value, reference_value, atol=atol, rtol=rtol)
+    for actual, expected in zip(packed_gradients, reference_gradients):
+        torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 def test_flash_rnnt_joint_dropout_recomputes_the_same_mask(monkeypatch):
-    """Backward recomputes each checkpointed tile, and must redraw the mask the forward used.
+    """A tile draws its own seed, so its recompute has to land on the mask the forward used."""
+    from nemo.collections.asr.parts.triton import rnnt_joint
 
-    The mask comes from a seed drawn inside the join, so a recompute that draws a fresh one produces
-    gradients for a different network than the forward scored. Comparing two whole runs cannot see
-    that -- both would redraw identically and agree -- so compare the recomputed hidden state
-    against the one the forward produced.
-    """
-    torch.manual_seed(131)
-    joint = _make_joint(1, activation="tanh", dropout=0.25)
+    torch.manual_seed(137)
+    joint = _make_joint(4, activation="tanh", dropout=0.25)
     joint.set_loss(
         RNNTLoss(
             num_classes=NUM_LABELS,
             reduction="mean_batch",
             loss_name="flash_rnnt",
-            loss_kwargs={"max_joint_rows": 4},
+            loss_kwargs={"max_joint_rows": 13},
         )
     )
     joint.set_wer(object())
-    batch, source_steps, target_tokens = 3, 5, 3
-    encoder = torch.randn(batch, ENCODER_HIDDEN, source_steps, device="cuda", requires_grad=True)
-    predictor = torch.randn(batch, PRED_HIDDEN, target_tokens + 1, device="cuda", requires_grad=True)
 
     produced = []
-    original = joint_hidden_state
+    original = rnnt_joint._PackedJoint.apply
 
-    def recording(*args, **kwargs):
-        hidden = original(*args, **kwargs)
+    def recording(*args):
+        hidden = original(*args)
         produced.append(hidden.detach().clone())
         return hidden
 
-    monkeypatch.setattr("nemo.collections.asr.losses.flash_rnnt.joint_hidden_state", recording)
+    monkeypatch.setattr(rnnt_joint._PackedJoint, "apply", staticmethod(recording))
+    encoder, predictor, source_lengths, target_lengths, labels = _end_to_end_batch()
     value = joint(
         encoder_outputs=encoder,
         decoder_outputs=predictor,
-        encoder_lengths=torch.tensor([source_steps, 4, 3], device="cuda"),
-        transcripts=torch.randint(0, NUM_LABELS, (batch, target_tokens), device="cuda"),
-        transcript_lengths=torch.tensor([target_tokens, 2, 1], device="cuda"),
+        encoder_lengths=source_lengths,
+        transcripts=labels,
+        transcript_lengths=target_lengths,
     )[0]
     forward_tiles = len(produced)
-    assert forward_tiles > 1, "the budget must split the batch so recomputation is exercised"
+    assert forward_tiles > 1, "the budget must split the lattice so recomputation is exercised"
     value.backward()
 
     recomputed = produced[forward_tiles:]
@@ -707,105 +837,6 @@ def test_flash_rnnt_joint_dropout_recomputes_the_same_mask(monkeypatch):
             tile.shape == original_tile.shape and torch.equal(tile, original_tile)
             for original_tile in produced[:forward_tiles]
         ), "a recomputed tile does not match any tile the forward produced"
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-@pytest.mark.parametrize("fused_batch_size", [1, 3])
-def test_flash_rnnt_workspace_batch_equivalence(fused_batch_size):
-    torch.manual_seed(11)
-    reference_joint = _make_joint(4)
-    joint = _make_joint(fused_batch_size)
-    joint.load_state_dict(reference_joint.state_dict())
-    loss = RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt")
-    reference_loss = RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt")
-    joint.set_loss(loss)
-    reference_joint.set_loss(reference_loss)
-    joint.set_wer(object())
-    reference_joint.set_wer(object())
-
-    encoder, predictor, source_lengths, target_lengths, labels = _end_to_end_batch()
-    reference_encoder = encoder.detach().clone().requires_grad_(True)
-    reference_predictor = predictor.detach().clone().requires_grad_(True)
-
-    value = joint(
-        encoder_outputs=encoder,
-        decoder_outputs=predictor,
-        encoder_lengths=source_lengths,
-        transcripts=labels,
-        transcript_lengths=target_lengths,
-    )[0]
-    reference_value = reference_joint(
-        encoder_outputs=reference_encoder,
-        decoder_outputs=reference_predictor,
-        encoder_lengths=source_lengths,
-        transcripts=labels,
-        transcript_lengths=target_lengths,
-    )[0]
-    gradients = torch.autograd.grad(value, (encoder, predictor, *joint.parameters()))
-    reference_gradients = torch.autograd.grad(
-        reference_value,
-        (reference_encoder, reference_predictor, *reference_joint.parameters()),
-    )
-
-    torch.testing.assert_close(value, reference_value, atol=1e-5, rtol=1e-5)
-    for actual, expected in zip(gradients, reference_gradients):
-        torch.testing.assert_close(actual, expected, atol=2e-5, rtol=2e-4)
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_flash_rnnt_workspace_time_equivalence(dtype):
-    torch.manual_seed(17)
-    reference_joint = _make_joint(4).to(dtype)
-    tiled_joint = _make_joint(4).to(dtype)
-    tiled_joint.load_state_dict(reference_joint.state_dict())
-    reference_loss = RNNTLoss(
-        num_classes=NUM_LABELS,
-        reduction="mean_batch",
-        loss_name="flash_rnnt",
-        loss_kwargs={"max_joint_rows": 10_000},
-    )
-    tiled_loss = RNNTLoss(
-        num_classes=NUM_LABELS,
-        reduction="mean_batch",
-        loss_name="flash_rnnt",
-        loss_kwargs={"max_joint_rows": 40},
-    )
-    reference_joint.set_loss(reference_loss)
-    tiled_joint.set_loss(tiled_loss)
-    reference_joint.set_wer(object())
-    tiled_joint.set_wer(object())
-
-    encoder, predictor, source_lengths, target_lengths, labels = _end_to_end_batch(dtype)
-    tiled_encoder = encoder.detach().clone().requires_grad_(True)
-    tiled_predictor = predictor.detach().clone().requires_grad_(True)
-
-    reference_value = reference_joint(
-        encoder_outputs=encoder,
-        decoder_outputs=predictor,
-        encoder_lengths=source_lengths,
-        transcripts=labels,
-        transcript_lengths=target_lengths,
-    )[0]
-    tiled_value = tiled_joint(
-        encoder_outputs=tiled_encoder,
-        decoder_outputs=tiled_predictor,
-        encoder_lengths=source_lengths,
-        transcripts=labels,
-        transcript_lengths=target_lengths,
-    )[0]
-    reference_gradients = torch.autograd.grad(reference_value, (encoder, predictor, *reference_joint.parameters()))
-    tiled_gradients = torch.autograd.grad(
-        tiled_value,
-        (tiled_encoder, tiled_predictor, *tiled_joint.parameters()),
-    )
-
-    atol, rtol = (2e-5, 2e-4) if dtype == torch.float32 else (2e-2, 2e-2)
-    torch.testing.assert_close(tiled_value, reference_value, atol=atol, rtol=rtol)
-    for actual, expected in zip(tiled_gradients, reference_gradients):
-        torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
 
 @pytest.mark.unit

@@ -12,16 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Fused broadcast-add, activation and dropout for the RNN-T joint network.
+"""RNN-T joint kernels over a packed lattice.
 
-The joint hidden state is ``act(encoder[b, t, :] + predictor[b, u, :])`` over a ``[B, T, U + 1, H]``
-grid. Backward saves only the two projected operands and rebuilds the pre-activation inside the
-reduction kernels, so no ``[B, T, U + 1, H]`` tensor stays live across the step.
-
-Dropout is folded in rather than applied afterwards, and its mask is never stored: each kernel
-redraws the mask from a per-call seed and the element's position in the grid, which all three agree
-on even though they traverse different axes. Applying dropout separately would instead read and
-rewrite the whole hidden state and hold a mask beside it, both of which the peak has to cover.
+Each utterance contributes ``T * (U + 1)`` rows to one flat list, and tiles are cut from it at a
+caller-chosen row budget, so a tile carries no padding whatever lengths it spans. Rows resolve their
+own coordinates through ``_locate``, storing no per-row index array. Score planes stay rectangular
+``[B, T, U + 1]`` for the dynamic program; ``packed_positions`` maps rows onto them.
 """
 
 from __future__ import annotations
@@ -62,23 +58,19 @@ if TRITON_AVAILABLE:
 
     @triton.jit
     def _rng_row_stride(hidden_size):
-        """Row spacing that keeps every block's first element on a Philox boundary.
+        """Row spacing, in draws, that keeps each block's first element on a Philox boundary.
 
-        Four consecutive elements share one draw, so rounding each row up to a multiple of four
-        makes a block's key exactly ``base_index // 4``. This spacing places draws only; memory is
-        addressed with ``hidden_size``.
+        Four elements share a draw, so rows round up to a multiple of four. Memory is addressed with
+        ``hidden_size``, not this.
         """
         return ((hidden_size + 3) // 4) * 4
 
     @triton.jit
     def _apply_dropout(value, seed, base_index, dropout_p: tl.constexpr, block_hidden: tl.constexpr):
-        """Zero the dropped elements of a hidden block and rescale the survivors by 1 / (1 - p).
+        """Apply the joint's dropout to a hidden block, rescaling survivors by ``1 / (1 - p)``.
 
-        An element's draw depends only on its position in the grid ``_rng_row_stride`` spaces, which
-        ``base_index`` locates, so the forward and both backward kernels agree without storing a mask.
-
-        Philox produces four values per call, so the block draws one key per four elements and
-        unpacks all four.
+        An element's draw is fixed by its position in the grid ``_rng_row_stride`` spaces, so no mask
+        is stored and every kernel reaches the same one.
         """
         if dropout_p > 0.0:
             keys = base_index // 4 + tl.arange(0, block_hidden // 4)
@@ -89,237 +81,485 @@ if TRITON_AVAILABLE:
         return value
 
     @triton.jit
-    def _joint_fwd_kernel(
+    def _locate(row_starts_ptr, states_ptr, row, batch, batch_pow2: tl.constexpr):
+        """Resolve a packed row to its sample, frame, state, and that sample's state count."""
+        lanes = tl.arange(0, batch_pow2)
+        starts = tl.load(row_starts_ptr + lanes, mask=lanes <= batch, other=2**30)
+        batch_idx = tl.sum(tl.where(starts <= row, 1, 0)) - 1
+        start = tl.sum(tl.where(lanes == batch_idx, starts, 0))
+        states = tl.sum(tl.where(lanes == batch_idx, tl.load(states_ptr + lanes, mask=lanes < batch, other=1), 0))
+        within = row - start
+        return batch_idx, within // states, within % states, states
+
+    @triton.jit
+    def _packed_joint_fwd(
         encoder_ptr,
         predictor_ptr,
+        row_starts_ptr,
+        states_ptr,
         hidden_ptr,
         seed_ptr,
-        source_steps,
-        target_states,
+        tile_start,
+        batch,
+        source_stride,
+        target_stride,
         hidden_size,
         activation: tl.constexpr,
         dropout_p: tl.constexpr,
+        batch_pow2: tl.constexpr,
         block_hidden: tl.constexpr,
     ):
-        """Write ``act(encoder + predictor)`` with dropout applied, one (batch, source, target) row each."""
-        row = tl.program_id(0).to(tl.int64)
-        # Row indexes the flattened (batch, source, target) grid
-        target_idx = row % target_states
-        source_row = row // target_states
-        batch_idx = source_row // source_steps
+        """Build one packed row of the joint state: add the two strips, activate, drop out.
 
-        offsets = tl.program_id(1) * block_hidden + tl.arange(0, block_hidden)
+        The hidden buffer is indexed from the tile's start, the strips by the resolved coordinates.
+        """
+        local = tl.program_id(0).to(tl.int64)
+        row = tile_start + local
+        batch_idx, source_idx, target_idx, _ = _locate(row_starts_ptr, states_ptr, row, batch, batch_pow2)
+
+        offsets = tl.arange(0, block_hidden)
         mask = offsets < hidden_size
-        encoder = tl.load(encoder_ptr + source_row * hidden_size + offsets, mask=mask, other=0.0).to(tl.float32)
+        encoder = tl.load(
+            encoder_ptr + (batch_idx * source_stride + source_idx) * hidden_size + offsets, mask=mask, other=0.0
+        ).to(tl.float32)
         predictor = tl.load(
-            predictor_ptr + (batch_idx * target_states + target_idx) * hidden_size + offsets,
-            mask=mask,
-            other=0.0,
+            predictor_ptr + (batch_idx * target_stride + target_idx) * hidden_size + offsets, mask=mask, other=0.0
         ).to(tl.float32)
         hidden = _activate_fwd(encoder + predictor, activation)
-        rng_base = row * _rng_row_stride(hidden_size) + tl.program_id(1) * block_hidden
+        rng_base = row * _rng_row_stride(hidden_size)
         hidden = _apply_dropout(hidden, tl.load(seed_ptr), rng_base, dropout_p, block_hidden)
-        tl.store(hidden_ptr + row * hidden_size + offsets, hidden, mask=mask)
+        tl.store(hidden_ptr + local * hidden_size + offsets, hidden, mask=mask)
 
     @triton.jit
-    def _joint_bwd_encoder_kernel(
+    def _apply_dropout_rows(
+        value, seed, base_index, dropout_p: tl.constexpr, block_rows: tl.constexpr, block_hidden: tl.constexpr
+    ):
+        """Apply the joint's dropout to a block of rows.
+
+        Each row draws from its own grid position, so the mask does not depend on the block shape.
+        """
+        if dropout_p > 0.0:
+            keys = base_index[:, None] // 4 + tl.arange(0, block_hidden // 4)[None, :]
+            first, second, third, fourth = tl.rand4x(seed, keys)
+            uniform = tl.reshape(tl.join(tl.join(first, third), tl.join(second, fourth)), [block_rows, block_hidden])
+            return tl.where(uniform > dropout_p, value / (1.0 - dropout_p), 0.0)
+        return value
+
+    @triton.autotune(
+        configs=[
+            triton.Config({"block_frames": frames, "block_hidden": hidden}, num_warps=warps)
+            for frames, hidden, warps in (
+                (16, 64, 4),
+                (32, 64, 4),
+                (64, 64, 4),
+                (16, 128, 4),
+                (32, 128, 4),
+                (32, 64, 2),
+            )
+        ],
+        key=["hidden_size"],
+        # Timing a config runs the kernel repeatedly, and the decoder gradient closes with atomics,
+        # so without this every trial would accumulate on top of the last.
+        reset_to_zero=["grad_predictor_ptr"],
+    )
+    @triton.jit
+    def _packed_joint_bwd(
         encoder_ptr,
         predictor_ptr,
+        row_starts_ptr,
+        states_ptr,
+        lengths_ptr,
         grad_hidden_ptr,
         grad_encoder_ptr,
-        seed_ptr,
-        source_steps,
-        target_states,
-        hidden_size,
-        activation: tl.constexpr,
-        dropout_p: tl.constexpr,
-        block_hidden: tl.constexpr,
-    ):
-        """Sum ``grad_hidden * act'(pre)`` over the target axis, one (batch, source) row each.
-
-        The pre-activation is rebuilt from the two projected inputs, so backward needs neither the
-        [B, T, U + 1, H] hidden state nor a pre-activation gradient buffer -- only the small
-        [B, T, H] and [B, U + 1, H] operands stay live across the step.
-        """
-        row = tl.program_id(0).to(tl.int64)  # batch * source_steps + source
-        batch_idx = row // source_steps
-        offsets = tl.program_id(1) * block_hidden + tl.arange(0, block_hidden)
-        mask = offsets < hidden_size
-        encoder = tl.load(encoder_ptr + row * hidden_size + offsets, mask=mask, other=0.0).to(tl.float32)
-        grad_base = row * target_states * hidden_size + offsets
-        predictor_base = batch_idx * target_states * hidden_size + offsets
-        seed = tl.load(seed_ptr)
-        rng_row_stride = _rng_row_stride(hidden_size)
-        rng_base = row * target_states * rng_row_stride + tl.program_id(1) * block_hidden
-        total = tl.zeros((block_hidden,), tl.float32)
-        for target_idx in tl.range(0, target_states):
-            predictor = tl.load(predictor_ptr + predictor_base + target_idx * hidden_size, mask=mask, other=0.0).to(
-                tl.float32
-            )
-            grad_hidden = tl.load(grad_hidden_ptr + grad_base + target_idx * hidden_size, mask=mask, other=0.0).to(
-                tl.float32
-            )
-            grad_hidden = _apply_dropout(
-                grad_hidden, seed, rng_base + target_idx * rng_row_stride, dropout_p, block_hidden
-            )
-            total += grad_hidden * _activate_bwd(encoder + predictor, activation)
-        tl.store(grad_encoder_ptr + row * hidden_size + offsets, total, mask=mask)
-
-    @triton.jit
-    def _joint_bwd_predictor_kernel(
-        encoder_ptr,
-        predictor_ptr,
-        grad_hidden_ptr,
         grad_predictor_ptr,
         seed_ptr,
-        source_steps,
-        target_states,
+        tile_start,
+        tile_rows,
+        batch,
+        source_stride,
+        target_stride,
         hidden_size,
         activation: tl.constexpr,
         dropout_p: tl.constexpr,
+        batch_pow2: tl.constexpr,
+        block_frames: tl.constexpr,
         block_hidden: tl.constexpr,
     ):
-        """Sum ``grad_hidden * act'(pre)`` over the source axis, one (batch, target) row each."""
-        row = tl.program_id(0).to(tl.int64)  # batch * target_states + target
-        batch_idx = row // target_states
-        target_idx = row % target_states
-        offsets = tl.program_id(1) * block_hidden + tl.arange(0, block_hidden)
-        mask = offsets < hidden_size
-        predictor = tl.load(predictor_ptr + row * hidden_size + offsets, mask=mask, other=0.0).to(tl.float32)
-        source_stride = target_states * hidden_size
-        grad_base = batch_idx * source_steps * source_stride + target_idx * hidden_size + offsets
-        encoder_base = batch_idx * source_steps * hidden_size + offsets
+        """Reduce the hidden-state gradient onto both axes in one pass over it.
+
+        A program owns a block of one sample's frames and a chunk of the hidden size, and walks that
+        sample's transcript. The encoder gradient is complete per program and stored; the decoder
+        gradient is partial over frame blocks and accumulated atomically.
+        """
+        chunk = tl.program_id(0)
+        frame_block = tl.program_id(1)
+        batch_idx = tl.program_id(2)
+
+        lanes = tl.arange(0, batch_pow2)
+        start = tl.sum(tl.where(lanes == batch_idx, tl.load(row_starts_ptr + lanes, mask=lanes <= batch, other=0), 0))
+        states = tl.sum(tl.where(lanes == batch_idx, tl.load(states_ptr + lanes, mask=lanes < batch, other=1), 0))
+        source_length = tl.sum(
+            tl.where(lanes == batch_idx, tl.load(lengths_ptr + lanes, mask=lanes < batch, other=0), 0)
+        )
+
+        # The rows a block owns are contiguous, so one outside the tile has nothing to contribute.
+        first_row = start + frame_block * block_frames * states
+        last_row = start + min((frame_block + 1) * block_frames, source_length) * states
+        if last_row <= tile_start or first_row >= tile_start + tile_rows:
+            return
+
+        frame = frame_block * block_frames + tl.arange(0, block_frames)
+        hidden = chunk * block_hidden + tl.arange(0, block_hidden)
+        frame_mask = frame < source_length
+        hidden_mask = hidden < hidden_size
+        live = frame_mask[:, None] & hidden_mask[None, :]
+
+        encoder = tl.load(
+            encoder_ptr + (batch_idx * source_stride + frame)[:, None] * hidden_size + hidden[None, :],
+            mask=live,
+            other=0.0,
+        ).to(tl.float32)
+        total = tl.zeros((block_frames, block_hidden), tl.float32)
         seed = tl.load(seed_ptr)
-        rng_row_stride = _rng_row_stride(hidden_size)
-        rng_source_stride = target_states * rng_row_stride
-        rng_base = (
-            batch_idx * source_steps * rng_source_stride
-            + target_idx * rng_row_stride
-            + tl.program_id(1) * block_hidden
+        rng_stride = _rng_row_stride(hidden_size)
+
+        for target_idx in tl.range(0, states):
+            predictor = tl.load(
+                predictor_ptr + (batch_idx * target_stride + target_idx) * hidden_size + hidden,
+                mask=hidden_mask,
+                other=0.0,
+            ).to(tl.float32)
+            row = start + frame * states + target_idx
+            local = row - tile_start
+            inside = live & ((local >= 0) & (local < tile_rows))[:, None]
+            grad = tl.load(
+                grad_hidden_ptr + local[:, None] * hidden_size + hidden[None, :], mask=inside, other=0.0
+            ).to(tl.float32)
+            grad = _apply_dropout_rows(
+                grad, seed, row * rng_stride + chunk * block_hidden, dropout_p, block_frames, block_hidden
+            )
+            grad *= _activate_bwd(encoder + predictor[None, :], activation)
+            total += grad
+            tl.atomic_add(
+                grad_predictor_ptr + (batch_idx * target_stride + target_idx) * hidden_size + hidden,
+                tl.sum(grad, axis=0),
+                mask=hidden_mask,
+            )
+
+        tl.store(
+            grad_encoder_ptr + (batch_idx * source_stride + frame)[:, None] * hidden_size + hidden[None, :],
+            total,
+            mask=live,
         )
-        total = tl.zeros((block_hidden,), tl.float32)
-        for source_idx in tl.range(0, source_steps):
-            encoder = tl.load(encoder_ptr + encoder_base + source_idx * hidden_size, mask=mask, other=0.0).to(
-                tl.float32
-            )
-            grad_hidden = tl.load(grad_hidden_ptr + grad_base + source_idx * source_stride, mask=mask, other=0.0).to(
-                tl.float32
-            )
-            grad_hidden = _apply_dropout(
-                grad_hidden, seed, rng_base + source_idx * rng_source_stride, dropout_p, block_hidden
-            )
-            total += grad_hidden * _activate_bwd(encoder + predictor, activation)
-        tl.store(grad_predictor_ptr + row * hidden_size + offsets, total, mask=mask)
+
+    @triton.jit
+    def _packed_logprobs_fwd(
+        logits_ptr,
+        targets_ptr,
+        row_starts_ptr,
+        states_ptr,
+        target_out_ptr,
+        blank_out_ptr,
+        logsumexp_ptr,
+        tile_start,
+        batch,
+        vocab,
+        blank_id,
+        target_stride,
+        batch_pow2: tl.constexpr,
+        block_vocab: tl.constexpr,
+    ):
+        """Reduce one packed row to the target and blank log-probabilities, keeping its log-sum-exp.
+
+        The saved log-sum-exp lets the backward reach the softmax with one exponential.
+        """
+        local = tl.program_id(0).to(tl.int64)
+        row = tile_start + local
+        batch_idx, source_idx, target_idx, states = _locate(row_starts_ptr, states_ptr, row, batch, batch_pow2)
+
+        offsets = tl.arange(0, block_vocab)
+        mask = offsets < vocab
+        logits = tl.load(logits_ptr + local * vocab + offsets, mask=mask, other=-float("inf")).to(tl.float32)
+        peak = tl.max(logits, axis=0)
+        logsumexp = peak + tl.log(tl.sum(tl.exp(tl.where(mask, logits - peak, -float("inf"))), axis=0))
+
+        blank_logit = tl.load(logits_ptr + local * vocab + blank_id).to(tl.float32)
+        tl.store(blank_out_ptr + local, blank_logit - logsumexp)
+        tl.store(logsumexp_ptr + local, logsumexp)
+        # the last state of a transcript has no token to score; the plane keeps its zero there
+        token_logit = 0.0
+        if target_idx < states - 1:
+            token = tl.load(targets_ptr + batch_idx * target_stride + target_idx)
+            token_logit = tl.load(logits_ptr + local * vocab + token).to(tl.float32) - logsumexp
+        tl.store(target_out_ptr + local, token_logit)
+
+    @triton.jit
+    def _packed_logprobs_bwd(
+        logits_ptr,
+        grad_logits_ptr,
+        targets_ptr,
+        row_starts_ptr,
+        states_ptr,
+        logsumexp_ptr,
+        grad_target_ptr,
+        grad_blank_ptr,
+        loss_grad_scale_ptr,
+        tile_start,
+        batch,
+        vocab,
+        blank_id,
+        target_stride,
+        clamp: float,
+        clamp_grad: tl.constexpr,
+        batch_pow2: tl.constexpr,
+        block_vocab: tl.constexpr,
+    ):
+        """Scatter the two score gradients over one packed row's vocabulary.
+
+        A log-probability's gradient is a one-hot at the label it scored minus the softmax, weighted
+        by the upstream gradient.
+        """
+        local = tl.program_id(0).to(tl.int64)
+        row = tile_start + local
+        batch_idx, source_idx, target_idx, states = _locate(row_starts_ptr, states_ptr, row, batch, batch_pow2)
+
+        offsets = tl.arange(0, block_vocab)
+        mask = offsets < vocab
+        logits = tl.load(logits_ptr + local * vocab + offsets, mask=mask, other=-float("inf")).to(tl.float32)
+        softmax = tl.exp(logits - tl.load(logsumexp_ptr + local))
+
+        grad_blank = tl.load(grad_blank_ptr + local).to(tl.float32)
+        scored = target_idx < states - 1
+        grad_token = tl.load(grad_target_ptr + local, mask=scored, other=0.0).to(tl.float32)
+        token = tl.load(targets_ptr + batch_idx * target_stride + target_idx, mask=scored, other=-1)
+
+        if clamp_grad:
+            # Clamping bounds the gradient at unit scale, before the loss reduction or any AMP
+            # scale multiplies it, so divide that scale out here, clamp, and reapply below.
+            loss_grad_scale = tl.load(loss_grad_scale_ptr + batch_idx).to(tl.float32)
+            inverse_scale = tl.where(loss_grad_scale != 0.0, 1.0 / loss_grad_scale, 0.0)
+            grad_blank *= inverse_scale
+            grad_token *= inverse_scale
+
+        grad = -softmax * (grad_blank + grad_token)
+        grad += tl.where(offsets == blank_id, grad_blank, 0.0)
+        grad += tl.where(offsets == token, grad_token, 0.0)
+        if clamp_grad:
+            grad = tl.maximum(tl.minimum(grad, clamp), -clamp)
+            grad *= loss_grad_scale
+        tl.store(grad_logits_ptr + local * vocab + offsets, grad, mask=mask)
 
 
-def _block_hidden(hidden_size: int) -> int:
-    """Lanes per program, at least four so a block covers whole Philox draws."""
-    return max(4, min(1024, triton.next_power_of_2(hidden_size)))
+def lattice_layout(source_lengths, target_lengths, source_steps, target_states):
+    """Return per-sample start rows, transcript-state counts, and the total row count.
+
+    Raises if a length reaches past the extent it indexes, since the kernels read those positions
+    rather than mask them. The check shares the transfer that brings the row count to the host.
+    """
+    states = (target_lengths + 1).to(torch.int32)
+    sizes = source_lengths.to(torch.int32) * states
+    offsets = torch.zeros(len(sizes) + 1, device=sizes.device, dtype=torch.int32)
+    offsets[1:] = torch.cumsum(sizes, 0)
+    total_rows, longest_source, most_states = torch.stack(
+        (offsets[-1].long(), source_lengths.max().long(), states.max().long())
+    ).tolist()
+    if longest_source > source_steps or most_states > target_states:
+        raise ValueError(
+            f"lengths reach beyond the states they index: {longest_source} source steps and "
+            f"{most_states} transcript states, against tensors holding {source_steps} and {target_states}"
+        )
+    return offsets, states, total_rows
 
 
-class _JointHiddenState(torch.autograd.Function):
+class _PackedJoint(torch.autograd.Function):
+    """Joint state for one tile of packed rows, ``[rows, H]``.
+
+    Saves the two projections rather than the state, and rebuilds the pre-activation in backward.
+    """
+
     @staticmethod
-    def forward(ctx, encoder: torch.Tensor, predictor: torch.Tensor, activation: str, dropout_p: float):
-        batch, source_steps, hidden_size = encoder.shape
-        target_states = predictor.shape[1]
-        hidden = torch.empty(
-            (batch, source_steps, target_states, hidden_size), device=encoder.device, dtype=encoder.dtype
-        )
-        # The kernels rebuild the whole mask from this one number, so it is all backward needs to
-        # keep. It stays on the device because reading it on the host would synchronize per tile.
-        seed = torch.empty(1, device=encoder.device, dtype=torch.int32)
+    def forward(ctx, encoder, predictor, offsets, states, lengths, start, rows, activation, dropout_p):
+        hidden_size = encoder.shape[2]
+        hidden = torch.empty(rows, hidden_size, device=encoder.device, dtype=encoder.dtype)
+        seed = torch.zeros(1, device=encoder.device, dtype=torch.int32)
         if dropout_p > 0.0:
             seed.random_(0, 2**31 - 1)
-        block_hidden = _block_hidden(hidden_size)
-        grid = (batch * source_steps * target_states, triton.cdiv(hidden_size, block_hidden))
-        _joint_fwd_kernel[grid](
+        block = triton.next_power_of_2(hidden_size)
+        batch_pow2 = triton.next_power_of_2(len(states) + 1)
+        _packed_joint_fwd[(rows,)](
             encoder,
             predictor,
+            offsets,
+            states,
             hidden,
             seed,
-            source_steps=source_steps,
-            target_states=target_states,
-            hidden_size=hidden_size,
+            start,
+            len(states),
+            encoder.shape[1],
+            predictor.shape[1],
+            hidden_size,
             activation=activation,
             dropout_p=dropout_p,
-            block_hidden=block_hidden,
-            # One warp per row, so each lane carries several elements. The kernel only streams a
-            # write, and splitting that stream across more warps adds no bandwidth.
-            num_warps=1,
+            batch_pow2=batch_pow2,
+            block_hidden=block,
+            num_warps=4,
         )
-        ctx.save_for_backward(encoder, predictor, seed)
-        ctx.activation = activation
-        ctx.dropout_p = dropout_p
+        ctx.save_for_backward(encoder, predictor, offsets, states, lengths, seed)
+        ctx.meta = (activation, dropout_p, batch_pow2, block)
+        ctx.tile_start = start
         return hidden
 
     @staticmethod
     def backward(ctx, grad_hidden):
-        encoder, predictor, seed = ctx.saved_tensors
+        encoder, predictor, offsets, states, lengths, seed = ctx.saved_tensors
+        activation, dropout_p, batch_pow2, _ = ctx.meta
         grad_hidden = grad_hidden.contiguous()
-        batch, source_steps, hidden_size = encoder.shape
-        target_states = predictor.shape[1]
-        activation = ctx.activation
-        dropout_p = ctx.dropout_p
-        block_hidden = _block_hidden(hidden_size)
-        hidden_blocks = triton.cdiv(hidden_size, block_hidden)
-
-        # Broadcast-add backward: sum the target axis for the encoder, the source axis for the predictor
-        grad_encoder = torch.empty_like(encoder)
-        _joint_bwd_encoder_kernel[(batch * source_steps, hidden_blocks)](
+        batch, hidden_size = len(states), encoder.shape[2]
+        grad_encoder = torch.zeros_like(encoder, dtype=torch.float32)
+        grad_predictor = torch.zeros_like(predictor, dtype=torch.float32)
+        max_states, max_frames = predictor.shape[1], encoder.shape[1]
+        grid = lambda meta: (  # noqa: E731
+            triton.cdiv(hidden_size, meta["block_hidden"]),
+            triton.cdiv(max_frames, meta["block_frames"]),
+            batch,
+        )
+        _packed_joint_bwd[grid](
             encoder,
             predictor,
+            offsets,
+            states,
+            lengths,
             grad_hidden,
             grad_encoder,
-            seed,
-            source_steps=source_steps,
-            target_states=target_states,
-            hidden_size=hidden_size,
-            activation=activation,
-            dropout_p=dropout_p,
-            block_hidden=block_hidden,
-        )
-        grad_predictor = torch.empty_like(predictor)
-        _joint_bwd_predictor_kernel[(batch * target_states, hidden_blocks)](
-            encoder,
-            predictor,
-            grad_hidden,
             grad_predictor,
             seed,
-            source_steps=source_steps,
-            target_states=target_states,
-            hidden_size=hidden_size,
+            ctx.tile_start,
+            grad_hidden.shape[0],
+            batch,
+            max_frames,
+            max_states,
+            hidden_size,
             activation=activation,
             dropout_p=dropout_p,
-            block_hidden=block_hidden,
+            batch_pow2=batch_pow2,
         )
-        return grad_encoder, grad_predictor, None, None
+        return (
+            grad_encoder.to(encoder.dtype),
+            grad_predictor.to(predictor.dtype),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
 
 
-def joint_hidden_state(
-    encoder: torch.Tensor, predictor: torch.Tensor, activation: str, dropout_p: float = 0.0
-) -> torch.Tensor:
-    """Return ``dropout(act(encoder.unsqueeze(2) + predictor.unsqueeze(1)))``.
+class _PackedLogProbs(torch.autograd.Function):
+    """The target and blank log-probabilities for one tile, ``[rows]`` each."""
 
-    Args:
-        encoder: projected encoder states, ``[B, T, H]``.
-        predictor: projected prediction-network states, ``[B, U + 1, H]``.
-        activation: one of ``ACTIVATIONS``.
-        dropout_p: probability of zeroing an element of the activated hidden state; survivors are
-            scaled by ``1 / (1 - dropout_p)``. Applied whenever it is positive, so the caller
-            decides whether the module is in training mode. The mask is drawn per call and is not
-            the one ``torch.nn.functional.dropout`` would have produced for the same torch seed.
+    @staticmethod
+    def forward(ctx, logits, targets, offsets, states, start, blank_id, clamp, loss_grad_scale):
+        rows, vocab = logits.shape
+        batch_pow2 = triton.next_power_of_2(len(states) + 1)
+        block = triton.next_power_of_2(vocab)
+        target_out = torch.empty(rows, device=logits.device, dtype=torch.float32)
+        blank_out = torch.empty(rows, device=logits.device, dtype=torch.float32)
+        logsumexp = torch.empty(rows, device=logits.device, dtype=torch.float32)
+        _packed_logprobs_fwd[(rows,)](
+            logits,
+            targets,
+            offsets,
+            states,
+            target_out,
+            blank_out,
+            logsumexp,
+            start,
+            len(states),
+            vocab,
+            blank_id,
+            targets.stride(0),
+            batch_pow2=batch_pow2,
+            block_vocab=block,
+            num_warps=4,
+        )
+        ctx.save_for_backward(logits, targets, offsets, states, logsumexp)
+        ctx.meta = (start, blank_id, batch_pow2, block, targets.stride(0))
+        ctx.clamp = float(clamp) if clamp > 0.0 else 0.0
+        # Held outside the saved tensors: the loss backward fills this buffer after the forward, and
+        # the version counter would reject a saved tensor that changed in between.
+        ctx.loss_grad_scale = loss_grad_scale
+        return target_out, blank_out
 
-    Returns:
-        Joint hidden states of shape ``[B, T, U + 1, H]``.
+    @staticmethod
+    def backward(ctx, grad_target, grad_blank):
+        logits, targets, offsets, states, logsumexp = ctx.saved_tensors
+        start, blank_id, batch_pow2, block, target_stride = ctx.meta
+        rows, vocab = logits.shape
+        # The tile owns its logits -- they are produced by the projection inside it and read by
+        # nothing else, and the linear's own backward wants the joint state, not this output -- so
+        # the gradient is written over them. Each row is loaded before it is stored and no program
+        # reads another row, so the overwrite races with nothing.
+        grad_logits = logits
+        # Any valid pointer will do when clamping is off: clamp_grad is a constexpr, so the
+        # kernel that reads it is never compiled.
+        loss_grad_scale = ctx.loss_grad_scale if ctx.loss_grad_scale is not None else logsumexp
+        _packed_logprobs_bwd[(rows,)](
+            logits,
+            grad_logits,
+            targets,
+            offsets,
+            states,
+            logsumexp,
+            grad_target.contiguous(),
+            grad_blank.contiguous(),
+            loss_grad_scale,
+            start,
+            len(states),
+            vocab,
+            blank_id,
+            target_stride,
+            clamp=ctx.clamp,
+            clamp_grad=ctx.clamp > 0.0,
+            batch_pow2=batch_pow2,
+            block_vocab=block,
+            num_warps=4,
+        )
+        return grad_logits, None, None, None, None, None, None, None
+
+
+def packed_tile_scores(
+    encoder,
+    predictor,
+    weight,
+    bias,
+    targets,
+    offsets,
+    states,
+    lengths,
+    start,
+    rows,
+    activation,
+    dropout_p,
+    blank_id,
+    clamp,
+    loss_grad_scale,
+):
+    """Score rows ``[start, start + rows)``: joint state, vocabulary projection, extraction.
+
+    Both intermediates are local to the call, so it can be wrapped in ``torch.utils.checkpoint``.
     """
-    if not TRITON_AVAILABLE:
-        raise RuntimeError("Triton is required for the fused RNN-T joint activation")
-    if activation not in ACTIVATIONS:
-        raise ValueError(f"Unsupported RNN-T joint activation: {activation}")
-    if not 0.0 <= dropout_p < 1.0:
-        raise ValueError(f"dropout_p must be in [0, 1), got {dropout_p}")
-    if encoder.ndim != 3 or predictor.ndim != 3:
-        raise ValueError(f"expected [B, T, H] and [B, U + 1, H], got {tuple(encoder.shape)} {tuple(predictor.shape)}")
-    if encoder.shape[0] != predictor.shape[0] or encoder.shape[2] != predictor.shape[2]:
-        raise ValueError(f"incompatible joint shapes: {tuple(encoder.shape)} and {tuple(predictor.shape)}")
-    return _JointHiddenState.apply(encoder.contiguous(), predictor.contiguous(), activation, dropout_p)
+    hidden = _PackedJoint.apply(encoder, predictor, offsets, states, lengths, start, rows, activation, dropout_p)
+    logits = torch.nn.functional.linear(hidden, weight, bias)
+    return _PackedLogProbs.apply(logits, targets, offsets, states, start, blank_id, clamp, loss_grad_scale)
+
+
+def packed_positions(offsets, states, total, frames, target_states):
+    """Index of each packed row in the flattened ``[B, T, U + 1]`` score planes."""
+    rows = torch.arange(total, device=offsets.device)
+    sample = torch.searchsorted(offsets[1:].to(torch.int64).contiguous(), rows, right=True)
+    within = rows - offsets[:-1].to(torch.int64)[sample]
+    per_sample = states.to(torch.int64)[sample]
+    frame, state = within // per_sample, within % per_sample
+    return sample * frames * target_states + frame * target_states + state

@@ -1344,8 +1344,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
         fused_batch_size: Optional int, required if `fuse_loss_wer` flag is set. Determines the size of the
             sub-batches. Should be any value below the actual batch size per GPU. A factorized-joint loss
-            chunks the batch itself and reads this as the maximum samples per chunk; smaller chunks trim
-            padding more aggressively, so prefer the smallest value that keeps the GPU busy.
+            consumes the whole batch at once and does not read this, though it is still required to be set.
         masking_prob: Optional float, indicating the probability of masking out decoder output in HAINAN
             (Hybrid Autoregressive Inference Transducer) model, described in https://arxiv.org/pdf/2410.02597
             Default to -1.0, which runs standard Joint network computation; if > 0, then masking out decoder output
@@ -1552,7 +1551,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                 )
 
             if getattr(self._loss, "requires_factorized_joint", False):
-                # This loss consumes the projections directly and chunks the batch itself,
+                # This loss consumes the projections directly and tiles the lattice itself,
                 # so the sub-batch loop below has nothing left to do.
                 losses = wer = wer_num = wer_denom = None
                 if decoder_outputs is not None:
@@ -1563,7 +1562,6 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                         targets=transcripts,
                         input_lengths=encoder_lengths,
                         target_lengths=transcript_lengths,
-                        max_samples_per_chunk=self._fused_batch_size,
                     )
                 hypotheses = []
                 if compute_wer:

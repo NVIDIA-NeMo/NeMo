@@ -12,15 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Exact RNN-T with a bounded joint workspace and activation recomputation."""
+"""Exact RNN-T loss computed without materializing the joint tensor.
+
+Scores the ``B * T * (U + 1)`` lattice one tile at a time from the encoder and prediction-network
+projections, reduces each tile to the target and blank log-probabilities the dynamic program reads,
+and recomputes it in backward. Requires the fused joint step: ``RNNTJoint`` invokes it through
+``forward_from_joint``.
+"""
 
 from functools import partial
 
 import torch
-import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from nemo.collections.asr.parts.triton.rnnt_joint import joint_hidden_state
+from nemo.collections.asr.parts.triton.rnnt_joint import (
+    ACTIVATIONS,
+    lattice_layout,
+    packed_positions,
+    packed_tile_scores,
+)
 from nemo.collections.asr.parts.triton.rnnt_loss import rnnt_loss_triton
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
@@ -32,11 +42,7 @@ def _ceil_div(numerator: int, denominator: int) -> int:
 
 
 def _validate_joint(joint, blank: int) -> None:
-    """Raise unless the joint behaves the way the flash path assumes.
-
-    The flash path reads the joint's weights directly instead of calling its forward,
-    so anything the forward would have applied has to be rejected here.
-    """
+    """Reject joint configurations this path does not reproduce."""
     if joint.is_adapter_available() or joint.masking_prob > 0.0:
         raise ValueError("Flash RNN-T does not support adapters or HAINAN masking")
     if joint.num_extra_outputs != 0 or blank != joint.num_classes_with_blank - 1:
@@ -46,22 +52,21 @@ def _validate_joint(joint, blank: int) -> None:
         raise ValueError("Flash RNN-T requires the joint output to include every label and the blank")
     if joint.log_softmax is True or joint.temperature != 1.0:
         raise ValueError("Flash RNN-T requires unnormalized joint logits with temperature 1")
+    if joint.activation not in ACTIVATIONS:
+        raise ValueError(f"Unsupported RNN-T joint activation: {joint.activation}")
+    if not 0.0 <= joint.dropout < 1.0:
+        raise ValueError(f"joint dropout must be in [0, 1), got {joint.dropout}")
 
 
 class FlashRNNTLoss(torch.nn.Module):
-    """Exact Flash RNN-T loss configured for the fused joint path.
+    """Exact RNN-T loss for a fused joint step.
 
-    The batch is sorted by target length, then split into chunks of at most
-    ``max_samples_per_chunk`` samples -- the value ``RNNTJoint`` passes down from its
-    ``fused_batch_size`` -- and one chunk is scored at a time. Every tensor in a chunk is trimmed to
-    that chunk's own longest source and target, so a chunk costs what its longest member costs and
-    sorting groups samples of similar length together. Smaller chunks trim more aggressively; prefer
-    the smallest value that still saturates the GPU.
-
-    Within a chunk, ``max_joint_rows`` budgets the flattened ``B * T * (U + 1)`` rows of one joint
-    workspace tile. Peak workspace is the largest tile, so source time is divided into equal tiles
-    rather than tiles filled to the budget, and tiles usually come in under it. One source step is
-    the smallest tile, so a chunk whose ``B * (U + 1)`` already exceeds the budget overruns it.
+    Args:
+        blank: blank label index; must be the joint output's final column.
+        fastemit_lambda: FastEmit regularization weight.
+        clamp: bound applied to the unit-scale gradient at the joint output, before the loss
+            reduction and any AMP scale. Disabled when not positive.
+        max_joint_rows: rows per lattice tile. Sets peak memory consumption.
     """
 
     def __init__(
@@ -89,7 +94,6 @@ class FlashRNNTLoss(torch.nn.Module):
         targets: torch.Tensor,
         source_lengths: torch.Tensor,
         target_lengths: torch.Tensor,
-        max_samples_per_chunk: int,
     ) -> torch.Tensor:
         """Return per-sample losses from encoder [B, T, D] and prediction network [B, U + 1, D] states."""
         return _compute_flash_rnnt(
@@ -102,58 +106,11 @@ class FlashRNNTLoss(torch.nn.Module):
             blank=self.blank,
             fastemit_lambda=self.fastemit_lambda,
             clamp=self.clamp,
-            max_samples_per_chunk=max_samples_per_chunk,
             max_joint_rows=self.max_joint_rows,
         )
 
 
-def _chunk_scores(
-    projected_encoder: torch.Tensor,
-    projected_predictor: torch.Tensor,
-    targets: torch.Tensor,
-    source_lengths: torch.Tensor,
-    target_lengths: torch.Tensor,
-    output_weight: torch.Tensor,
-    output_bias: torch.Tensor,
-    activation: str,
-    dropout_p: float,
-    blank: int,
-    clamp: float,
-    loss_grad_scale: torch.Tensor | None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Calculate transition scores for one disposable joint chunk."""
-    from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_triton
-
-    hidden = joint_hidden_state(projected_encoder, projected_predictor, activation, dropout_p)
-    logits = F.linear(hidden, output_weight, output_bias)
-    return rnnt_logprobs_triton(
-        logits,
-        targets,
-        blank,
-        source_lengths=source_lengths,
-        target_lengths=target_lengths,
-        clamp=clamp,
-        reuse_logits_for_grad=True,
-        loss_grad_scale=loss_grad_scale,
-    )
-
-
-def _balanced_time_tile_size(
-    source_steps: int,
-    chunk_batch: int,
-    target_states: int,
-    max_joint_rows: int,
-) -> int:
-    """Size source tiles evenly rather than filling the budget, since peak workspace is the largest tile.
-
-    A tile covers at least one source step, so a step wider than the budget still runs.
-    """
-    max_time_tile = max(1, max_joint_rows // (chunk_batch * target_states))
-    num_tiles = _ceil_div(source_steps, max_time_tile)
-    return _ceil_div(source_steps, num_tiles)
-
-
-def _time_tiled_chunk_scores(
+def _packed_scores(
     projected_encoder: torch.Tensor,
     projected_predictor: torch.Tensor,
     targets: torch.Tensor,
@@ -168,33 +125,37 @@ def _time_tiled_chunk_scores(
     max_joint_rows: int,
     loss_grad_scale: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Checkpoint one balanced source tile at a time."""
-    source_steps = projected_encoder.shape[1]
-    time_tile = _balanced_time_tile_size(
-        source_steps,
-        projected_encoder.shape[0],
-        projected_predictor.shape[1],
-        max_joint_rows,
-    )
+    """Return the target and blank score planes, ``[B, T, U + 1]`` each."""
+    batch, source_steps = projected_encoder.shape[0], projected_encoder.shape[1]
+    target_states = projected_predictor.shape[1]
+    offsets, states, total_rows = lattice_layout(source_lengths, target_lengths, source_steps, target_states)
+    device = projected_encoder.device
+    tile_rows = _ceil_div(total_rows, _ceil_div(total_rows, max_joint_rows))
 
-    # Bound rather than passed: the loss fills this buffer during backward, and checkpoint
-    # rejects a tensor argument whose version changed between forward and recomputation.
-    score_tile = partial(_chunk_scores, loss_grad_scale=loss_grad_scale)
+    # Bound rather than passed as an argument: the loss fills this buffer during its own backward,
+    # and checkpoint rejects a tensor argument whose version changed since the forward.
+    score_tile = partial(packed_tile_scores, loss_grad_scale=loss_grad_scale)
 
-    target_score_tiles = []
-    blank_score_tiles = []
-    for source_begin in range(0, source_steps, time_tile):
-        source_end = min(source_begin + time_tile, source_steps)
-        tile_source_lengths = (source_lengths - source_begin).clamp(min=0, max=source_end - source_begin)
+    # The dynamic program reads a rectangular lattice, so each tile scatters straight into one.
+    positions = packed_positions(offsets, states, total_rows, source_steps, target_states)
+    shape = (batch, source_steps, target_states)
+    target_scores = torch.zeros(batch * source_steps * target_states, device=device, dtype=torch.float32)
+    blank_scores = torch.zeros_like(target_scores)
+
+    for start in range(0, total_rows, tile_rows):
+        rows = min(tile_rows, total_rows - start)
         target_score_tile, blank_score_tile = checkpoint(
             score_tile,
-            projected_encoder[:, source_begin:source_end],
+            projected_encoder,
             projected_predictor,
-            targets,
-            tile_source_lengths,
-            target_lengths,
             output_weight,
             output_bias,
+            targets,
+            offsets,
+            states,
+            source_lengths.to(torch.int32),
+            start,
+            rows,
             activation,
             dropout_p,
             blank,
@@ -203,10 +164,11 @@ def _time_tiled_chunk_scores(
             # Backward recomputation must use the same mask as the forward tile.
             preserve_rng_state=dropout_p > 0.0,
         )
-        target_score_tiles.append(target_score_tile)
-        blank_score_tiles.append(blank_score_tile)
+        tile_positions = positions[start : start + rows]
+        target_scores[tile_positions] = target_score_tile
+        blank_scores[tile_positions] = blank_score_tile
 
-    return torch.cat(target_score_tiles, dim=1), torch.cat(blank_score_tiles, dim=1)
+    return target_scores.view(shape), blank_scores.view(shape)
 
 
 def _compute_flash_rnnt(
@@ -219,16 +181,13 @@ def _compute_flash_rnnt(
     blank: int,
     fastemit_lambda: float,
     clamp: float,
-    max_samples_per_chunk: int,
     max_joint_rows: int,
 ) -> torch.Tensor:
-    """Run exact RNN-T with a bounded vocabulary workspace recomputed in backward."""
+    """Per-sample losses from the projections, before the joint network is applied."""
     if not TRITON_AVAILABLE:
         raise RuntimeError("Triton is required for flash RNN-T training")
     if not encoder.is_cuda:
         raise RuntimeError("Flash RNN-T training requires CUDA tensors")
-    if max_samples_per_chunk < 1:
-        raise ValueError("max_samples_per_chunk must be positive")
     _validate_joint(joint, blank)
     batch = encoder.shape[0]
     if predictor.shape[0] != batch or targets.shape[0] != batch:
@@ -236,61 +195,34 @@ def _compute_flash_rnnt(
     if source_lengths.shape != (batch,) or target_lengths.shape != (batch,):
         raise ValueError("source_lengths and target_lengths must contain one value per batch item")
 
-    order = torch.argsort(target_lengths, stable=True)
-    source_lengths = source_lengths.index_select(0, order)
-    target_lengths = target_lengths.index_select(0, order)
-
-    num_chunks = _ceil_div(batch, max_samples_per_chunk)
-    padded_batch = num_chunks * max_samples_per_chunk
-    length_pairs = torch.stack((source_lengths, target_lengths), dim=1)
-    if padded_batch != batch:
-        length_pairs = F.pad(length_pairs, (0, 0, 0, padded_batch - batch))
-    # Python slicing needs concrete shapes; synchronize once for the reduced
-    # per-chunk maxima rather than materializing every sample length.
-    chunk_maxima = length_pairs.view(num_chunks, max_samples_per_chunk, 2).amax(dim=1).tolist()
-    inverse_order = torch.argsort(order)
-    encoder = encoder.index_select(0, order)
-    predictor = predictor.index_select(0, order)
-    targets = targets.index_select(0, order)
-
     projected_encoder = joint.project_encoder(encoder)
     projected_predictor = joint.project_prednet(predictor)
 
-    # The clamp bounds the gradient at unit scale: the reference kernel clamps while computing
-    # gradients in its forward, before autograd multiplies by the reduction and any AMP scale.
-    # Flash only reaches that gradient in the extraction backward, by which point the scale is
-    # already folded in, so the loss backward publishes that per-sample gradient here for the
-    # extraction to divide out, clamp, and reapply.
+    # Clamping bounds the gradient at unit scale, before the loss reduction and any AMP scale
+    # multiply it. Those factors are already folded in by the time the extraction backward runs, so
+    # the dynamic program publishes each sample's loss gradient in this buffer and the extraction
+    # divides it out, clamps, and reapplies it.
     loss_grad_scale = torch.zeros(batch, device=encoder.device, dtype=torch.float32) if clamp > 0.0 else None
 
-    source_steps = encoder.shape[1]
-    target_states = predictor.shape[1]
-    target_scores = torch.zeros((batch, source_steps, target_states), device=encoder.device, dtype=torch.float32)
-    blank_scores = torch.zeros_like(target_scores)
     output_layer = joint.joint_net[-1]
     dropout_p = joint.dropout if joint.training else 0.0
-    for chunk_index, (max_source, max_target) in enumerate(chunk_maxima):
-        begin = chunk_index * max_samples_per_chunk
-        end = min(begin + max_samples_per_chunk, batch)
-        chunk_target_scores, chunk_blank_scores = _time_tiled_chunk_scores(
-            projected_encoder[begin:end, :max_source],
-            projected_predictor[begin:end, : max_target + 1],
-            targets[begin:end, :max_target],
-            source_lengths[begin:end],
-            target_lengths[begin:end],
-            output_layer.weight,
-            output_layer.bias,
-            joint.activation,
-            dropout_p,
-            blank,
-            clamp,
-            max_joint_rows,
-            loss_grad_scale[begin:end] if loss_grad_scale is not None else None,
-        )
-        target_scores[begin:end, :max_source, : max_target + 1] = chunk_target_scores
-        blank_scores[begin:end, :max_source, : max_target + 1] = chunk_blank_scores
 
-    losses = rnnt_loss_triton(
+    target_scores, blank_scores = _packed_scores(
+        projected_encoder,
+        projected_predictor,
+        targets,
+        source_lengths,
+        target_lengths,
+        output_layer.weight,
+        output_layer.bias,
+        joint.activation,
+        dropout_p,
+        blank,
+        clamp,
+        max_joint_rows,
+        loss_grad_scale,
+    )
+    return rnnt_loss_triton(
         target_scores[..., :-1],
         blank_scores,
         source_lengths,
@@ -298,4 +230,3 @@ def _compute_flash_rnnt(
         fastemit_lambda,
         loss_grad_scale=loss_grad_scale,
     )
-    return losses.index_select(0, inverse_order)

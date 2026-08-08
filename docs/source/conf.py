@@ -41,7 +41,6 @@ autodoc_mock_imports = [
     'torch.utils.data',
     'torch.utils.data.sampler',
     'torchtext',
-    'torchvision',
     'hydra',  # hydra-core in requirements, hydra during import
     'transformers.tokenization_bert',  # has ., troublesome for this regex
     'sklearn',  # scikit_learn in requirements, sklearn in import

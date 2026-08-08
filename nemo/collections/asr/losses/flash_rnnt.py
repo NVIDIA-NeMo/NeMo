@@ -130,6 +130,7 @@ def _packed_scores(
     target_states = projected_predictor.shape[1]
     offsets, states, total_rows = lattice_layout(source_lengths, target_lengths, source_steps, target_states)
     device = projected_encoder.device
+    lengths = source_lengths.to(torch.int32)
     tile_rows = _ceil_div(total_rows, _ceil_div(total_rows, max_joint_rows))
 
     # Bound rather than passed as an argument: the loss fills this buffer during its own backward,
@@ -153,7 +154,7 @@ def _packed_scores(
             targets,
             offsets,
             states,
-            source_lengths.to(torch.int32),
+            lengths,
             start,
             rows,
             activation,

@@ -26,14 +26,11 @@ import torch
 
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
+ACTIVATIONS = ("relu", "sigmoid", "tanh")
+
 if TRITON_AVAILABLE:
     import triton
     import triton.language as tl
-
-ACTIVATIONS = ("relu", "sigmoid", "tanh")
-
-
-if TRITON_AVAILABLE:
 
     @triton.jit
     def _activate_fwd(value, activation: tl.constexpr):
@@ -91,6 +88,7 @@ if TRITON_AVAILABLE:
         within = row - start
         return batch_idx, within // states, within % states, states
 
+    @triton.autotune(configs=[triton.Config({}, num_warps=warps) for warps in (1, 2, 4, 8)], key=["hidden_size"])
     @triton.jit
     def _packed_joint_fwd(
         encoder_ptr,
@@ -147,20 +145,34 @@ if TRITON_AVAILABLE:
 
     @triton.autotune(
         configs=[
-            triton.Config({"block_frames": frames, "block_hidden": hidden}, num_warps=warps)
-            for frames, hidden, warps in (
-                (16, 64, 4),
-                (32, 64, 4),
-                (64, 64, 4),
-                (16, 128, 4),
-                (32, 128, 4),
-                (32, 64, 2),
+            triton.Config(
+                {"block_frames": frames, "block_states": states, "block_hidden": hidden, "span": span},
+                num_warps=warps,
+            )
+            for frames, states, hidden, span, warps in (
+                (32, 1, 64, 32, 1),
+                (32, 1, 64, 64, 1),
+                (32, 1, 64, 128, 1),
+                (32, 1, 64, 64, 2),
+                (32, 1, 64, 128, 2),
+                (16, 1, 64, 64, 1),
+                (32, 1, 64, 32, 4),
+                (32, 1, 64, 64, 4),
+                (32, 1, 64, 128, 4),
+                (32, 1, 64, 256, 4),
+                (32, 1, 32, 128, 4),
+                (16, 1, 64, 64, 4),
+                (16, 4, 32, 128, 4),
+                (16, 4, 32, 256, 4),
+                (8, 8, 32, 64, 4),
+                (8, 4, 64, 128, 4),
             )
         ],
-        key=["hidden_size"],
-        # Timing a config runs the kernel repeatedly, and the decoder gradient closes with atomics,
-        # so without this every trial would accumulate on top of the last.
-        reset_to_zero=["grad_predictor_ptr"],
+        # How much transcript a program should own moves with how long the transcript is.
+        key=["hidden_size", "target_stride"],
+        # Timing a config runs the kernel repeatedly, and both gradients may close with atomics, so
+        # without this every trial would accumulate on top of the last.
+        reset_to_zero=["grad_encoder_ptr", "grad_predictor_ptr"],
     )
     @triton.jit
     def _packed_joint_bwd(
@@ -183,17 +195,24 @@ if TRITON_AVAILABLE:
         dropout_p: tl.constexpr,
         batch_pow2: tl.constexpr,
         block_frames: tl.constexpr,
+        block_states: tl.constexpr,
         block_hidden: tl.constexpr,
+        span: tl.constexpr,
     ):
         """Reduce the hidden-state gradient onto both axes in one pass over it.
 
-        A program owns a block of one sample's frames and a chunk of the hidden size, and walks that
-        sample's transcript. The encoder gradient is complete per program and stored; the decoder
-        gradient is partial over frame blocks and accumulated atomically.
+        A program owns a block of frames, a chunk of the hidden size, and ``span`` of the transcript.
+        A span covering the transcript leaves one program per frame block and closes the encoder sum,
+        so it stores; a shorter span puts more programs on the lattice, which is what keeps
+        parallelism up on long transcripts, and closes that sum atomically instead. The decoder sum
+        is partial either way.
         """
+        # matches the grid, which splits the transcript the same way
+        state_blocks = tl.cdiv(target_stride, span)
         chunk = tl.program_id(0)
         frame_block = tl.program_id(1)
-        batch_idx = tl.program_id(2)
+        batch_idx = tl.program_id(2) // state_blocks
+        state_block = tl.program_id(2) % state_blocks
 
         lanes = tl.arange(0, batch_pow2)
         start = tl.sum(tl.where(lanes == batch_idx, tl.load(row_starts_ptr + lanes, mask=lanes <= batch, other=0), 0))
@@ -202,17 +221,17 @@ if TRITON_AVAILABLE:
             tl.where(lanes == batch_idx, tl.load(lengths_ptr + lanes, mask=lanes < batch, other=0), 0)
         )
 
-        # The rows a block owns are contiguous, so one outside the tile has nothing to contribute.
-        first_row = start + frame_block * block_frames * states
-        last_row = start + min((frame_block + 1) * block_frames, source_length) * states
-        if last_row <= tile_start or first_row >= tile_start + tile_rows:
-            return
-
         frame = frame_block * block_frames + tl.arange(0, block_frames)
         hidden = chunk * block_hidden + tl.arange(0, block_hidden)
         frame_mask = frame < source_length
         hidden_mask = hidden < hidden_size
         live = frame_mask[:, None] & hidden_mask[None, :]
+
+        # The rows this program owns lie between these bounds, so one outside the tile does nothing.
+        low = start + frame_block * block_frames * states + state_block * span
+        high = start + min((frame_block + 1) * block_frames, source_length) * states
+        if high <= tile_start or low >= tile_start + tile_rows:
+            return
 
         encoder = tl.load(
             encoder_ptr + (batch_idx * source_stride + frame)[:, None] * hidden_size + hidden[None, :],
@@ -223,35 +242,51 @@ if TRITON_AVAILABLE:
         seed = tl.load(seed_ptr)
         rng_stride = _rng_row_stride(hidden_size)
 
-        for target_idx in tl.range(0, states):
+        for step in tl.range(0, span, block_states):
+            state = state_block * span + step + tl.arange(0, block_states)
+            state_mask = state < states
+            row = start + frame[:, None] * states + state[None, :]
+            local = row - tile_start
+            covered = frame_mask[:, None] & state_mask[None, :] & (local >= 0) & (local < tile_rows)
+
             predictor = tl.load(
-                predictor_ptr + (batch_idx * target_stride + target_idx) * hidden_size + hidden,
-                mask=hidden_mask,
+                predictor_ptr + (batch_idx * target_stride + state)[:, None] * hidden_size + hidden[None, :],
+                mask=state_mask[:, None] & hidden_mask[None, :],
                 other=0.0,
             ).to(tl.float32)
-            row = start + frame * states + target_idx
-            local = row - tile_start
-            inside = live & ((local >= 0) & (local < tile_rows))[:, None]
+            inside = covered[:, :, None] & hidden_mask[None, None, :]
             grad = tl.load(
-                grad_hidden_ptr + local[:, None] * hidden_size + hidden[None, :], mask=inside, other=0.0
+                grad_hidden_ptr + local[:, :, None] * hidden_size + hidden[None, None, :], mask=inside, other=0.0
             ).to(tl.float32)
-            grad = _apply_dropout_rows(
-                grad, seed, row * rng_stride + chunk * block_hidden, dropout_p, block_frames, block_hidden
+            # the mask is drawn per row, so the tile is flattened over its rows to draw it
+            grad = tl.reshape(
+                _apply_dropout_rows(
+                    tl.reshape(grad, [block_frames * block_states, block_hidden]),
+                    seed,
+                    tl.reshape(row, [block_frames * block_states]) * rng_stride + chunk * block_hidden,
+                    dropout_p,
+                    block_frames * block_states,
+                    block_hidden,
+                ),
+                [block_frames, block_states, block_hidden],
             )
-            grad *= _activate_bwd(encoder + predictor[None, :], activation)
-            total += grad
-            tl.atomic_add(
-                grad_predictor_ptr + (batch_idx * target_stride + target_idx) * hidden_size + hidden,
-                tl.sum(grad, axis=0),
-                mask=hidden_mask,
-            )
+            grad *= _activate_bwd(encoder[:, None, :] + predictor[None, :, :], activation)
+            grad = tl.where(inside, grad, 0.0)
+            total += tl.sum(grad, axis=1)
+            if tl.sum(covered.to(tl.int32)) > 0:
+                tl.atomic_add(
+                    grad_predictor_ptr + (batch_idx * target_stride + state)[:, None] * hidden_size + hidden[None, :],
+                    tl.sum(grad, axis=0),
+                    mask=state_mask[:, None] & hidden_mask[None, :],
+                )
 
-        tl.store(
-            grad_encoder_ptr + (batch_idx * source_stride + frame)[:, None] * hidden_size + hidden[None, :],
-            total,
-            mask=live,
-        )
+        address = grad_encoder_ptr + (batch_idx * source_stride + frame)[:, None] * hidden_size + hidden[None, :]
+        if state_blocks == 1:
+            tl.store(address, total, mask=live)
+        else:
+            tl.atomic_add(address, total, mask=live)
 
+    @triton.autotune(configs=[triton.Config({}, num_warps=warps) for warps in (1, 2, 4, 8)], key=["vocab"])
     @triton.jit
     def _packed_logprobs_fwd(
         logits_ptr,
@@ -293,6 +328,11 @@ if TRITON_AVAILABLE:
             token_logit = tl.load(logits_ptr + local * vocab + token).to(tl.float32) - logsumexp
         tl.store(target_out_ptr + local, token_logit)
 
+    @triton.autotune(
+        configs=[triton.Config({}, num_warps=warps) for warps in (1, 2, 4, 8)],
+        key=["vocab"],
+        restore_value=["logits_ptr"],
+    )
     @triton.jit
     def _packed_logprobs_bwd(
         logits_ptr,
@@ -402,7 +442,6 @@ class _PackedJoint(torch.autograd.Function):
             dropout_p=dropout_p,
             batch_pow2=batch_pow2,
             block_hidden=block,
-            num_warps=4,
         )
         ctx.save_for_backward(encoder, predictor, offsets, states, lengths, seed)
         ctx.meta = (activation, dropout_p, batch_pow2, block)
@@ -421,7 +460,7 @@ class _PackedJoint(torch.autograd.Function):
         grid = lambda meta: (  # noqa: E731
             triton.cdiv(hidden_size, meta["block_hidden"]),
             triton.cdiv(max_frames, meta["block_frames"]),
-            batch,
+            batch * triton.cdiv(max_states, meta["span"]),
         )
         _packed_joint_bwd[grid](
             encoder,
@@ -482,7 +521,6 @@ class _PackedLogProbs(torch.autograd.Function):
             targets.stride(0),
             batch_pow2=batch_pow2,
             block_vocab=block,
-            num_warps=4,
         )
         ctx.save_for_backward(logits, targets, offsets, states, logsumexp)
         ctx.meta = (start, blank_id, batch_pow2, block, targets.stride(0))
@@ -524,7 +562,6 @@ class _PackedLogProbs(torch.autograd.Function):
             clamp_grad=ctx.clamp > 0.0,
             batch_pow2=batch_pow2,
             block_vocab=block,
-            num_warps=4,
         )
         return grad_logits, None, None, None, None, None, None, None
 

@@ -754,7 +754,7 @@ def test_one_shot_flow_free_running_inference_feeds_generated_acoustics_back():
     original_embed_flow_audio_state = model.embed_flow_audio_state
     assert not hasattr(model._codec_helper, "acoustic_embedding_to_codes")
     with (
-        patch.object(model.local_flow, "sample", side_effect=sample_ones),
+        patch.object(model.local_predictor, "predict", side_effect=sample_ones),
         patch.object(model, "embed_flow_audio_state", wraps=original_embed_flow_audio_state) as embed_mock,
     ):
         output = model.infer_batch(

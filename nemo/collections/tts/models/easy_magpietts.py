@@ -1257,7 +1257,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 speech_eos_mask=speech_eos_mask,
                 agent_mask=agent_mask,
             )
-            if self.local_transformer_type == LocalTransformerType.FLOW
+            if self.local_transformer_type.is_oneshot
             else self.prepare_audio_channel_embeddings(
                 audio_codes=audio_codes,
                 audio_codes_lens=audio_codes_lens,
@@ -1427,7 +1427,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         logits = self.final_proj(pred_embeddings_audio)
 
         # Compute codebook loss
-        if self.local_transformer_type == LocalTransformerType.FLOW:
+        if self.local_transformer_type.is_oneshot:
             codebook_loss, _ = self.compute_loss(
                 logits,
                 audio_codes_target,
@@ -1457,7 +1457,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 audio_codes_lens_target,
                 agent_mask_target=agent_mask if self.cfg.get("mask_user_on_loss", False) else None,
             )
-        elif self.local_transformer_type == LocalTransformerType.FLOW:
+        elif self.local_transformer_type.is_oneshot:
             if audio_embedding is None or audio_embedding_lens is None:
                 raise ValueError(
                     "normalizing_flow requires target audio waveforms so the codec encoder output can be "
@@ -1499,7 +1499,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             flow_frame_mask = None
             if self.cfg.get("mask_user_on_loss", False) and agent_mask is not None:
                 flow_frame_mask = agent_mask[:, :target_steps]
-            local_transformer_loss = self.local_flow.compute_loss(
+            local_transformer_loss = self.local_predictor.compute_loss(
                 acoustic_embedding_stacked,
                 flow_condition,
                 flow_lens,
@@ -1510,7 +1510,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 and self.local_flow_debug_loss_threshold is not None
                 and bool(local_transformer_loss.detach() >= self.local_flow_debug_loss_threshold)
             ):
-                local_flow_diagnostics = self.local_flow.compute_diagnostics(
+                local_flow_diagnostics = self.local_predictor.compute_diagnostics(
                     acoustic_embedding_stacked,
                     flow_condition,
                     flow_lens,
@@ -1576,7 +1576,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
     def _log_local_predictor_loss(self, mode: str, loss: torch.Tensor) -> None:
         self.log(f'{mode}/local_transformer_loss', loss, prog_bar=True, sync_dist=True)
-        if self.local_transformer_type == LocalTransformerType.FLOW:
+        if self.local_transformer_type.is_oneshot:
             self.log(f'{mode}/flow_loss', loss, prog_bar=False, sync_dist=True)
 
     def _log_local_flow_spike(self, batch, loss: torch.Tensor, diagnostics: dict[str, torch.Tensor]) -> None:
@@ -1615,7 +1615,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
     def training_step(self, batch, batch_idx):
         context_audio_embedding = None
-        if self.local_transformer_type == LocalTransformerType.FLOW:
+        if self.local_transformer_type.is_oneshot:
             if 'context_audio' not in batch:
                 raise ValueError(
                     "normalizing_flow requires raw context audio; set model.load_cached_codes_if_available=false."
@@ -1637,7 +1637,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         audio_embedding = None
         audio_embedding_lens = None
-        if self.local_transformer_type == LocalTransformerType.FLOW:
+        if self.local_transformer_type.is_oneshot:
             if 'audio' not in batch:
                 raise ValueError(
                     "normalizing_flow requires target audio; set model.load_cached_codes_if_available=false."
@@ -1717,7 +1717,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 if silence_mask.any():
                     user_audio[silence_mask] = 0.0
 
-            if self.local_transformer_type == LocalTransformerType.FLOW:
+            if self.local_transformer_type.is_oneshot:
                 user_audio_codes, user_audio_codes_lens, user_audio_embedding = (
                     self._codec_helper.audio_to_semantic_codes_and_embedding(
                         user_audio, user_audio_lens, self.num_semantic_codebooks
@@ -1953,7 +1953,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             f"batch_idx: {batch_idx}"
         )
         context_audio_embedding = None
-        if self.local_transformer_type == LocalTransformerType.FLOW:
+        if self.local_transformer_type.is_oneshot:
             if 'context_audio' not in batch:
                 raise ValueError(
                     "normalizing_flow requires raw context audio; set model.load_cached_codes_if_available=false."
@@ -1975,7 +1975,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         audio_embedding = None
         audio_embedding_lens = None
-        if self.local_transformer_type == LocalTransformerType.FLOW:
+        if self.local_transformer_type.is_oneshot:
             if 'audio' not in batch:
                 raise ValueError(
                     "normalizing_flow requires target audio; set model.load_cached_codes_if_available=false."
@@ -2028,7 +2028,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             # Flow predictions must be decoded from semantic tokens plus the
             # continuous acoustic embedding produced by the flow. The legacy
             # logger decodes a full set of discrete codec codebooks.
-            if self.local_transformer_type == LocalTransformerType.FLOW:
+            if self.local_transformer_type.is_oneshot:
                 wandb_log_dict.update(self.log_val_flow_audio_example(batch))
             else:
                 wandb_log_dict.update(
@@ -2065,7 +2065,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 temperature=0.7,
                 topk=80,
                 use_local_transformer_for_inference=(
-                    self.local_transformer_type in (LocalTransformerType.AR, LocalTransformerType.FLOW)
+                    (self.local_transformer_type == LocalTransformerType.AR or self.local_transformer_type.is_oneshot)
                 ),
                 use_cfg=self.cfg.get('inference_use_cfg_in_val', True),
                 cfg_scale=2.5,
@@ -2081,7 +2081,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_audio_paths = []
             generated_wandb_log = {}
 
-            if self.local_transformer_type == LocalTransformerType.FLOW:
+            if self.local_transformer_type.is_oneshot:
                 context_audio_cleaned = batch["context_audio"]
                 context_audio_lens_cleaned = batch["context_audio_lens"]
             else:
@@ -2111,7 +2111,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                                 sample_rate=self.output_sample_rate,
                                 caption=(
                                     "generated_free_running_flow"
-                                    if self.local_transformer_type == LocalTransformerType.FLOW
+                                    if self.local_transformer_type.is_oneshot
                                     else "generated"
                                 ),
                             )

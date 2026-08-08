@@ -41,6 +41,11 @@ class LocalTransformerType(PrettyStrEnum):
     FLOW = "normalizing_flow"
     MASKGIT = "maskgit"
 
+    @property
+    def is_oneshot(self) -> bool:
+        """Whether this local predictor produces a continuous acoustic embedding in one shot."""
+        return self == self.FLOW
+
 
 class EOSDetectionMethod(PrettyStrEnum):
     """

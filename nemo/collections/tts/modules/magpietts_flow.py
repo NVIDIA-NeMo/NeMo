@@ -48,6 +48,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from nemo.collections.tts.modules.magpietts_oneshot import OneShotLocalPredictor
+
 
 AFFINE_COUPLING = "affine"
 SPLINE_COUPLING = "rational_quadratic_spline"
@@ -461,7 +463,7 @@ class PointwiseCouplingBlock(nn.Module):
         return inputs, total_log_determinant
 
 
-class OneShotLocalFlow(nn.Module):
+class OneShotLocalFlow(OneShotLocalPredictor):
     """Conditional pointwise flow over a continuous FSQ-compressed acoustic codec embedding."""
 
     def __init__(
@@ -480,13 +482,12 @@ class OneShotLocalFlow(nn.Module):
         spline_min_derivative: float = 1e-3,
         match_affine_parameter_count: bool = True,
     ):
-        super().__init__()
+        super().__init__(acoustic_channels=acoustic_channels)
         if hidden_channels < 1:
             raise ValueError(f"hidden_channels must be positive, got {hidden_channels}")
         if n_layers < 1:
             raise ValueError(f"n_layers must be positive, got {n_layers}")
 
-        self.acoustic_channels = acoustic_channels
         self.flow_channels = acoustic_channels + acoustic_channels % 2
         self.coupling_type = _canonical_coupling_type(coupling_type)
         self.requested_hidden_channels = hidden_channels
@@ -514,11 +515,6 @@ class OneShotLocalFlow(nn.Module):
             spline_min_derivative=spline_min_derivative,
         )
 
-    @staticmethod
-    def _length_mask(lengths: torch.Tensor, max_length: int, dtype: torch.dtype) -> torch.Tensor:
-        positions = torch.arange(max_length, device=lengths.device)
-        return (positions.unsqueeze(0) < lengths.unsqueeze(1)).unsqueeze(1).to(dtype)
-
     def encode(
         self,
         acoustic_embedding: torch.Tensor,
@@ -534,7 +530,7 @@ class OneShotLocalFlow(nn.Module):
 
         if self.flow_channels != self.acoustic_channels:
             acoustic_embedding = torch.nn.functional.pad(acoustic_embedding, (0, 0, 0, 1))
-        mask = self._length_mask(lengths, acoustic_embedding.size(2), acoustic_embedding.dtype)
+        mask = self.length_mask(lengths, acoustic_embedding.size(2), acoustic_embedding.dtype)
         if frame_mask is not None:
             mask = mask * frame_mask.unsqueeze(1).to(mask.dtype)
         latent, log_determinant = self.flow(
@@ -607,13 +603,13 @@ class OneShotLocalFlow(nn.Module):
             ),
         }
 
-    def sample(
+    def predict(
         self,
         condition: torch.Tensor,
         lengths: torch.Tensor,
         noise_scale: float = 1.0,
     ) -> torch.Tensor:
-        mask = self._length_mask(lengths, condition.size(2), condition.dtype)
+        mask = self.length_mask(lengths, condition.size(2), condition.dtype)
         latent = torch.randn(
             condition.size(0),
             self.flow_channels,
@@ -623,3 +619,12 @@ class OneShotLocalFlow(nn.Module):
         )
         latent = latent * noise_scale
         return self.decode(latent, condition, mask)
+
+    def sample(
+        self,
+        condition: torch.Tensor,
+        lengths: torch.Tensor,
+        noise_scale: float = 1.0,
+    ) -> torch.Tensor:
+        """Compatibility alias for downstream callers using the old API."""
+        return self.predict(condition=condition, lengths=lengths, noise_scale=noise_scale)

@@ -36,7 +36,6 @@ from nemo.collections.tts.data.text_to_speech_dataset_lhotse import (
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.modules import transformer_2501
 from nemo.collections.tts.modules.audio_codec_modules import VectorQuantizerIndexConverter
-from nemo.collections.tts.modules.magpietts_flow import OneShotLocalFlow
 from nemo.collections.tts.modules.magpietts_modules import (
     CharAwareSubwordEncoder,
     CodecHelper,
@@ -45,6 +44,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     SpecialAudioToken,
     add_special_tokens,
 )
+from nemo.collections.tts.modules.magpietts_oneshot import OneShotLocalPredictor, create_oneshot_local_predictor
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
@@ -415,7 +415,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         self.local_transformer_type = LocalTransformerType(cfg.get('local_transformer_type', 'none').lower())
         logging.info(f"Local transformer type: {self.local_transformer_type}")
-        if self.local_transformer_type == LocalTransformerType.FLOW:
+        if self.local_transformer_type.is_oneshot:
             if self._codec_converter is not None:
                 raise ValueError("normalizing_flow does not support model.vector_quantizer conversion.")
             self.num_semantic_codebooks = int(cfg.get("num_semantic_codebooks", 1))
@@ -609,7 +609,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             self.num_predicted_audio_codebooks * self.num_all_tokens_per_codebook * self.frame_stacking_factor,
         )
 
-        if self.local_transformer_type not in (LocalTransformerType.NO_LT, LocalTransformerType.FLOW):
+        if self.local_transformer_type != LocalTransformerType.NO_LT and not self.local_transformer_type.is_oneshot:
             local_transformer_hidden_dim = cfg.get('local_transformer_hidden_dim', 256)
             if local_transformer_hidden_dim != cfg.hidden_dim:
                 self.local_transformer_in_projection = nn.Linear(cfg.hidden_dim, local_transformer_hidden_dim)
@@ -658,7 +658,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 codebook_size=self.codebook_size,
             )
 
-        elif self.local_transformer_type == LocalTransformerType.FLOW:
+        elif self.local_transformer_type.is_oneshot:
             embedding_dim_per_codebook = self._codec_helper._embedding_dim_per_codebook()
             self.semantic_codec_embedding_dim = self.num_semantic_codebooks * embedding_dim_per_codebook
             self.acoustic_codec_embedding_dim = (
@@ -671,27 +671,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # exact no-op so loading the pretrained backbone does not inject a random residual.
             nn.init.zeros_(self.flow_acoustic_in_projection.weight)
             nn.init.zeros_(self.flow_acoustic_in_projection.bias)
-            self.local_flow = OneShotLocalFlow(
+            # Keep the registered name for compatibility with existing normalizing-flow checkpoints.
+            self.local_flow = create_oneshot_local_predictor(
+                self.local_transformer_type,
                 acoustic_channels=stacked_acoustic_dim,
                 condition_channels=cfg.hidden_dim + stacked_semantic_dim,
-                hidden_channels=int(cfg.get("local_flow_hidden_dim", 1536)),
-                n_layers=int(cfg.get("local_flow_n_layers", 3)),
-                n_flows=int(cfg.get("local_flow_n_flows", 4)),
-                dropout=float(cfg.get("local_flow_dropout", 0.0)),
-                coupling_type=str(cfg.get("local_flow_coupling_type", "affine")),
-                spline_num_bins=int(cfg.get("local_flow_spline_num_bins", 8)),
-                spline_tail_bound=float(cfg.get("local_flow_spline_tail_bound", 5.0)),
-                spline_min_bin_width=float(cfg.get("local_flow_spline_min_bin_width", 1e-3)),
-                spline_min_bin_height=float(cfg.get("local_flow_spline_min_bin_height", 1e-3)),
-                spline_min_derivative=float(cfg.get("local_flow_spline_min_derivative", 1e-3)),
-                match_affine_parameter_count=bool(cfg.get("local_flow_match_affine_parameter_count", True)),
+                cfg=cfg,
             )
-            logging.info(
-                "Local flow coupling: %s; conditioner hidden channels: %d (requested affine-budget width: %d)",
-                self.local_flow.coupling_type,
-                self.local_flow.hidden_channels,
-                self.local_flow.requested_hidden_channels,
-            )
+            logging.info("One-shot local predictor: %s", type(self.local_predictor).__name__)
 
     @property
     def codec_sil_codes(self):
@@ -707,6 +694,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
     def codec_sil_acoustic_embedding(self):
         """Return one continuous acoustic codec frame representing silence."""
         return self._codec_sil_acoustic_embedding_buffer
+
+    @property
+    def local_predictor(self) -> OneShotLocalPredictor:
+        """Return the active continuous acoustic predictor."""
+        return self.local_flow
 
     def restore_from_pretrained_checkpoint(self, checkpoint_path):
         """
@@ -742,7 +734,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
         with torch.no_grad():
             sil_acoustic = None
-            if self.local_transformer_type == LocalTransformerType.FLOW:
+            if self.local_transformer_type.is_oneshot:
                 sil_codes_raw, sil_codes_lens, sil_embedding = (
                     self._codec_helper.audio_to_semantic_codes_and_embedding(
                         audio, audio_len, self.num_semantic_codebooks
@@ -824,7 +816,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # AUDIO CHANNEL: previous-token input during profile
             # -----------------------
             S = self.frame_stacking_factor
-            is_flow = self.local_transformer_type == LocalTransformerType.FLOW
+            is_flow = self.local_transformer_type.is_oneshot
             C = self.num_semantic_codebooks if is_flow else self.num_audio_codebooks
             sil_codes = self.codec_sil_codes[:C].to(device=device, dtype=torch.long)
 
@@ -1049,7 +1041,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         acoustic_embedding: torch.Tensor,
     ) -> torch.Tensor:
         """Embed one or more flow audio states for the backbone input channel."""
-        if self.local_transformer_type != LocalTransformerType.FLOW:
+        if not self.local_transformer_type.is_oneshot:
             raise RuntimeError("embed_flow_audio_state is only valid for normalizing-flow models.")
 
         expected_semantic_channels = self.num_semantic_codebooks * self.frame_stacking_factor
@@ -1452,7 +1444,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if context_audio_codes is None:
             if context_audio is None:
                 raise ValueError("Either context_audio_codes or context_audio must be provided")
-            if self.local_transformer_type == LocalTransformerType.FLOW:
+            if self.local_transformer_type.is_oneshot:
                 context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
                     self._codec_helper.audio_to_semantic_codes_and_embedding(
                         context_audio, context_audio_lens, self.num_semantic_codebooks
@@ -1463,7 +1455,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     context_audio, context_audio_lens
                 )
 
-        if self.local_transformer_type == LocalTransformerType.FLOW:
+        if self.local_transformer_type.is_oneshot:
             if context_audio_embedding is None:
                 raise ValueError(
                     "normalizing_flow context requires the codec encoder output; provide raw context audio "
@@ -1728,7 +1720,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             [hidden.unsqueeze(-1), stacked_semantic_embedding.to(hidden.dtype)],
             dim=1,
         )
-        stacked_acoustic_embedding = self.local_flow.sample(
+        stacked_acoustic_embedding = self.local_predictor.predict(
             condition=condition,
             lengths=torch.ones(batch_size, dtype=torch.long, device=condition.device),
             noise_scale=float(self.cfg.get("local_flow_noise_scale", 1.0)),
@@ -1776,7 +1768,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 # Base class returns (B, C, S); flatten to (B, C*S) for downstream code
                 audio_codes_next = audio_codes_next.permute(0, 2, 1)
                 audio_codes_next = audio_codes_next.reshape(audio_codes_next.size(0), -1)
-            elif self.local_transformer_type == LocalTransformerType.FLOW:
+            elif self.local_transformer_type.is_oneshot:
                 return self._sample_audio_codes_with_flow(
                     last_hidden=last_hidden,
                     all_code_logits_t=all_code_logits_t,
@@ -2316,7 +2308,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 has_last_audio = needs_audio & ~first_audio_step & (state.last_audio_codes is not None)
 
                 if first_audio_step.any():
-                    if self.local_transformer_type == LocalTransformerType.FLOW:
+                    if self.local_transformer_type.is_oneshot:
                         semantic_bos = torch.full(
                             (batch_size, self.num_semantic_codebooks * self.frame_stacking_factor, 1),
                             self.audio_bos_id,
@@ -2328,7 +2320,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                             self.acoustic_codec_embedding_dim * self.frame_stacking_factor,
                             1,
                             device=device,
-                            dtype=next(self.local_flow.parameters()).dtype,
+                            dtype=next(self.local_predictor.parameters()).dtype,
                         )
                         audio_bos_emb = self.embed_flow_audio_state(semantic_bos, acoustic_bos)
                     else:
@@ -2342,7 +2334,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     audio_emb = audio_emb + audio_bos_emb * first_mask
 
                 if has_last_audio.any() and state.last_audio_codes is not None:
-                    if self.local_transformer_type == LocalTransformerType.FLOW:
+                    if self.local_transformer_type.is_oneshot:
                         if state.last_acoustic_embedding is None:
                             raise RuntimeError("Flow inference is missing its previous continuous acoustic state.")
                         last_audio_emb = self.embed_flow_audio_state(
@@ -2461,14 +2453,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             audio_codes_next_stacked, all_codes_next_argmax, acoustic_embedding_next = self._predict_audio_codes(state)
 
             S = self.frame_stacking_factor
-            C = (
-                self.num_semantic_codebooks
-                if self.local_transformer_type == LocalTransformerType.FLOW
-                else self.num_audio_codebooks
-            )
+            C = self.num_semantic_codebooks if self.local_transformer_type.is_oneshot else self.num_audio_codebooks
             audio_codes_unstacked = audio_codes_next_stacked.view(batch_size, C, S)
 
-            if self.local_transformer_type == LocalTransformerType.FLOW and acoustic_embedding_next is None:
+            if self.local_transformer_type.is_oneshot and acoustic_embedding_next is None:
                 raise RuntimeError("Flow inference did not return a continuous acoustic state.")
 
             if state.last_audio_codes is None:
@@ -2654,7 +2642,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             total_frames = all_codes.size(-1)
             num_codebooks = all_codes.size(1)
             all_acoustic = None
-            if self.local_transformer_type == LocalTransformerType.FLOW:
+            if self.local_transformer_type.is_oneshot:
                 if len(state.all_acoustic_predictions) != len(state.all_predictions):
                     raise RuntimeError("Flow semantic and acoustic prediction histories have different lengths.")
                 all_acoustic = torch.cat(state.all_acoustic_predictions, dim=-1)
@@ -2801,7 +2789,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             # Handle context audio - either use codes directly or encode from audio
             context_audio_embedding = None
-            if self.local_transformer_type == LocalTransformerType.FLOW:
+            if self.local_transformer_type.is_oneshot:
                 if 'context_audio' in batch:
                     context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
                         self._codec_helper.audio_to_semantic_codes_and_embedding(
@@ -2839,7 +2827,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 temperature = 0.0
 
                 gt_audio_embedding = None
-                if self.local_transformer_type == LocalTransformerType.FLOW:
+                if self.local_transformer_type.is_oneshot:
                     if 'audio' not in batch:
                         raise ValueError("Flow teacher forcing requires raw target audio.")
                     gt_audio_codes, gt_audio_codes_lens, gt_audio_embedding = (
@@ -2858,7 +2846,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 else:
                     raise ValueError("Teacher forcing requires 'audio_codes' or 'audio' in batch")
 
-                if self.local_transformer_type == LocalTransformerType.FLOW:
+                if self.local_transformer_type.is_oneshot:
                     semantic_codes = gt_audio_codes
                     _, acoustic_embedding = self._codec_helper.split_continuous_embedding(
                         gt_audio_embedding,
@@ -3079,7 +3067,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         context_text = (context_text or "[NO TEXT CONTEXT]").strip()
         if use_local_transformer is None:
             # AR and one-shot flow both replace parallel acoustic-codebook sampling.
-            use_local_transformer = self.local_transformer_type in (LocalTransformerType.AR, LocalTransformerType.FLOW)
+            use_local_transformer = (
+                self.local_transformer_type == LocalTransformerType.AR or self.local_transformer_type.is_oneshot
+            )
 
         if main_tokenizer_name is None:
             # Match model init behavior: default to first configured tokenizer.
@@ -3133,7 +3123,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if context_audio_file_path is not None and context_audio_file_path.strip() != "":
             batch['context_audio'] = context_audio
             batch['context_audio_lens'] = context_audio_lens
-        elif self.local_transformer_type == LocalTransformerType.FLOW:
+        elif self.local_transformer_type.is_oneshot:
             batch['context_audio_embedding'] = torch.zeros(
                 1,
                 self._codec_model.vector_quantizer.codebook_dim,

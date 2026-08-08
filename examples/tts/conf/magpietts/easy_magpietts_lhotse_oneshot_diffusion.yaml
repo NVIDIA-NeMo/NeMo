@@ -1,0 +1,26 @@
+defaults:
+  - easy_magpietts_lhotse_oneshot_flow
+  - _self_
+
+name: EasyMagpie-OneShotDiffusion
+
+model:
+  # Vanilla DDPM epsilon-prediction objective with accelerated iterative DDIM inference.
+  local_transformer_type: diffusion
+  local_diffusion_hidden_dim: 1536
+  local_diffusion_n_layers: 3
+  local_diffusion_dropout: 0.0
+  local_diffusion_time_embedding_dim: 128
+  local_diffusion_training_timesteps: 1000
+  local_diffusion_inference_steps: 16
+  local_diffusion_beta_schedule: linear  # linear or cosine
+  local_diffusion_ddim_eta: 0.0
+
+  # Fit the randomly initialized denoiser without moving the pretrained semantic backbone.
+  train_oneshot_local_predictor_only: false
+
+  optim:
+    lr: 2.0e-4
+    sched:
+      name: ExponentialLR
+      gamma: 0.9995

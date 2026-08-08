@@ -417,7 +417,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         logging.info(f"Local transformer type: {self.local_transformer_type}")
         if self.local_transformer_type.is_oneshot:
             if self._codec_converter is not None:
-                raise ValueError("normalizing_flow does not support model.vector_quantizer conversion.")
+                raise ValueError("One-shot acoustic prediction does not support model.vector_quantizer conversion.")
             self.num_semantic_codebooks = int(cfg.get("num_semantic_codebooks", 1))
             if not 0 < self.num_semantic_codebooks < self.num_audio_codebooks:
                 raise ValueError(
@@ -985,7 +985,32 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 for param in module.parameters():
                     excluded_param_ids.add(id(param))
 
-        trainable_params = [p for p in self.parameters() if id(p) not in excluded_param_ids]
+        train_local_predictor_only = bool(self.cfg.get("train_oneshot_local_predictor_only", False))
+        if train_local_predictor_only:
+            if not self.local_transformer_type.is_oneshot:
+                raise ValueError(
+                    "train_oneshot_local_predictor_only requires a one-shot local transformer, "
+                    f"got {self.local_transformer_type}."
+                )
+
+            trainable_prefixes = ("local_flow.", "flow_acoustic_in_projection.")
+            trainable_params = []
+            trainable_numel = 0
+            for name, param in self.named_parameters():
+                should_train = id(param) not in excluded_param_ids and name.startswith(trainable_prefixes)
+                param.requires_grad_(should_train)
+                if should_train:
+                    trainable_params.append(param)
+                    trainable_numel += param.numel()
+
+            logging.info(
+                "Training only the one-shot local predictor and acoustic feedback projection: "
+                f"{len(trainable_params)} tensors / {trainable_numel:,} parameters"
+            )
+        else:
+            trainable_params = [
+                p for p in self.parameters() if id(p) not in excluded_param_ids and p.requires_grad
+            ]
 
         logging.info(
             f"setup_optimizer_param_groups: {len(trainable_params)} params in optimizer, "
@@ -1458,7 +1483,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if self.local_transformer_type.is_oneshot:
             if context_audio_embedding is None:
                 raise ValueError(
-                    "normalizing_flow context requires the codec encoder output; provide raw context audio "
+                    "One-shot acoustic prediction requires the codec encoder output; provide raw context audio "
                     "or context_audio_embedding."
                 )
             semantic_context = context_audio_codes

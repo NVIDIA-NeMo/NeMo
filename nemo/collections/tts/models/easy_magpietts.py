@@ -929,7 +929,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Prepare teacher-forced semantic tokens plus continuous acoustic states."""
         if audio_embedding is None:
-            raise ValueError("normalizing_flow requires the codec encoder output for backbone teacher forcing.")
+            raise ValueError(
+                "One-shot acoustic prediction requires the codec encoder output for backbone teacher forcing."
+            )
 
         semantic_codes = audio_codes
         _, acoustic_embedding = self._codec_helper.split_continuous_embedding(
@@ -1460,7 +1462,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         elif self.local_transformer_type.is_oneshot:
             if audio_embedding is None or audio_embedding_lens is None:
                 raise ValueError(
-                    "normalizing_flow requires target audio waveforms so the codec encoder output can be "
+                    "One-shot acoustic prediction requires target audio waveforms so the codec encoder output can be "
                     "computed before quantization; set model.load_cached_codes_if_available=false."
                 )
             if not torch.equal(audio_embedding_lens.to(audio_codes_lens.device), audio_codes_lens):
@@ -1577,7 +1579,12 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
     def _log_local_predictor_loss(self, mode: str, loss: torch.Tensor) -> None:
         self.log(f'{mode}/local_transformer_loss', loss, prog_bar=True, sync_dist=True)
         if self.local_transformer_type.is_oneshot:
-            self.log(f'{mode}/flow_loss', loss, prog_bar=False, sync_dist=True)
+            loss_name = (
+                'diffusion_loss'
+                if self.local_transformer_type == LocalTransformerType.DIFFUSION
+                else 'flow_loss'
+            )
+            self.log(f'{mode}/{loss_name}', loss, prog_bar=False, sync_dist=True)
 
     def _log_local_flow_spike(self, batch, loss: torch.Tensor, diagnostics: dict[str, torch.Tensor]) -> None:
         sample_index = int(diagnostics['sample_index'].item())
@@ -1618,7 +1625,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         if self.local_transformer_type.is_oneshot:
             if 'context_audio' not in batch:
                 raise ValueError(
-                    "normalizing_flow requires raw context audio; set model.load_cached_codes_if_available=false."
+                    "One-shot acoustic prediction requires raw context audio; set model.load_cached_codes_if_available=false."
                 )
             context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
                 self._codec_helper.audio_to_semantic_codes_and_embedding(
@@ -1640,7 +1647,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         if self.local_transformer_type.is_oneshot:
             if 'audio' not in batch:
                 raise ValueError(
-                    "normalizing_flow requires target audio; set model.load_cached_codes_if_available=false."
+                    "One-shot acoustic prediction requires target audio; set model.load_cached_codes_if_available=false."
                 )
             audio_codes, audio_codes_lens, audio_embedding = self._codec_helper.audio_to_semantic_codes_and_embedding(
                 batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
@@ -1956,7 +1963,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         if self.local_transformer_type.is_oneshot:
             if 'context_audio' not in batch:
                 raise ValueError(
-                    "normalizing_flow requires raw context audio; set model.load_cached_codes_if_available=false."
+                    "One-shot acoustic prediction requires raw context audio; set model.load_cached_codes_if_available=false."
                 )
             context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
                 self._codec_helper.audio_to_semantic_codes_and_embedding(
@@ -1978,7 +1985,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         if self.local_transformer_type.is_oneshot:
             if 'audio' not in batch:
                 raise ValueError(
-                    "normalizing_flow requires target audio; set model.load_cached_codes_if_available=false."
+                    "One-shot acoustic prediction requires target audio; set model.load_cached_codes_if_available=false."
                 )
             audio_codes, audio_codes_lens, audio_embedding = self._codec_helper.audio_to_semantic_codes_and_embedding(
                 batch['audio'], batch['audio_lens'], self.num_semantic_codebooks

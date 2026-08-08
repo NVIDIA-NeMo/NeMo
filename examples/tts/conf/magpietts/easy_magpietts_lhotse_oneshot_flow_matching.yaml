@@ -1,0 +1,28 @@
+defaults:
+  - easy_magpietts_lhotse_oneshot_flow
+  - _self_
+
+name: EasyMagpie-OneShotFlowMatching
+
+model:
+  # Straight conditional optimal-transport path from Gaussian noise to the continuous
+  # FSQ acoustic embedding. Inference integrates the learned velocity field iteratively.
+  local_transformer_type: flow_matching
+  local_flow_matching_hidden_dim: 1536
+  local_flow_matching_n_layers: 3
+  local_flow_matching_dropout: 0.0
+  local_flow_matching_time_embedding_dim: 128
+  local_flow_matching_inference_steps: 8
+  local_flow_matching_solver: midpoint  # midpoint or euler
+
+  # Useful for fitting the randomly initialized flow estimator from a pretrained
+  # semantic backbone without changing that backbone. Override to true for this stage.
+  train_oneshot_local_predictor_only: false
+
+  # Keep a useful learning rate through a short local run while the new velocity
+  # estimator learns from scratch.
+  optim:
+    lr: 2.0e-4
+    sched:
+      name: ExponentialLR
+      gamma: 0.9995

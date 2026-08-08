@@ -64,7 +64,7 @@ model:
   use_text_conditioning_encoder: true # If true, distilbert will be used to encode context_text if provided.
   context_duration_min: 5.0
   context_duration_max: 5.0
-  # normalizing_flow needs target waveforms to build the continuous FSQ-compressed target; set this false.
+  # One-shot continuous predictors need target waveforms to build the continuous FSQ-compressed target; set this false.
   load_cached_codes_if_available: true
   
   embedding_dim: 1536
@@ -73,7 +73,7 @@ model:
   codecmodel_path: ???
   
   # Local predictor for acoustic information within each stacked frame.
-  local_transformer_type: "autoregressive" # "none", "autoregressive", "normalizing_flow"
+  local_transformer_type: "autoregressive" # "none", "autoregressive", "normalizing_flow", "flow_matching"
   local_transformer_loss_scale: 1.0
   phoneme_loss_weight: 1.0
 

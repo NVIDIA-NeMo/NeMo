@@ -444,9 +444,9 @@ def main() -> None:
     cfg = _compose_model_config(args.config_name, overrides)
     _defer_dataset_setup(cfg.model)
     model = EasyMagpieTTSModel(cfg=cfg.model, trainer=None)
-    if model.local_transformer_type.value != "normalizing_flow":
+    if not model.local_transformer_type.is_oneshot:
         raise ValueError(
-            "Target config must use model.local_transformer_type=normalizing_flow; "
+            "Target config must use a one-shot continuous acoustic predictor; "
             f"got {model.local_transformer_type.value!r}."
         )
 

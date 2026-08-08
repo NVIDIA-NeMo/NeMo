@@ -26,7 +26,10 @@ from torch import nn
 
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.collections.tts.models.easy_magpietts import EasyMagpieTTSModel
-from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters, TrainingMode
+from nemo.collections.tts.models.easy_magpietts_inference import (
+    EasyModelInferenceParameters,
+    TrainingMode,
+)
 from tests.collections.tts.models.test_audio_codec import create_codec_config
 
 
@@ -363,11 +366,19 @@ def test_prepare_audio_channel_embeddings_shapes(model):
         agent_mask=agent_mask,
     )
 
-    assert embeddings.shape == (2, int((delay + target_lens).max().item()), model.cfg.embedding_dim)
+    assert embeddings.shape == (
+        2,
+        int((delay + target_lens).max().item()),
+        model.cfg.embedding_dim,
+    )
     assert embeddings.dtype == torch.float32
     assert torch.isfinite(embeddings).all()
     assert lens.tolist() == (delay + target_lens).tolist()
-    assert targets.shape == (2, model.num_audio_codebooks, int(target_lens.max().item()))
+    assert targets.shape == (
+        2,
+        model.num_audio_codebooks,
+        int(target_lens.max().item()),
+    )
     assert target_lens.tolist() == [4, 3]
     assert loss_agent_mask.shape == (2, targets.size(2))
     assert loss_agent_mask.dtype == torch.bool
@@ -575,6 +586,90 @@ def test_one_shot_flow_allocates_only_semantic_token_heads():
         model.flow_acoustic_in_projection.bias,
         torch.zeros_like(model.flow_acoustic_in_projection.bias),
     )
+
+
+def test_flow_matching_model_uses_iterative_oneshot_predictor():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "frame_stacking_factor": 2,
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "local_flow_matching_inference_steps": 3,
+            }
+        )
+    )
+
+    assert str(model.local_transformer_type) == "flow_matching"
+    assert model.local_predictor.inference_steps == 3
+    semantic_channels = model.num_semantic_codebooks * model.frame_stacking_factor
+    assert len(model.audio_embeddings) == semantic_channels
+    assert model.final_proj.out_features == semantic_channels * model.num_all_tokens_per_codebook
+
+    condition = torch.randn(2, model.cfg.hidden_dim + model.semantic_codec_embedding_dim * 2, 4)
+    lengths = torch.tensor([4, 2])
+    prediction = model.local_predictor.predict(condition, lengths)
+
+    expected_channels = model.acoustic_codec_embedding_dim * model.frame_stacking_factor
+    assert prediction.shape == (2, expected_channels, 4)
+    assert torch.count_nonzero(prediction[1, :, 2:]) == 0
+
+
+def test_diffusion_model_uses_iterative_oneshot_predictor():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "diffusion",
+                "frame_stacking_factor": 2,
+                "local_diffusion_hidden_dim": 16,
+                "local_diffusion_n_layers": 2,
+                "local_diffusion_time_embedding_dim": 8,
+                "local_diffusion_training_timesteps": 20,
+                "local_diffusion_inference_steps": 4,
+            }
+        )
+    )
+
+    assert str(model.local_transformer_type) == "diffusion"
+    assert model.local_predictor.training_timesteps == 20
+    assert model.local_predictor.inference_steps == 4
+    semantic_channels = model.num_semantic_codebooks * model.frame_stacking_factor
+    assert len(model.audio_embeddings) == semantic_channels
+    assert model.final_proj.out_features == semantic_channels * model.num_all_tokens_per_codebook
+
+    condition = torch.randn(2, model.cfg.hidden_dim + model.semantic_codec_embedding_dim * 2, 4)
+    lengths = torch.tensor([4, 2])
+    prediction = model.local_predictor.predict(condition, lengths)
+
+    expected_channels = model.acoustic_codec_embedding_dim * model.frame_stacking_factor
+    assert prediction.shape == (2, expected_channels, 4)
+    assert torch.count_nonzero(prediction[1, :, 2:]) == 0
+
+
+def test_flow_matching_can_optimize_only_oneshot_predictor():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "train_oneshot_local_predictor_only": True,
+            }
+        )
+    )
+
+    model.setup_optimizer_param_groups()
+
+    trainable_names = {name for name, param in model.named_parameters() if param.requires_grad}
+    assert trainable_names
+    assert any(name.startswith("local_flow.") for name in trainable_names)
+    assert any(name.startswith("flow_acoustic_in_projection.") for name in trainable_names)
+    assert all(name.startswith(("local_flow.", "flow_acoustic_in_projection.")) for name in trainable_names)
+    optimizer_param_ids = {id(param) for group in model._optimizer_param_groups for param in group["params"]}
+    assert optimizer_param_ids == {id(param) for _, param in model.named_parameters() if param.requires_grad}
 
 
 def test_one_shot_flow_teacher_forcing_uses_previous_continuous_acoustic_embedding():
@@ -906,13 +1001,23 @@ def test_validation_step_smoke(model, toy_batch, tmp_path):
     object.__setattr__(
         model,
         "_trainer",
-        SimpleNamespace(world_size=1, global_rank=0, local_rank=0, log_dir=str(tmp_path), current_epoch=0),
+        SimpleNamespace(
+            world_size=1,
+            global_rank=0,
+            local_rank=0,
+            log_dir=str(tmp_path),
+            current_epoch=0,
+        ),
     )
 
     with patch.object(model, "log_val_audio_example", lambda *args, **kwargs: {}):
         output = model.validation_step(toy_batch, batch_idx=1)
 
-    assert set(output.keys()) == {"val_loss", "val_codebook_loss", "val_local_transformer_loss"}
+    assert set(output.keys()) == {
+        "val_loss",
+        "val_codebook_loss",
+        "val_local_transformer_loss",
+    }
     assert torch.isfinite(output["val_loss"])
     assert torch.isfinite(output["val_codebook_loss"])
     assert output["val_local_transformer_loss"] is None

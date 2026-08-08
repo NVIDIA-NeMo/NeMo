@@ -39,12 +39,14 @@ class LocalTransformerType(PrettyStrEnum):
     NO_LT = "none"
     AR = "autoregressive"
     FLOW = "normalizing_flow"
+    FLOW_MATCHING = "flow_matching"
+    DIFFUSION = "diffusion"
     MASKGIT = "maskgit"
 
     @property
     def is_oneshot(self) -> bool:
         """Whether this local predictor produces a continuous acoustic embedding in one shot."""
-        return self == self.FLOW
+        return self in (self.FLOW, self.FLOW_MATCHING, self.DIFFUSION)
 
 
 class EOSDetectionMethod(PrettyStrEnum):
@@ -62,11 +64,20 @@ class EOSDetectionMethod(PrettyStrEnum):
 
     @staticmethod
     def detection_type(detection_method: EOSDetectionMethod):
-        if detection_method in [EOSDetectionMethod.ARGMAX_ANY, EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ANY]:
+        if detection_method in [
+            EOSDetectionMethod.ARGMAX_ANY,
+            EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ANY,
+        ]:
             return "any"
-        elif detection_method in [EOSDetectionMethod.ARGMAX_ALL, EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ALL]:
+        elif detection_method in [
+            EOSDetectionMethod.ARGMAX_ALL,
+            EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ALL,
+        ]:
             return "all"
-        elif detection_method in [EOSDetectionMethod.ARGMAX_ZERO_CB, EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ZERO_CB]:
+        elif detection_method in [
+            EOSDetectionMethod.ARGMAX_ZERO_CB,
+            EOSDetectionMethod.ARGMAX_OR_MULTINOMIAL_ZERO_CB,
+        ]:
             return "zero_cb"
         else:
             raise ValueError(f"Invalid EOS detection method: {detection_method}")
@@ -187,7 +198,13 @@ class CharAwareSubwordEncoder(NeuralModule):
     The output is a tensor of shape (batch_size, max_subword_length, d_embed).
     """
 
-    def __init__(self, d_embed: int, llm_tokenizer_vocab: dict, subword_padding_idx: int, special_vocab: dict = None):
+    def __init__(
+        self,
+        d_embed: int,
+        llm_tokenizer_vocab: dict,
+        subword_padding_idx: int,
+        special_vocab: dict = None,
+    ):
         """
         Args:
             d_embed (int): The dimension of the embedding.
@@ -226,7 +243,11 @@ class CharAwareSubwordEncoder(NeuralModule):
         char_lengths = torch.tensor([len(x) for x in char_id_list], dtype=torch.long, device=device)
         batch_size = char_lengths.size(0)
 
-        char_ids = torch.full((batch_size, int(char_lengths.max().item())), self.vocab_size, dtype=torch.long)
+        char_ids = torch.full(
+            (batch_size, int(char_lengths.max().item())),
+            self.vocab_size,
+            dtype=torch.long,
+        )
         for i in range(batch_size):
             char_ids[i, : char_lengths[i]] = torch.tensor(char_id_list[i])
         char_ids = char_ids.to(device=device)
@@ -259,11 +280,14 @@ class CharAwareSubwordEncoder(NeuralModule):
         char_mask = get_mask_from_lengths(char_lengths)
         char_emb = self.embed_tokens(char_ids)
         # char emb has the shape  [B*T, N, channels], where N is the max number of chars tokens decoded from bpe tokens
-        x = self.encoder(x=char_emb, x_mask=char_mask)['output']
+        x = self.encoder(x=char_emb, x_mask=char_mask)["output"]
 
         # Get average embedding over the chars
         mean_emb = ((x / char_mask.unsqueeze(-1).sum(1, keepdim=True)) * char_mask.unsqueeze(-1)).sum(1)
-        subword_emb = torch.zeros((subword_mask.size(0), subword_mask.size(1), mean_emb.size(-1)), device=device)
+        subword_emb = torch.zeros(
+            (subword_mask.size(0), subword_mask.size(1), mean_emb.size(-1)),
+            device=device,
+        )
         subword_emb[subword_mask.unsqueeze(-1).expand(-1, -1, mean_emb.size(-1))] = mean_emb.view(-1)
 
         return subword_emb
@@ -282,7 +306,7 @@ def worker_init_fn(worker_id):
     dataset = worker_info.dataset
     tokenizer = setup_tokenizers(dataset.tokenizer_config, mode=dataset.dataset_type)
     dataset.text_tokenizer = tokenizer
-    if hasattr(dataset, 'phoneme_tokenizer_config'):
+    if hasattr(dataset, "phoneme_tokenizer_config"):
         dataset.phoneme_tokenizer = safe_instantiate(dataset.phoneme_tokenizer_config)
 
 
@@ -384,7 +408,7 @@ def clear_forbidden_logits(logits: torch.Tensor, codebook_size: int, forbid_audi
         :,
         :,
         SpecialAudioToken.get_forbidden_tokens(codebook_size, forbid_audio_eos=forbid_audio_eos),
-    ] = float('-inf')
+    ] = float("-inf")
     return logits
 
 
@@ -402,14 +426,20 @@ class CodecHelper:
     def audio_to_codes(self, audio, audio_len, sample_rate=None):
         """Encode audio waveforms into codec codes."""
         embedding, embedding_len = self.audio_to_prequantized_embedding(audio, audio_len, sample_rate=sample_rate)
-        with torch.no_grad(), torch.autocast(device_type=audio.device.type, enabled=False):
+        with (
+            torch.no_grad(),
+            torch.autocast(device_type=audio.device.type, enabled=False),
+        ):
             codes = self.codec_model.quantize(encoded=embedding, encoded_len=embedding_len)
         return codes, embedding_len
 
     def audio_to_prequantized_embedding(self, audio, audio_len, sample_rate=None):
         """Return raw codec encoder logits before FSQ compression and rounding."""
         self.codec_model.eval()
-        with torch.no_grad(), torch.autocast(device_type=audio.device.type, enabled=False):
+        with (
+            torch.no_grad(),
+            torch.autocast(device_type=audio.device.type, enabled=False),
+        ):
             return self.codec_model.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
 
     def _continuous_fsq_embedding(
@@ -441,7 +471,10 @@ class CodecHelper:
         prequantized_embedding, embedding_len = self.audio_to_prequantized_embedding(
             audio, audio_len, sample_rate=sample_rate
         )
-        with torch.no_grad(), torch.autocast(device_type=audio.device.type, enabled=False):
+        with (
+            torch.no_grad(),
+            torch.autocast(device_type=audio.device.type, enabled=False),
+        ):
             codes = self.codec_model.quantize(encoded=prequantized_embedding, encoded_len=embedding_len)
             embedding = self._continuous_fsq_embedding(prequantized_embedding, embedding_len)
         return codes, embedding_len, embedding
@@ -479,7 +512,10 @@ class CodecHelper:
         quantizer_groups = self._independent_quantizer_groups()
         group_dim = self._embedding_dim_per_codebook()
         semantic_indices = []
-        with torch.no_grad(), torch.autocast(device_type=audio.device.type, enabled=False):
+        with (
+            torch.no_grad(),
+            torch.autocast(device_type=audio.device.type, enabled=False),
+        ):
             for group_index in range(num_semantic_codebooks):
                 group_input = prequantized_embedding[
                     :, group_index * group_dim : (group_index + 1) * group_dim
@@ -582,7 +618,10 @@ class CodecHelper:
             codes_len=codes_len,
         )
         self.codec_model.eval()
-        with torch.no_grad(), torch.autocast(device_type=combined_embedding.device.type, enabled=False):
+        with (
+            torch.no_grad(),
+            torch.autocast(device_type=combined_embedding.device.type, enabled=False),
+        ):
             audio, audio_len = self.codec_model.decode_audio(
                 inputs=combined_embedding.to(self.codec_model.dtype),
                 input_len=codes_len,
@@ -595,7 +634,10 @@ class CodecHelper:
         ``codes`` must already be unstacked to the shape the codec expects.
         """
         self.codec_model.eval()
-        with torch.no_grad(), torch.autocast(device_type=codes.device.type, dtype=torch.float32):
+        with (
+            torch.no_grad(),
+            torch.autocast(device_type=codes.device.type, dtype=torch.float32),
+        ):
             if self.codec_converter is not None:
                 codes = self.codec_converter.convert_new_to_original(audio_tokens=codes, audio_lens=codes_len)
             audio, audio_len = self.codec_model.decode(tokens=codes, tokens_len=codes_len)
@@ -709,9 +751,11 @@ class LocalTransformerHelper:
         local_transformer_input = torch.stack(local_transformer_input, dim=1)
         local_transformer_input = self.local_transformer_in_projection(local_transformer_input)
         _mask = torch.ones(
-            local_transformer_input.size(0), local_transformer_input.size(1), device=local_transformer_input.device
+            local_transformer_input.size(0),
+            local_transformer_input.size(1),
+            device=local_transformer_input.device,
         )
-        local_transformer_output = self.local_transformer(local_transformer_input, _mask)['output']
+        local_transformer_output = self.local_transformer(local_transformer_input, _mask)["output"]
         if not targets_offset_by_one:
             local_transformer_output = local_transformer_output[:, :-1, :]
         else:
@@ -729,7 +773,9 @@ class LocalTransformerHelper:
         all_code_logits = torch.cat(all_code_logits, dim=1)
 
         all_code_logits = all_code_logits.view(
-            audio_codes_target.size(0), audio_codes_target.size(2) // self.frame_stacking_factor, -1
+            audio_codes_target.size(0),
+            audio_codes_target.size(2) // self.frame_stacking_factor,
+            -1,
         )
 
         return all_code_logits
@@ -770,9 +816,11 @@ class LocalTransformerHelper:
         all_preds = []
         for codebook_num in range(self.num_audio_codebooks * self.frame_stacking_factor):
             _mask = torch.ones(
-                local_transformer_input.size(0), local_transformer_input.size(1), device=local_transformer_input.device
+                local_transformer_input.size(0),
+                local_transformer_input.size(1),
+                device=local_transformer_input.device,
             )
-            local_transformer_output = self.local_transformer(local_transformer_input, _mask)['output']
+            local_transformer_output = self.local_transformer(local_transformer_input, _mask)["output"]
 
             lt_out_for_proj = self.local_transformer_audio_out_projection(local_transformer_output[:, -1, :])
             codebook_logits = self.local_transformer_out_projections[codebook_num](lt_out_for_proj)
@@ -789,19 +837,21 @@ class LocalTransformerHelper:
                 codebook_logits = codebook_logits.clamp(min=-100.0, max=100.0)
 
             for item_idx in unfinished_items:
-                codebook_logits[item_idx, self.audio_eos_id] = float('-inf')
+                codebook_logits[item_idx, self.audio_eos_id] = float("-inf")
             for item_idx in finished_items:
-                codebook_logits[item_idx, :] = float('-inf')
+                codebook_logits[item_idx, :] = float("-inf")
                 codebook_logits[item_idx, self.audio_eos_id] = 0.0
 
             codebook_logits = clear_forbidden_logits(
-                codebook_logits.unsqueeze(1), self.codebook_size, forbid_audio_eos=forbid_audio_eos
+                codebook_logits.unsqueeze(1),
+                self.codebook_size,
+                forbid_audio_eos=forbid_audio_eos,
             ).squeeze(1)
 
             codebook_logits_topk = torch.topk(codebook_logits, topk, dim=-1)[0]
             indices_to_remove = codebook_logits < codebook_logits_topk[:, -1].unsqueeze(-1)
             codebook_logits_rescored = codebook_logits.clone()
-            codebook_logits_rescored[indices_to_remove] = float('-inf')
+            codebook_logits_rescored[indices_to_remove] = float("-inf")
 
             if temperature <= 0.0:
                 codebook_preds = codebook_logits_rescored.argmax(dim=-1, keepdim=True)
@@ -893,9 +943,9 @@ class LocalTransformerHelper:
             _, topk_indices = torch.topk(confidences, k=n_unmasked, dim=1)
             if use_cfg:
                 actual_batch_size = topk_indices.size(0) // 2
-                assert (
-                    topk_indices[actual_batch_size:] == topk_indices[:actual_batch_size]
-                ).all(), "Topk indices are not the same for conditional and unconditional codes"
+                assert (topk_indices[actual_batch_size:] == topk_indices[:actual_batch_size]).all(), (
+                    "Topk indices are not the same for conditional and unconditional codes"
+                )
 
             unmasked_codes = torch.gather(sampled_codes, dim=1, index=topk_indices)
             codes.scatter_(dim=1, index=topk_indices, src=unmasked_codes)
@@ -907,7 +957,7 @@ class LocalTransformerHelper:
                 local_transformer_input = torch.cat([local_transformer_input, next_local_transformer_input], dim=1)
 
             _mask = torch.ones(B, codebook_seq_len + 1, device=device)
-            local_transformer_output = self.local_transformer(local_transformer_input, _mask)['output']
+            local_transformer_output = self.local_transformer(local_transformer_input, _mask)["output"]
 
             logits = []
             for codebook_num in range(codebook_seq_len):
@@ -933,15 +983,15 @@ class LocalTransformerHelper:
             logits = clear_forbidden_logits(logits, self.codebook_size, forbid_audio_eos=forbid_audio_eos)
 
             for item_idx in unfinished_items:
-                logits[item_idx, self.audio_eos_id] = float('-inf')
+                logits[item_idx, self.audio_eos_id] = float("-inf")
             for item_idx in finished_items:
-                logits[item_idx, :, :] = float('-inf')
+                logits[item_idx, :, :] = float("-inf")
                 logits[item_idx, :, self.audio_eos_id] = 0.0
 
             logits_topk = torch.topk(logits, topk, dim=-1)[0]
             indices_to_remove = logits < logits_topk[:, :, -1].unsqueeze(-1)
             logits_rescored = logits.clone()
-            logits_rescored[indices_to_remove] = float('-inf')
+            logits_rescored[indices_to_remove] = float("-inf")
             probs = torch.softmax(logits_rescored / temperature, dim=-1)
             sampled_codes = torch.multinomial(probs.view(B * codebook_seq_len, -1), 1).view(B, codebook_seq_len)
             if use_cfg:
@@ -957,16 +1007,18 @@ class LocalTransformerHelper:
                 confidences += noise
                 confidences[actual_batch_size:] = confidences[:actual_batch_size]
             confidence_eps = 0.1
-            assert (
-                confidences.max() + confidence_eps < max_confidence
-            ), f"Predicted confidence is approaching max_confidence: {confidences.max()}"
+            assert confidences.max() + confidence_eps < max_confidence, (
+                f"Predicted confidence is approaching max_confidence: {confidences.max()}"
+            )
             confidences.scatter_(
-                index=topk_indices, dim=1, src=max_confidence * torch.ones_like(topk_indices, dtype=torch.float)
+                index=topk_indices,
+                dim=1,
+                src=max_confidence * torch.ones_like(topk_indices, dtype=torch.float),
             )
         codes = sampled_codes
-        assert not (
-            codes == self.mask_token_id
-        ).any(), "Codes contain mask tokens after completion of MaskGit sampling"
+        assert not (codes == self.mask_token_id).any(), (
+            "Codes contain mask tokens after completion of MaskGit sampling"
+        )
 
         codes = codes.reshape(B, self.frame_stacking_factor, self.num_audio_codebooks).permute(0, 2, 1)
 

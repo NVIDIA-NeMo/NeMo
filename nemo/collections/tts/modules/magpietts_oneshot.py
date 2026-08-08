@@ -23,6 +23,8 @@ from torch import nn
 
 
 NORMALIZING_FLOW = "normalizing_flow"
+FLOW_MATCHING = "flow_matching"
+DIFFUSION = "diffusion"
 
 
 class OneShotLocalPredictor(ABC, nn.Module):
@@ -100,6 +102,40 @@ def create_oneshot_local_predictor(
             spline_min_bin_height=float(cfg.get("local_flow_spline_min_bin_height", 1e-3)),
             spline_min_derivative=float(cfg.get("local_flow_spline_min_derivative", 1e-3)),
             match_affine_parameter_count=bool(cfg.get("local_flow_match_affine_parameter_count", True)),
+        )
+
+    if predictor_type == FLOW_MATCHING:
+        from nemo.collections.tts.modules.magpietts_flow_matching import (
+            OneShotLocalFlowMatching,
+        )
+
+        return OneShotLocalFlowMatching(
+            acoustic_channels=acoustic_channels,
+            condition_channels=condition_channels,
+            hidden_channels=int(cfg.get("local_flow_matching_hidden_dim", 1536)),
+            n_layers=int(cfg.get("local_flow_matching_n_layers", 3)),
+            dropout=float(cfg.get("local_flow_matching_dropout", 0.0)),
+            time_embedding_dim=int(cfg.get("local_flow_matching_time_embedding_dim", 128)),
+            inference_steps=int(cfg.get("local_flow_matching_inference_steps", 8)),
+            solver=str(cfg.get("local_flow_matching_solver", "midpoint")),
+        )
+
+    if predictor_type == DIFFUSION:
+        from nemo.collections.tts.modules.magpietts_diffusion import (
+            OneShotLocalDiffusion,
+        )
+
+        return OneShotLocalDiffusion(
+            acoustic_channels=acoustic_channels,
+            condition_channels=condition_channels,
+            hidden_channels=int(cfg.get("local_diffusion_hidden_dim", 1536)),
+            n_layers=int(cfg.get("local_diffusion_n_layers", 3)),
+            dropout=float(cfg.get("local_diffusion_dropout", 0.0)),
+            time_embedding_dim=int(cfg.get("local_diffusion_time_embedding_dim", 128)),
+            training_timesteps=int(cfg.get("local_diffusion_training_timesteps", 1000)),
+            inference_steps=int(cfg.get("local_diffusion_inference_steps", 16)),
+            beta_schedule=str(cfg.get("local_diffusion_beta_schedule", "linear")),
+            ddim_eta=float(cfg.get("local_diffusion_ddim_eta", 0.0)),
         )
 
     raise ValueError(f"Unsupported one-shot local predictor type {predictor_type!r}.")

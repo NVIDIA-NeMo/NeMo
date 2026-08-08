@@ -1662,23 +1662,45 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
     }
     tar_kwargs_extra = {"indexed": indexed, **indexed_extra, **pack_extra} if indexed else {}
     is_tarred = config.get("tarred_audio_filepaths") is not None
+    manifest_filepath = config.manifest_filepath
+    manifest_is_scalar = isinstance(manifest_filepath, (str, Path))
+    manifest_is_flat_list = (
+        isinstance(manifest_filepath, (list, tuple, ListConfig))
+        and bool(manifest_filepath)
+        and all(isinstance(item, (str, Path)) for item in manifest_filepath)
+    )
+    tarred_audio_filepaths = config.get("tarred_audio_filepaths")
+    tar_is_scalar = isinstance(tarred_audio_filepaths, (str, Path))
+    tar_is_flat_list = (
+        isinstance(tarred_audio_filepaths, (list, tuple, ListConfig))
+        and bool(tarred_audio_filepaths)
+        and all(isinstance(item, (str, Path)) for item in tarred_audio_filepaths)
+    )
     if index_pack is not None:
-        if not isinstance(config.manifest_filepath, (str, Path)):
+        if not (manifest_is_scalar or manifest_is_flat_list):
             raise ValueError(
                 "Packed native NeMo datasets require manifest_filepath to be "
-                "a string/Path (brace expansion is supported); list forms are not."
+                "a string/Path or a non-empty flat list of strings/Paths; nested "
+                "and weighted list forms are not supported."
             )
-        if is_tarred and not isinstance(config.tarred_audio_filepaths, (str, Path)):
+        if is_tarred and not (tar_is_scalar or tar_is_flat_list):
             raise ValueError(
                 "Packed native NeMo datasets require tarred_audio_filepaths to "
-                "be a string/Path (brace expansion is supported); list forms are not."
+                "be a string/Path or a non-empty flat list of strings/Paths; nested "
+                "list forms are not supported."
             )
-    if isinstance(config.manifest_filepath, (str, Path)):
+        if is_tarred and manifest_is_flat_list != tar_is_flat_list:
+            raise ValueError(
+                "Packed native NeMo manifest_filepath and tarred_audio_filepaths "
+                "must both use scalar path specs or both use non-empty flat lists."
+            )
+    packed_flat_list = index_pack is not None and (manifest_is_flat_list or (is_tarred and tar_is_flat_list))
+    if manifest_is_scalar or packed_flat_list:
         if is_tarred and not metadata_only:
             cuts = CutSet(
                 LazyNeMoTarredIterator(
-                    config.manifest_filepath,
-                    tar_paths=config.tarred_audio_filepaths,
+                    manifest_filepath,
+                    tar_paths=tarred_audio_filepaths,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
                     slice_length=config.get("slice_length", None),
                     **tar_kwargs_extra,
@@ -1688,9 +1710,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
             if not force_finite:
                 cuts = cuts.repeat(preserve_id=True)
         else:
-            cuts = CutSet(
-                LazyNeMoIterator(config.manifest_filepath, **notar_kwargs, **notar_kwargs_extra, **common_kwargs)
-            )
+            cuts = CutSet(LazyNeMoIterator(manifest_filepath, **notar_kwargs, **notar_kwargs_extra, **common_kwargs))
     else:
         # Format option 1:
         #   Assume it's [[path1], [path2], ...] (same for tarred_audio_filepaths).

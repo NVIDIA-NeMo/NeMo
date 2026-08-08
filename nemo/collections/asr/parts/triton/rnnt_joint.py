@@ -88,7 +88,7 @@ if TRITON_AVAILABLE:
         within = row - start
         return batch_idx, within // states, within % states, states
 
-    @triton.autotune(configs=[triton.Config({}, num_warps=warps) for warps in (1, 2, 4, 8)], key=["hidden_size"])
+    @triton.autotune(configs=[triton.Config({}, num_warps=warps) for warps in (1, 2, 4)], key=["hidden_size"])
     @triton.jit
     def _packed_joint_fwd(
         encoder_ptr,
@@ -150,26 +150,16 @@ if TRITON_AVAILABLE:
                 num_warps=warps,
             )
             for frames, states, hidden, span, warps in (
-                (32, 1, 64, 32, 1),
-                (32, 1, 64, 64, 1),
-                (32, 1, 64, 128, 1),
-                (32, 1, 64, 64, 2),
-                (32, 1, 64, 128, 2),
-                (16, 1, 64, 64, 1),
                 (32, 1, 64, 32, 4),
-                (32, 1, 64, 64, 4),
                 (32, 1, 64, 128, 4),
-                (32, 1, 64, 256, 4),
-                (32, 1, 32, 128, 4),
                 (16, 1, 64, 64, 4),
-                (16, 4, 32, 128, 4),
                 (16, 4, 32, 256, 4),
-                (8, 8, 32, 64, 4),
-                (8, 4, 64, 128, 4),
             )
         ],
-        # How much transcript a program should own moves with how long the transcript is.
-        key=["hidden_size", "target_stride"],
+        # Keyed on the model's hidden size alone: the transcript extent changes every batch, and
+        # tuning on it would retune for the whole run to pick between configurations that measure
+        # the same on real shapes.
+        key=["hidden_size"],
         # Timing a config runs the kernel repeatedly, and both gradients may close with atomics, so
         # without this every trial would accumulate on top of the last.
         reset_to_zero=["grad_encoder_ptr", "grad_predictor_ptr"],
@@ -286,7 +276,7 @@ if TRITON_AVAILABLE:
         else:
             tl.atomic_add(address, total, mask=live)
 
-    @triton.autotune(configs=[triton.Config({}, num_warps=warps) for warps in (1, 2, 4, 8)], key=["vocab"])
+    @triton.autotune(configs=[triton.Config({}, num_warps=warps) for warps in (1, 2, 4)], key=["vocab"])
     @triton.jit
     def _packed_logprobs_fwd(
         logits_ptr,
@@ -329,7 +319,7 @@ if TRITON_AVAILABLE:
         tl.store(target_out_ptr + local, token_logit)
 
     @triton.autotune(
-        configs=[triton.Config({}, num_warps=warps) for warps in (1, 2, 4, 8)],
+        configs=[triton.Config({}, num_warps=warps) for warps in (1, 2, 4)],
         key=["vocab"],
         restore_value=["logits_ptr"],
     )

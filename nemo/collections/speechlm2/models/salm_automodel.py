@@ -1006,6 +1006,41 @@ class SALMAutomodel(LightningModule, HFHubMixin):
     def configure_optimizers(self):
         return configure_optimizers(self)
 
+    def _apply_mtp_training_mode(self, training_mode: str) -> None:
+        """Apply the optimizer-facing parameter policy for an MTP run.
+
+        ``joint`` preserves the recipe's ordinary freeze policy. ``head_only``
+        freezes every parameter outside ``llm.mtp`` and guarantees that the
+        head wins over any user-supplied ``freeze_params`` expression. The
+        latter is intentionally strict: speech encoder, modality adapter,
+        backbone, embeddings, and LM head all remain fixed.
+
+        This runs after model/checkpoint setup so loading is unaffected, and
+        before Lightning constructs the optimizer.
+        """
+        if training_mode != "head_only":
+            return
+        if not self._mtp_enabled:
+            raise RuntimeError("MTP training_mode='head_only' requires an attached MTP head.")
+
+        mtp_param_ids = {id(param) for param in self.llm.mtp.parameters()}
+        if not mtp_param_ids:
+            raise RuntimeError("MTP training_mode='head_only' found an MTP module with no parameters.")
+        for param in self.parameters():
+            param.requires_grad_(id(param) in mtp_param_ids)
+
+        # freeze_and_subset applies recipe regexes when configure_optimizers is
+        # called. Ensure broad expressions such as '^llm\\..+$' cannot remove
+        # the one parameter namespace that head-only mode promises to train.
+        keep_pattern = r"^llm\.mtp\..+$"
+        if "prevent_freeze_params" not in self.cfg:
+            self.cfg.prevent_freeze_params = []
+        if keep_pattern not in self.cfg.prevent_freeze_params:
+            self.cfg.prevent_freeze_params.append(keep_pattern)
+
+        trainable = sum(param.numel() for param in self.llm.mtp.parameters() if param.requires_grad)
+        logging.info(f"MTP training mode=head_only: trainable MTP parameters={trainable}; all others frozen")
+
     def _build_and_attach_mtp_head(self, mtp_cfg, dtype) -> None:
         """Construct the NemotronV3 MTP head and attach it as ``self.llm.mtp``.
 
@@ -1135,6 +1170,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # So we load the LLM normally and then construct + attach the head ourselves.
         mtp_cfg = self.cfg.get("mtp", None)
         mtp_requested = mtp_cfg is not None and mtp_cfg.get("enabled", False)
+        mtp_training_mode = str(mtp_cfg.get("training_mode", "joint")) if mtp_requested else "disabled"
+        if mtp_requested and mtp_training_mode not in {"joint", "head_only"}:
+            raise ValueError(
+                f"Unknown mtp.training_mode {mtp_training_mode!r}; expected 'joint' or 'head_only' when MTP is enabled"
+            )
+        logging.info(f"MTP training mode={mtp_training_mode}")
         if mtp_requested:
             # MTP supports both BSHD and packed THD. For THD the MTP loss must
             # receive cu_seqlens so target rolling is masked at packed sequence
@@ -1199,6 +1240,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         if device_mesh is None:
             maybe_load_pretrained_models(self)
+            self._apply_mtp_training_mode(mtp_training_mode)
             return
 
         # Cast perception to training dtype BEFORE FSDP2 wrapping.
@@ -1244,6 +1286,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # (fresh optimizer/scheduler). Must happen after FSDP wrapping so that
         # DCP loading can fill DTensor parameters with correct shards.
         maybe_load_pretrained_models(self)
+
+        self._apply_mtp_training_mode(mtp_training_mode)
 
     @property
     def oomptimizer_schema(self) -> dict:

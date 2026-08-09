@@ -103,6 +103,101 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
     assert not model._mtp_enabled
 
 
+@pytest.mark.parametrize("training_mode", ["joint", "head_only"])
+def test_base_checkpoint_attaches_fresh_mtp_for_both_training_modes(monkeypatch, training_mode):
+    """A checkpoint with no native head gets a fresh head in either enabled mode."""
+    from omegaconf import DictConfig
+
+    import nemo.collections.speechlm2.models.salm_automodel as salm_module
+
+    class _Perception(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.adapter = torch.nn.Linear(4, 4)
+
+        def set_activation_checkpointing(self, _enabled):
+            return None
+
+    class _LLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = torch.nn.Linear(4, 4)
+            self.config = type("Config", (), {"hidden_size": 4})()
+            self.mtp = None
+
+    model = _bare_model()
+    model.cfg = DictConfig(
+        {
+            "pretrained_llm": "base-checkpoint-without-mtp",
+            "pretrained_asr": "unused-in-test",
+            "pretrained_weights": True,
+            "freeze_params": ["^.+$"] if training_mode == "head_only" else [],
+            "prevent_freeze_params": [],
+            "mtp": {"enabled": True, "training_mode": training_mode},
+        }
+    )
+    model._trainer = None
+    model._use_fsdp = False
+    model._use_tp = False
+    model.setup_moe_options = lambda: None
+
+    monkeypatch.setattr(salm_module, "load_pretrained_automodel_llm", lambda *_args, **_kwargs: _LLM())
+    monkeypatch.setattr(
+        salm_module, "setup_speech_encoder", lambda model, **_kwargs: setattr(model, "perception", _Perception())
+    )
+    monkeypatch.setattr(salm_module, "update_perception_output_dim", lambda _model: None)
+    monkeypatch.setattr(salm_module, "maybe_load_pretrained_models", lambda _model: None)
+
+    def _attach_fresh_head(self, _mtp_cfg, _dtype):
+        self.llm.mtp = torch.nn.Linear(4, 4)
+
+    monkeypatch.setattr(SALMAutomodel, "_build_and_attach_mtp_head", _attach_fresh_head)
+
+    SALMAutomodel.configure_model(model)
+
+    assert model._mtp_enabled
+    assert all(param.requires_grad for param in model.llm.mtp.parameters())
+    if training_mode == "head_only":
+        assert all(not param.requires_grad for param in model.llm.backbone.parameters())
+        assert all(not param.requires_grad for param in model.perception.parameters())
+        assert r"^llm\.mtp\..+$" in model.cfg.prevent_freeze_params
+        from nemo.collections.speechlm2.parts.optim_setup import freeze_and_subset
+
+        optimizer_params = list(
+            freeze_and_subset(model.named_parameters(), model.cfg.freeze_params, model.cfg.prevent_freeze_params)
+        )
+        assert {id(param) for param in optimizer_params} == {id(param) for param in model.llm.mtp.parameters()}
+    else:
+        assert all(param.requires_grad for param in model.llm.backbone.parameters())
+        assert all(param.requires_grad for param in model.perception.parameters())
+
+
+def test_invalid_mtp_training_mode_fails_before_loading(monkeypatch):
+    from omegaconf import DictConfig
+
+    import nemo.collections.speechlm2.models.salm_automodel as salm_module
+
+    model = _bare_model()
+    model.cfg = DictConfig(
+        {
+            "pretrained_llm": "unused",
+            "pretrained_asr": "unused",
+            "mtp": {"enabled": True, "training_mode": "backbone_only"},
+        }
+    )
+    model._trainer = None
+    model._use_fsdp = False
+    model._use_tp = False
+    monkeypatch.setattr(
+        salm_module,
+        "load_pretrained_automodel_llm",
+        lambda *_args, **_kwargs: pytest.fail("invalid mode must fail before loading"),
+    )
+
+    with pytest.raises(ValueError, match="mtp.training_mode"):
+        SALMAutomodel.configure_model(model)
+
+
 # ---------------------------------------------------------------------------
 # forward: mtp_per_depth_h extraction
 # ---------------------------------------------------------------------------

@@ -1239,10 +1239,6 @@ def _is_oom_like(error: RuntimeError) -> bool:
         "cuFFT error: CUFFT_INTERNAL_ERROR" in error_msg
         or "CUDA out of memory" in error_msg
         or "CUDACachingAllocator" in error_msg
-        or (
-            "torch.utils.checkpoint.CheckpointError" in error_msg
-            and "Recomputed values for the following tensors have different metadata" in error_msg
-        )
     )
 
 

@@ -223,7 +223,7 @@ BLEU score relies on TorchMetrics' SacreBLEU implementation and supports all Sac
 
 * ``"13a"`` - Default WMT tokenizer (mteval-v13a script compatible)
 * ``"none"`` - No tokenization applied
-* ``"intl"`` - International tokenization (mteval-v14 script compatible)
+* ``"intl"`` - International tokenization (mteval-v14 script compatible)  
 * ``"char"`` - Character-level tokenization (language-agnostic)
 * ``"zh"`` - Chinese tokenization (separates Chinese characters, uses 13a for non-Chinese)
 * ``"ja-mecab"`` - Japanese tokenization using MeCab morphological analyzer
@@ -751,7 +751,7 @@ conformer as encoder).
 Hybrid-Transducer-CTC with Prompt Conditioning Configuration
 ------------------------------------------------------------
 
-The :ref:`Hybrid-Transducer-CTC model with prompt conditioning <Hybrid-Transducer-CTC-Prompt_model>`
+The :ref:`Hybrid-Transducer-CTC model with prompt conditioning <Hybrid-Transducer-CTC-Prompt_model>` 
 (``EncDecHybridRNNTCTCBPEModelWithPrompt``) extends the base hybrid model to support prompt-based multilingual ASR/AST.
 
 **Key Configuration Parameters:**
@@ -789,7 +789,7 @@ The model requires training data with prompt annotations when using Lhotse datas
       prompt_field: "target_lang"     # Field name for prompt extraction
       prompt_dictionary: ${model.model_defaults.prompt_dictionary}
       num_prompts: ${model.model_defaults.num_prompts}
-
+      
     validation_ds:
       use_lhotse: true
       initialize_prompt_feature: true

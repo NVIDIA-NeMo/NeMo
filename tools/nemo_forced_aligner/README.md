@@ -26,5 +26,5 @@ NFA is a tool for generating token-, word- and segment-level timestamps of speec
 	<img src="https://github.com/NVIDIA-NeMo/Speech/releases/download/v1.20.0/nfa_run.png">
 </p>
 
-## Documentation
+## Documentation 
 More documentation is available [here](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/tools/nemo_forced_aligner.html).

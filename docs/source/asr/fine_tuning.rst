@@ -155,7 +155,7 @@ The most important parameters for fine-tuning:
      - Number of fine-tuning epochs (typically 50-100 for domain adaptation)
    * - ``model.optim.lr``
      - Learning rate (use lower than training from scratch, e.g., 1e-4 to 1e-5)
-   * - ``model.train_ds.manifest_filepath``
+   * - ``model.train_ds.manifest_filepath``     
      - Path to training manifest (NeMo JSON format)
    * - ``model.train_ds.batch_size``
      - Batch size per GPU

@@ -151,7 +151,7 @@ model:
         slm_sr: 16000
         input_sr: ${sample_rate}
         slm_hidden: 768
-        slm_layers: 13
+        slm_layers: 13 
         initial_channel: 64
         use_spectral_norm: false
 

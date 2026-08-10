@@ -315,7 +315,7 @@ High-level overview of the context-biasing words replacement with CTC-WS method:
 More details about CTC-WS context-biasing can be found in the `tutorial <https://github.com/NVIDIA-NeMo/Speech/tree/main/tutorials/asr/ASR_Context_Biasing.ipynb>`__.
 
 To use CTC-WS context-biasing, you need to create a context-biasing text file that contains words/phrases to be boosted, with its transcriptions (spellings) separated by underscore.
-Multiple transcriptions can be useful for abbreviations ("gpu" -> "g p u"), compound words ("nvlink" -> "nv link"),
+Multiple transcriptions can be useful for abbreviations ("gpu" -> "g p u"), compound words ("nvlink" -> "nv link"), 
 or words with common mistakes in the case of our ASR model ("nvidia" -> "n video").
 
 Example of the context-biasing file:
@@ -329,7 +329,7 @@ Example of the context-biasing file:
     nvlink_nvlink_nv link
     ray tracing_ray tracing
 
-The main script for CTC-WS context-biasing in NeMo is:
+The main script for CTC-WS context-biasing in NeMo is: 
 
 .. code-block::
 
@@ -349,7 +349,7 @@ The script will run the recognition with all the combinations of the parameters 
 
 .. code-block::
 
-    # Context-biasing with the CTC-WS method for CTC ASR model
+    # Context-biasing with the CTC-WS method for CTC ASR model 
     python {NEMO_DIR_PATH}/scripts/asr_context_biasing/eval_greedy_decoding_with_context_biasing.py \
             nemo_model_file={ctc_model_name} \
             input_manifest={test_nemo_manifest} \

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Use this script to install KenLM, OpenSeq2Seq decoder, Flashlight decoder, OpenGRM Ngram tool to contaner
+# Use this script to install KenLM, OpenSeq2Seq decoder, Flashlight decoder, OpenGRM Ngram tool to contaner 
 
 # How to use? Build it from NeMo root folder:
 # 1. git clone https://github.com/NVIDIA-NeMo/Speech.git && cd NeMo

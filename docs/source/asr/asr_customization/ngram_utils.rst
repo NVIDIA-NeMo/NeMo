@@ -12,14 +12,14 @@ NeMo utilizes the KenLM library (`https://github.com/kpu/kenlm`) for building ef
 
 .. note::
 
-    KenLM is not installed by default in NeMo.
-    Please see the installation instructions in the script:
+    KenLM is not installed by default in NeMo.  
+    Please see the installation instructions in the script:  
     `scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh <https://github.com/NVIDIA-NeMo/Speech/blob/stable/scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh>`__.
 
-    Alternatively, you can build a Docker image with all required dependencies using:
+    Alternatively, you can build a Docker image with all required dependencies using:  
     `scripts/installers/Dockerfile.ngramtools <https://github.com/NVIDIA-NeMo/Speech/blob/stable/scripts/installers/Dockerfile.ngramtools>`__.
 
-The script for training an n-gram language model with KenLM is available here:
+The script for training an n-gram language model with KenLM is available here:  
 `scripts/asr_language_modeling/ngram_lm/train_kenlm.py <https://github.com/NVIDIA-NeMo/Speech/blob/stable/scripts/asr_language_modeling/ngram_lm/train_kenlm.py>`__.
 
 This script supports training n-gram LMs on both character-level and BPE-level encodings, which are automatically detected from the model type. The resulting language models can then be used with beam search decoders integrated on top of ASR models.

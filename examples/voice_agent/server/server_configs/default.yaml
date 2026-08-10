@@ -42,7 +42,7 @@ llm:
   # model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
   # model_config: "./server_configs/llm_configs/nemotron_nano_v3.yaml"
   # if `model_config` is not specified, and the llm.model is not in model_registry.yaml, it will use `llm_configs/hf_llm_generic.yaml`
-  # model: "Qwen/Qwen2.5-7B-Instruct"
+  # model: "Qwen/Qwen2.5-7B-Instruct" 
   # model_config: "./server_configs/llm_configs/qwen2.5-7B.yaml"
   # model: "Qwen/Qwen3-8B"
   # model_config: "./server_configs/llm_configs/qwen3-8B.yaml"

@@ -106,7 +106,7 @@ In order to obtain alignments from CTC or RNNT models (previously called ``logpr
 .. code-block:: python
 
     hyps = model.transcribe(audio=[list of audio files], batch_size=BATCH_SIZE, return_hypotheses=True)
-    logprobs = hyps[0].alignments
+    logprobs = hyps[0].alignments  
 
 -----
 
@@ -187,10 +187,10 @@ Multi-task models that use structured prompts require additionl task tokens as i
 .. code-block:: python
 
     from nemo.collections.asr.models import EncDecMultiTaskModel
-
+   
     # load model
     canary_model = EncDecMultiTaskModel.from_pretrained('nvidia/canary-1b-v2')
-
+   
     # update dcode params
     decode_cfg = canary_model.cfg.decoding
     decode_cfg.beam.beam_size = 1
@@ -213,10 +213,10 @@ Here the manifest file should be a json file where each line has the following f
        "source_lang": "en",  # language of the audio input, set `source_lang`==`target_lang` for ASR
        "target_lang": "en",  # language of the text output
        "pnc": "yes",  # whether to have PnC output, choices=['yes', 'no']
-       "answer": "na", # set to non-dummy strings to calculate WER/BLEU scores
+       "answer": "na", # set to non-dummy strings to calculate WER/BLEU scores 
     }
 
-Note that using manifest allows to specify the task configuration for each audio individually. If we want to use the same task configuration for all the audio files, it can be specified in `transcribe` method directly.
+Note that using manifest allows to specify the task configuration for each audio individually. If we want to use the same task configuration for all the audio files, it can be specified in `transcribe` method directly. 
 
 .. code-block:: python
 
@@ -261,7 +261,7 @@ Automatic Speech Recognition Models
 
 Speech Recognition
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Below is a list of the high quality ASR models available in NeMo for specific languages. All ASR models can be found in :doc:`ASR Model Checkpoints <./asr_checkpoints>`.
+Below is a list of the high quality ASR models available in NeMo for specific languages. All ASR models can be found in :doc:`ASR Model Checkpoints <./asr_checkpoints>`. 
 
 Multilingual Multitask
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -269,7 +269,7 @@ Multilingual Multitask
 .. csv-table::
    :file: data/benchmark_canary.csv
    :align: left
-   :widths: 50,50
+   :widths: 50,50  
    :header-rows: 1
 
 Parakeet
@@ -310,10 +310,10 @@ The Hybrid-Transducer-CTC model with prompt conditioning (``EncDecHybridRNNTCTCB
 .. code-block:: python
 
   import nemo.collections.asr as nemo_asr
-
+  
   # Load the model
   model = nemo_asr.models.EncDecHybridRNNTCTCBPEModelWithPrompt.restore_from("path/to/model.nemo")
-
+  
   # Transcribe with language prompts
   transcriptions = model.transcribe(
       paths2audio_files=["audio1.wav", "audio2.wav"],

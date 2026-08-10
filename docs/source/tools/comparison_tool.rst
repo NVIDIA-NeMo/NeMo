@@ -1,7 +1,7 @@
 Comparison tool for ASR Models
 ==============================
 
-The Comparison Tool (CT) allows to compare predictions of different ASR models at word accuracy and utterance level.
+The Comparison Tool (CT) allows to compare predictions of different ASR models at word accuracy and utterance level. 
 
 +--------------------------------------------------------------------------------------------------------------------------+
 | **Comparison tool features:**                                                                                            |
@@ -77,7 +77,7 @@ SDE has three pages if `--names_compared` argument is not empty:
         :align: center
         :width: 800px
         :alt: SDE Statistics
-
+        
 
 * `Samples` (to allow navigation across the entire dataset and exploration of individual utterances)
 
@@ -122,7 +122,7 @@ If there is a pre-trained ASR model, then the JSON manifest file can be extended
 .. code-block:: bash
 
     python examples/asr/transcribe_speech.py pretrained_name=<ASR_MODEL_NAME> dataset_manifest=<JSON_FILENAME> append_pred=False pred_name_postfix=<model_name_1>
-
+    
 
 More information about transcribe_speech parameters is available in the code: `NeMo/examples/asr/transcribe_speech.py <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/transcribe_speech.py>`__.
 .
@@ -164,19 +164,19 @@ At the next field you could choose metric: WER or CER
         :align: center
         :width: 800px
         :alt: Switch mode
+		
+When an utterance level is selected, it is possible to click on a point on the graph, and the corresponding utterance will be automatically selected. 
 
-When an utterance level is selected, it is possible to click on a point on the graph, and the corresponding utterance will be automatically selected.
-
-If audio files are available, there will be an option to listen to the audio recording and view its waveform.
+If audio files are available, there will be an option to listen to the audio recording and view its waveform. 
 
     .. image:: images/scr_11.png
         :align: center
         :width: 800px
         :alt: Audio player
-
+		
 In this mode, filtering is still available as well.
 
 **Limitations**
 
-To ensure efficient processing and avoid issues with memory limitations and slow performance, it is recommended to keep the manifests within the limits of 320 hours or around 170,000 utterances.
+To ensure efficient processing and avoid issues with memory limitations and slow performance, it is recommended to keep the manifests within the limits of 320 hours or around 170,000 utterances. 
 Exceeding these limits may result in both memory constraints and slower processing.

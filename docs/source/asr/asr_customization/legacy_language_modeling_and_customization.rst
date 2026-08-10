@@ -7,7 +7,7 @@ N-gram Language Model Fusion
 In this approach, an N-gram LM is trained on text data, then it is used in fusion with beam search decoding to find the
 best candidates. The beam search decoders in NeMo support language models trained with KenLM library (
 `https://github.com/kpu/kenlm <https://github.com/kpu/kenlm>`__).
-The beam search decoders and KenLM library are not installed by default in NeMo.
+The beam search decoders and KenLM library are not installed by default in NeMo. 
 You need to install them to be able to use beam search decoding and N-gram LM.
 Please refer to `scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh <https://github.com/NVIDIA-NeMo/Speech/blob/stable/scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh>`__
 on how to install them. Alternatively, you can build Docker image
@@ -244,7 +244,7 @@ Weighted Finite-State Transducers (WFST) are finite-state machines with input an
     More precisely, WFST decoding is more of a greedy N-depth search with LM.
     Thus, it is asymptotically worse than conventional beam search decoding algorithms, but faster.
 
-**WARNING**
+**WARNING**  
 At the moment, NeMo supports WFST decoding only for CTC models and word-based LMs.
 
 To run WFST decoding in NeMo, one needs to provide a NeMo ASR model and either an ARPA LM or a WFST LM (advanced). An ARPA LM can be built from source text with KenLM as follows: ``<kenlm_bin_path>/lmplz -o <ngram_length> --arpa <out_arpa_path> --prune <ngram_prune>``.

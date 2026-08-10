@@ -39,7 +39,7 @@ See the [model architecture](#model-architecture) section and [NeMo documentatio
 To train, fine-tune, or experiment with the model, install the PyTorch build for your platform first, then install [NVIDIA NeMo](https://docs.nvidia.com/nemo/speech/nightly/starthere/install.html) with the extras you need.
 ```
 pip install 'nemo-toolkit[all]'
-```
+``` 
 
 ## How to Use this Model
 
@@ -150,7 +150,7 @@ model = ModelPT.from_pretrained("{repo_id}")
 ### NOTE
 
     An example is provided below for ASR metrics list that can be added to the top of the README
-
+    
     model-index:
     - name: PUT_MODEL_NAME
       results:
@@ -182,7 +182,7 @@ model = ModelPT.from_pretrained("{repo_id}")
           type: wer
           value: 14.11
 
-Provide any caveats about the results presented in the top of the discussion so that nuance is not lost.
+Provide any caveats about the results presented in the top of the discussion so that nuance is not lost. 
 
 It should ideally be in a tabular format (you can use the following website to make your tables in markdown format - https://www.tablesgenerator.com/markdown_tables)**
 
@@ -193,7 +193,7 @@ It should ideally be in a tabular format (you can use the following website to m
 
 ### Note
 
-    An example is provided below
+    An example is provided below 
 
     Since this model was trained on publicly available speech datasets, the performance of this model might degrade for speech which includes technical terms, or vernacular that the model has not been trained on. The model might also perform worse for accented speech.
 

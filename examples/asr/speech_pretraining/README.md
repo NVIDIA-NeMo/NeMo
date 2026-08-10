@@ -1,6 +1,6 @@
 # Speech Self-Supervised Learning
 
-This directory contains example scripts to self-supervised speech models.
+This directory contains example scripts to self-supervised speech models. 
 
 There are two main types of supported self-supervised learning methods:
 - [Wav2vec-BERT](https://arxiv.org/abs/2108.06209): `speech_pre_training.py`
@@ -24,7 +24,7 @@ The dataset format follows that of ASR models, but no groundtruth transcriptions
 Please refer to the [ASR dataset documentation](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/datasets.html#preparing-custom-asr-data%60) for more details.
 
 
-For most efficient data loading, please refer to
-- [lhotse dataloading](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/datasets.html#lhotse-dataloading)
+For most efficient data loading, please refer to 
+- [lhotse dataloading](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/datasets.html#lhotse-dataloading) 
 - [pre-compute bucket durations](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/datasets.html#pre-computing-bucket-duration-bins)
 - [optimizing GPU memory usage](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/datasets.html#pushing-gpu-utilization-to-the-limits-with-bucketing-and-oomptimizer)

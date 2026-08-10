@@ -28,12 +28,6 @@ from nemo.core.neural_types.elements import AudioSignal
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging, model_utils
 
-PYNINI_AVAILABLE = True
-try:
-    import nemo_text_processing
-except (ImportError, ModuleNotFoundError):
-    PYNINI_AVAILABLE = False
-
 
 class NeedsNormalizer:
     """Base class for all TTS models that needs text normalization(TN)"""
@@ -42,7 +36,7 @@ class NeedsNormalizer:
         if "text_normalizer" in cfg:
             if not PYNINI_AVAILABLE:
                 logging.error(
-                    "`nemo_text_processing` not installed, see https://github.com/NVIDIA-NeMo/Speech-text-processing for more details."
+                    "`nemo_text_processing` not installed, see https://github.com/NVIDIA/NeMo-text-processing for more details."
                 )
                 logging.error("The normalizer will be disabled.")
                 return

@@ -264,7 +264,7 @@ and stability. To use EMA, set the following parameters via YAML or :class:`~nem
 
     Fault tolerance ("FT") relies on a special launcher (``ft_launcher``), which is a modified ``torchrun``. 
     The FT launcher runs background processes called rank monitors. **You need to use ft_launcher to start 
-    your workload if you are using FT**. I.e., `NeMo-Framework-Launcher <https://github.com/NVIDIA-NeMo/Speech-Framework-Launcher>`_  
+    your workload if you are using FT**. I.e., `NeMo-Framework-Launcher <https://github.com/NVIDIA/NeMo-Framework-Launcher>`_  
     can be used to generate SLURM batch scripts with FT support. 
 
     Each training process (rank) sends `heartbeats` to its monitor during training and validation steps.

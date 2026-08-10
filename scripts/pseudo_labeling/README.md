@@ -14,7 +14,7 @@ TopIPL relies on the following components:
 
 - **[`SDPNeMoRunIPLProcessor`]**  
   Commands for running IPL are generated and submitted using SDP processors and NeMo-Run.  
-  See instructions for usage [here](https://github.com/NVIDIA-NeMo/Speech-speech-data-processor/blob/main/sdp/processors/ipl/README.md).
+  See instructions for usage [here](https://github.com/NVIDIA/NeMo-speech-data-processor/blob/main/sdp/processors/ipl/README.md).
 
 - **Training Callback: `IPLEpochStopperCallback`**  
   Add this to your training config under `exp_manager` to **stop training at the end of each epoch**, enabling pseudo-label update:

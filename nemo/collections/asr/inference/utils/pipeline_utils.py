@@ -310,3 +310,58 @@ def seconds_to_frames(seconds: float | int | Iterable[float | int], model_stride
         return [int(s / model_stride_in_secs) for s in seconds]
 
     raise ValueError(f"Invalid type for seconds: {type(seconds)}")
+
+
+def filter_token_triples(
+    tokens: list[int], timesteps: list[int], confidences: list[float], token_ids_to_remove: set[int]
+) -> tuple[list[int], list[int], list[float]]:
+    """
+    Remove the given token ids from aligned (tokens, timesteps, confidences) lists.
+    Args:
+        tokens: (list[int]) Token ids.
+        timesteps: (list[int]) Timesteps aligned with tokens.
+        confidences: (list[float]) Confidences aligned with tokens.
+        token_ids_to_remove: (set[int]) Token ids to filter out.
+    Returns:
+        (tuple[list[int], list[int], list[float]]) Filtered aligned lists.
+    """
+    kept = [
+        (token, timestep, confidence)
+        for token, timestep, confidence in zip(tokens, timesteps, confidences)
+        if token not in token_ids_to_remove
+    ]
+    if not kept:
+        return [], [], []
+    filtered_tokens, filtered_timesteps, filtered_confidences = (list(column) for column in zip(*kept))
+    return filtered_tokens, filtered_timesteps, filtered_confidences
+
+
+def filter_tokens_from_greedy_output(
+    output: dict, labels: list[int], token_ids_to_remove: set[int], blank_id: int
+) -> tuple[dict, list[int]]:
+    """
+    Remove the given token ids (e.g. language tags emitted by multilingual models in "auto" mode)
+    from a greedy-decoder chunk output, keeping tokens/timesteps/confidences aligned.
+    The removed tokens are also replaced with blanks in the label buffer so that
+    they are not counted as speech during EOU detection.
+    Args:
+        output: (dict) Greedy decoder output with "tokens", "timesteps", "confidences",
+            "last_token" and "last_token_idx" keys.
+        labels: (list[int]) Current labels (including blanks) aligned with the chunk frames.
+        token_ids_to_remove: (set[int]) Token ids to filter out.
+        blank_id: (int) Blank token id used in the label buffer.
+    Returns:
+        (tuple[dict, list[int]]) Filtered output and labels.
+    """
+    if not token_ids_to_remove or not output["tokens"]:
+        return output, labels
+
+    tokens, timesteps, confidences = filter_token_triples(
+        output["tokens"], output["timesteps"], output["confidences"], token_ids_to_remove
+    )
+    labels = [blank_id if label in token_ids_to_remove else label for label in labels]
+    output = dict(output)
+    output["tokens"], output["timesteps"], output["confidences"] = tokens, timesteps, confidences
+    output["last_token"] = tokens[-1] if tokens else None
+    output["last_token_idx"] = timesteps[-1] if timesteps else None
+    return output, labels

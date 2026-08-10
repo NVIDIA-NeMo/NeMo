@@ -34,14 +34,14 @@ class T5NMTPromptFormatter(PromptFormatter):
     OUTPUT_ROLE = "assistant"
     TEMPLATE = {
         "user": {
-            "template": f"|target_lang| |message|",
+            "template": "|target_lang| |message|",
             "slots": {
                 "target_lang": Modality.Text,
                 "message": Modality.Text,
             },
         },
         OUTPUT_ROLE: {
-            "template": f"|message|",
+            "template": "|message|",
             "slots": {
                 "message": Modality.Text,
             },
@@ -61,7 +61,6 @@ class T5NMTPromptFormatter(PromptFormatter):
 
 @registered_prompt_format_fn(Cut, T5NMTPromptFormatter)
 def t5nmt(cut: Cut, prompt: T5NMTPromptFormatter) -> dict[str, torch.Tensor]:
-    ans = defaultdict(list)
     if isinstance(cut, MixedCut):
         cut = cut._first_non_padding_cut
     if not isinstance(cut, MonoCut):

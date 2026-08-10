@@ -343,7 +343,7 @@ def test_prepare_packed_llm_inputs_attention_kwargs_reach_te_preprocessor():
     Regression for: ``prepare_packed_llm_inputs`` previously emitted
     ``max_seqlen_q``/``max_seqlen_kv`` (plural), but the preprocessor only
     inspects the singular ``max_seqlen`` key in the ``cu_seqlens`` branch
-    (``Automodel/.../attention/utils.py``). The plural keys were silently
+    (``nemo_automodel/.../attention/utils.py``). The plural keys were silently
     dropped, TE fell back to a degenerate varlen path, and step-1 backward
     produced NaN gradients that poisoned every subsequent step.
     """
@@ -372,7 +372,7 @@ def test_prepare_packed_llm_inputs_attention_kwargs_reach_te_preprocessor():
     assert "cu_seqlens_padded" not in llm_kwargs, (
         "Standard Automodel pipeline emits only `cu_seqlens`, never both `cu_seqlens` "
         "and `cu_seqlens_padded`. Passing both activates the `pad_between_seqs=True` "
-        "branch in Automodel/.../attention/utils.py, routing TE down a different path."
+        "branch in nemo_automodel/.../attention/utils.py, routing TE down a different path."
     )
 
     # Run the LLM kwargs through the preprocessor exactly as the attention

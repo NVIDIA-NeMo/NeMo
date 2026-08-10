@@ -236,6 +236,22 @@ def _is_target_allowed(target: str) -> bool:
             except (ImportError, TypeError):
                 return False
 
+        if target.startswith("nemo.collections.tts.parts.preprocessing."):
+            try:
+                from nemo.collections.tts.parts.preprocessing.audio_trimming import AudioTrimmer
+
+                return issubclass(obj, AudioTrimmer)
+            except (ImportError, TypeError):
+                return False
+
+        if target.startswith("nemo.collections.tts.parts.utils.callbacks"):
+            try:
+                from nemo.collections.tts.parts.utils.callbacks import ArtifactGenerator
+
+                return issubclass(obj, ArtifactGenerator)
+            except (ImportError, TypeError):
+                return False
+
         if target.startswith("nemo.collections.audio.parts.submodules.flow."):
             try:
                 from nemo.collections.audio.parts.submodules.flow import (

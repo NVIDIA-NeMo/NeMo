@@ -103,7 +103,7 @@ model:
   pronunciation_control_g2p:
     en:
       _target_: nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p
-      phoneme_dict: "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv23.01.txt"
+      phoneme_dict: "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv26.07.txt"
       heteronyms: "scripts/tts_dataset_files/heteronyms-052722"
       phoneme_probability: 0.3
       ignore_ambiguous_words: false

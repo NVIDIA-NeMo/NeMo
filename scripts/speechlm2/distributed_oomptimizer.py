@@ -98,7 +98,13 @@ import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, IterableDataset
 
-from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
+from nemo.core.neural_types import (
+    AudioSignal,
+    LabelsType,
+    LengthsType,
+    MaskType,
+    NeuralType,
+)
 from nemo.utils import logging
 from nemo.utils.oomptimizer import SequenceLengthResolver
 from nemo.utils.oomptimizer import is_2d_bucketing as _is_2d_bucketing

@@ -416,6 +416,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.local_transformer_type = LocalTransformerType(cfg.get('local_transformer_type', 'none').lower())
         logging.info(f"Local transformer type: {self.local_transformer_type}")
         if self.local_transformer_type.is_oneshot:
+            self.acoustic_embedding_noise = float(cfg.get('acoustic_embedding_noise', 0.0))
+            if self.acoustic_embedding_noise < 0.0:
+                raise ValueError(
+                    f"acoustic_embedding_noise must be non-negative, got {self.acoustic_embedding_noise}."
+                )
+            logging.info("Teacher-forced acoustic embedding noise: %s", self.acoustic_embedding_noise)
             if self._codec_converter is not None:
                 raise ValueError("One-shot acoustic prediction does not support model.vector_quantizer conversion.")
             self.num_semantic_codebooks = int(cfg.get("num_semantic_codebooks", 1))

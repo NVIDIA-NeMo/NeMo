@@ -32,6 +32,9 @@ model:
   load_cached_codes_if_available: false
   local_transformer_type: normalizing_flow
   frame_stacking_factor: 1
+  # Standard deviation of Gaussian noise added only to valid teacher-forced acoustic inputs during training.
+  # The acoustic prediction target and validation/inference inputs remain clean.
+  acoustic_embedding_noise: 0.0
   local_flow_hidden_dim: 1536
   local_flow_n_flows: 4
   local_flow_n_layers: 3

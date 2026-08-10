@@ -1038,6 +1038,14 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 )
                 acoustic_inputs = acoustic_inputs.masked_fill(user_to_agent.unsqueeze(1), 0.0)
 
+        if self.training and self.acoustic_embedding_noise > 0.0:
+            valid_input = get_mask_from_lengths(target_lens, x=semantic_inputs).bool().to(semantic_inputs.device)
+            acoustic_frame = (semantic_inputs < self.codebook_size).all(dim=1)
+            noise_mask = (valid_input & acoustic_frame).unsqueeze(1).to(acoustic_inputs.dtype)
+            acoustic_inputs = acoustic_inputs + (
+                torch.randn_like(acoustic_inputs) * self.acoustic_embedding_noise * noise_mask
+            )
+
         audio_embedded = self.embed_flow_audio_state(semantic_inputs, acoustic_inputs)
         max_delay = delay.max().item()
         zero_delay = audio_embedded.new_zeros(audio_embedded.size(0), max_delay, audio_embedded.size(2))

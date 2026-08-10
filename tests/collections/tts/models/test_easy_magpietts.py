@@ -715,6 +715,62 @@ def test_one_shot_flow_teacher_forcing_uses_previous_continuous_acoustic_embeddi
     assert not torch.allclose(first_inputs[:, 1:], second_inputs[:, 1:])
 
 
+def test_one_shot_teacher_forced_acoustic_embedding_noise_is_training_only():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "normalizing_flow",
+                "frame_stacking_factor": 2,
+                "local_flow_hidden_dim": 16,
+                "local_flow_n_layers": 2,
+                "local_flow_n_flows": 2,
+                "acoustic_embedding_noise": 0.25,
+            }
+        )
+    )
+    codes = _toy_codes(model, batch_size=1, num_frames=4)[:, : model.num_semantic_codebooks]
+    codes_lens = torch.tensor([4], dtype=torch.long)
+    delay = torch.tensor([0], dtype=torch.long)
+    full_dim = model._codec_model.vector_quantizer.codebook_dim
+    audio_embedding = torch.randn(1, full_dim, 4)
+    with torch.no_grad():
+        model.flow_acoustic_in_projection.weight.fill_(0.125)
+        model.flow_acoustic_in_projection.bias.zero_()
+
+    model.eval()
+    clean_inputs, _, clean_targets, clean_lens, _ = model.prepare_flow_audio_channel_embeddings(
+        audio_codes=codes,
+        audio_codes_lens=codes_lens,
+        audio_embedding=audio_embedding,
+        delay=delay,
+    )
+
+    model.train()
+    with patch.object(torch, "randn_like", side_effect=lambda value: torch.ones_like(value)) as noise_mock:
+        noisy_inputs, _, noisy_targets, noisy_lens, _ = model.prepare_flow_audio_channel_embeddings(
+            audio_codes=codes,
+            audio_codes_lens=codes_lens,
+            audio_embedding=audio_embedding,
+            delay=delay,
+        )
+
+    noise_mock.assert_called_once()
+    torch.testing.assert_close(clean_targets, noisy_targets)
+    torch.testing.assert_close(clean_lens, noisy_lens)
+    torch.testing.assert_close(clean_inputs[:, :1], noisy_inputs[:, :1])
+    assert not torch.allclose(clean_inputs[:, 1:], noisy_inputs[:, 1:])
+
+    model.eval()
+    with patch.object(torch, "randn_like", side_effect=AssertionError("noise must be disabled in eval")):
+        eval_inputs, _, _, _, _ = model.prepare_flow_audio_channel_embeddings(
+            audio_codes=codes,
+            audio_codes_lens=codes_lens,
+            audio_embedding=audio_embedding,
+            delay=delay,
+        )
+    torch.testing.assert_close(clean_inputs, eval_inputs)
+
+
 def test_one_shot_flow_sampling_returns_semantic_codes_and_continuous_acoustics():
     _seed_everything()
     model = _make_easy_magpie_model(

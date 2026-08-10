@@ -1000,7 +1000,7 @@ def default_multimodal_conversation_prompt_format_fn(example: NeMoMultimodalConv
     return prompt.encode_dialog(turns, **prompt_kwargs)
 
 
-def _make_url_cut(
+def _make_archive_member_cut(
     tar_path: str,
     audio_filename: str,
     duration: float,
@@ -1008,24 +1008,26 @@ def _make_url_cut(
     sampling_rate: int = 16000,
 ) -> Cut:
     """
-    Build a Cut backed by a URL-type ``AudioSource`` (no tar file opened).
+    Build a Cut backed by an archive-member ``AudioSource`` (no tar file opened).
 
-    Used for the AIStore GetBatch code path in the multimodal conversation adapters —
-    audio will be fetched lazily (typically via a single batched request from
-    ``AudioSamples(use_batch_loader=True)``).
+    Used for archive-backed paths in the multimodal conversation adapters. Audio
+    is fetched lazily by Lhotse from either a local archive member or a URL-backed
+    archive member.
 
     Unlike the richer helper in ``nemo_adapters.py``, this one does not attach
     supervisions, custom fields, or manifest/tar origin — the multimodal conversation
     adapters attach their own turn-level metadata downstream and re-id the cut via
     ``_make_cut_id``.
     """
-    audio_url = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
+    audio_path = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
+    source_type = "url" if is_valid_url(tar_path) else "file"
+    recording_duration = offset + duration if offset > 0 else duration
     recording = Recording(
         id=audio_filename,
-        sources=[AudioSource(type="url", channels=[0], source=audio_url)],
+        sources=[AudioSource(type=source_type, channels=[0], source=audio_path)],
         sampling_rate=sampling_rate,
-        num_samples=compute_num_samples(duration, sampling_rate),
-        duration=duration,
+        num_samples=compute_num_samples(recording_duration, sampling_rate),
+        duration=recording_duration,
     )
     cut = recording.to_cut()
     if offset > 0:
@@ -1037,9 +1039,7 @@ def _make_url_cut(
 _ARCHIVE_MEMBER_EXTENSIONS = (".tar.gz", ".tar", ".tgz")
 
 
-def _split_archive_member_url(audio_path: str) -> tuple[str, str] | None:
-    if not is_valid_url(audio_path):
-        return None
+def _split_archive_member_reference(audio_path: str) -> tuple[str, str] | None:
     for ext in _ARCHIVE_MEMBER_EXTENSIONS:
         marker = f"{ext}/"
         marker_index = audio_path.find(marker)
@@ -1253,7 +1253,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
 
     def _build_direct_audio_cut(self, turn: dict, manifest_path: str) -> Cut:
         audio_path = get_full_path(turn["value"], manifest_path)
-        archive_ref = _split_archive_member_url(str(audio_path))
+        archive_ref = _split_archive_member_reference(str(audio_path))
         if archive_ref is not None:
             duration = turn.get("duration")
             if duration is None:
@@ -1261,7 +1261,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                     "Archive-member multimodal conversation audio requires a 'duration' field: " f"{turn['value']!r}"
                 )
             tar_path, audio_filename = archive_ref
-            return _make_url_cut(
+            return _make_archive_member_cut(
                 tar_path=tar_path,
                 audio_filename=audio_filename,
                 duration=duration,
@@ -1403,7 +1403,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                 cuts = []
                 for turn in audio_turns:
                     if use_ais_get_batch:
-                        cut = _make_url_cut(
+                        cut = _make_archive_member_cut(
                             tar_path=str(tar_path),
                             audio_filename=turn['value'],
                             duration=turn.get('duration'),
@@ -1806,7 +1806,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 cuts = []
                 for turn in audio_turns:
                     if use_ais_get_batch:
-                        cut = _make_url_cut(
+                        cut = _make_archive_member_cut(
                             tar_path=str(tar_path),
                             audio_filename=turn['value'],
                             duration=turn.get('duration'),

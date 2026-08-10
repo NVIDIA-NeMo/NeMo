@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from contextlib import contextmanager
 from typing import Callable
 
 import torch
@@ -67,7 +68,7 @@ def encode_audio_with_optional_chunking(
         embeddings are concatenated along the time axis to recover a single tensor per
         original audio row.
     """
-    _validate_chunk_batch_size(chunk_batch_size)
+    _validate_chunk_config(chunk_size_seconds, chunk_batch_size)
 
     if input_signal_length.numel() == 0:
         dummy_loss = _run_dummy_chunk_forwards(
@@ -151,11 +152,28 @@ def _maybe_return_dummy_loss(
     return (audio_embs, dummy_loss) if return_dummy_loss else audio_embs
 
 
-def _validate_chunk_batch_size(chunk_batch_size: int | None) -> None:
+def _validate_chunk_config(chunk_size_seconds: float | None, chunk_batch_size: int | None) -> None:
     if chunk_batch_size is None:
         return
+    if chunk_size_seconds is None:
+        raise ValueError("encoder_chunk_batch_size requires encoder_chunk_size_seconds to be set.")
     if int(chunk_batch_size) != chunk_batch_size or int(chunk_batch_size) <= 0:
         raise ValueError(f"encoder_chunk_batch_size must be a positive integer when set, got {chunk_batch_size}.")
+
+
+@contextmanager
+def _preserve_module_buffers(module: Callable):
+    if not isinstance(module, torch.nn.Module):
+        yield
+        return
+
+    buffers = [(buffer, buffer.detach().clone()) for buffer in module.buffers()]
+    try:
+        yield
+    finally:
+        with torch.no_grad():
+            for buffer, value in buffers:
+                buffer.copy_(value)
 
 
 def _encode_chunk_microbatches(
@@ -183,7 +201,8 @@ def _encode_chunk_microbatches(
             continue
 
         dummy_kwargs = _slice_perception_kwargs(chunked_perception_kwargs, 0, 1)
-        mb_embs, _ = perception(**dummy_kwargs)
+        with _preserve_module_buffers(perception):
+            mb_embs, _ = perception(**dummy_kwargs)
         zero = mb_embs.float().sum() * 0.0
         dummy_loss = zero if dummy_loss is None else dummy_loss + zero
 
@@ -229,7 +248,8 @@ def _run_dummy_chunk_forwards(
     dummy_lens = torch.full((1,), dummy_len, dtype=input_signal_length.dtype, device=input_signal_length.device)
     dummy_loss = None
     for _ in range(total_microbatches):
-        dummy_embs, _ = perception(input_signal=dummy_audio, input_signal_length=dummy_lens)
+        with _preserve_module_buffers(perception):
+            dummy_embs, _ = perception(input_signal=dummy_audio, input_signal_length=dummy_lens)
         zero = dummy_embs.float().sum() * 0.0
         dummy_loss = zero if dummy_loss is None else dummy_loss + zero
     return dummy_loss

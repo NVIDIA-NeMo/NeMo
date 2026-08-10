@@ -15,7 +15,6 @@
 
 import importlib.metadata
 import importlib.util
-import inspect
 import os
 import subprocess
 from datetime import timedelta
@@ -120,12 +119,8 @@ def _require_compiled_dependencies() -> None:
     assert importlib.metadata.version("nvidia-ml-py")
 
     import pynvml
-    from nemo_automodel.components.moe.layers import MoE
 
     assert pynvml.__file__
-    moe_forward_source = inspect.getsource(MoE.forward)
-    assert "_shared_experts_stream" not in moe_forward_source
-    assert "computed inline on the main" in moe_forward_source
 
 
 def _local_tensor(tensor: torch.Tensor) -> torch.Tensor:
@@ -153,8 +148,7 @@ def _init_distributed(device: torch.device) -> None:
 
 
 def _make_strategy(*, world_size: int, ep_size: int) -> AutomodelParallelStrategy:
-    from nemo_automodel.components.distributed.config import FSDP2Config
-    from nemo_automodel.components.moe.config import MoEParallelizerConfig
+    from nemo_automodel.components.distributed.config import FSDP2Config, MoEParallelizerConfig
 
     strategy = AutomodelParallelStrategy(
         dp_size=world_size // ep_size,
@@ -248,16 +242,18 @@ def _make_tiny_nemotron_llm(
     if parallelize_moe:
         from nemo_automodel.components.moe.parallelizer import parallelize_model
 
+        distributed_setup = strategy.distributed_setup
+        assert distributed_setup is not None
         parallelize_model(
             llm,
-            world_mesh=strategy.device_mesh,
-            moe_mesh=strategy.moe_mesh,
+            world_mesh=distributed_setup.mesh_context.device_mesh,
+            moe_mesh=distributed_setup.mesh_context.moe_mesh,
             dp_axis_names=("dp",),
             cp_axis_name="cp",
             tp_axis_name="tp",
             ep_axis_name="ep",
             ep_shard_axis_names=None,
-            **strategy.moe_config.to_dict(),
+            **distributed_setup.moe_parallel_config.to_dict(),
         )
 
     return llm

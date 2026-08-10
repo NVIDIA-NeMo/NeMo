@@ -301,7 +301,7 @@ def prepare_packed_llm_inputs(
             # and ``cp_utils._shard_thd_chunk_for_te``): emit only ``cu_seqlens`` (the
             # padded cumsum) and a single ``max_seqlen``. Passing ``cu_seqlens_padded``
             # too would activate the ``pad_between_seqs=True`` branch in
-            # ``Automodel/.../attention/utils.py``, which routes TE down a different
+            # ``nemo_automodel/.../attention/utils.py``, which routes TE down a different
             # attention path. Passing pre-split ``max_seqlen_q`` / ``max_seqlen_kv``
             # gets them silently dropped by the preprocessor.
             "cu_seqlens": packed["cu_seqlens"],

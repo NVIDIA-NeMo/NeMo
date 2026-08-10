@@ -1034,6 +1034,24 @@ def _make_url_cut(
     return cut
 
 
+_ARCHIVE_MEMBER_EXTENSIONS = (".tar.gz", ".tar", ".tgz")
+
+
+def _split_archive_member_url(audio_path: str) -> tuple[str, str] | None:
+    if not is_valid_url(audio_path):
+        return None
+    for ext in _ARCHIVE_MEMBER_EXTENSIONS:
+        marker = f"{ext}/"
+        marker_index = audio_path.find(marker)
+        if marker_index < 0:
+            continue
+        archive_end = marker_index + len(ext)
+        member = audio_path[archive_end + 1 :]
+        if member:
+            return audio_path[:archive_end], member
+    return None
+
+
 @dataclass
 class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
     """
@@ -1072,20 +1090,27 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
     slice_length: int | None = None
     indexed: bool = False
     indexes_root: Optional[Pathlike] = None
+    index_pack: Optional[Pathlike] = None
+    index_pack_max_open_files: int = 32
 
     def __post_init__(self):
-        self.manifest_filepath = expand_sharded_filepaths(self.manifest_filepath)
+        raw_manifest_filepath = self.manifest_filepath
         if self.tarred_audio_filepaths is not None:
             self.tarred_audio_filepaths = expand_sharded_filepaths(self.tarred_audio_filepaths)
-            assert len(self.manifest_filepath) == len(
-                self.tarred_audio_filepaths
-            ), f"{len(self.manifest_filepath)} != {len(self.tarred_audio_filepaths)}"
         self.epoch = 0
         self._cuts_readers: list = []
         self._tar_readers: list = []
         self._cum_lens: list[int] = []
         self._total_len = 0
         self._iter_state = PartitionedIndexedIterator()
+        if self.indexed and self.index_pack is not None:
+            self._init_packed(raw_manifest_filepath)
+            return
+        self.manifest_filepath = expand_sharded_filepaths(raw_manifest_filepath)
+        if self.tarred_audio_filepaths is not None:
+            assert len(self.manifest_filepath) == len(
+                self.tarred_audio_filepaths
+            ), f"{len(self.manifest_filepath)} != {len(self.tarred_audio_filepaths)}"
         if self.indexed:
             self._init_indexed()
 
@@ -1120,6 +1145,29 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
             self._cum_lens.append(cum)
         self._total_len = cum
 
+    def _init_packed(self, source_spec) -> None:
+        from lhotse.index_pack import index_pack_collection_key, open_index_pack
+        from lhotse.packed_lazy import LazyPackedManifestIterator
+
+        if self.slice_length is not None:
+            raise ValueError("NeMoMultimodalConversationJsonlAdapter(indexed=True) does not support slice_length.")
+        if self.tarred_audio_filepaths is not None:
+            raise ValueError(
+                "Packed multimodal_conversation currently supports JSONL manifests with "
+                "direct/remote audio paths, not paired audio tar files."
+            )
+        pack = open_index_pack(self.index_pack)
+        key = index_pack_collection_key("manifest", "jsonl", source_spec)
+        self._packed_source = LazyPackedManifestIterator(
+            pack,
+            key,
+            decode=dict,
+            max_open_files=self.index_pack_max_open_files,
+        )
+        self._cuts_readers = [self._packed_source]
+        self._cum_lens = [0, len(self._packed_source)]
+        self._total_len = len(self._packed_source)
+
     def __len__(self) -> int:
         if self.indexed:
             return self._total_len
@@ -1151,15 +1199,19 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
             )
         idx = int(normalize_graph_token(token))
         shard_idx, local_idx = self._resolve(idx)
-        data = self._cuts_readers[shard_idx][local_idx]
-        if self._tar_readers:
-            convo = self._build_conversation_tarred(
-                data,
-                tar_reader=self._tar_readers[shard_idx],
-                tar_path=self.tarred_audio_filepaths[shard_idx],
-            )
+        if hasattr(self, "_packed_source"):
+            data, location = self._packed_source.read_with_location(local_idx)
+            convo = self._build_conversation_local(data, manifest_path=location.path)
         else:
-            convo = self._build_conversation_local(data, manifest_path=self._cuts_readers[shard_idx].path)
+            data = self._cuts_readers[shard_idx][local_idx]
+            if self._tar_readers:
+                convo = self._build_conversation_tarred(
+                    data,
+                    tar_reader=self._tar_readers[shard_idx],
+                    tar_path=self.tarred_audio_filepaths[shard_idx],
+                )
+            else:
+                convo = self._build_conversation_local(data, manifest_path=self._cuts_readers[shard_idx].path)
         if convo is None:
             raise IndexError(
                 f"Conversation at index {idx} (shard {shard_idx}, local {local_idx}) "
@@ -1179,9 +1231,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                 if turn["type"] == "text"
                 else AudioTurn(
                     cut=(
-                        cut := Recording.from_file(get_full_path(turn["value"], manifest_path))
-                        .to_cut()
-                        .truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+                        cut := self._build_direct_audio_cut(turn=turn, manifest_path=manifest_path)
                     ).with_id(self._make_cut_id(cut, turn)),
                     text=cut.supervisions[0].text if cut.supervisions else None,
                     role=turn["from"].lower(),
@@ -1199,6 +1249,28 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
             turns=turns,
             token_equivalent_duration=self.token_equivalent_duration,
             custom=data.get("custom"),
+        )
+
+    def _build_direct_audio_cut(self, turn: dict, manifest_path: str) -> Cut:
+        audio_path = get_full_path(turn["value"], manifest_path)
+        archive_ref = _split_archive_member_url(str(audio_path))
+        if archive_ref is not None:
+            duration = turn.get("duration")
+            if duration is None:
+                raise ValueError(
+                    "Archive-member multimodal conversation audio requires a 'duration' field: "
+                    f"{turn['value']!r}"
+                )
+            tar_path, audio_filename = archive_ref
+            return _make_url_cut(
+                tar_path=tar_path,
+                audio_filename=audio_filename,
+                duration=duration,
+                offset=turn.get("offset", 0.0),
+                sampling_rate=turn.get("sampling_rate", 16000),
+            )
+        return Recording.from_file(audio_path).to_cut().truncate(
+            offset=turn.get("offset", 0.0), duration=turn.get("duration")
         )
 
     def _build_conversation_tarred(self, data: dict, tar_reader, tar_path: str) -> NeMoMultimodalConversation | None:
@@ -1270,15 +1342,19 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
     def _iter_indexed(self) -> Iterator[NeMoMultimodalConversation]:
         for global_idx in self._iter_state.iterate(self._total_len):
             shard_idx, local_idx = self._resolve(global_idx)
-            data = self._cuts_readers[shard_idx][local_idx]
-            if self._tar_readers:
-                convo = self._build_conversation_tarred(
-                    data,
-                    tar_reader=self._tar_readers[shard_idx],
-                    tar_path=self.tarred_audio_filepaths[shard_idx],
-                )
+            if hasattr(self, "_packed_source"):
+                data, location = self._packed_source.read_with_location(local_idx)
+                convo = self._build_conversation_local(data, manifest_path=location.path)
             else:
-                convo = self._build_conversation_local(data, manifest_path=self._cuts_readers[shard_idx].path)
+                data = self._cuts_readers[shard_idx][local_idx]
+                if self._tar_readers:
+                    convo = self._build_conversation_tarred(
+                        data,
+                        tar_reader=self._tar_readers[shard_idx],
+                        tar_path=self.tarred_audio_filepaths[shard_idx],
+                    )
+                else:
+                    convo = self._build_conversation_local(data, manifest_path=self._cuts_readers[shard_idx].path)
             if convo is None:
                 continue
             attach_graph_origin(convo, global_idx)
@@ -1405,9 +1481,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                         if turn["type"] == "text"
                         else AudioTurn(
                             cut=(
-                                cut := Recording.from_file(get_full_path(turn["value"], path))
-                                .to_cut()
-                                .truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+                                cut := self._build_direct_audio_cut(turn=turn, manifest_path=path)
                             ).with_id(self._make_cut_id(cut, turn)),
                             text=cut.supervisions[0].text if cut.supervisions else None,
                             role=turn["from"].lower(),

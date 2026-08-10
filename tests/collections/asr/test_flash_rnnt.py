@@ -52,8 +52,11 @@ def _joint_hidden_state(encoder, predictor, activation, dropout_p=0.0):
     source_lengths = torch.full((batch,), source_steps, device=encoder.device, dtype=torch.int32)
     target_lengths = torch.full((batch,), target_states - 1, device=encoder.device, dtype=torch.int32)
     offsets, states, total_rows = lattice_layout(source_lengths, target_lengths, source_steps, target_states)
+    seed = source_lengths
+    if dropout_p > 0.0:
+        seed = torch.randint(0, 2**31 - 1, (1,), device=encoder.device, dtype=torch.int32)
     hidden = _PackedJoint.apply(
-        encoder, predictor, offsets, states, source_lengths, 0, total_rows, activation, dropout_p
+        encoder, predictor, offsets, states, source_lengths, seed, 0, total_rows, activation, dropout_p
     )
     return hidden.view(batch, source_steps, target_states, hidden_size)
 

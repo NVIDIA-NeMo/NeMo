@@ -146,6 +146,11 @@ def _packed_scores(
 
     for start in range(0, total_rows, tile_rows):
         rows = min(tile_rows, total_rows - start)
+        # Drawn outside the tile so the recomputation replays the forward's mask. With dropout off
+        # the branch that reads it is not compiled, so any valid address works.
+        seed = lengths
+        if dropout_p > 0.0:
+            seed = torch.randint(0, 2**31 - 1, (1,), device=device, dtype=torch.int32)
         target_score_tile, blank_score_tile = checkpoint(
             score_tile,
             projected_encoder,
@@ -156,6 +161,7 @@ def _packed_scores(
             offsets,
             states,
             lengths,
+            seed,
             start,
             rows,
             activation,
@@ -163,8 +169,7 @@ def _packed_scores(
             blank,
             clamp,
             use_reentrant=False,
-            # Backward recomputation must use the same mask as the forward tile.
-            preserve_rng_state=dropout_p > 0.0,
+            preserve_rng_state=False,
         )
         # The scatter derives each address from its row, so no index over the lattice is held.
         target_scores, blank_scores = packed_scatter(

@@ -32,6 +32,7 @@ model:
   # prevent_freeze_params when the broad LLM freeze pattern above is active.
   mtp:
     enabled: false
+    training_mode: joint  # joint preserves the recipe freeze policy; head_only trains only llm.mtp
     num_nextn_predict_layers: 1
     hybrid_override_pattern: "*"
     loss_scaling_factor: 0.1

@@ -14,7 +14,9 @@
 import pytest
 import torch
 
-from nemo.collections.speechlm2.models import SALMAutomodel
+import nemo.collections.speechlm2.models.salm_automodel as salm_module
+
+SALMAutomodel = salm_module.SALMAutomodel
 
 
 def _bare_model():
@@ -58,8 +60,6 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
     """Native checkpoint MTP weights are not instantiated when MTP is disabled."""
     from omegaconf import DictConfig
 
-    import nemo.collections.speechlm2.models.salm_automodel as salm_module
-
     captured_kwargs = {}
 
     class _Perception(torch.nn.Module):
@@ -69,7 +69,7 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
     class _LLM(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.config = type("Config", (), {"hidden_size": 8})()
+            self.config = type("Config", (), {"hidden_size": 8, "num_nextn_predict_layers": 1})()
             self.mtp = None
 
     def _load_llm(*_args, **kwargs):
@@ -100,6 +100,7 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
     SALMAutomodel.configure_model(model)
 
     assert captured_kwargs["num_nextn_predict_layers"] == 0
+    assert model.llm.config.num_nextn_predict_layers == 0
     assert not model._mtp_enabled
 
 
@@ -107,8 +108,6 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
 def test_base_checkpoint_attaches_fresh_mtp_for_both_training_modes(monkeypatch, training_mode):
     """A checkpoint with no native head gets a fresh head in either enabled mode."""
     from omegaconf import DictConfig
-
-    import nemo.collections.speechlm2.models.salm_automodel as salm_module
 
     class _Perception(torch.nn.Module):
         def __init__(self):
@@ -174,8 +173,6 @@ def test_base_checkpoint_attaches_fresh_mtp_for_both_training_modes(monkeypatch,
 
 def test_invalid_mtp_training_mode_fails_before_loading(monkeypatch):
     from omegaconf import DictConfig
-
-    import nemo.collections.speechlm2.models.salm_automodel as salm_module
 
     model = _bare_model()
     model.cfg = DictConfig(
@@ -263,9 +260,8 @@ def test_forward_omits_mtp_per_depth_h_when_absent():
 
 
 def test_validation_epoch_end_logs_mtp_acceptance():
-    '''on_validation_epoch_end reports per-head acceptance probability and the
-    expected acceptance length (always-accepted main token + cumulative product
-    of per-head accept probabilities).'''
+    '''on_validation_epoch_end reports verifier-prefix acceptance probabilities
+    and their expected acceptance length.'''
     from collections import defaultdict
 
     model = _bare_model()
@@ -281,7 +277,7 @@ def test_validation_epoch_end_logs_mtp_acceptance():
     model._partial_val_num_frames = defaultdict(list, {'ds': [torch.tensor(10.0)]})
     model._partial_val_lss = defaultdict(list)
 
-    # Head 1: 8/10 accepted (p1 = 0.8); head 2: 5/10 accepted (p2 = 0.5).
+    # Depth-1 prefix: 8/10 accepted; depth-2 prefix: 5/10 accepted.
     model._partial_val_mtp_correct = defaultdict(list, {'ds': [torch.tensor([8.0, 5.0])]})
     model._partial_val_mtp_valid = defaultdict(list, {'ds': [torch.tensor([10.0, 10.0])]})
 
@@ -289,22 +285,17 @@ def test_validation_epoch_end_logs_mtp_acceptance():
 
     assert logged['val_mtp_acc_ds/head_1'] == pytest.approx(0.8)
     assert logged['val_mtp_acc_ds/head_2'] == pytest.approx(0.5)
-    # 1 (main) + 0.8 + 0.8 * 0.5 = 2.2
-    assert logged['val_mtp_accept_length_ds'] == pytest.approx(2.2)
-    assert logged['val_mtp_accept_length'] == pytest.approx(2.2)
+    # 1 (main verifier token) + P(A1) + P(A1 and A2) = 2.3.
+    assert logged['val_mtp_accept_length_ds'] == pytest.approx(2.3)
+    assert logged['val_mtp_accept_length'] == pytest.approx(2.3)
 
 
 def test_calculate_mtp_acceptance_with_heads_counts(monkeypatch):
-    '''_calculate_mtp_acceptance_with_heads compares each head's argmax against the
-    same rolled/masked targets used by the MTP loss and returns per-head
-    (correct, valid) counts.'''
+    '''Acceptance compares drafts with verifier predictions and requires a matched prefix.'''
     # The helper imports these specific Automodel submodules; importorskip each so the test
     # skips cleanly when the installed Automodel rev predates them (rather than hard-failing).
     pytest.importorskip('nemo_automodel.components.loss.utils', reason='needs Automodel _get_lm_head_module')
-    mtp_mod = pytest.importorskip('nemo_automodel.components.models.common.mtp', reason='needs Automodel roll_tensor')
-    roll_tensor = mtp_mod.roll_tensor
-
-    from nemo.collections.speechlm2.models.salm_automodel import _calculate_mtp_acceptance_with_heads
+    pytest.importorskip('nemo_automodel.components.models.common.mtp', reason='needs Automodel roll_tensor')
 
     # Identity lm_head over a V==H one-hot space so argmax(hidden) == predicted token id.
     V = 4
@@ -316,24 +307,112 @@ def test_calculate_mtp_acceptance_with_heads_counts(monkeypatch):
     # Avoid depending on Automodel's lm-head discovery internals.
     monkeypatch.setattr('nemo_automodel.components.loss.utils._get_lm_head_module', lambda m: m.lm_head)
 
-    labels = torch.tensor([[0, 1, 2, 3, 0]])  # (1, T)
-    T = labels.shape[-1]
-    D = 2
-    # Every head predicts token 0 everywhere (one-hot index 0).
-    one_hot_zero = torch.zeros(1, T, V)
-    one_hot_zero[..., 0] = 1.0
-    mtp_h = [one_hot_zero.clone() for _ in range(D)]
+    labels = torch.tensor([[3, 3, 3, 3, 3]])  # Used only to define valid positions.
+    verifier_predictions = torch.tensor([[0, 1, 2, 3, 0]])
+    # Depth 1's verifier targets are [1, 2, 3, 0]. Drafts match positions 0, 2, 3.
+    depth_1_ids = torch.tensor([[1, 0, 3, 0, 0]])
+    # Depth 2 matches all three verifier targets [2, 3, 0], but position 1 cannot
+    # be accepted because depth 1 already mismatched there.
+    depth_2_ids = torch.tensor([[2, 3, 0, 0, 0]])
+    mtp_h = [torch.nn.functional.one_hot(ids, num_classes=V).float() for ids in (depth_1_ids, depth_2_ids)]
 
-    correct, valid = _calculate_mtp_acceptance_with_heads(mtp_per_depth_h=mtp_h, labels=labels, model=model)
+    correct, valid = salm_module._calculate_mtp_acceptance_with_heads(
+        mtp_per_depth_h=mtp_h,
+        labels=labels,
+        model=model,
+        verifier_predictions=verifier_predictions,
+    )
 
-    # Independently recompute the rolled/masked targets with the real roll_tensor.
-    cur = labels
-    for k in range(D):
-        cur = roll_tensor(cur, shifts=-1, dim=-1)
-        masked = cur.clone()
-        masked[..., -min(k + 1, T) :] = -100
-        valid_mask = masked != -100
-        exp_valid = int(valid_mask.sum())
-        exp_correct = int(((masked == 0) & valid_mask).sum())  # preds are all 0
-        assert int(valid[k]) == exp_valid
-        assert int(correct[k]) == exp_correct
+    assert [int(value) for value in correct] == [3, 2]
+    assert [int(value) for value in valid] == [4, 3]
+
+
+def test_mtp_validation_forward_legacy_gate_keeps_children_in_eval():
+    llm = torch.nn.Module()
+    llm.child = torch.nn.Dropout()
+    llm.eval()
+
+    with salm_module._mtp_validation_forward(llm, enabled=True):
+        assert llm.training
+        assert not llm.child.training
+
+    assert not llm.training
+    assert not llm.child.training
+
+
+def test_mtp_validation_forward_uses_and_restores_native_gate():
+    llm = torch.nn.Module()
+    llm.eval()
+    llm.compute_mtp_in_eval = False
+
+    with salm_module._mtp_validation_forward(llm, enabled=True):
+        assert llm.compute_mtp_in_eval
+        assert not llm.training
+
+    assert not llm.compute_mtp_in_eval
+    assert not llm.training
+
+
+def test_mtp_rejects_context_parallelism(monkeypatch):
+    from omegaconf import DictConfig
+
+    import nemo.collections.speechlm2.parts.parallel as parallel_module
+
+    class _Submesh:
+        def size(self):
+            return 2
+
+    class _Mesh:
+        mesh_dim_names = ("cp",)
+
+        def __getitem__(self, name):
+            assert name == "cp"
+            return _Submesh()
+
+    model = _bare_model()
+    model.cfg = DictConfig({"mtp": {"enabled": True}, "packed_sequences": True})
+    model._device_mesh = _Mesh()
+    monkeypatch.setattr(parallel_module, "validate_parallelism_compatibility", lambda **_kwargs: None)
+
+    with pytest.raises(ValueError, match="requires cp_size=1"):
+        model._validate_parallelism_compatibility()
+
+
+def test_fused_mtp_loss_reuses_lm_weight_without_projecting_logits(monkeypatch):
+    pytest.importorskip('nemo_automodel.components.models.common.mtp', reason='needs Automodel roll_tensor')
+    loss_module = pytest.importorskip('nemo_automodel.components.loss.linear_ce', reason='needs fused linear CE')
+    loss_utils = pytest.importorskip('nemo_automodel.components.loss.utils', reason='needs Automodel loss utilities')
+
+    class _FailingLMHead(torch.nn.Linear):
+        def forward(self, _inputs):
+            pytest.fail("fused MTP loss must not materialize logits through lm_head.forward")
+
+    model = torch.nn.Module()
+    model.lm_head = _FailingLMHead(4, 4, bias=False)
+    monkeypatch.setattr(loss_utils, "_get_lm_head_module", lambda _model: model.lm_head)
+
+    calls = []
+
+    def _calculate_loss(_loss_fn, **kwargs):
+        calls.append(kwargs)
+        return kwargs["hidden_states"].sum() * 0 + 2.0
+
+    monkeypatch.setattr(loss_utils, "calculate_loss", _calculate_loss)
+    mtp_h = [torch.randn(1, 4, 4, requires_grad=True) for _ in range(2)]
+
+    total, head_losses, raw_head_losses = salm_module._calculate_mtp_loss_with_heads(
+        loss_fn=loss_module.FusedLinearCrossEntropy(reduction="sum"),
+        mtp_per_depth_h=mtp_h,
+        labels=torch.tensor([[0, 1, 2, 3]]),
+        model=model,
+        scaling_factor=0.1,
+    )
+
+    assert len(calls) == 2
+    assert calls[0]["lm_weight"] is model.lm_head.weight
+    assert calls[1]["lm_weight"] is calls[0]["lm_weight"]
+    assert float(total.detach()) == pytest.approx(0.2)
+    assert [float(value.detach()) for value in head_losses] == pytest.approx([0.1, 0.1])
+    assert [float(value.detach()) for value in raw_head_losses] == pytest.approx([2.0, 2.0])
+    total.backward()
+    assert all(hidden.grad is not None for hidden in mtp_h)

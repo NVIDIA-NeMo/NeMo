@@ -13,6 +13,7 @@
 # limitations under the License.
 import warnings
 from collections import defaultdict
+from contextlib import contextmanager
 from typing import Any
 
 import torch
@@ -386,6 +387,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             nvte_fused_attn=nvte_fused_attn,
             device_capability=device_capability,
         )
+        mtp_cfg = self.cfg.get("mtp", None)
+        if cp_size > 1 and mtp_cfg is not None and bool(mtp_cfg.get("enabled", False)):
+            raise ValueError(
+                "SALMAutomodel MTP currently requires cp_size=1. Context parallelism uses an interleaved "
+                "THD partition, so rank-local labels cannot be rolled into correct next-token MTP targets yet."
+            )
 
     def training_step(self, dataloader_iter):
         # ``dataloader_iter`` signature → Lightning selects
@@ -567,10 +574,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             if lss_vals:
                 self.log("val_lss", torch.stack(lss_vals).mean(), on_epoch=True, sync_dist=True)
 
-        # Multi-Token Prediction acceptance metrics: per-head acceptance probability and the
-        # expected acceptance length (number of tokens a greedy verifier would accept, i.e. the
-        # always-accepted main-head token plus the cumulative product of each MTP head's accept
-        # probability). Per-head marginal rates approximate the conditional accept probabilities.
+        # Multi-Token Prediction acceptance metrics. Each accumulated per-head count is already
+        # a prefix count: depth k contributes only when the verifier matched every draft through
+        # depth k. Therefore the expected greedy acceptance length is one always-accepted target
+        # token plus the sum of the measured prefix-acceptance probabilities.
         if self._partial_val_mtp_correct:
             accept_lengths = []
             for name in self._partial_val_mtp_correct:
@@ -581,7 +588,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 per_head = reduced[:D] / reduced[D:].clamp(min=1)
                 for head_idx, p in enumerate(per_head, start=1):
                     self.log(f"val_mtp_acc_{name}/head_{head_idx}", p, on_epoch=True, sync_dist=True)
-                accept_length = 1.0 + torch.cumprod(per_head, dim=0).sum()
+                accept_length = 1.0 + per_head.sum()
                 self.log(f"val_mtp_accept_length_{name}", accept_length, on_epoch=True, sync_dist=True)
                 accept_lengths.append(accept_length)
             if accept_lengths:
@@ -605,32 +612,15 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             if dataset_batch is None:
                 continue  # some dataset is exhausted
             inputs = self.prepare_inputs(dataset_batch)
-            # Enable the MTP heads under eval so we can measure per-head token
-            # acceptance during validation; the LLM gates them on self.training
-            # otherwise. Restored immediately so generation stays unaffected.
-            # ``hasattr`` (not ``getattr(..., None)``) so we can distinguish "LLM
-            # doesn't support eval-mode MTP" from the normal False default and warn
-            # once — otherwise the acceptance metrics silently never appear.
-            _mtp_eval_supported = hasattr(self.llm, "compute_mtp_in_eval")
-            if not _mtp_eval_supported and self._mtp_enabled and not getattr(self, "_warned_no_mtp_eval", False):
-                logging.warning(
-                    "MTP is enabled but the LLM has no `compute_mtp_in_eval` attribute, so validation "
-                    "will not report MTP acceptance metrics. Upgrade nemo_automodel to a revision that "
-                    "supports eval-mode MTP (the heads are gated on `self.training` otherwise)."
-                )
-                self._warned_no_mtp_eval = True
-            if _mtp_eval_supported:
-                _prev_mtp_eval = self.llm.compute_mtp_in_eval
-                self.llm.compute_mtp_in_eval = True
-            try:
+            # Enable MTP only around the validation forward. New Automodel revisions expose
+            # ``compute_mtp_in_eval``; the compatibility path for the currently pinned revision
+            # flips only the root module's gate while leaving every child in eval mode.
+            with _mtp_validation_forward(self.llm, enabled=self._mtp_enabled):
                 forward_outputs = self(
                     inputs["input_embeds"],
                     attention_mask=inputs["attention_mask"],
                     **inputs.get("llm_kwargs", {}),
                 )
-            finally:
-                if _mtp_eval_supported:
-                    self.llm.compute_mtp_in_eval = _prev_mtp_eval
             num_frames = (inputs["target_ids"] != -100).long().sum()
             with loss_parallel():
                 logits = forward_outputs["logits"]
@@ -641,14 +631,15 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     ignore_index=-100,
                 )
 
+            if isinstance(logits, DTensor):
+                logits = logits.full_tensor()
             if self.lss_loss is not None and num_frames > 0:
-                if isinstance(logits, DTensor):
-                    logits = logits.full_tensor()
                 log_probs = torch.nn.functional.log_softmax(logits.float(), dim=-1)
                 lss_val = self.lss_loss(log_probs=log_probs, labels=inputs["target_ids"])
                 self._partial_val_lss[name].append(lss_val.detach())
 
-            preds = forward_outputs["logits"].argmax(dim=-1).view(-1)
+            verifier_predictions = logits.argmax(dim=-1)
+            preds = verifier_predictions.view(-1)
             refs = inputs["target_ids"].reshape(-1)
             preds = preds[refs != -100]
             refs = refs[refs != -100]
@@ -658,8 +649,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             self._partial_val_corrects[name].append(correct.detach().to(loss_sum.dtype))
             self._partial_val_num_frames[name].append(num_frames.detach().to(loss_sum.dtype))
 
-            # Multi-Token Prediction acceptance: per-head match rate of each MTP head's
-            # argmax against the token it predicts, accumulated for epoch-end reporting.
+            # Multi-Token Prediction acceptance: verifier-matched prefix rates for each
+            # depth, accumulated for epoch-end expected-length reporting.
             mtp_h = forward_outputs.get("mtp_per_depth_h", None)
             if mtp_h is not None:
                 mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
@@ -667,6 +658,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     mtp_per_depth_h=mtp_h,
                     labels=inputs["target_ids"],
                     model=self.llm,
+                    verifier_predictions=verifier_predictions,
                     cu_seqlens=mtp_cu_seqlens,
                 )
                 self._partial_val_mtp_correct[name].append(torch.stack(correct_by_head).detach().to(loss_sum.dtype))
@@ -1182,11 +1174,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # boundaries (see training_step); the MTP sublayers already get the
             # THD context (qkv_format/cu_seqlens/seq_idx) from the model forward.
             self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1))
-            # Same per-token loss class the Automodel recipe uses for MTP; reduction="sum"
-            # so calculate_mtp_loss can normalize by our global token count.
-            from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
+            # Fuse the shared LM projection with CE so each MTP depth does not materialize
+            # a full [tokens, vocab] logits tensor. reduction="sum" lets the helper
+            # normalize by the global labeled-token count.
+            from nemo_automodel.components.loss.linear_ce import FusedLinearCrossEntropy
 
-            self._mtp_loss_fn = MaskedCrossEntropy(reduction="sum", fp32_upcast=False)
+            self._mtp_loss_fn = FusedLinearCrossEntropy(reduction="sum")
         else:
             # Some checkpoints (including Nemotron-3.5 Lightning) ship a native
             # MTP head in config.json. Explicitly override its depth to zero so
@@ -1201,6 +1194,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             trust_remote_code=self.cfg.get("trust_remote_code", False),
             **automodel_kwargs,
         )
+        if not mtp_requested:
+            # The constructor override suppresses a checkpoint-native MTP module but does
+            # not mutate the HF config. Keep the serialized config consistent with the
+            # actual state dict so conversion/reload does not recreate a missing head.
+            self.llm.config.num_nextn_predict_layers = 0
 
         # Build + attach the MTP head ourselves only when the checkpoint did not
         # provide one. Native checkpoint MTP modules were already sharded by
@@ -1356,6 +1354,19 @@ def _calculate_mtp_loss_with_heads(
     head_losses = []
     raw_head_losses = []
 
+    # FusedLinearCrossEntropy consumes the shared LM-head weight directly. Materialize
+    # a possibly sharded weight once and reuse it for every depth; gathering separately
+    # inside calculate_loss retains one full vocabulary matrix per head for backward.
+    lm_weight = None
+    if mtp_per_depth_h is not None and isinstance(loss_fn, FusedLinearCrossEntropy):
+        lm_head = _get_lm_head_module(model)
+        if lm_head is None:
+            raise ValueError("lm_head module not found in model")
+        lm_weight = lm_head.weight
+        if isinstance(lm_weight, DTensor):
+            materialize = getattr(loss_fn, "materialize_lm_weight", None)
+            lm_weight = materialize(lm_weight) if materialize is not None else lm_weight.full_tensor()
+
     if seq_idx is None and cu_seqlens is not None:
         cs = cu_seqlens
         if cs.dim() == 2 and cs.shape[0] == 1:
@@ -1404,6 +1415,7 @@ def _calculate_mtp_loss_with_heads(
                 hidden_states=mtp_output,
                 labels=masked,
                 model=model,
+                lm_weight=lm_weight,
                 num_label_tokens=num_label_tokens,
             )
         else:
@@ -1431,18 +1443,18 @@ def _calculate_mtp_acceptance_with_heads(
     mtp_per_depth_h: list[torch.Tensor],
     labels: torch.Tensor,
     model: torch.nn.Module,
+    verifier_predictions: torch.Tensor,
     ignore_index: int = -100,
     cu_seqlens: torch.Tensor | None = None,
     seq_idx: torch.Tensor | None = None,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """Per-head MTP token-acceptance counts for validation.
 
-    For each MTP depth ``k`` the head's argmax prediction is compared against the
-    token ``k + 1`` steps ahead, using exactly the same rolled/masked targets as
-    ``_calculate_mtp_loss_with_heads`` (including cross-sequence masking under
-    packed THD). Returns ``(correct_by_head, valid_by_head)`` scalar tensors so
-    the epoch end can report per-head acceptance probability and expected
-    acceptance length without repeating the forward pass.
+    For each MTP depth ``k`` the head's argmax prediction is compared with the
+    verifier's prediction for the same future position. Counts are prefix-based:
+    depth ``k`` is accepted only when every draft through ``k`` matches. The same
+    rolled/masked labels as the MTP loss define eligible validation positions,
+    including cross-sequence masking under packed THD.
     """
     from nemo_automodel.components.loss.utils import _get_lm_head_module
     from nemo_automodel.components.models.common.mtp import roll_tensor
@@ -1450,6 +1462,13 @@ def _calculate_mtp_acceptance_with_heads(
     mtp_outputs = mtp_per_depth_h
     if labels.dim() == 1:
         mtp_outputs = [h.squeeze(0) if (h.dim() == 3 and h.shape[0] == 1) else h for h in mtp_outputs]
+        if verifier_predictions.dim() == 2 and verifier_predictions.shape[0] == 1:
+            verifier_predictions = verifier_predictions.squeeze(0)
+    if verifier_predictions.shape != labels.shape:
+        raise ValueError(
+            f"verifier_predictions.shape={tuple(verifier_predictions.shape)} does not "
+            f"match labels.shape={tuple(labels.shape)}"
+        )
 
     lm_head = _get_lm_head_module(model)
     if lm_head is None:
@@ -1466,6 +1485,8 @@ def _calculate_mtp_acceptance_with_heads(
                 seq_idx = seq_idx.unsqueeze(0).expand(labels.shape[0], -1)
 
     cur_labels = labels
+    prefix_matches = torch.ones_like(labels, dtype=torch.bool)
+    prefix_valid = torch.ones_like(labels, dtype=torch.bool)
     correct_by_head = []
     valid_by_head = []
     for k, mtp_output in enumerate(mtp_outputs):
@@ -1483,7 +1504,37 @@ def _calculate_mtp_acceptance_with_heads(
             logits = logits.full_tensor()
         preds = logits.argmax(dim=-1)
         valid = masked != ignore_index
-        correct_by_head.append((preds.eq(masked) & valid).sum())
-        valid_by_head.append(valid.sum())
+        verifier_for_depth = roll_tensor(verifier_predictions, shifts=-(k + 1), dim=-1)
+        prefix_valid = prefix_valid & valid
+        prefix_matches = prefix_matches & preds.eq(verifier_for_depth)
+        correct_by_head.append((prefix_matches & prefix_valid).sum())
+        valid_by_head.append(prefix_valid.sum())
 
     return correct_by_head, valid_by_head
+
+
+@contextmanager
+def _mtp_validation_forward(llm: torch.nn.Module, *, enabled: bool):
+    """Run MTP during one eval forward without changing child-module eval state."""
+    if not enabled:
+        yield
+        return
+
+    if hasattr(llm, "compute_mtp_in_eval"):
+        previous = llm.compute_mtp_in_eval
+        llm.compute_mtp_in_eval = True
+        try:
+            yield
+        finally:
+            llm.compute_mtp_in_eval = previous
+        return
+
+    # Older Automodel revisions gate MTP only on the root module's ``training``
+    # flag. Assign it directly rather than calling train(), which would recursively
+    # enable dropout and other training-only behavior in the frozen verifier.
+    previous = llm.training
+    llm.training = True
+    try:
+        yield
+    finally:
+        llm.training = previous

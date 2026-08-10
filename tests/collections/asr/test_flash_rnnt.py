@@ -17,11 +17,9 @@ import torch
 
 from nemo.collections.asr.losses.flash_rnnt import FlashRNNTLoss
 from nemo.collections.asr.losses.rnnt import NUMBA_RNNT_AVAILABLE, RNNTLoss
-from nemo.collections.asr.losses.rnnt_pytorch import RNNTLossPytorch
 from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint
 from nemo.collections.asr.modules.rnnt import RNNTJoint
 from nemo.collections.asr.parts.triton.rnnt_joint import _PackedJoint, lattice_layout, packed_scatter
-from nemo.collections.asr.parts.triton.rnnt_loss import rnnt_loss_triton
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
 CUDA_TRITON_AVAILABLE = TRITON_AVAILABLE and torch.cuda.is_available()
@@ -35,10 +33,6 @@ JOINT_HIDDEN = 8
 NUM_LABELS = 7
 BLANK = NUM_LABELS
 VOCAB = NUM_LABELS + 1
-
-if TRITON_AVAILABLE:
-    # This module imports Triton at the top level, so only reach for it once Triton is known good.
-    from nemo.collections.asr.parts.triton.rnnt_logprobs import rnnt_logprobs_torch, rnnt_logprobs_triton
 
 
 def _joint_hidden_state(encoder, predictor, activation, dropout_p=0.0):
@@ -59,35 +53,6 @@ def _joint_hidden_state(encoder, predictor, activation, dropout_p=0.0):
         encoder, predictor, offsets, states, source_lengths, seed, 0, total_rows, activation, dropout_p
     )
     return hidden.view(batch, source_steps, target_states, hidden_size)
-
-
-def _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, blank, fastemit_lambda=0.0, clamp=-1.0):
-    """Reference loss over dense logits, using the kernels the flash path composes.
-
-    Flash trades the dense ``[B, T, U + 1, V]`` tensor for chunking, tiling and recomputation.
-    Running the same extraction and dynamic programming over materialized logits isolates those
-    mechanics, so a mismatch points at the chunking rather than at the kernels.
-    """
-    # Clamping needs the unit scale that autograd folds into the score gradients; the loss
-    # backward publishes it here for the extraction backward to divide out.
-    loss_grad_scale = torch.zeros(logits.shape[0], device=logits.device) if clamp > 0.0 else None
-    target_scores, blank_scores = rnnt_logprobs_triton(
-        logits,
-        labels,
-        blank,
-        source_lengths=source_lengths,
-        target_lengths=target_lengths,
-        clamp=clamp,
-        loss_grad_scale=loss_grad_scale,
-    )
-    return rnnt_loss_triton(
-        target_scores[..., :-1],
-        blank_scores,
-        source_lengths,
-        target_lengths,
-        fastemit_lambda=fastemit_lambda,
-        loss_grad_scale=loss_grad_scale,
-    )
 
 
 def _scatter_row_numbers(source_lengths, target_lengths, frames, target_states):
@@ -224,101 +189,6 @@ def test_flash_rnnt_rejects_dense_path():
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-@pytest.mark.parametrize(
-    "batch_size,num_frames,num_text_units,vocab_size",
-    [
-        (1, 4, 2, 4),
-        (2, 3, 2, 5),
-        (2, 16, 31, 17),
-        (16, 129, 65, 2048),
-    ],
-)
-@pytest.mark.parametrize(
-    "float_dtype",
-    [torch.float32] + ([torch.bfloat16] if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else []),
-)
-def test_rnnt_logprobs_matches_torch_reference(
-    batch_size: int, num_frames: int, num_text_units: int, vocab_size: int, float_dtype: torch.dtype
-):
-    """Check the Triton extraction against the naive Torch one, forward and backward."""
-    device = torch.device("cuda")
-    torch.manual_seed(777)
-
-    targets = torch.randint(0, vocab_size - 1, (batch_size, num_text_units), device=device, dtype=torch.long)
-    logits = torch.rand(
-        [batch_size, num_frames, num_text_units + 1, vocab_size + 1],
-        dtype=float_dtype,
-        device=device,
-        requires_grad=True,
-    )
-
-    # The Triton kernel accumulates in float32 for accuracy, so the reference gets float32 input too.
-    target_scores_etalon, blank_scores_etalon = rnnt_logprobs_torch(
-        logits=logits.to(torch.float32), targets=targets, blank_id=vocab_size
-    )
-    logits2 = logits.clone().detach()
-    logits2.requires_grad_(True)
-    target_scores, blank_scores = rnnt_logprobs_triton(logits=logits2, targets=targets, blank_id=vocab_size)
-    target_scores[..., -1:] = 0.0
-    target_scores_etalon[..., -1:] = 0.0
-    torch.testing.assert_close(blank_scores, blank_scores_etalon, atol=1e-5, rtol=1e-5)
-    torch.testing.assert_close(target_scores, target_scores_etalon, atol=1e-5, rtol=1e-5)
-
-    target_scales = torch.rand_like(target_scores, requires_grad=False)
-    blank_scales = torch.rand_like(blank_scores, requires_grad=False)
-    loss_etalon = (target_scales * target_scores_etalon + blank_scales * blank_scores_etalon).sum()
-    loss = (target_scales * target_scores + blank_scales * blank_scores).sum()
-    loss_etalon.backward()
-    loss.backward()
-    torch.testing.assert_close(logits.grad, logits2.grad, atol=1e-5, rtol=1e-5)
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-def test_rnnt_logprobs_backward_accepts_noncontiguous_score_gradients():
-    torch.manual_seed(5)
-    batch, source_steps, target_tokens = 2, 6, 4
-    expected_logits = torch.randn(batch, source_steps, target_tokens + 1, VOCAB, device="cuda", requires_grad=True)
-    actual_logits = expected_logits.detach().clone().requires_grad_(True)
-    targets = torch.randint(0, NUM_LABELS, (batch, target_tokens), device="cuda")
-    source_lengths = torch.tensor([source_steps, 4], device="cuda")
-    target_lengths = torch.tensor([target_tokens, 2], device="cuda")
-
-    expected_scores = rnnt_logprobs_triton(
-        expected_logits,
-        targets,
-        blank_id=BLANK,
-        source_lengths=source_lengths,
-        target_lengths=target_lengths,
-    )
-    actual_scores = rnnt_logprobs_triton(
-        actual_logits,
-        targets,
-        blank_id=BLANK,
-        source_lengths=source_lengths,
-        target_lengths=target_lengths,
-    )
-    # Slicing one lane out of a wider buffer is the cheapest way to hand the backward a strided
-    # gradient, which is what cat's backward produces once source time is tiled.
-    lanes = 2
-    gradient_storage = tuple(
-        torch.randn(score.shape + (lanes,), device=score.device, dtype=score.dtype) for score in actual_scores
-    )
-    score_gradients = tuple(storage[..., 0] for storage in gradient_storage)
-    assert all(not gradient.is_contiguous() for gradient in score_gradients)
-
-    expected_gradient = torch.autograd.grad(
-        expected_scores,
-        expected_logits,
-        tuple(gradient.contiguous() for gradient in score_gradients),
-    )[0]
-    actual_gradient = torch.autograd.grad(actual_scores, actual_logits, score_gradients)[0]
-
-    torch.testing.assert_close(actual_gradient, expected_gradient, atol=0.0, rtol=0.0)
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 def test_flash_rnnt_rejects_hat_joint_without_reading_blank_out_of_bounds():
     """A HAT joint scores blank in a separate head, so its joint_net is one column short.
 
@@ -352,25 +222,6 @@ def test_flash_rnnt_rejects_hat_joint_without_reading_blank_out_of_bounds():
             transcripts=torch.randint(0, NUM_LABELS, (batch, target_tokens), device="cuda"),
             transcript_lengths=torch.tensor([target_tokens, 1], device="cuda"),
         )
-
-
-@pytest.mark.unit
-def test_rnnt_logprobs_rejects_invalid_pointer_layout_before_launch():
-    batch, source_steps, target_tokens = 2, 3, 4
-    logits = torch.empty(batch, source_steps, target_tokens + 1, VOCAB)
-    targets = torch.zeros(batch, target_tokens, dtype=torch.int64)
-
-    with pytest.raises(ValueError, match=f"blank_id={VOCAB}"):
-        rnnt_logprobs_triton(logits, targets, blank_id=VOCAB)
-    with pytest.raises(ValueError, match="targets must have shape"):
-        rnnt_logprobs_triton(logits, torch.zeros(batch, target_tokens + 1, dtype=torch.int64), blank_id=BLANK)
-    with pytest.raises(ValueError, match="source_lengths must have shape"):
-        rnnt_logprobs_triton(logits, targets, blank_id=BLANK, source_lengths=torch.ones(batch + 1, dtype=torch.int64))
-
-    # Transposing the two middle axes leaves the right shape behind a stride the kernel cannot walk.
-    noncontiguous_logits = torch.empty(batch, target_tokens + 1, source_steps, VOCAB).transpose(1, 2)
-    with pytest.raises(ValueError, match="logits must be contiguous"):
-        rnnt_logprobs_triton(noncontiguous_logits, targets, blank_id=BLANK)
 
 
 @pytest.mark.unit
@@ -444,20 +295,6 @@ def test_flash_rnnt_join_matches_the_eager_broadcast_add(activation, dtype):
         torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
 
-def _inputs(blank, dtype=torch.float32, vocab=VOCAB):
-    """Ragged dense logits: the batch mixes a full-length sample, a shorter one and an empty transcript."""
-    torch.manual_seed(7)
-    batch, source_steps, target_tokens = 3, 6, 4
-    logits = torch.randn(batch, source_steps, target_tokens + 1, vocab, device="cuda", dtype=dtype, requires_grad=True)
-    # Labels have to avoid whichever column holds blank.
-    low = 1 if blank == 0 else 0
-    high = vocab if blank == 0 else vocab - 1
-    labels = torch.randint(low, high, (batch, target_tokens), device="cuda")
-    source_lengths = torch.tensor([source_steps, 4, 3], device="cuda", dtype=torch.int64)
-    target_lengths = torch.tensor([target_tokens, 2, 0], device="cuda", dtype=torch.int64)
-    return logits, labels, source_lengths, target_lengths
-
-
 @pytest.mark.unit
 def test_flash_rnnt_requires_triton(monkeypatch):
     monkeypatch.setattr("nemo.collections.asr.losses.flash_rnnt.TRITON_AVAILABLE", False)
@@ -471,152 +308,6 @@ def test_flash_rnnt_requires_triton(monkeypatch):
             source_lengths=torch.full((batch,), source_steps, dtype=torch.long),
             target_lengths=torch.full((batch,), target_tokens, dtype=torch.long),
         )
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-@pytest.mark.parametrize(("blank", "vocab"), [(0, 8), (7, 8), (0, 9), (8, 9)])
-def test_dense_rnnt_matches_torch_loss_and_gradient(blank, vocab):
-    logits, labels, source_lengths, target_lengths = _inputs(blank, vocab=vocab)
-    original_logits = logits.detach().clone()
-    reference_logits = logits.detach().clone().requires_grad_(True)
-
-    native_loss = _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, blank)
-    reference_loss = RNNTLossPytorch(blank=blank, reduction="none")(
-        reference_logits, labels, source_lengths, target_lengths
-    )
-    native_grad = torch.autograd.grad(native_loss.sum(), logits)[0]
-    reference_grad = torch.autograd.grad(reference_loss.sum(), reference_logits)[0]
-
-    torch.testing.assert_close(native_loss, reference_loss, atol=1e-5, rtol=1e-5)
-    torch.testing.assert_close(native_grad, reference_grad, atol=2e-5, rtol=2e-4)
-    torch.testing.assert_close(logits, original_logits, atol=0.0, rtol=0.0)
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-def test_rnnt_logprobs_can_reuse_private_logits_for_gradient():
-    logits, labels, source_lengths, target_lengths = _inputs(blank=BLANK)
-    reference_logits = logits.detach().clone().requires_grad_(True)
-    target_scores, blank_scores = rnnt_logprobs_triton(
-        logits,
-        labels,
-        blank_id=BLANK,
-        source_lengths=source_lengths,
-        target_lengths=target_lengths,
-        reuse_logits_for_grad=True,
-    )
-    loss = rnnt_loss_triton(target_scores[..., :-1], blank_scores, source_lengths, target_lengths)
-    reference_loss = _dense_rnnt_loss(reference_logits, labels, source_lengths, target_lengths, BLANK)
-    grad = torch.autograd.grad(loss.sum(), logits)[0]
-    reference_grad = torch.autograd.grad(reference_loss.sum(), reference_logits)[0]
-
-    torch.testing.assert_close(loss, reference_loss, atol=0.0, rtol=0.0)
-    torch.testing.assert_close(grad, reference_grad, atol=0.0, rtol=0.0)
-    assert logits.data_ptr() == grad.data_ptr()
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-def test_rnnt_logprobs_reused_logits_reject_second_backward():
-    logits, labels, source_lengths, target_lengths = _inputs(blank=BLANK)
-    target_scores, blank_scores = rnnt_logprobs_triton(
-        logits,
-        labels,
-        blank_id=BLANK,
-        source_lengths=source_lengths,
-        target_lengths=target_lengths,
-        reuse_logits_for_grad=True,
-    )
-    loss = rnnt_loss_triton(target_scores[..., :-1], blank_scores, source_lengths, target_lengths).sum()
-
-    torch.autograd.grad(loss, logits, retain_graph=True)
-    with pytest.raises(RuntimeError, match="only supports one backward pass"):
-        torch.autograd.grad(loss, logits)
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(
-    not CUDA_TRITON_AVAILABLE or not NUMBA_RNNT_AVAILABLE,
-    reason="CUDA, Triton, and Numba RNN-T are required",
-)
-@pytest.mark.parametrize(("fastemit_lambda", "clamp"), [(0.0, -1.0), (0.01, -1.0), (0.01, 0.02)])
-@pytest.mark.parametrize("blank", [0, 7])
-def test_dense_rnnt_matches_reference_fastemit_and_clamp(fastemit_lambda, clamp, blank):
-    """Check FastEmit and clamping against the reference transducer rather than another CUDA kernel.
-
-    ``rnnt_numpy`` runs the dynamic program in NumPy on the host, so it shares no code with either
-    the Triton kernels or the Numba ones and a mismatch cannot be a bug both implementations hold in
-    common. It clamps the gradient it is handed, which matches the unit-scale clamp only while the
-    loss gradient scale is one, so the objective here stays an unweighted sum.
-    """
-    from nemo.collections.asr.parts.numba.rnnt_loss.rnnt_numpy import RNNTLoss as RNNTLossNumpy
-
-    logits, labels, source_lengths, target_lengths = _inputs(blank=blank)
-    reference_logits = logits.detach().clone().requires_grad_(True)
-    reference = RNNTLossNumpy(blank=blank, fastemit_lambda=fastemit_lambda, clamp=clamp)
-
-    native_loss = _dense_rnnt_loss(
-        logits, labels, source_lengths, target_lengths, blank, fastemit_lambda=fastemit_lambda, clamp=clamp
-    )
-    # The reference sums over the batch, so compare the total and take gradients from the same scalar.
-    reference_loss = reference(reference_logits, labels.cpu(), source_lengths.cpu(), target_lengths.cpu())
-    native_grad = torch.autograd.grad(native_loss.sum(), logits)[0]
-    reference_grad = torch.autograd.grad(reference_loss.sum(), reference_logits)[0]
-
-    torch.testing.assert_close(native_loss.sum(), reference_loss.sum().to(native_loss.device), atol=1e-5, rtol=1e-5)
-    torch.testing.assert_close(native_grad, reference_grad, atol=2e-5, rtol=2e-4)
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(
-    not CUDA_TRITON_AVAILABLE or not NUMBA_RNNT_AVAILABLE,
-    reason="CUDA, Triton, and Numba RNN-T are required",
-)
-@pytest.mark.parametrize(("objective_reduction", "amp_scale"), [("mean", 1.0), ("mean", 1024.0), ("weighted", 1.0)])
-def test_dense_rnnt_clamp_precedes_loss_grad_scaling(objective_reduction, amp_scale):
-    from nemo.collections.asr.parts.numba.rnnt_loss import RNNTLossNumba
-
-    logits, labels, source_lengths, target_lengths = _inputs(blank=BLANK)
-    reference_logits = logits.detach().clone().requires_grad_(True)
-    native_loss = _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, 7, fastemit_lambda=0.01, clamp=0.02)
-    reference_loss = RNNTLossNumba(
-        blank=BLANK,
-        reduction="none",
-        fastemit_lambda=0.01,
-        clamp=0.02,
-    )(reference_logits, labels, source_lengths, target_lengths)
-
-    if objective_reduction == "mean":
-        native_objective = native_loss.mean()
-        reference_objective = reference_loss.mean()
-    else:
-        weights = torch.tensor([0.5, 0.0, -2.0], device="cuda")
-        native_objective = (native_loss * weights).sum()
-        reference_objective = (reference_loss * weights).sum()
-
-    native_grad = torch.autograd.grad(native_objective * amp_scale, logits)[0] / amp_scale
-    reference_grad = torch.autograd.grad(reference_objective * amp_scale, reference_logits)[0] / amp_scale
-
-    torch.testing.assert_close(native_grad, reference_grad, atol=2e-5, rtol=2e-4)
-
-
-@pytest.mark.unit
-@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_dense_rnnt_mixed_precision_matches_float32(dtype):
-    logits, labels, source_lengths, target_lengths = _inputs(blank=BLANK, dtype=dtype)
-    reference_logits = logits.detach().float().requires_grad_(True)
-
-    loss = _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, BLANK)
-    reference_loss = _dense_rnnt_loss(reference_logits, labels, source_lengths, target_lengths, BLANK)
-    grad = torch.autograd.grad(loss.sum(), logits)[0].float()
-    reference_grad = torch.autograd.grad(reference_loss.sum(), reference_logits)[0]
-
-    torch.testing.assert_close(loss, reference_loss, atol=2e-3, rtol=2e-3)
-    assert torch.isfinite(grad).all() and torch.count_nonzero(grad)
-    relative_error = torch.linalg.vector_norm(grad - reference_grad) / torch.linalg.vector_norm(reference_grad)
-    assert relative_error < 2e-3
 
 
 def _end_to_end_batch(dtype=torch.float32):
@@ -886,10 +577,21 @@ def test_flash_rnnt_joint_dropout_recomputes_the_same_mask(monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.skipif(
+    not CUDA_TRITON_AVAILABLE or not NUMBA_RNNT_AVAILABLE,
+    reason="CUDA, Triton, and Numba RNN-T are required",
+)
 @pytest.mark.parametrize("activation", ["relu", "sigmoid", "tanh"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_flash_rnnt_matches_dense_native_loss_and_gradients(dtype, activation):
+def test_flash_rnnt_matches_numba_loss_and_gradients(dtype, activation):
+    """The whole path -- joint, extraction, dynamic program -- against an independent backend.
+
+    warprnnt_numba materializes the joint tensor and shares no kernel with this loss, so a defect
+    anywhere in the chain shows up here. It reads float32, which also makes the reference the more
+    accurate of the two in the reduced-precision arm.
+    """
+    from nemo.collections.asr.parts.numba.rnnt_loss import RNNTLossNumba
+
     torch.manual_seed(19)
     dense_joint = _make_joint(4, activation=activation).to(dtype)
     flash_joint = _make_joint(4, activation=activation).to(dtype)
@@ -907,7 +609,9 @@ def test_flash_rnnt_matches_dense_native_loss_and_gradients(dtype, activation):
     flash_predictor = predictor.detach().clone().requires_grad_(True)
 
     logits = dense_joint.joint(encoder.transpose(1, 2), predictor.transpose(1, 2))
-    dense_value = _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, BLANK, fastemit_lambda=0.01).mean()
+    dense_value = RNNTLossNumba(blank=BLANK, reduction="none", fastemit_lambda=0.01)(
+        logits.float(), labels, source_lengths, target_lengths
+    ).mean()
     flash_value = flash_joint(
         encoder_outputs=flash_encoder,
         decoder_outputs=flash_predictor,

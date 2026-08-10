@@ -313,7 +313,7 @@ def rnnt_loss_triton(
         loss_grad_scale: optional ``[B]`` float32 buffer. Backward writes ``grad_losses`` into it --
             the objective's gradient with respect to each per-sample loss, which the reduction and any
             AMP scale determine -- so a producer of the scores can recover the unit scale its own
-            gradients were computed at. Only gradient clamping needs it; see ``rnnt_logprobs_triton``.
+            gradients were computed at. Only gradient clamping needs it.
     """
     losses, _, _ = _RNNTLossTriton.apply(
         target_scores, blank_scores, source_lengths, target_lengths, fastemit_lambda, loss_grad_scale

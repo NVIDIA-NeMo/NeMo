@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import torch
-import torch.nn.functional as F
 import triton
 import triton.language as tl
 
@@ -83,9 +82,6 @@ def _rnnt_logprobs_bwd_kernel(
     blank_id: int,
     grad_target_scores_ptr,
     grad_blank_scores_ptr,
-    loss_grad_scale_ptr,
-    clamp: float,
-    CLAMP_GRAD: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
@@ -100,7 +96,9 @@ def _rnnt_logprobs_bwd_kernel(
     # load lengths for source/target
     source_len = tl.load(source_lengths_ptr + batch_i)
     target_len = tl.load(target_lengths_ptr + batch_i)
-    valid_state = (source_i < source_len) & (target_i <= target_len)
+    if source_i >= source_len or target_i > target_len:
+        # no calculations required
+        return
 
     # calculate offset in [B, T, U+1, V] tensor for the current vector with target logits/grad_logits
     flat_index = ((batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i) * num_labels
@@ -109,75 +107,25 @@ def _rnnt_logprobs_bwd_kernel(
 
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < num_labels
-    logits = tl.load(logits_ptr + col_offsets, mask=mask & valid_state, other=-float("inf")).to(tl.float32)
+    logits = tl.load(logits_ptr + col_offsets, mask=mask, other=-float("inf")).to(tl.float32)
     # stable log softmax calculation
     logits_max = tl.max(logits, axis=0)
     logits_minus_max = logits - logits_max
-    unnormalized = tl.exp(logits_minus_max)
-    denominator_sum = tl.sum(unnormalized, axis=0)
+    denominator = tl.log(tl.sum(tl.exp(logits_minus_max), axis=0))
+    log_softmax = logits_minus_max - denominator
     # softmax for gradient
-    softmax = unnormalized / denominator_sum
+    softmax = tl.exp(log_softmax)
 
     flat_index_grad = (batch_i * max_source_len + source_i) * max_target_len_plus_1 + target_i
-    blank_grad = tl.load(grad_blank_scores_ptr + flat_index_grad, mask=valid_state, other=0.0).to(tl.float32)
-    target_i_valid = valid_state & (target_i < target_len)
+    blank_grad = tl.load(grad_blank_scores_ptr + flat_index_grad).to(tl.float32)
+    target_i_valid = target_i < target_len
     target_grad = tl.load(grad_target_scores_ptr + flat_index_grad, mask=target_i_valid, other=0.0).to(tl.float32)
     target_id = tl.load(targets_ptr + batch_i * (max_target_len_plus_1 - 1) + target_i, mask=target_i_valid, other=-1)
 
-    if CLAMP_GRAD:
-        # The reference kernel clamps the per-sample gradient at unit scale, before the loss
-        # reduction or AMP scale reaches it, so divide that scale out, clamp, and reapply below.
-        loss_grad_scale = tl.load(loss_grad_scale_ptr + batch_i).to(tl.float32)
-        inverse_scale = tl.where(loss_grad_scale != 0.0, 1.0 / loss_grad_scale, 0.0)
-        blank_grad *= inverse_scale
-        target_grad *= inverse_scale
-
     grad_not_in_targets = (-softmax) * (blank_grad + target_grad)
-    # Add both deltas instead of overwriting one with the other. This also keeps
-    # malformed target==blank inputs mathematically correct.
-    grad = grad_not_in_targets
-    grad += tl.where(col_offsets == blank_id, blank_grad, 0.0)
-    grad += tl.where(col_offsets == target_id, target_grad, 0.0)
-    if CLAMP_GRAD:
-        grad = tl.maximum(tl.minimum(grad, clamp), -clamp)
-        grad *= loss_grad_scale
-    grad = tl.where(valid_state, grad, 0.0)
+    grad = tl.where(col_offsets == blank_id, blank_grad + grad_not_in_targets, grad_not_in_targets)
+    grad = tl.where(col_offsets == target_id, target_grad + grad_not_in_targets, grad)
     tl.store(grad_logits_ptr + col_offsets, grad, mask=mask)
-
-
-def _validate_rnnt_logprobs_inputs(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    blank_id: int,
-    source_lengths: torch.Tensor | None,
-    target_lengths: torch.Tensor | None,
-) -> None:
-    """Validate the tensor layout assumed by the pointer arithmetic below."""
-    if logits.ndim != 4:
-        raise ValueError(f"logits must have shape [B, T, U + 1, V], got {tuple(logits.shape)}")
-    if targets.ndim != 2:
-        raise ValueError(f"targets must have shape [B, U], got {tuple(targets.shape)}")
-    expected_targets = (logits.shape[0], logits.shape[2] - 1)
-    if targets.shape != expected_targets:
-        raise ValueError(f"targets must have shape {expected_targets}, got {tuple(targets.shape)}")
-    if not 0 <= blank_id < logits.shape[-1]:
-        raise ValueError(f"blank_id={blank_id} must be in [0, {logits.shape[-1]})")
-    if not logits.is_contiguous():
-        raise ValueError("logits must be contiguous")
-    if targets.device != logits.device:
-        raise ValueError("targets and logits must be on the same device")
-    if targets.dtype not in (torch.int32, torch.int64):
-        raise ValueError("targets must use int32 or int64 indices")
-
-    for name, lengths in (("source_lengths", source_lengths), ("target_lengths", target_lengths)):
-        if lengths is None:
-            continue
-        if lengths.shape != (logits.shape[0],):
-            raise ValueError(f"{name} must have shape ({logits.shape[0]},), got {tuple(lengths.shape)}")
-        if lengths.device != logits.device:
-            raise ValueError(f"{name} and logits must be on the same device")
-        if lengths.dtype not in (torch.int32, torch.int64):
-            raise ValueError(f"{name} must use int32 or int64 values")
 
 
 class RnntLogProbs(torch.autograd.Function):
@@ -193,11 +141,8 @@ class RnntLogProbs(torch.autograd.Function):
         blank_id: int,
         source_lengths: torch.Tensor | None,
         target_lengths: torch.Tensor | None,
-        clamp: float,
-        reuse_logits_for_grad: bool,
-        loss_grad_scale: torch.Tensor | None,
     ):
-        """Log probabilities of the target and blank labels at every lattice position.
+        """
 
         Args:
             ctx: ctx object for storing the context
@@ -206,13 +151,11 @@ class RnntLogProbs(torch.autograd.Function):
             blank_id: id of the blank output
             source_lengths: optional tensor with lengths for source utterances
             target_lengths: optional tensor with lengths for targets
-            clamp: bound on the unit-scale gradient, disabled when not positive
-            reuse_logits_for_grad: write the gradient over ``logits`` rather than allocating for it
-            loss_grad_scale: per-sample loss gradient the clamp divides out and reapplies
 
         Returns:
-            Log probabilities for target and blank labels, both of size [B, T, U+1].
+
         """
+        assert logits.is_contiguous()  # logits are huge, so here we just check if logits are contiguous
         targets = targets.contiguous()
         device = logits.device
         float_dtype = torch.float32
@@ -248,12 +191,6 @@ class RnntLogProbs(torch.autograd.Function):
         # saving for backward
         ctx.save_for_backward(logits, targets, source_lengths, target_lengths)
         ctx.blank_id = blank_id
-        ctx.clamp = float(clamp) if clamp > 0.0 else 0.0
-        ctx.reuse_logits_for_grad = reuse_logits_for_grad
-        ctx.reused_logits_consumed = False
-        # Held outside save_for_backward: the loss fills it during its own backward, which
-        # runs before ours because these scores are what it consumes.
-        ctx.loss_grad_scale = loss_grad_scale
         return target_scores, blank_scores
 
     @staticmethod
@@ -269,19 +206,9 @@ class RnntLogProbs(torch.autograd.Function):
         Returns:
             gradient for logits, None for all other arguments for `forward`
         """
-        if ctx.reuse_logits_for_grad:
-            if ctx.reused_logits_consumed:
-                raise RuntimeError("reuse_logits_for_grad=True only supports one backward pass")
-            ctx.reused_logits_consumed = True
         (logits, targets, source_lengths, target_lengths) = ctx.saved_tensors
         blank_id = ctx.blank_id
-        clamp = ctx.clamp
-        grad_target_scores = grad_target_scores.contiguous()
-        grad_blank_scores = grad_blank_scores.contiguous()
-        grad_logits = logits if ctx.reuse_logits_for_grad else torch.zeros_like(logits)
-        # Any valid pointer will do when clamping is off: CLAMP_GRAD is a constexpr, so the
-        # only branch that reads this argument is compiled out.
-        loss_grad_scale = ctx.loss_grad_scale if ctx.loss_grad_scale is not None else grad_blank_scores
+        grad_logits = torch.zeros_like(logits)
         _rnnt_logprobs_bwd_kernel[(logits.shape[0], logits.shape[1], logits.shape[2])](
             logits_ptr=logits,
             grad_logits_ptr=grad_logits,
@@ -294,12 +221,9 @@ class RnntLogProbs(torch.autograd.Function):
             blank_id=blank_id,
             grad_target_scores_ptr=grad_target_scores,
             grad_blank_scores_ptr=grad_blank_scores,
-            loss_grad_scale_ptr=loss_grad_scale,
-            clamp=clamp,
-            CLAMP_GRAD=clamp > 0.0,
             BLOCK_SIZE=triton.next_power_of_2(logits.shape[-1]),
         )
-        return grad_logits, None, None, None, None, None, None, None
+        return grad_logits, None, None, None, None
 
 
 def rnnt_logprobs_triton(
@@ -308,9 +232,6 @@ def rnnt_logprobs_triton(
     blank_id: int,
     source_lengths: torch.Tensor | None = None,
     target_lengths: torch.Tensor | None = None,
-    clamp: float = -1.0,
-    reuse_logits_for_grad: bool = False,
-    loss_grad_scale: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Given logits, calculate log probabilities for blank and target labels needed for transducer loss calculation.
@@ -322,56 +243,9 @@ def rnnt_logprobs_triton(
         blank_id: id of the blank output
         source_lengths: optional tensor with lengths for source utterances
         target_lengths: optional tensor with lengths for targets
-        clamp: bound on the unit-scale RNN-T gradient, applied before ``loss_grad_scale`` is
-            reapplied; disabled when not positive
-        reuse_logits_for_grad: overwrite logits with their gradient during backward; only safe for private,
-            disposable logits; a second backward through the same graph raises
-        loss_grad_scale: ``[B]`` float32 buffer holding the objective's gradient with respect to
-            each per-sample loss, filled by ``rnnt_loss_triton``. Required only when clamping: the
-            clamp bounds the unit-scale gradient, and by this point autograd has folded that scale
-            in, so the backward divides it out, clamps, and reapplies it.
 
     Returns:
         Tuple of tensors with log probabilities for targets and blank labels, both of size [B, T, U+1].
         For the non-existent targets (U+1 or beyond target_lengths) output is zero.
     """
-    _validate_rnnt_logprobs_inputs(logits, targets, blank_id, source_lengths, target_lengths)
-    if clamp > 0.0:
-        if loss_grad_scale is None:
-            raise ValueError("Clamping the RNN-T gradient requires loss_grad_scale")
-        if loss_grad_scale.shape != (logits.shape[0],) or loss_grad_scale.dtype != torch.float32:
-            raise ValueError(
-                f"loss_grad_scale must be a float32 tensor of shape ({logits.shape[0]},), "
-                f"got {tuple(loss_grad_scale.shape)} of {loss_grad_scale.dtype}"
-            )
-    return RnntLogProbs.apply(
-        logits, targets, blank_id, source_lengths, target_lengths, clamp, reuse_logits_for_grad, loss_grad_scale
-    )
-
-
-def rnnt_logprobs_torch(
-    logits: torch.Tensor, targets: torch.Tensor, blank_id: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Given logits, calculate log probabilities for blank and target labels needed for transducer loss calculation.
-    Naive implementation in PyTorch, for testing and prototyping purposes.
-
-    Args:
-        logits: Joint tensor of size [B, T, U+1, D]
-        targets: Targets of size [B, U]
-        blank_id: id of the blank output
-
-    Returns:
-        Tuple of tensors with log probabilities for targets and blank labels, both of size [B, T, U+1].
-        For the last non-existent target (U+1) output is zero.
-    """
-    device = logits.device
-    batch_size = logits.shape[0]
-    log_probs = F.log_softmax(logits, dim=-1)
-    blank_scores = log_probs[..., blank_id]
-    targets = torch.cat((targets, torch.zeros([batch_size], dtype=targets.dtype, device=device).unsqueeze(1)), dim=-1)
-    target_scores = torch.gather(
-        log_probs, dim=-1, index=targets.unsqueeze(1).expand(log_probs.shape[:-1]).unsqueeze(-1)
-    ).squeeze(-1)
-    target_scores[:, :, -1] = 0.0
-    return target_scores, blank_scores
+    return RnntLogProbs.apply(logits, targets, blank_id, source_lengths, target_lengths)

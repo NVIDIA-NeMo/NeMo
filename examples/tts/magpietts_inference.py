@@ -168,6 +168,7 @@ def run_inference_and_evaluation(
     csv_header = (
         "checkpoint_name,dataset,cer_filewise_avg,wer_filewise_avg,cer_cumulative,"
         "wer_cumulative,cer_pred_gt_audio_filewise_avg,cer_pred_gt_audio_cumulative,"
+        "wer_pred_gt_audio_filewise_avg,wer_pred_gt_audio_cumulative,"
         "ssim_pred_gt_avg,ssim_pred_context_avg,ssim_gt_context_avg,"
         "ssim_pred_gt_avg_alternate,ssim_pred_context_avg_alternate,"
         "ssim_gt_context_avg_alternate,esim_pred_gt_avg,ems_pred_gt_avg,"

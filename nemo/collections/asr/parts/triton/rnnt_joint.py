@@ -276,6 +276,57 @@ if TRITON_AVAILABLE:
         else:
             tl.atomic_add(address, total, mask=live)
 
+    @triton.autotune(
+        configs=[
+            triton.Config({"block_rows": rows}, num_warps=warps)
+            for rows, warps in ((64, 1), (128, 1), (128, 4), (256, 4), (512, 4), (512, 8))
+        ],
+        # The work per row is the same at every shape, so one choice serves the whole run.
+        key=[],
+    )
+    @triton.jit
+    def _packed_scatter(
+        target_ptr,
+        blank_ptr,
+        target_plane_ptr,
+        blank_plane_ptr,
+        row_starts_ptr,
+        states_ptr,
+        tile_start,
+        rows,
+        batch,
+        source_stride,
+        target_states,
+        gather: tl.constexpr,
+        batch_pow2: tl.constexpr,
+        block_rows: tl.constexpr,
+    ):
+        """Move a block of rows' scores between packed order and the rectangular planes.
+
+        Addresses are derived from the rows rather than read from an index, so neither direction
+        stores one. A block amortises that derivation over its rows; ``gather`` runs it backwards.
+        """
+        local = tl.program_id(0) * block_rows + tl.arange(0, block_rows)
+        live = local < rows
+        row = (tile_start + local).to(tl.int64)
+
+        lanes = tl.arange(0, batch_pow2)
+        starts = tl.load(row_starts_ptr + lanes, mask=lanes <= batch, other=2**30)
+        counts = tl.load(states_ptr + lanes, mask=lanes < batch, other=1)
+        batch_idx = tl.sum(tl.where(starts[None, :] <= row[:, None], 1, 0), axis=1) - 1
+        picked = lanes[None, :] == batch_idx[:, None]
+        start = tl.sum(tl.where(picked, starts[None, :], 0), axis=1)
+        states = tl.sum(tl.where(picked, counts[None, :], 0), axis=1)
+
+        within = row - start
+        plane = (batch_idx * source_stride + within // states) * target_states + within % states
+        if gather:
+            tl.store(target_ptr + local, tl.load(target_plane_ptr + plane, mask=live, other=0.0), mask=live)
+            tl.store(blank_ptr + local, tl.load(blank_plane_ptr + plane, mask=live, other=0.0), mask=live)
+        else:
+            tl.store(target_plane_ptr + plane, tl.load(target_ptr + local, mask=live, other=0.0), mask=live)
+            tl.store(blank_plane_ptr + plane, tl.load(blank_ptr + local, mask=live, other=0.0), mask=live)
+
     @triton.autotune(configs=[triton.Config({}, num_warps=warps) for warps in (1, 2, 4)], key=["vocab"])
     @triton.jit
     def _packed_logprobs_fwd(
@@ -582,11 +633,53 @@ def packed_tile_scores(
     return _PackedLogProbs.apply(logits, targets, offsets, states, start, blank_id, clamp, loss_grad_scale)
 
 
-def packed_positions(offsets, states, total, frames, target_states):
-    """Index of each packed row in the flattened ``[B, T, U + 1]`` score planes."""
-    rows = torch.arange(total, device=offsets.device)
-    sample = torch.searchsorted(offsets[1:].to(torch.int64).contiguous(), rows, right=True)
-    within = rows - offsets[:-1].to(torch.int64)[sample]
-    per_sample = states.to(torch.int64)[sample]
-    frame, state = within // per_sample, within % per_sample
-    return sample * frames * target_states + frame * target_states + state
+class _PackedScatter(torch.autograd.Function):
+    """Place one tile's two score vectors into the rectangular planes the dynamic program reads."""
+
+    @staticmethod
+    def forward(ctx, target_tile, blank_tile, target_plane, blank_plane, offsets, states, start, shape):
+        rows = target_tile.shape[0]
+        _packed_scatter[lambda meta: (triton.cdiv(rows, meta["block_rows"]),)](
+            target_tile,
+            blank_tile,
+            target_plane,
+            blank_plane,
+            offsets,
+            states,
+            start,
+            rows,
+            len(states),
+            shape[1],
+            shape[2],
+            gather=False,
+            batch_pow2=triton.next_power_of_2(len(states) + 1),
+        )
+        ctx.save_for_backward(offsets, states)
+        ctx.meta = (start, rows, shape)
+        return target_plane, blank_plane
+
+    @staticmethod
+    def backward(ctx, grad_target_plane, grad_blank_plane):
+        offsets, states = ctx.saved_tensors
+        start, rows, shape = ctx.meta
+        grad_target = torch.empty(rows, device=offsets.device, dtype=torch.float32)
+        grad_blank = torch.empty_like(grad_target)
+        _packed_scatter[lambda meta: (triton.cdiv(rows, meta["block_rows"]),)](
+            grad_target,
+            grad_blank,
+            grad_target_plane.contiguous(),
+            grad_blank_plane.contiguous(),
+            offsets,
+            states,
+            start,
+            rows,
+            len(states),
+            shape[1],
+            shape[2],
+            gather=True,
+            batch_pow2=triton.next_power_of_2(len(states) + 1),
+        )
+        return grad_target, grad_blank, grad_target_plane, grad_blank_plane, None, None, None, None
+
+
+packed_scatter = _PackedScatter.apply

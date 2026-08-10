@@ -28,7 +28,7 @@ from torch.utils.checkpoint import checkpoint
 from nemo.collections.asr.parts.triton.rnnt_joint import (
     ACTIVATIONS,
     lattice_layout,
-    packed_positions,
+    packed_scatter,
     packed_tile_scores,
 )
 from nemo.collections.asr.parts.triton.rnnt_loss import rnnt_loss_triton
@@ -131,6 +131,8 @@ def _packed_scores(
     offsets, states, total_rows = lattice_layout(source_lengths, target_lengths, source_steps, target_states)
     device = projected_encoder.device
     lengths = source_lengths.to(torch.int32)
+    # The extraction addresses a label by row stride alone, so the columns have to be adjacent.
+    targets = targets.contiguous()
     tile_rows = _ceil_div(total_rows, _ceil_div(total_rows, max_joint_rows))
 
     # Bound rather than passed as an argument: the loss fills this buffer during its own backward,
@@ -138,7 +140,6 @@ def _packed_scores(
     score_tile = partial(packed_tile_scores, loss_grad_scale=loss_grad_scale)
 
     # The dynamic program reads a rectangular lattice, so each tile scatters straight into one.
-    positions = packed_positions(offsets, states, total_rows, source_steps, target_states)
     shape = (batch, source_steps, target_states)
     target_scores = torch.zeros(batch * source_steps * target_states, device=device, dtype=torch.float32)
     blank_scores = torch.zeros_like(target_scores)
@@ -165,9 +166,10 @@ def _packed_scores(
             # Backward recomputation must use the same mask as the forward tile.
             preserve_rng_state=dropout_p > 0.0,
         )
-        tile_positions = positions[start : start + rows]
-        target_scores[tile_positions] = target_score_tile
-        blank_scores[tile_positions] = blank_score_tile
+        # The scatter derives each address from its row, so no index over the lattice is held.
+        target_scores, blank_scores = packed_scatter(
+            target_score_tile, blank_score_tile, target_scores, blank_scores, offsets, states, start, shape
+        )
 
     return target_scores.view(shape), blank_scores.view(shape)
 

@@ -20,7 +20,7 @@ from nemo.collections.asr.losses.rnnt import NUMBA_RNNT_AVAILABLE, RNNTLoss
 from nemo.collections.asr.losses.rnnt_pytorch import RNNTLossPytorch
 from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint
 from nemo.collections.asr.modules.rnnt import RNNTJoint
-from nemo.collections.asr.parts.triton.rnnt_joint import _PackedJoint, lattice_layout, packed_positions
+from nemo.collections.asr.parts.triton.rnnt_joint import _PackedJoint, lattice_layout, packed_scatter
 from nemo.collections.asr.parts.triton.rnnt_loss import rnnt_loss_triton
 from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 
@@ -87,28 +87,35 @@ def _dense_rnnt_loss(logits, labels, source_lengths, target_lengths, blank, fast
     )
 
 
+def _scatter_row_numbers(source_lengths, target_lengths, frames, target_states):
+    """Scatter each row's own number into the planes, so the layout can be read back off them."""
+    offsets, states, total_rows = lattice_layout(source_lengths, target_lengths, frames, target_states)
+    numbers = torch.arange(total_rows, device="cuda", dtype=torch.float32) + 1.0
+    planes = [torch.zeros(len(source_lengths) * frames * target_states, device="cuda") for _ in range(2)]
+    shape = (len(source_lengths), frames, target_states)
+    planes = packed_scatter(numbers, numbers, planes[0], planes[1], offsets, states, 0, shape)
+    return planes[0], total_rows
+
+
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 def test_packed_rows_run_frame_major_within_a_sample():
     """Rows advance through transcript states first, then frames, with samples laid end to end.
 
-    Everything downstream reads this ordering: the scatter back to the score planes addresses rows
-    by it, and a lattice with no padding is expected to be a dense reshape of the same rows.
+    The scatter derives each address from the row rather than from a stored index, so this is what
+    pins that addressing down.
     """
     source_lengths = torch.tensor([3, 1, 2], device="cuda")
     target_lengths = torch.tensor([2, 0, 1], device="cuda")
-    frames, target_states = 3, 3
-    offsets, states, total_rows = lattice_layout(source_lengths, target_lengths, frames, target_states)
+    plane, total_rows = _scatter_row_numbers(source_lengths, target_lengths, 3, 3)
 
-    sizes = source_lengths * (target_lengths + 1)
-    assert total_rows == int(sizes.sum())
-    torch.testing.assert_close(states.long(), target_lengths + 1)
-    torch.testing.assert_close(offsets[1:].long(), sizes.cumsum(0))
-
-    # Sample 0 fills its 3x3 plane, sample 1 contributes one row, sample 2 a 2x2 corner.
-    expected = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 18, 19, 21, 22], device="cuda")
-    positions = packed_positions(offsets, states, total_rows, frames, target_states)
-    torch.testing.assert_close(positions, expected)
+    # sample 0 fills its 3x3 plane, sample 1 contributes one row, sample 2 a 2x2 corner
+    occupied = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 18, 19, 21, 22], device="cuda")
+    assert total_rows == occupied.numel()
+    torch.testing.assert_close(plane[occupied], torch.arange(total_rows, device="cuda", dtype=torch.float32) + 1.0)
+    empty = torch.ones_like(plane, dtype=torch.bool)
+    empty[occupied] = False
+    assert torch.equal(plane[empty], torch.zeros_like(plane[empty]))
 
 
 @pytest.mark.unit
@@ -118,10 +125,46 @@ def test_packed_rows_of_a_full_lattice_are_a_dense_reshape():
     batch, frames, target_states = 4, 5, 3
     source_lengths = torch.full((batch,), frames, device="cuda")
     target_lengths = torch.full((batch,), target_states - 1, device="cuda")
-    offsets, states, total_rows = lattice_layout(source_lengths, target_lengths, frames, target_states)
+    plane, total_rows = _scatter_row_numbers(source_lengths, target_lengths, frames, target_states)
 
-    positions = packed_positions(offsets, states, total_rows, frames, target_states)
-    torch.testing.assert_close(positions, torch.arange(total_rows, device="cuda"))
+    torch.testing.assert_close(plane, torch.arange(total_rows, device="cuda", dtype=torch.float32) + 1.0)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+def test_flash_rnnt_reads_labels_from_a_strided_transcript():
+    """The extraction addresses a label by row stride alone, so the columns must be adjacent.
+
+    A caller is free to pass a view whose columns are not, and the wrong labels would be scored
+    without any shape error, so the loss has to make the layout it assumes.
+    """
+    torch.manual_seed(29)
+    encoder, predictor, source_lengths, target_lengths, labels = _end_to_end_batch()
+    batch, target_tokens = labels.shape
+    # every other column of a wider tensor: same labels, stride(1) == 2
+    strided = torch.zeros(batch, 2 * target_tokens, device="cuda", dtype=labels.dtype)
+    strided[:, ::2] = labels
+    strided = strided[:, ::2]
+    assert not strided.is_contiguous() and torch.equal(strided, labels)
+
+    values = []
+    for transcripts in (labels, strided):
+        joint = _make_joint(4)
+        torch.manual_seed(29)
+        for parameter in joint.parameters():
+            torch.nn.init.normal_(parameter, std=0.2)
+        joint.set_loss(RNNTLoss(num_classes=NUM_LABELS, reduction="mean_batch", loss_name="flash_rnnt"))
+        joint.set_wer(object())
+        values.append(
+            joint(
+                encoder_outputs=encoder,
+                decoder_outputs=predictor,
+                encoder_lengths=source_lengths,
+                transcripts=transcripts,
+                transcript_lengths=target_lengths,
+            )[0]
+        )
+    torch.testing.assert_close(values[1], values[0], atol=0.0, rtol=0.0)
 
 
 @pytest.mark.unit

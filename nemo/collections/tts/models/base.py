@@ -28,6 +28,13 @@ from nemo.core.neural_types.elements import AudioSignal
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging, model_utils
 
+PYNINI_AVAILABLE = True
+try:
+    # Used to define PYNINI_AVAILABLE global var which is used in L44
+    import nemo_text_processing  # noqa: F401 # pylint: disable=unused-import
+except (ImportError, ModuleNotFoundError):
+    PYNINI_AVAILABLE = False
+
 
 class NeedsNormalizer:
     """Base class for all TTS models that needs text normalization(TN)"""

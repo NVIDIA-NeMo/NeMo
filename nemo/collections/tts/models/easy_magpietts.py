@@ -34,7 +34,7 @@ from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset, setup_tokenizers
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
-from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel, TrainingMode
+from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel, TrainingMode, get_last_hidden_state
 from nemo.collections.tts.modules.magpietts_modules import (
     LocalTransformerType,
     add_special_tokens,
@@ -1184,7 +1184,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             inputs_embeds=full_embedding,
             attention_mask=get_mask_from_lengths(combined_channel_lens),
         )
-        transformer_hidden_states = self._get_last_hidden_state(transformer_out)  # (B, T_total, E)
+        transformer_hidden_states = get_last_hidden_state(transformer_out)  # (B, T_total, E)
 
         # 9. Extract prediction embeddings and compute losses
         # Audio predictions start at audio_delay

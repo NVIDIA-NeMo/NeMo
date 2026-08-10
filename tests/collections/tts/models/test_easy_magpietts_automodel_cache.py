@@ -18,6 +18,7 @@ import pytest
 import torch
 from torch import nn
 
+import nemo.collections.tts.models.easy_magpietts_inference as easy_magpietts_inference
 from nemo.collections.tts.models.easy_magpietts_inference import EasyMagpieTTSInferenceModel, TrainingMode
 
 
@@ -52,7 +53,7 @@ def test_automodel_forward_creates_hybrid_cache_for_prefill(monkeypatch):
     nn.Module.__init__(model)
     model.decoder_type = 'nemo_automodel'
     model.decoder = _FakeAutomodelDecoder()
-    monkeypatch.setattr(model, '_get_automodel_cache_class', lambda: _FakeNemotronHybridCache)
+    monkeypatch.setattr(easy_magpietts_inference, 'NemotronHybridCache', _FakeNemotronHybridCache)
 
     inputs_embeds = torch.randn(2, 4, 8)
     output = model.forward(
@@ -80,9 +81,9 @@ def test_automodel_forward_reuses_existing_hybrid_cache(monkeypatch):
     model.decoder_type = 'nemo_automodel'
     model.decoder = _FakeAutomodelDecoder()
     monkeypatch.setattr(
-        model,
-        '_get_automodel_cache_class',
-        lambda: pytest.fail('cache class should not be loaded when a cache already exists'),
+        easy_magpietts_inference,
+        'NemotronHybridCache',
+        lambda *args, **kwargs: pytest.fail('cache should not be created when one already exists'),
     )
     existing_cache = object()
 

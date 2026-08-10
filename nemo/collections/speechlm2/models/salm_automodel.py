@@ -29,23 +29,11 @@ from transformers import GenerationConfig
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
-from nemo.collections.speechlm2.models.salm import (
-    _resolve_audios_in_prompt,
-    replace_placeholders_and_build_targets,
-)
-from nemo.collections.speechlm2.parts.automodel_lora import (
-    ensure_lora_trainable,
-    make_peft_config,
-    maybe_install_lora,
-)
-from nemo.collections.speechlm2.parts.encoder_chunking import (
-    encode_audio_with_optional_chunking,
-)
+from nemo.collections.speechlm2.models.salm import _resolve_audios_in_prompt, replace_placeholders_and_build_targets
+from nemo.collections.speechlm2.parts.automodel_lora import ensure_lora_trainable, make_peft_config, maybe_install_lora
+from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
-from nemo.collections.speechlm2.parts.multispeaker import (
-    build_speaker_tokens,
-    maybe_init_lss_loss,
-)
+from nemo.collections.speechlm2.parts.multispeaker import build_speaker_tokens, maybe_init_lss_loss
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_automodel_llm,
@@ -53,13 +41,7 @@ from nemo.collections.speechlm2.parts.pretrained import (
     setup_speech_encoder,
     update_perception_output_dim,
 )
-from nemo.core.neural_types import (
-    AudioSignal,
-    LabelsType,
-    LengthsType,
-    MaskType,
-    NeuralType,
-)
+from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.core.utils.lightning_utils import read_batch
 from nemo.utils import logging
 
@@ -221,9 +203,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         During generation the PE encoder does its own context-preserving long-form
         windowing, so audio must reach it as one long sequence rather than pre-chunked.
         """
-        from nemo.collections.asr.modules.parallel_expert_encoder import (
-            ParallelExpertEncoder,
-        )
+        from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder
 
         return isinstance(getattr(self.perception, "encoder", None), ParallelExpertEncoder)
 
@@ -330,9 +310,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # Packed-sequence (THD) path — used for both training and validation when enabled.
         # Generate stays on the BSHD path (it doesn't go through prepare_inputs).
         if self.cfg.get("packed_sequences", False):
-            from nemo.collections.speechlm2.parts.packed_sequences import (
-                prepare_packed_llm_inputs,
-            )
+            from nemo.collections.speechlm2.parts.packed_sequences import prepare_packed_llm_inputs
 
             ans = prepare_packed_llm_inputs(
                 input_ids=batch["input_ids"],
@@ -394,9 +372,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         """
         import os
 
-        from nemo.collections.speechlm2.parts.parallel import (
-            validate_parallelism_compatibility,
-        )
+        from nemo.collections.speechlm2.parts.parallel import validate_parallelism_compatibility
 
         cp_size = 1
         device_mesh = getattr(self, "_device_mesh", None)
@@ -922,9 +898,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         moe_metrics_cfg = self.cfg.get("moe_metrics", None)
         if moe_metrics_cfg is not None and moe_metrics_cfg.get("enabled", False):
-            from nemo_automodel.components.moe.load_balance_metrics import (
-                enable_load_balance_tracking,
-            )
+            from nemo_automodel.components.moe.load_balance_metrics import enable_load_balance_tracking
 
             enable_load_balance_tracking(self.llm)
 
@@ -1013,9 +987,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         No-op when ``nemo_automodel`` isn't available (non-MoE builds).
         """
         try:
-            from nemo_automodel.components.moe.megatron.moe_utils import (
-                MoEAuxLossAutoScaler,
-            )
+            from nemo_automodel.components.moe.megatron.moe_utils import MoEAuxLossAutoScaler
         except ImportError:
             return
         dp_group = self._get_moe_dp_group()

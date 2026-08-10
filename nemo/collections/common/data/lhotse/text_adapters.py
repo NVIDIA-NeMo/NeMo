@@ -48,10 +48,7 @@ from nemo.collections.common.data.lhotse.indexed_adapters import (
     _split_json_audio_pair,
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
-from nemo.collections.common.data.prompt_fn import (
-    apply_prompt_format_fn,
-    registered_prompt_format_fn,
-)
+from nemo.collections.common.data.prompt_fn import apply_prompt_format_fn, registered_prompt_format_fn
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
 
@@ -1137,9 +1134,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
         for p in self.manifest_filepath:
             self._cuts_readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
         if self.tarred_audio_filepaths is not None:
-            from nemo.collections.common.data.lhotse.indexed_adapters import (
-                IndexedTarMemberReader,
-            )
+            from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
 
             for p in self.tarred_audio_filepaths:
                 self._tar_readers.append(IndexedTarMemberReader(p, idx_path=index_file_path(p, self.indexes_root)))
@@ -1593,9 +1588,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         for p in self.manifest_filepath:
             self._cuts_readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
         if self.tarred_audio_filepaths is not None:
-            from nemo.collections.common.data.lhotse.indexed_adapters import (
-                IndexedTarMemberReader,
-            )
+            from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
 
             for p in self.tarred_audio_filepaths:
                 self._tar_readers.append(IndexedTarMemberReader(p, idx_path=index_file_path(p, self.indexes_root)))

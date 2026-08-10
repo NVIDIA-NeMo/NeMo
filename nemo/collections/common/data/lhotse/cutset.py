@@ -1790,9 +1790,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
 @data_type_parser("multi_speaker_simulator")
 def read_multi_speaker_simulator(config: DictConfig) -> tuple[CutSet, bool]:
     # Import here to avoid circular dependency
-    from nemo.collections.asr.parts.utils.asr_multispeaker_utils import (
-        MultiSpeakerMixtureGenerator,
-    )
+    from nemo.collections.asr.parts.utils.asr_multispeaker_utils import MultiSpeakerMixtureGenerator
 
     multi_speaker_cuts = CutSet(
         MultiSpeakerMixtureGenerator(
@@ -1848,9 +1846,7 @@ def guess_parse_cutset(inp: Union[str, dict, omegaconf.DictConfig]) -> CutSet:
 
     It's intended to be used in a generic context where we are not sure which way the user will specify the inputs.
     """
-    from nemo.collections.common.data.lhotse.dataloader import (
-        make_structured_with_schema_warnings,
-    )
+    from nemo.collections.common.data.lhotse.dataloader import make_structured_with_schema_warnings
 
     if isinstance(inp, (dict, omegaconf.DictConfig)):
         try:

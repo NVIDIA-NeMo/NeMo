@@ -13,8 +13,6 @@
 # limitations under the License.
 # pylint: disable=C0116
 # pylint: disable=C0301
-from collections import defaultdict
-
 import torch
 from lhotse import MonoCut
 from lhotse.cut import Cut, MixedCut

@@ -1235,9 +1235,9 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                 )
                 if turn["type"] == "text"
                 else AudioTurn(
-                    cut=(
-                        cut := self._build_direct_audio_cut(turn=turn, manifest_path=manifest_path)
-                    ).with_id(self._make_cut_id(cut, turn)),
+                    cut=(cut := self._build_direct_audio_cut(turn=turn, manifest_path=manifest_path)).with_id(
+                        self._make_cut_id(cut, turn)
+                    ),
                     text=cut.supervisions[0].text if cut.supervisions else None,
                     role=turn["from"].lower(),
                     audio_locator_tag=self.audio_locator_tag,
@@ -1263,8 +1263,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
             duration = turn.get("duration")
             if duration is None:
                 raise ValueError(
-                    "Archive-member multimodal conversation audio requires a 'duration' field: "
-                    f"{turn['value']!r}"
+                    "Archive-member multimodal conversation audio requires a 'duration' field: " f"{turn['value']!r}"
                 )
             tar_path, audio_filename = archive_ref
             return _make_url_cut(
@@ -1274,8 +1273,10 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                 offset=turn.get("offset", 0.0),
                 sampling_rate=turn.get("sampling_rate", 16000),
             )
-        return Recording.from_file(audio_path).to_cut().truncate(
-            offset=turn.get("offset", 0.0), duration=turn.get("duration")
+        return (
+            Recording.from_file(audio_path)
+            .to_cut()
+            .truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
         )
 
     def _build_conversation_tarred(self, data: dict, tar_reader, tar_path: str) -> NeMoMultimodalConversation | None:
@@ -1485,9 +1486,9 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                         )
                         if turn["type"] == "text"
                         else AudioTurn(
-                            cut=(
-                                cut := self._build_direct_audio_cut(turn=turn, manifest_path=path)
-                            ).with_id(self._make_cut_id(cut, turn)),
+                            cut=(cut := self._build_direct_audio_cut(turn=turn, manifest_path=path)).with_id(
+                                self._make_cut_id(cut, turn)
+                            ),
                             text=cut.supervisions[0].text if cut.supervisions else None,
                             role=turn["from"].lower(),
                             audio_locator_tag=self.audio_locator_tag,

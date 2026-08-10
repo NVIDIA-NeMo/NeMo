@@ -634,6 +634,8 @@ def append_metrics_to_csv(csv_path: str, checkpoint_name: str, dataset: str, met
         metrics.get('wer_filewise_avg', ''),
         metrics.get('cer_cumulative', ''),
         metrics.get('wer_cumulative', ''),
+        metrics.get('cer_pred_gt_audio_filewise_avg', ''),
+        metrics.get('cer_pred_gt_audio_cumulative', ''),
         metrics.get('ssim_pred_gt_avg', ''),
         metrics.get('ssim_pred_context_avg', ''),
         metrics.get('ssim_gt_context_avg', ''),
@@ -758,6 +760,7 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
         turns = sorted(turns, key=turn_sort_key)
 
         cer_turns = [r.get("cer") for r in turns]
+        cer_pred_gt_audio_turns = [r.get("cer_pred_gt_audio") for r in turns]
         wer_turns = [r.get("wer") for r in turns]
         pred_context_ssim_turns = [r.get("pred_context_ssim") for r in turns]
         pred_gt_ssim_turns = [r.get("pred_gt_ssim") for r in turns]
@@ -783,6 +786,7 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 "num_turns": len(turns),
                 # Sample-level averages over all turns.
                 "cer": _mean_finite(cer_turns),
+                "cer_pred_gt_audio": _mean_finite(cer_pred_gt_audio_turns),
                 "wer": _mean_finite(wer_turns),
                 "pred_context_ssim": _mean_finite(pred_context_ssim_turns),
                 "pred_gt_ssim": _mean_finite(pred_gt_ssim_turns),
@@ -798,6 +802,7 @@ def _group_multiturn_filewise_metrics_by_sample(filewise_metrics: list) -> list:
                 # Turn-by-turn values, old-script style.
                 "turn_ids": [r.get("turn_id", i) for i, r in enumerate(turns)],
                 "cer_turns": cer_turns,
+                "cer_pred_gt_audio_turns": cer_pred_gt_audio_turns,
                 "wer_turns": wer_turns,
                 "pred_context_ssim_turns": pred_context_ssim_turns,
                 "pred_gt_ssim_turns": pred_gt_ssim_turns,
@@ -840,6 +845,7 @@ def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: l
         "rank",
         "num_turns",
         "cer",
+        "cer_pred_gt_audio",
         "wer",
         "pred_context_ssim",
         "pred_gt_ssim",
@@ -854,6 +860,7 @@ def _write_grouped_multiturn_filewise_metrics_csv(csv_path: str, grouped_rows: l
         "eou_trail_rms_ratio",
         "turn_ids",
         "cer_turns",
+        "cer_pred_gt_audio_turns",
         "wer_turns",
         "pred_context_ssim_turns",
         "pred_gt_ssim_turns",

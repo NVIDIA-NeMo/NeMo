@@ -105,6 +105,7 @@ def strip_text_annotations_from_text(text: str) -> str:
 
 FILEWISE_METRICS_TO_SAVE = [
     'cer',
+    'cer_pred_gt_audio',
     'wer',
     'pred_context_ssim',
     'pred_gt_esim',
@@ -561,6 +562,11 @@ def evaluate_dir(
 
         detailed_cer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=True)
         detailed_wer = word_error_rate_detail(hypotheses=[pred_text], references=[gt_text], use_cer=False)
+        cer_pred_gt_audio = (
+            word_error_rate_detail(hypotheses=[pred_text], references=[gt_audio_text], use_cer=True)[0]
+            if gt_audio_text is not None
+            else float('NaN')
+        )
 
         # Japanese: additional reading-based CER on Katakana (pyopenjtalk g2p), robust to
         # kanji/kana spelling differences between reference and ASR hypothesis.
@@ -682,6 +688,7 @@ def evaluate_dir(
             'detailed_cer': detailed_cer,
             'detailed_wer': detailed_wer,
             'cer': detailed_cer[0],
+            'cer_pred_gt_audio': cer_pred_gt_audio,
             'wer': detailed_wer[0],
             'katakana_cer': katakana_cer,
             'gt_katakana': gt_katakana,
@@ -888,7 +895,11 @@ def compute_global_metrics(
 
     # Cumulative WER/CER on ground-truth audio transcriptions (if available)
     gt_audio_texts = [m['gt_audio_text'] for m in filewise_metrics]
+    avg_metrics['cer_pred_gt_audio_filewise_avg'] = _mean_finite_metric(filewise_metrics, 'cer_pred_gt_audio')
     if None not in gt_audio_texts:
+        avg_metrics['cer_pred_gt_audio_cumulative'] = word_error_rate_detail(
+            hypotheses=pred_texts, references=gt_audio_texts, use_cer=True
+        )[0]
         avg_metrics['cer_gt_audio_cumulative'] = word_error_rate_detail(
             hypotheses=gt_audio_texts, references=gt_texts, use_cer=True
         )[0]
@@ -896,6 +907,7 @@ def compute_global_metrics(
             hypotheses=gt_audio_texts, references=gt_texts, use_cer=False
         )[0]
     else:
+        avg_metrics['cer_pred_gt_audio_cumulative'] = float('NaN')
         avg_metrics['cer_gt_audio_cumulative'] = float('NaN')
         avg_metrics['wer_gt_audio_cumulative'] = float('NaN')
         logging.warning(

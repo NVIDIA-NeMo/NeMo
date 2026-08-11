@@ -336,17 +336,21 @@ class ConformerConvolution(nn.Module):
         )
 
     def forward(self, x, pad_mask=None, cache=None):
-        x = x.transpose(1, 2)
-        x = self.pointwise_conv1(x)
+        # kernel_size=1 convs are pointwise, i.e. linear, but nn.Conv1d dispatches to much slower
+        # cuBLAS kernels; the modules stay nn.Conv1d so checkpoints are unchanged.
+        x = nn.functional.linear(x, self.pointwise_conv1.weight.squeeze(-1), self.pointwise_conv1.bias)
 
         # Compute the activation function or use GLU for original Conformer
         if self.pointwise_activation == 'glu_':
-            x = nn.functional.glu(x, dim=1)
+            x = nn.functional.glu(x, dim=-1)
         else:
             x = self.pointwise_activation(x)
 
+        # the depthwise conv and its streaming cache are channel-first
+        x = x.transpose(1, 2)
         if pad_mask is not None:
             x = x.masked_fill(pad_mask.unsqueeze(1), 0.0)
+        x = x.contiguous()
 
         x = self.depthwise_conv(x, cache=cache)
         if cache is not None:
@@ -355,13 +359,12 @@ class ConformerConvolution(nn.Module):
         if self.norm_type == "layer_norm":
             x = x.transpose(1, 2)
             x = self.batch_norm(x)
-            x = x.transpose(1, 2)
         else:
             x = self.batch_norm(x)
+            x = x.transpose(1, 2)
 
         x = self.activation(x)
-        x = self.pointwise_conv2(x)
-        x = x.transpose(1, 2)
+        x = nn.functional.linear(x, self.pointwise_conv2.weight.squeeze(-1), self.pointwise_conv2.bias)
         if cache is None:
             return x
         else:

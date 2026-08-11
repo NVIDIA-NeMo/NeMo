@@ -308,11 +308,7 @@ class ParallelExpertEncoderPT(ModelPT):
             asr_normalize_type=self._cfg.get('asr_normalize_type', 'per_feature'),
             freeze_speaker=self._cfg.get('freeze_speaker', True),
             freeze_speech=self._cfg.get('freeze_speech', False),
-<<<<<<< HEAD
             freeze_sound=self._cfg.get('freeze_sound', True),
-=======
-            freeze_sound=self._cfg.get('freeze_sound', False),
->>>>>>> 23028a383a4276686445f632c07c0adb7489abce
             online_inference_length=self._cfg.get('online_inference_length', 375),
             chunk_left_context=self._cfg.get('chunk_left_context', 50),
             chunk_right_context=self._cfg.get('chunk_right_context', 50),
@@ -748,11 +744,7 @@ class ParallelExpertEncoder(nn.Module):
         asr_normalize_type: Optional[str] = 'per_feature',
         freeze_speaker: bool = True,
         freeze_speech: bool = False,
-<<<<<<< HEAD
         freeze_sound: bool = True,
-=======
-        freeze_sound: bool = False,
->>>>>>> 23028a383a4276686445f632c07c0adb7489abce
         online_inference_length: int = 375,
         chunk_left_context: int = 50,
         chunk_right_context: int = 50,
@@ -1021,72 +1013,6 @@ class ParallelExpertEncoder(nn.Module):
             # explicit and keeps the head out of the optimizer.
             self.sound_ctc_head.eval()
             for p in self.sound_ctc_head.parameters():
-<<<<<<< HEAD
-=======
-                p.requires_grad = False
-
-            # The same argument applies to the expert behind the head: on this route it
-            # reaches ASR only through those binarized tags, so it cannot receive
-            # gradient either. Leaving it unfrozen is not wrong, just inert -- and it
-            # allocates optimizer state for parameters that cannot move. Warn rather
-            # than override, since an auxiliary sound loss may train it separately.
-            if not freeze_sound:
-                logging.warning(
-                    "merge_sound_expert_to_asr=False with freeze_sound=False: the sound "
-                    "expert reaches the ASR states only through hard-thresholded event "
-                    "tags, so it will receive NO gradient from this path and its "
-                    "optimizer state is wasted. Set freeze_sound=True unless an "
-                    "auxiliary sound loss trains it separately."
-                )
-
-        else:
-            sound_d_model = int(self.pee.experts['sound'].d_model)
-            if sound_d_model != self.asr_d_model:
-                raise ValueError(
-                    f"merge_sound_expert_to_asr requires the sound expert d_model "
-                    f"({sound_d_model}) to match the speech expert d_model ({self.asr_d_model}); "
-                    "the merge is an elementwise add onto the ASR states."
-                )
-            # Normalize both streams before the add so `sound_merge_scale` is a
-            # relative gain rather than depending on checkpoint-specific activation
-            # magnitudes.
-            #
-            # The speech-side norm is affine-free: it exists only to fix the scale, and
-            # `asr_norm` right after the merge already carries a learnable affine. The
-            # sound-side norm keeps its affine so training can still adjust the sound gain.
-            #
-            # Built only on this branch: on the SoundToken branch they would be
-            # parameters in the state dict that no forward pass ever reads.
-            self.merge_speech_norm = nn.LayerNorm(self.asr_d_model, elementwise_affine=False)
-            self.sound_norm = nn.LayerNorm(self.asr_d_model)
-
-        self._apply_freezing()
-
-    def _apply_freezing(self) -> None:
-        """Put each frozen branch in eval and drop its grads."""
-        frozen = {
-            'speech': self.freeze_speech,
-            'speaker': self.freeze_speaker,
-            'sound': self.freeze_sound,
-        }
-        for role, is_frozen in frozen.items():
-            if not is_frozen:
-                continue
-            expert = self.pee.experts[role]
-            expert.eval()
-            for p in expert.parameters():
-                p.requires_grad = False
-        if self.freeze_speaker:
-            # The head travels with the speaker expert.
-            self.sortformer_modules.eval()
-            for p in self.sortformer_modules.parameters():
-                p.requires_grad = False
-        if self.sound_ctc_head is not None:
-            # Unconditionally frozen, unlike the speaker head: the event tags are
-            # binarized before the kernel, so nothing could train it through the fusion.
-            self.sound_ctc_head.eval()
-            for p in self.sound_ctc_head.parameters():
->>>>>>> 23028a383a4276686445f632c07c0adb7489abce
                 p.requires_grad = False
 
             # The same argument applies to the expert behind the head: on this route it
@@ -1182,21 +1108,7 @@ class ParallelExpertEncoder(nn.Module):
             ParallelExpertEncoder: ``self``, matching ``nn.Module.train``.
         """
         super().train(mode)
-<<<<<<< HEAD
         self._apply_freezing()
-=======
-        for role, is_frozen in (
-            ('speech', self.freeze_speech),
-            ('speaker', self.freeze_speaker),
-            ('sound', self.freeze_sound),
-        ):
-            if is_frozen:
-                self.pee.experts[role].eval()
-        if self.freeze_speaker:
-            self.sortformer_modules.eval()
-        if self.sound_ctc_head is not None:
-            self.sound_ctc_head.eval()
->>>>>>> 23028a383a4276686445f632c07c0adb7489abce
         return self
 
     # ConformerEncoder-compatible properties (drop-in for SALM perception).
@@ -1288,11 +1200,7 @@ class ParallelExpertEncoder(nn.Module):
         freeze(self)
 
     def unfreeze(self, partial: bool = False) -> None:
-<<<<<<< HEAD
         """Unfreeze trainable branches while preserving expert freeze policy.
-=======
-        """Unfreeze module parameters (re-exposes :func:`nemo.core.classes.module.unfreeze`).
->>>>>>> 23028a383a4276686445f632c07c0adb7489abce
 
         Args:
             partial (bool): If ``True``, unfreeze only parameters that were partially frozen.

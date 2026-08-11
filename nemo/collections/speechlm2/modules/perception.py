@@ -222,11 +222,8 @@ def _set_encoder_activation_checkpointing(encoder: nn.Module, enabled: bool) -> 
     non-Conformer architectures degrade gracefully. No-op when ``enabled`` is
     False.
 
-    Encoders that do not run their layers as ``encoder.layers[i](...)`` cannot be
-    checkpointed by wrapping submodules, so an encoder may implement
-    ``set_activation_checkpointing`` and own the policy itself. ParallelExpertEncoder
-    does: it fuses all three experts' layers into grouped GEMMs, and the wrapping below
-    would find no ``layers`` to wrap and silently leave every layer's activations live.
+    Encoders whose execution bypasses ``encoder.layers[i](...)`` may implement
+    ``set_activation_checkpointing`` and own the policy themselves.
     """
     if not enabled:
         return

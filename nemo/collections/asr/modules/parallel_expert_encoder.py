@@ -45,7 +45,7 @@ Speakers, events, and styles are separate families. Each has its own LayerNorm,
 sinusoid-row block, and scale so one family's activity does not alter another's
 representation or gain.
 
-Every family's rows are strided (see ``_TAG_ROW_STRIDE``) and its kernel calibrated so a
+Every family's rows are strided and its kernel calibrated so a
 single active tag injects a vector of norm ``sqrt(d_model)``. That makes each ``*_scale``
 a plain fraction of the ASR state magnitude, unaffected by how many tags the family holds
 or which rows it was given -- so widening a family, or moving it, no longer silently
@@ -107,46 +107,10 @@ __all__ = [
     'ParallelExpertEncoderPT',
 ]
 
-# Container roles, in the order they are packed into the attention group.
+# Roles follow packed-attention order.
 EXPERT_ROLES = ('speech', 'speaker', 'sound')
-# Role -> decoder/head family. These are PEE model semantics, not properties of
-# grouped-GEMM execution: speech is decoded by the restored ASR TDT/RNNT stack,
-# speaker by the Sortformer head, and sound by its restored RNNT/CTC components.
-EXPERT_TASKS = {'speech': 'asr_tdt', 'speaker': 'diarization', 'sound': 'sound_rnnt'}
-
-# The sound expert's CTC head contributes event tags and style-span delimiters to
-# the ASR states. Their prefixes come from the sound checkpoint's
-# `token_weighting.{event,style}_prefixes` configuration.
-#
-# Start and end delimiters remain independent point tags. Reconstructing spans
-# would require state carried across window boundaries and could make offline and
-# streaming behavior diverge. Emitting raw delimiters keeps fusion stateless.
-#
-# Speaker tags are deliberately excluded because speaker activity comes from the
-# dedicated Sortformer expert.
-_SOUND_EVENT_TOKEN_PREFIX = '<ev:'
-_SOUND_EVENT_TOKEN_RE = re.compile(r'^<ev:[^>]+>$')
-_SOUND_STYLE_TOKEN_PREFIX = '<sty:'
-_SOUND_STYLE_TOKEN_RE = re.compile(r'^<sty:(?:stt|end):[^>]+>$')
-
-# Where each tag family's sinusoid rows live, and how far apart consecutive rows sit.
-#
-# Rows are strided rather than consecutive because they represent identities, not
-# positions. Each family uses a disjoint block to reduce within-family correlation,
-# avoid cross-family overlap, and keep per-tag injection magnitudes comparable as
-# vocabularies change.
-_TAG_ROW_STRIDE = 16
-_SPEAKER_ROW_OFFSET = 0
-_SOUND_EVENT_ROW_OFFSET = 512
-_SOUND_STYLE_ROW_OFFSET = 1024
-
-# Legacy bundles use a contiguous, uncalibrated speaker-row layout. New bundles can
-# opt into the calibrated, strided layout through ``spk_kernel_row_stride`` and
-# ``spk_kernel_calibrate``. Calibration remains tied to the saved layout so existing
-# bundles reload without changing the representation their weights were trained on.
-_LEGACY_SPEAKER_ROW_STRIDE = 1
-_LEGACY_SPK_KERNEL_SCALE = 1.0
-_CALIBRATED_KERNEL_SCALE = 0.75
+# Encoder/head role represented by each branch.
+EXPERT_TASKS = {'speech': 'asr_encoder', 'speaker': 'diarization', 'sound': 'sound_ctc'}
 
 
 @contextlib.contextmanager
@@ -156,6 +120,9 @@ def _default_dtype(dtype: torch.dtype):
     Makes ``SortformerModules.init_streaming_state`` allocate its dtype-less
     speaker-cache / FIFO buffers in the speaker expert's dtype, avoiding fp32/bf16
     mismatch.
+
+    Args:
+        dtype (torch.dtype): Floating-point dtype to set as the global default.
     """
     prev = torch.get_default_dtype()
     if dtype == prev or not dtype.is_floating_point:
@@ -196,12 +163,8 @@ def _disable_max_seq_length_sync(module: nn.Module) -> None:
     NCCL cannot match positionally -- the run then deadlocks until the watchdog
     aborts it.
 
-    Dropping it is numerically neutral: the reduced value only sizes the
-    positional-encoding buffer (grown on demand per rank, and sliced
-    length-relative), while attention masks are always built from the local
-    sequence length. Applies to the flex ``TransformerEncoder`` family the same way
-    it did to the Conformer branches -- both expose ``sync_max_audio_length`` and
-    both all-reduce inside ``update_max_seq_length``.
+    Args:
+        module (nn.Module): Root module whose encoder descendants are scanned.
     """
     for submodule in module.modules():
         if getattr(submodule, "sync_max_audio_length", False):
@@ -212,6 +175,12 @@ def _clone_config(config: Optional[DictConfig]) -> Optional[DictConfig]:
     """Deep-copy a ``DictConfig`` without resolving interpolations.
 
     ``from_config_dict`` mutates its input in place, so sub-target builders get a copy.
+
+    Args:
+        config (DictConfig, optional): Config to deep-copy, or ``None``.
+
+    Returns:
+        A deep copy of ``config``, or ``None`` if the input was ``None``.
     """
     if config is None:
         return None
@@ -225,6 +194,12 @@ def _unwrap_cls(cls):
     ``wrapt`` proxy that forwards ``__repr__``/``__class__``, so the object
     ``inspect.unwrap`` returns still resolves ``__init__`` to the proxy's
     ``(*args, **kwargs)``.
+
+    Args:
+        cls (type): Class object that may be wrapped by ``@experimental``/``wrapt``.
+
+    Returns:
+        The underlying class after stepping through proxy wrappers.
     """
     seen = {id(cls)}
     cur = cls
@@ -238,7 +213,14 @@ def _unwrap_cls(cls):
 
 
 def _resolve_target(target: str) -> type:
-    """Resolve a Hydra ``_target_`` string to a class."""
+    """Resolve a Hydra ``_target_`` string to a class.
+
+    Args:
+        target (str): Hydra ``_target_`` string (``module.path.ClassName``).
+
+    Returns:
+        The resolved class object.
+    """
     module_path, _, cls_name = target.rpartition(".")
     try:
         return getattr(importlib.import_module(module_path), cls_name)
@@ -251,6 +233,12 @@ def _init_param_names(cls) -> set:
 
     Refuses to fall back to a ``**kwargs`` signature: filtering config keys against
     one would drop *every* key and silently build a default-shaped encoder.
+
+    Args:
+        cls (type): Class whose ``__init__`` signature is introspected.
+
+    Returns:
+        Set of parameter names accepted by ``cls.__init__`` (excluding ``self``).
     """
     for cand in (cls, _unwrap_cls(cls)):
         try:
@@ -271,6 +259,13 @@ def _build_from_cfg(cfg: DictConfig, what: str) -> nn.Module:
     Keys the installed class does not accept are reported rather than silently
     ignored -- tuning-only extras (e.g. ``flex_kernel_options``) are harmless, but
     anything architectural showing up here means a branch mismatch.
+
+    Args:
+        cfg (DictConfig): Config mapping carrying a ``_target_`` key.
+        what (str): Label used in error messages (e.g. ``"speech_expert_cfg"``).
+
+    Returns:
+        Instantiated ``nn.Module``.
     """
     if cfg is None or '_target_' not in cfg:
         raise ValueError(f"{what} config must be a mapping carrying a `_target_` key.")
@@ -297,6 +292,12 @@ class ParallelExpertEncoderPT(ModelPT):
     """
 
     def __init__(self, cfg: DictConfig, trainer: Optional[Trainer] = None):
+        """Build the inner :class:`ParallelExpertEncoder` from a PE bundle config.
+
+        Args:
+            cfg (DictConfig): Self-contained PE bundle config (inline expert configs).
+            trainer (Trainer, optional): Lightning trainer when used as a :class:`ModelPT` shell.
+        """
         super().__init__(cfg=cfg, trainer=trainer)
         self.encoder = ParallelExpertEncoder(
             speech_expert_cfg=self._cfg.get('speech_expert_cfg', None),
@@ -317,8 +318,20 @@ class ParallelExpertEncoderPT(ModelPT):
             missing_rttm_target=self._cfg.get('missing_rttm_target', -1.0),
             speaker_activity_threshold=self._cfg.get('speaker_activity_threshold', 0.5),
             spk_kernel_scale=self._cfg.get('spk_kernel_scale', None),
-            spk_kernel_row_stride=self._cfg.get('spk_kernel_row_stride', _LEGACY_SPEAKER_ROW_STRIDE),
+            spk_kernel_row_stride=self._cfg.get('spk_kernel_row_stride', 1),
             spk_kernel_calibrate=self._cfg.get('spk_kernel_calibrate', False),
+            sound_event_token_prefix=self._cfg.get('sound_event_token_prefix', '<ev:'),
+            sound_event_token_pattern=self._cfg.get('sound_event_token_pattern', r'^<ev:[^>]+>$'),
+            sound_style_token_prefix=self._cfg.get('sound_style_token_prefix', '<sty:'),
+            sound_style_token_pattern=self._cfg.get(
+                'sound_style_token_pattern', r'^<sty:(?:stt|end):[^>]+>$'
+            ),
+            tag_row_stride=self._cfg.get('tag_row_stride', 16),
+            speaker_row_offset=self._cfg.get('speaker_row_offset', 0),
+            sound_event_row_offset=self._cfg.get('sound_event_row_offset', 512),
+            sound_style_row_offset=self._cfg.get('sound_style_row_offset', 1024),
+            legacy_spk_kernel_scale=self._cfg.get('legacy_spk_kernel_scale', 1.0),
+            calibrated_spk_kernel_scale=self._cfg.get('calibrated_spk_kernel_scale', 0.75),
             sync_max_audio_length=self._cfg.get('sync_max_audio_length', False),
             always_run_diarization=self._cfg.get('always_run_diarization', True),
             moe_mode=self._cfg.get('moe_mode', 'dense'),
@@ -335,12 +348,27 @@ class ParallelExpertEncoderPT(ModelPT):
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:
+        """Return pretrained PE bundles (none registered by default).
+
+        Returns:
+            Empty list; PE bundles are loaded from user-supplied ``.nemo`` archives.
+        """
         return []
 
     def setup_training_data(self, train_data_config: Union[DictConfig, dict]):
+        """No-op placeholder for :class:`ModelPT` compatibility.
+
+        Args:
+            train_data_config (DictConfig | dict): Training data configuration (unused).
+        """
         pass
 
     def setup_validation_data(self, val_data_config: Union[DictConfig, dict]):
+        """No-op placeholder for :class:`ModelPT` compatibility.
+
+        Args:
+            val_data_config (DictConfig | dict): Validation data configuration (unused).
+        """
         pass
 
     @staticmethod
@@ -355,14 +383,14 @@ class ParallelExpertEncoderPT(ModelPT):
         the matching encoder stored in :class:`GGEMMTransformerEncoder`.
 
         Args:
-            full_state_dict: State dict of the source expert model.
-            encoder_attr: Attribute that owns the required encoder. Use ``encoder``
+            full_state_dict (dict[str, torch.Tensor]): State dict of the source expert model.
+            encoder_attr (str): Attribute that owns the required encoder. Use ``encoder``
                 for ASR experts and ``transformer_encoder`` for the Sortformer
                 speaker expert; its ``encoder`` attribute is the upstream
                 FastConformer rather than the PEE Transformer encoder.
 
         Returns:
-            The selected encoder state dict with ``encoder_attr`` removed.
+            dict[str, torch.Tensor]: The selected encoder state dict with ``encoder_attr`` removed.
         """
         prefix = f"{encoder_attr}."
         return {key[len(prefix) :]: value for key, value in full_state_dict.items() if key.startswith(prefix)}
@@ -457,19 +485,13 @@ class ParallelExpertEncoderPT(ModelPT):
         normal way. Fixing that belongs in ``nemo/core/classes/common.py``, which is
         deliberately out of scope here.
 
-        A PE bundle is only ``model_config.yaml`` + ``model_weights.ckpt``, and the
-        encoder is fully described by the inline expert configs, so reading those two
-        directly is both sufficient and strictly less machinery than ``restore_from``.
-        The archive's ``target:`` is still verified first, so this does not widen what
-        gets instantiated.
-
         Args:
             nemo_path (str): Local ``.nemo`` bundle.
-            map_location: Device to map weights onto.
+            map_location (str | torch.device): Device to map weights onto.
             strict (bool): Enforce exact state-dict match.
 
         Returns:
-            The restored :class:`ParallelExpertEncoder`.
+            ParallelExpertEncoder: The restored inner encoder.
         """
         import tempfile
 
@@ -700,6 +722,18 @@ class ParallelExpertEncoder(nn.Module):
             calibrated footing as ``sound_kernel_scale``. It remains independent so
             event and style contributions can be tuned separately. Only read on the
             SoundToken path.
+        sound_event_token_prefix (str): Event-token prefix shown in validation errors.
+        sound_event_token_pattern (str): Regular expression selecting event tokens from
+            the sound-head vocabulary.
+        sound_style_token_prefix (str): Style-token prefix shown in validation errors.
+        sound_style_token_pattern (str): Regular expression selecting style boundary
+            tokens from the sound-head vocabulary.
+        tag_row_stride (int): Spacing between sinusoid rows for sound event and style tags.
+        speaker_row_offset (int): First sinusoid row reserved for speaker identities.
+        sound_event_row_offset (int): First sinusoid row reserved for sound events.
+        sound_style_row_offset (int): First sinusoid row reserved for sound styles.
+        legacy_spk_kernel_scale (float): Default speaker gain for uncalibrated kernels.
+        calibrated_spk_kernel_scale (float): Default speaker gain for calibrated kernels.
     """
 
     def __init__(
@@ -722,7 +756,7 @@ class ParallelExpertEncoder(nn.Module):
         missing_rttm_target: float = -1.0,
         speaker_activity_threshold: float = 0.5,
         spk_kernel_scale: Optional[float] = None,
-        spk_kernel_row_stride: int = _LEGACY_SPEAKER_ROW_STRIDE,
+        spk_kernel_row_stride: int = 1,
         spk_kernel_calibrate: bool = False,
         sync_max_audio_length: bool = False,
         always_run_diarization: bool = True,
@@ -736,7 +770,24 @@ class ParallelExpertEncoder(nn.Module):
         sound_kernel_scale: float = 0.75,
         inject_sound_styles: bool = True,
         sound_style_scale: float = 0.75,
+        sound_event_token_prefix: str = '<ev:',
+        sound_event_token_pattern: str = r'^<ev:[^>]+>$',
+        sound_style_token_prefix: str = '<sty:',
+        sound_style_token_pattern: str = r'^<sty:(?:stt|end):[^>]+>$',
+        tag_row_stride: int = 16,
+        speaker_row_offset: int = 0,
+        sound_event_row_offset: int = 512,
+        sound_style_row_offset: int = 1024,
+        legacy_spk_kernel_scale: float = 1.0,
+        calibrated_spk_kernel_scale: float = 0.75,
     ):
+        """Construct experts, fusion heads, and streaming configuration.
+
+        Args:
+            speech_expert_cfg, speaker_expert_cfg, sound_expert_cfg,
+            sortformer_modules_cfg, and remaining keyword arguments: see the class
+            docstring for the full argument list and descriptions.
+        """
         super().__init__()
 
         cfgs = {
@@ -757,9 +808,7 @@ class ParallelExpertEncoder(nn.Module):
         self.expert_tasks = dict(EXPERT_TASKS)
 
         # The Sortformer head. `ParallelExpertEncoderPT.extract_encoder_state_dict`
-        # pulls only the speaker *encoder*, so the head (encoder_proj + the sigmoid
-        # stack) and the streaming cache logic are built here and loaded separately
-        # from the speaker .nemo's `sortformer_modules.*` keys.
+        # pulls only the speaker encoder.
         self.sortformer_modules = _build_from_cfg(_clone_config(sortformer_modules_cfg), 'sortformer_modules_cfg')
 
         speaker_d_model = self.pee.experts['speaker'].d_model
@@ -813,10 +862,33 @@ class ParallelExpertEncoder(nn.Module):
         self.missing_rttm_target = float(missing_rttm_target)
         self.speaker_activity_threshold = float(speaker_activity_threshold)
         self.spk_kernel_calibrate = bool(spk_kernel_calibrate)
+        self.sound_event_token_prefix = str(sound_event_token_prefix)
+        self.sound_style_token_prefix = str(sound_style_token_prefix)
+        self.sound_event_token_pattern = str(sound_event_token_pattern)
+        self.sound_style_token_pattern = str(sound_style_token_pattern)
+        try:
+            self.sound_event_token_re = re.compile(self.sound_event_token_pattern)
+            self.sound_style_token_re = re.compile(self.sound_style_token_pattern)
+        except re.error as exc:
+            raise ValueError(f"Invalid sound token regular expression: {exc}") from exc
+
+        self.tag_row_stride = max(1, int(tag_row_stride))
+        self.speaker_row_offset = int(speaker_row_offset)
+        self.sound_event_row_offset = int(sound_event_row_offset)
+        self.sound_style_row_offset = int(sound_style_row_offset)
+        if min(self.speaker_row_offset, self.sound_event_row_offset, self.sound_style_row_offset) < 0:
+            raise ValueError("Speaker, event, and style sinusoid row offsets must be non-negative.")
+
+        self.legacy_spk_kernel_scale = float(legacy_spk_kernel_scale)
+        self.calibrated_spk_kernel_scale = float(calibrated_spk_kernel_scale)
         # The default scale follows the saved layout because calibrated and legacy
         # kernels express gain in different units.
         if spk_kernel_scale is None:
-            spk_kernel_scale = _CALIBRATED_KERNEL_SCALE if self.spk_kernel_calibrate else _LEGACY_SPK_KERNEL_SCALE
+            spk_kernel_scale = (
+                self.calibrated_spk_kernel_scale
+                if self.spk_kernel_calibrate
+                else self.legacy_spk_kernel_scale
+            )
         self.spk_kernel_scale = float(spk_kernel_scale)
 
         self.n_spk = int(self.sortformer_modules.n_spk)
@@ -826,12 +898,12 @@ class ParallelExpertEncoder(nn.Module):
         self.asr_norm = nn.LayerNorm(self.asr_d_model)
         self.diar_norm = nn.LayerNorm(self.n_spk)
         self.spk_kernel_row_stride = max(1, int(spk_kernel_row_stride))
-        spk_last_row = _SPEAKER_ROW_OFFSET + self.spk_kernel_row_stride * (self.n_spk - 1)
-        if spk_last_row >= _SOUND_EVENT_ROW_OFFSET:
+        spk_last_row = self.speaker_row_offset + self.spk_kernel_row_stride * (self.n_spk - 1)
+        if spk_last_row >= self.sound_event_row_offset:
             raise ValueError(
                 f"n_spk={self.n_spk} at spk_kernel_row_stride={self.spk_kernel_row_stride} "
                 f"reaches sinusoid row {spk_last_row}, which is inside the sound event "
-                f"block at row {_SOUND_EVENT_ROW_OFFSET}. Speakers and sound tags would "
+                f"block at row {self.sound_event_row_offset}. Speakers and sound tags would "
                 "share rows and become indistinguishable; lower the stride or move the "
                 "sound blocks."
             )
@@ -839,7 +911,7 @@ class ParallelExpertEncoder(nn.Module):
             "diar_kernel",
             self._build_tag_kernel(
                 self.n_spk,
-                _SPEAKER_ROW_OFFSET,
+                self.speaker_row_offset,
                 self.asr_d_model,
                 stride=self.spk_kernel_row_stride,
                 calibrate=self.spk_kernel_calibrate,
@@ -880,10 +952,10 @@ class ParallelExpertEncoder(nn.Module):
             # Read the tag ids out of the vocabulary rather than hard-coding them: they
             # are an artifact of how the sound expert's tokenizer was built and will move
             # the next time it is retrained.
-            event_ids = [i for i, tok in enumerate(vocabulary) if _SOUND_EVENT_TOKEN_RE.match(str(tok))]
+            event_ids = [i for i, tok in enumerate(vocabulary) if self.sound_event_token_re.match(str(tok))]
             if not event_ids:
                 raise ValueError(
-                    f"sound_ctc_head_cfg.vocabulary has no {_SOUND_EVENT_TOKEN_PREFIX}... "
+                    f"sound_ctc_head_cfg.vocabulary has no {self.sound_event_token_prefix}... "
                     f"tokens among its {len(vocabulary)} entries, so there is nothing to "
                     "inject. Is this the CTC-head sound expert?"
                 )
@@ -893,11 +965,11 @@ class ParallelExpertEncoder(nn.Module):
 
             style_ids = []
             if self.inject_sound_styles:
-                style_ids = [i for i, tok in enumerate(vocabulary) if _SOUND_STYLE_TOKEN_RE.match(str(tok))]
+                style_ids = [i for i, tok in enumerate(vocabulary) if self.sound_style_token_re.match(str(tok))]
                 if not style_ids:
                     raise ValueError(
                         f"inject_sound_styles=True but the vocabulary has no "
-                        f"{_SOUND_STYLE_TOKEN_PREFIX}stt|end:... tokens among its "
+                        f"{self.sound_style_token_prefix}stt|end:... tokens among its "
                         f"{len(vocabulary)} entries. Pass inject_sound_styles=False to "
                         "inject only the event tags."
                     )
@@ -907,25 +979,36 @@ class ParallelExpertEncoder(nn.Module):
 
             # Events and styles are separate families, each with its own LayerNorm,
             # gain, and disjoint block of sinusoid rows.
-            #
-            # A single LayerNorm spanning both would couple them: its mean and variance
-            # run over every tag, so each style that fires would rewrite the value placed
-            # on an active event dimension. Per-family normalization prevents that
-            # cross-talk and lets either contribution be tuned independently.
-            #
-            # Disjoint row blocks also keep event, style, and speaker identity codes
-            # from sharing directions in the ASR state space.
+            event_last_row = self.sound_event_row_offset + self.tag_row_stride * (self.n_sound_events - 1)
+            if self.n_sound_styles and event_last_row >= self.sound_style_row_offset:
+                raise ValueError(
+                    f"n_sound_events={self.n_sound_events} at tag_row_stride={self.tag_row_stride} "
+                    f"reaches sinusoid row {event_last_row}, which is inside the sound style "
+                    f"block at row {self.sound_style_row_offset}. Lower the stride or move "
+                    "the style block."
+                )
+
             self.sound_token_norm = nn.LayerNorm(self.n_sound_events)
             self.register_buffer(
                 "sound_token_kernel",
-                self._build_tag_kernel(self.n_sound_events, _SOUND_EVENT_ROW_OFFSET, self.asr_d_model),
+                self._build_tag_kernel(
+                    self.n_sound_events,
+                    self.sound_event_row_offset,
+                    self.asr_d_model,
+                    stride=self.tag_row_stride,
+                ),
                 persistent=False,
             )
             if self.n_sound_styles:
                 self.sound_style_norm = nn.LayerNorm(self.n_sound_styles)
                 self.register_buffer(
                     "sound_style_kernel",
-                    self._build_tag_kernel(self.n_sound_styles, _SOUND_STYLE_ROW_OFFSET, self.asr_d_model),
+                    self._build_tag_kernel(
+                        self.n_sound_styles,
+                        self.sound_style_row_offset,
+                        self.asr_d_model,
+                        stride=self.tag_row_stride,
+                    ),
                     persistent=False,
                 )
 
@@ -1029,18 +1112,28 @@ class ParallelExpertEncoder(nn.Module):
     # ConformerEncoder-compatible properties (drop-in for SALM perception).
     @property
     def d_model(self) -> int:
+        """Return the speech expert model dimension."""
         return self.asr_d_model
 
     @property
     def subsampling_factor(self) -> int:
+        """Return the speech expert subsampling factor."""
         return self.pee.experts['speech'].subsampling_factor
 
     @property
     def pre_encode(self):
+        """Return the speech expert pre-encoder."""
         return self.pee.experts['speech'].pre_encode
 
     def get_expert_task(self, expert_name: str) -> Optional[str]:
-        """Return the PEE decoder/head family recorded for ``expert_name``."""
+        """Return the role identifier recorded for ``expert_name``.
+
+        Args:
+            expert_name (str): Expert role name (``'speech'``, ``'speaker'``, or ``'sound'``).
+
+        Returns:
+            Task identifier string (e.g. ``'diarization'``), or ``None`` if unmapped.
+        """
         if expert_name not in self.pee.experts:
             raise KeyError(f"Unknown PEE expert '{expert_name}'. Available: {list(self.pee.experts)}.")
         return self.expert_tasks.get(expert_name)
@@ -1055,6 +1148,9 @@ class ParallelExpertEncoder(nn.Module):
         unit. This keeps ``TransformerEncoder`` behavior and state-dict structure
         untouched. The fused inference path
         (:meth:`GGEMMTransformerEncoder.forward_packed`) is deliberately left alone.
+
+        Args:
+            enabled (bool): Turn activation checkpointing on (``True``) or off (``False``).
         """
         self.activation_checkpointing = bool(enabled)
         if enabled and self.fused_forward_in_training:
@@ -1066,7 +1162,18 @@ class ParallelExpertEncoder(nn.Module):
             )
 
     def _forward_all_training(self, audio_signal, length):
-        """Run native expert forwards, optionally checkpointed at the PEE boundary."""
+        """Run native expert forwards, optionally checkpointed at the PEE boundary.
+
+        Args:
+            audio_signal (torch.Tensor): Shared mel input for every expert.
+                Shape: (B, feat_in, n_frames)
+            length (torch.Tensor): Valid feature length per sample.
+                Shape: (B,)
+
+        Returns:
+            dict: Per-expert ``(encoded, encoded_len)`` tuples from
+            :meth:`GGEMMTransformerEncoder.forward_all`.
+        """
         if not self.activation_checkpointing or not torch.is_grad_enabled():
             return self.pee.forward_all(audio_signal, length)
 
@@ -1087,15 +1194,30 @@ class ParallelExpertEncoder(nn.Module):
 
     # freeze/unfreeze parity (plain nn.Module re-exposing the standalone helpers).
     def freeze(self) -> None:
+        """Freeze module parameters."""
         freeze(self)
 
     def unfreeze(self, partial: bool = False) -> None:
+        """Unfreeze module parameters (re-exposes :func:`nemo.core.classes.module.unfreeze`).
+
+        Args:
+            partial (bool): If ``True``, unfreeze only parameters that were partially frozen.
+        """
         unfreeze(self, partial=partial)
 
     # Fusion helpers
     @staticmethod
     def _build_sinusoid_position_encoding(max_position: int, embedding_dim: int) -> torch.Tensor:
-        """Mirror of ``MSEncDecMultiTaskModel.get_sinusoid_position_encoding``."""
+        """Mirror of ``MSEncDecMultiTaskModel.get_sinusoid_position_encoding``.
+
+        Args:
+            max_position (int): Number of position rows to generate.
+            embedding_dim (int): Embedding width for each row.
+
+        Returns:
+            torch.Tensor: Sinusoidal position table.
+                Shape: (max_position, embedding_dim)
+        """
         position = torch.arange(max_position, dtype=torch.float32).unsqueeze(1)
         div_term = torch.exp(
             torch.arange(0, embedding_dim, 2, dtype=torch.float32) * -(math.log(10000.0) / embedding_dim)
@@ -1111,27 +1233,24 @@ class ParallelExpertEncoder(nn.Module):
         n_tags: int,
         row_offset: int,
         embedding_dim: int,
-        stride: int = _TAG_ROW_STRIDE,
+        stride: int = 16,
         calibrate: bool = True,
     ) -> torch.Tensor:
         """Take ``n_tags`` sinusoid rows from ``row_offset``, spaced ``stride``, and calibrate.
 
-        Every tag family slices the one shared table, so no two families can alias onto
-        each other by construction. See ``_TAG_ROW_STRIDE`` for why the rows are strided
-        and offset rather than taken consecutively.
+        Every tag family slices the one shared table. Configurable row offsets and
+        strides keep their identity ranges separate.
 
-        When ``calibrate``, the kernel is then rescaled so that a single active tag injects
-        a vector of norm ``sqrt(embedding_dim)`` -- the norm of the LayerNorm-ed states it
-        is added to. Without this the injection strength depends on ``n_tags`` and on the
-        row choice, both layout decisions rather than modelling ones: a LayerNorm over
-        ``n`` inputs emits a larger code as ``n`` grows, so widening a family silently
-        turns its contribution up. With it, the ``*_scale`` arguments mean a
-        straightforward *fraction of the ASR state magnitude* and stay meaningful when the
-        layout changes. Pass ``calibrate=False`` only when restoring a bundle that was
-        trained with an uncalibrated kernel.
+        Args:
+            n_tags (int): Number of tag identities (rows in the kernel).
+            row_offset (int): Starting row index in the shared sinusoid table.
+            embedding_dim (int): ASR state dimension the kernel projects into.
+            stride (int): Spacing between consecutive tag rows.
+            calibrate (bool): Rescale so one active tag injects norm ``sqrt(embedding_dim)``.
 
         Returns:
-            Tag kernel. Shape ``(n_tags, embedding_dim)``.
+            torch.Tensor: Tag kernel.
+                Shape: (n_tags, embedding_dim)
         """
         rows = [row_offset + stride * i for i in range(n_tags)]
         table = cls._build_sinusoid_position_encoding(rows[-1] + 1, embedding_dim)
@@ -1154,6 +1273,10 @@ class ParallelExpertEncoder(nn.Module):
         unchecked, a narrower target broadcasts against the predictions inside
         :meth:`_fuse_diar_and_asr` and reports a bare size mismatch several frames away
         from the setting that caused it.
+
+        Args:
+            spk_targets (torch.Tensor, optional): Speaker activity targets.
+                Shape: (B, T, n_spk)
         """
         if spk_targets is None:
             return
@@ -1169,7 +1292,17 @@ class ParallelExpertEncoder(nn.Module):
 
     @staticmethod
     def _align_diar_frames(spk_targets: torch.Tensor, target_len: int) -> torch.Tensor:
-        """Pad-by-repeat or truncate ``spk_targets`` to ``target_len`` along time."""
+        """Pad-by-repeat or truncate ``spk_targets`` to ``target_len`` along time.
+
+        Args:
+            spk_targets (torch.Tensor): Speaker activity along time.
+                Shape: (B, T, n_spk)
+            target_len (int): Desired number of time frames.
+
+        Returns:
+            torch.Tensor: Padded or truncated targets.
+                Shape: (B, target_len, n_spk)
+        """
         cur_len = spk_targets.shape[1]
         if cur_len < target_len:
             last = spk_targets[:, -1:, :]
@@ -1179,7 +1312,16 @@ class ParallelExpertEncoder(nn.Module):
         return spk_targets
 
     def _match_module_io(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Cast ``tensor`` to the experts' device and parameter dtype."""
+        """Cast ``tensor`` to the experts' device and parameter dtype.
+
+        Args:
+            tensor (torch.Tensor): Input tensor to cast.
+                Shape: arbitrary
+
+        Returns:
+            torch.Tensor: ``tensor`` on the experts' device and parameter dtype.
+                Shape: same as ``tensor``
+        """
         param = next(self.pee.parameters(), None)
         if param is None:
             return tensor
@@ -1193,11 +1335,14 @@ class ParallelExpertEncoder(nn.Module):
         projection dimensions come from ``sortformer_modules_cfg``.
 
         Args:
-            speaker_encoded (Tensor): Speaker expert output. Shape ``(B, D_spk, T)``.
-            length (Tensor): Valid frame counts. Shape ``(B,)``.
+            speaker_encoded (torch.Tensor): Speaker expert output.
+                Shape: (B, D, T)
+            length (torch.Tensor): Valid frame counts.
+                Shape: (B,)
 
         Returns:
-            Speaker activity probabilities. Shape ``(B, T, n_spk)``.
+            torch.Tensor: Speaker activity probabilities.
+                Shape: (B, T, n_spk)
         """
         emb_seq = speaker_encoded.transpose(1, 2)  # (B, T, fc_d_model)
         if self.sortformer_modules.encoder_proj is not None:
@@ -1219,11 +1364,12 @@ class ParallelExpertEncoder(nn.Module):
         every frame including silence.
 
         Args:
-            sound_encoded (Tensor): Sound expert output. Shape ``(B, D_sound, T)``.
+            sound_encoded (torch.Tensor): Sound expert output.
+                Shape: (B, D, T)
 
         Returns:
-            ``(events, styles)`` with shapes ``(B, T, n_sound_events)`` and
-            ``(B, T, n_sound_styles)``; ``styles`` is ``None`` when styles are not injected.
+            tuple: ``(events, styles)`` where ``events`` has shape ``(B, T, n_sound_events)``
+            and ``styles`` has shape ``(B, T, n_sound_styles)`` or is ``None``.
         """
         log_probs = self.sound_ctc_head(encoder_output=sound_encoded)  # (B, T, V+1)
         events = log_probs.index_select(-1, self.sound_event_token_ids).exp()
@@ -1240,16 +1386,19 @@ class ParallelExpertEncoder(nn.Module):
         way. The result is low rank: at most ``n_sound_events + n_sound_styles``
         directions into ``d_model``.
 
-        Events and styles are normalized and projected SEPARATELY, then summed. Sharing a
+        Events and styles are normalized and projected separately, then summed. Sharing a
         LayerNorm would make each family's code depend on how many tags of the other
         family happen to be firing -- see the note where the two norms are built.
 
         Args:
-            asr_encoded (Tensor): Speech states. Shape ``(B, D, T)``.
-            sound_encoded (Tensor): Sound expert states. Shape ``(B, D_sound, T)``.
+            asr_encoded (torch.Tensor): Speech states.
+                Shape: (B, D, T)
+            sound_encoded (torch.Tensor): Sound expert states.
+                Shape: (B, D, T)
 
         Returns:
-            States with the tag signal added. Shape ``(B, D, T)``.
+            torch.Tensor: States with the tag signal added.
+                Shape: (B, D, T)
         """
         if sound_encoded.shape[-1] != asr_encoded.shape[-1]:
             raise ValueError(
@@ -1287,11 +1436,14 @@ class ParallelExpertEncoder(nn.Module):
         tensors are already aligned in time and need no resampling.
 
         Args:
-            asr_encoded (Tensor): Speech (and speaker-fused) states. Shape ``(B, D, T)``.
-            sound_encoded (Tensor): Sound expert states. Shape ``(B, D, T)``.
+            asr_encoded (torch.Tensor): Speech states before speaker fusion.
+                Shape: (B, D, T)
+            sound_encoded (torch.Tensor): Sound expert states.
+                Shape: (B, D, T)
 
         Returns:
-            Merged states, shape ``(B, D, T)``.
+            torch.Tensor: Merged states.
+                Shape: (B, D, T)
         """
         if not self.merge_sound_expert_to_asr:
             raise RuntimeError(
@@ -1317,19 +1469,23 @@ class ParallelExpertEncoder(nn.Module):
         diarization_preds: Optional[torch.Tensor] = None,
         use_diarization: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Fuse speech states with speaker-activity preds (LayerNorm + sinusoidal kernel + ADD).
+        """Fuse sound-enhanced ASR states with speaker activity.
 
         Args:
-            asr_encoded (Tensor): Speech expert output. Shape ``(B, D, T_asr)``.
-            spk_targets (Tensor): RTTM or Sortformer speaker activity. Shape
-                ``(B, T_diar, n_spk)``.
-            diarization_preds (Tensor, optional): Diarization predictions used for
+            asr_encoded (torch.Tensor): ASR states after sound merge or injection.
+                Shape: (B, D, T)
+            spk_targets (torch.Tensor): RTTM or Sortformer speaker activity.
+                Shape: (B, T, n_spk)
+            diarization_preds (torch.Tensor, optional): Diarization predictions used for
                 rows selected by ``use_diarization``. Callers must supply these whenever
                 ``use_diarization`` can select a row; :meth:`_forward` guarantees it.
-            use_diarization (Tensor, optional): Bool mask with shape ``(B,)``.
+                Shape: (B, T, n_spk)
+            use_diarization (torch.Tensor, optional): Bool mask per batch row.
+                Shape: (B,)
 
         Returns:
-            Fused encoder output. Shape ``(B, D, T_asr)``.
+            torch.Tensor: Fused encoder output.
+                Shape: (B, D, T)
         """
         asr_enc_states = asr_encoded.transpose(1, 2)  # (B, T, D)
         spk_targets = self._align_diar_frames(spk_targets, asr_enc_states.shape[1]).to(asr_enc_states.dtype)
@@ -1372,6 +1528,9 @@ class ParallelExpertEncoder(nn.Module):
         eval mode and must stay on the single-pass path. The windowed loop calls the packed
         encoder once per window, so the number of collectives it emits tracks each rank's
         own audio length -- fine in one process, a deadlock in a distributed step.
+
+        Args:
+            enabled (bool): When ``True``, route :meth:`forward` through the windowed path.
         """
         previous = self.online_inference_enabled
         self.online_inference_enabled = bool(enabled)
@@ -1385,6 +1544,15 @@ class ParallelExpertEncoder(nn.Module):
 
         Packed execution uses a shared input tensor, so normalization runs once and
         every expert receives the same features.
+
+        Args:
+            audio_signal (torch.Tensor): Raw mel features.
+                Shape: (B, feat_in, n_frames)
+            length (torch.Tensor): Valid feature length per sample.
+                Shape: (B,)
+
+        Returns:
+            tuple: ``(audio_signal, length)`` normalized, cast, and on the experts' device.
         """
         if self.asr_normalize_type:
             audio_signal, _, _ = normalize_batch(audio_signal, length, normalize_type=self.asr_normalize_type)
@@ -1399,9 +1567,9 @@ class ParallelExpertEncoder(nn.Module):
         spk_targets=None,
         return_experts: bool = False,
     ):
-        """Encode ``audio_signal``, fusing speaker activity into the speech states.
+        """Encode ``audio_signal``, add sound information, and fuse speaker activity.
 
-        Fusion is per row and consistent across modes. Rows with RTTM use their
+        Speaker fusion is per row and consistent across modes. Rows with RTTM use their
         ``spk_targets``; rows marked by ``missing_rttm_target`` use the Sortformer
         prediction.
 
@@ -1413,10 +1581,13 @@ class ParallelExpertEncoder(nn.Module):
           :meth:`_forward_online`, which walks long-form audio with a live speaker cache.
 
         Args:
-            audio_signal (Tensor): Un-normalised mel features; `per_feature` normalization
-                is re-applied internally. Shape ``(B, feat_in, n_frames)``.
-            length (Tensor): Per-sample feature lengths. Shape ``(B,)``.
-            spk_targets (Tensor, optional): ``(B, T, n_spk)`` RTTM/oracle speaker activity.
+            audio_signal (torch.Tensor): Un-normalised mel features; `per_feature` normalization
+                is re-applied internally.
+                Shape: (B, feat_in, n_frames)
+            length (torch.Tensor): Per-sample feature lengths.
+                Shape: (B,)
+            spk_targets (torch.Tensor, optional): RTTM/oracle speaker activity.
+                Shape: (B, T, n_spk)
                 ``None`` predicts for the whole batch; rows marked by
                 ``missing_rttm_target`` use predictions, allowing mixed target
                 availability within a batch.
@@ -1426,8 +1597,8 @@ class ParallelExpertEncoder(nn.Module):
                 :class:`ConformerEncoder`.
 
         Returns:
-            ``(outputs, encoded_lengths)`` with ``outputs`` of shape ``(B, D, T_asr)``,
-            or ``(outputs, encoded_lengths, experts)`` when ``return_experts``.
+            tuple: ``(outputs, encoded_lengths)`` with ``outputs`` of shape ``(B, D, T)``,
+            or ``(outputs, encoded_lengths, experts)`` when ``return_experts`` is ``True``.
         """
         # Off unless a generation call opened `online_inference()`, so training and
         # validation both take the single-pass path no matter what the batch holds.
@@ -1452,16 +1623,25 @@ class ParallelExpertEncoder(nn.Module):
         tensor, and evaluates all ``moe_num_experts`` experts on every token so it can
         weight them by a router matrix that is zero outside the top ``k``. Both are a good
         trade when nothing is stored and a bad one when everything is.
+
+        Args:
+            audio_signal (torch.Tensor): Un-normalised mel features; `per_feature` normalization
+                is re-applied internally.
+                Shape: (B, feat_in, n_frames)
+            length (torch.Tensor): Per-sample feature lengths.
+                Shape: (B,)
+            spk_targets (torch.Tensor, optional): RTTM/oracle speaker activity.
+                Shape: (B, T, n_spk)
+
+        Returns:
+            tuple: ``(outputs, encoded_lengths, experts)`` with ``outputs`` of shape
+            ``(B, D, T)`` and per-expert side outputs in ``experts``.
         """
         self._check_spk_target_width(spk_targets)
         use_diarization = (
             None if spk_targets is None else (spk_targets <= self.missing_rttm_target).flatten(start_dim=1).any(dim=1)
         )
-        # `use_diarization` is rank-local: whether this rank's batch holds a row needing
-        # predicted diarization depends on which cuts the sampler handed it. Branching on it
-        # makes the head -- and every collective and FSDP hook underneath it -- run on some
-        # ranks and not others, which desynchronises them. Keep the decision batch-independent,
-        # and never touch the tensor: `bool(...)` on it blocks the host on a device transfer.
+
         if spk_targets is None or self.always_run_diarization:
             run_diarization = True
         else:
@@ -1497,10 +1677,6 @@ class ParallelExpertEncoder(nn.Module):
             if spk_targets is None:
                 spk_targets = diarization_preds
 
-        # Sound merges into the ASR states BEFORE the speaker fusion, so the two
-        # together form the backbone that `asr_norm` normalizes and the speaker
-        # kernel is then added on top of. Merging afterwards would instead bolt sound
-        # onto an already-normalized sum, leaving its scale outside the norm.
         asr_states = asr_encoded
         if self.merge_sound_expert_to_asr:
             asr_states = self._merge_sound_and_asr(asr_states, sound_encoded)
@@ -1527,37 +1703,20 @@ class ParallelExpertEncoder(nn.Module):
     def _forward_online(self, audio_signal, length, spk_targets=None):
         """Long-form generation path: dispatches to the offline pass or the windowed loop.
 
-        If the batch fits within the configured window, this delegates straight
-        to :meth:`_forward`, which is the same computation without any of the streaming
-        bookkeeping -- see the comment at the branch. Otherwise it runs
-        :meth:`_forward_windowed`.
-
-        Reached only from :meth:`online_inference`, which only generation opens -- the
-        window count depends on this rank's audio, so the loop must never run in a
-        distributed training or validation step.
-
-        Walks the recording in non-overlapping windows of ``online_inference_length``
-        output frames, each extended by left/right context. Per window, one
-        ``forward_packed`` call runs all experts, with the speaker's streaming
-        cache passed as a ``prefix`` so it attends over ``[spkcache | fifo | chunk]``
-        while speech and sound are right-padded to that longer ``T`` and masked to
-        their own length. Speech and sound use overlap-and-trim; the speaker's
-        full-window predictions and the window's projected speaker embeddings are
-        handed to ``streaming_update``, which trims context, updates the cache and
-        returns the chunk-only predictions. This mirrors
-        ``SortformerEncLabelModel.forward_streaming_step``, so the cache
-        compression, silence profile and speaker permutation logic keep working.
-
         Args:
-            audio_signal (Tensor): Un-normalised mel features; `per_feature` normalization
-                is re-applied internally. Shape ``(B, feat_in, n_frames)``.
-            length (Tensor): Per-sample feature lengths. Shape ``(B,)``.
-            spk_targets (Tensor, optional): ``(B, T, n_spk)`` override. Rows marked by
-                ``missing_rttm_target`` still get a streaming Sortformer prediction;
-                the rest keep their targets and only the encoder is chunked for them.
+            audio_signal (torch.Tensor): Un-normalised mel features; `per_feature` normalization
+                is re-applied internally.
+                Shape: (B, feat_in, n_frames)
+            length (torch.Tensor): Per-sample feature lengths.
+                Shape: (B,)
+            spk_targets (torch.Tensor, optional): RTTM/oracle speaker activity override.
+                Shape: (B, T, n_spk)
+                Rows marked by ``missing_rttm_target`` still get a streaming Sortformer
+                prediction; the rest keep their targets and only the encoder is chunked
+                for them.
 
         Returns:
-            ``(outputs, encoded_lengths, experts)``; ``outputs`` has shape ``(B, D, T_asr)``.
+            tuple: ``(outputs, encoded_lengths, experts)``; ``outputs`` has shape ``(B, D, T)``.
         """
         total_feat_len = min(audio_signal.shape[-1], int(length.max().item()))
         num_chunks = max(1, math.ceil(total_feat_len / self.chunk_feat_len))
@@ -1565,17 +1724,7 @@ class ParallelExpertEncoder(nn.Module):
         if num_chunks == 1:
             # The whole batch fits one window, so every part of the streaming
             # apparatus is dead weight: the cache and context are empty, and
-            # `streaming_update` reduces to selecting the current chunk. Take the
-            # offline path instead; same result, none of the
-            # per-window bookkeeping.
-            #
-            # `num_chunks` follows `length.max()`, so this is a per-BATCH decision: one
-            # long utterance keeps the whole batch on the windowed path. Length-bucket
-            # upstream to get the win on mixed batches.
-            #
-            # Trim to `total_feat_len` first -- the windowed path never looks past it,
-            # and carrying the batch's right padding into the encoder would both change
-            # T and waste the compute this fast path exists to save.
+            # `streaming_update` reduces to selecting the current chunk.
             return self._forward(
                 audio_signal=audio_signal[:, :, :total_feat_len],
                 length=length.clamp(max=total_feat_len),
@@ -1594,13 +1743,22 @@ class ParallelExpertEncoder(nn.Module):
         """The windowed long-form loop proper: one ``forward_packed`` per window with a
         live speaker cache. Split out from :meth:`_forward_online` so the single-window
         fast path and this path can each be exercised directly.
+
+        Args:
+            audio_signal (torch.Tensor): Un-normalised mel features.
+                Shape: (B, feat_in, n_frames)
+            length (torch.Tensor): Per-sample feature lengths.
+                Shape: (B,)
+            spk_targets (torch.Tensor, optional): RTTM/oracle speaker activity.
+                Shape: (B, T, n_spk)
+            total_feat_len (int): Total mel frames to encode (clamped to batch max).
+            num_chunks (int): Number of non-overlapping windows.
+
+        Returns:
+            tuple: ``(outputs, encoded_lengths, experts)``; ``outputs`` has shape ``(B, D, T)``.
         """
         # Normalise the whole utterance once (not per chunk) to match offline stats.
         signal, signal_length = self._prepare_input(audio_signal, length)
-
-        # Rows marked by `missing_rttm_target` carry no RTTM and need a prediction,
-        # exactly as in `_forward`. Reading the mask on the host is fine here: only
-        # generation reaches this path, and it already syncs on `length.max()` above.
         self._check_spk_target_width(spk_targets)
         use_diarization = (
             None if spk_targets is None else (spk_targets <= self.missing_rttm_target).flatten(start_dim=1).any(dim=1)
@@ -1634,13 +1792,7 @@ class ParallelExpertEncoder(nn.Module):
             left_offset = stt - enc_stt
             right_offset = enc_end - end
 
-            # The speaker attends over [cache | chunk]. Rather than let the cache
-            # extend it past the others and pad them with zeros, walk the window's
-            # start back by exactly the cache length and splice in 'replace' mode: the
-            # cache stands in for the speaker's leading frames, while speech and sound
-            # spend those same slots on REAL left context. Same T, same FLOPs, no zeros
-            # -- and with every expert full-length the group stays eligible for the
-            # fused SDPA fast path.
+            # The speaker attends over [cache | chunk].
             prefix, cache_len, extra = None, 0, 0
             if run_streaming_diar:
                 cache = torch.cat([streaming_state.spkcache, streaming_state.fifo], dim=1)
@@ -1650,9 +1802,9 @@ class ParallelExpertEncoder(nn.Module):
                     # Only as far back as the recording actually goes.
                     extra = min(cache_len * self.subsampling_factor, enc_stt) // self.subsampling_factor
 
-            # 'replace' needs the window to carry at least `cache_len` leading frames to
-            # give up. Near the start of a recording it cannot, so fall back to the
-            # zero-padded 'extend' path for those windows only.
+            # 'replace' needs at least `cache_len` leading window frames to replace
+            # with cache embeddings. Near the recording start, fall back to the
+            # zero-padded 'extend' path when that context is unavailable.
             prefix_mode = 'replace' if (self.online_prefix_mode == 'replace' and extra == cache_len) else 'extend'
             ext_stt = enc_stt - (extra * self.subsampling_factor if prefix_mode == 'replace' else 0)
 

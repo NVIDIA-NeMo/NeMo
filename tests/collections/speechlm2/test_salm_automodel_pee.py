@@ -11,16 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SALMAutomodel tests for the Parallel Expert Encoder (PEE) recipe.
+"""SALMAutomodel tests for a multi-expert perception recipe.
 
 Mirrors ``test_salm_automodel.py`` but swaps the plain ConformerEncoder for a
-``ParallelExpertEncoder`` (streaming Sortformer diarizer + ASR Conformer, fused).
-The tiny-but-real PE encoder is the same dummy bundle built in
-``tests/collections/asr/test_parallel_expert_encoder.py`` (``build_toy_pe_encoder``);
-this file mounts it onto ``model.perception.encoder`` exactly the way
-``nemo.collections.speechlm2.parts.pretrained.setup_parallel_expert_encoder`` does
-and exercises the SALM training / validation / generation path end to end, plus the
-``spk_targets -> spk_targets`` routing that is unique to the PEE recipe.
+tiny multi-expert encoder. It exercises SALM training, validation, generation,
+and external speaker-target routing end to end.
 """
 import importlib.util
 import os
@@ -40,8 +35,7 @@ from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.speechlm2.data import SALMDataset
 from nemo.collections.speechlm2.models import SALMAutomodel
 
-# Reuse the toy PE encoder (and its dimensions) defined for the standalone
-# ParallelExpertEncoder tests, so both suites share one dummy bundle definition.
+# Reuse the shared toy encoder and dimensions so both suites use one fixture.
 from tests.collections.asr.test_parallel_expert_encoder import (
     _ASR_D_MODEL,
     _MEL_FEATURES,
@@ -64,8 +58,7 @@ requires_cuda = pytest.mark.skipif(
 
 # NOTE: deliberately do NOT call torch.set_default_device('cuda') here. It is a
 # global, process-wide mutation that leaks into other test modules collected in
-# the same pytest session (e.g. the device-agnostic CPU tests in
-# tests/collections/asr/test_parallel_expert_encoder.py), causing spurious
+# the same pytest session (e.g. device-agnostic CPU tests), causing spurious
 # cuda/cpu device-mismatch failures. CUDA tests below place their tensors on
 # model.device explicitly instead.
 
@@ -88,7 +81,7 @@ def resolve_pretrained_models():
 AUDIO_LOCATOR_TAG = "<|audioplaceholder|>"
 PROMPT = "qwen"
 
-# Speaker-activity (SOT) target settings; num_speakers matches the PE encoder's n_spk.
+# Speaker-activity settings match the replacement encoder's speaker count.
 SOT_CFG = {
     "num_speakers": _N_SPK,
     "sample_rate": 16000,
@@ -99,15 +92,14 @@ SOT_CFG = {
 
 
 def mount_dummy_pe_encoder(model: SALMAutomodel) -> ParallelExpertEncoder:
-    """Mount a dummy ParallelExpertEncoder onto ``model.perception.encoder``.
+    """Mount the dummy multi-expert encoder onto ``model.perception.encoder``.
 
-    Replicates ``setup_parallel_expert_encoder`` without needing an on-disk
-    ``.nemo`` bundle: it swaps the perception encoder for a tiny-but-real PE
-    encoder, disables the outer preprocessor normalization (the PE encoder
-    re-applies ASR normalization internally), and matches the model dtype/device.
+    This swaps the perception encoder without an on-disk bundle, disables the
+    outer preprocessor normalization (re-applied internally), and matches the
+    model dtype/device.
     """
     pe_encoder = build_toy_pe_encoder()
-    # The PE encoder consumes un-normalised mels; turn off the perception
+    # The replacement consumes un-normalised mels; turn off the perception
     # preprocessor's normalization just like the real mounting helper does.
     model.perception.preprocessor.featurizer.normalize = None
     model.perception.encoder = pe_encoder
@@ -129,7 +121,7 @@ def model():
             "target": "nemo.collections.speechlm2.modules.perception.AudioPerceptionModule",
             "output_dim": 2048,
             # Placeholder encoder; its only job is to define a d_model that matches
-            # the dummy PE encoder we mount in its place (mount validation checks this).
+            # the dummy replacement we mount in its place (mount validation checks this).
             "encoder": {
                 "_target_": "nemo.collections.asr.modules.ConformerEncoder",
                 "att_context_size": [-1, -1],
@@ -221,10 +213,10 @@ def training_cutset_batch():
 def test_salm_automodel_pee_uses_ext_spk_tgts(model):
     assert isinstance(model.perception.encoder, ParallelExpertEncoder)
     assert model._uses_ext_spk_tgts()
-    # The mounted PE encoder is a drop-in: its d_model drives the perception output projection.
+    # The mounted encoder's width drives the perception output projection.
     assert model.perception.encoder.d_model == _ASR_D_MODEL
     assert model.perception.encoder.n_spk == _N_SPK
-    # PE encoder consumes un-normalised mels; the outer preprocessor normalization is disabled.
+    # The replacement consumes un-normalised mels, so outer normalization is disabled.
     assert model.perception.preprocessor.featurizer.normalize is None
 
 
@@ -235,7 +227,7 @@ def test_salm_automodel_pee_dataset_emits_speaker_targets(dataset, prompt_format
     for key in ("audios", "audio_lens", "input_ids", "loss_mask", "spk_targets"):
         assert key in batch
         assert torch.is_tensor(batch[key])
-    # spk_targets: (B, T_target, num_speakers) -> last dim must match the PE encoder n_spk.
+    # The speaker-target count must match the encoder's configured speaker count.
     assert batch["spk_targets"].ndim == 3
     assert batch["spk_targets"].shape[0] == batch["audios"].shape[0]
     assert batch["spk_targets"].shape[-1] == _N_SPK
@@ -245,7 +237,7 @@ def test_salm_automodel_pee_dataset_emits_speaker_targets(dataset, prompt_format
 def test_salm_automodel_pee_training_step(model, dataset, prompt_formatter, training_cutset_batch):
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
-    assert "spk_targets" in batch  # injected as spk_targets into the PE encoder during training
+    assert "spk_targets" in batch  # Injected into the perception encoder during training.
     batch = move_data_to_device(batch, device=model.device)
     results = model._training_step_batch(batch, batch_idx=0)
     assert torch.is_tensor(results["loss"])
@@ -259,14 +251,14 @@ def test_salm_automodel_pee_validation_step(model, dataset, prompt_formatter, tr
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
     batch = move_data_to_device(batch, device=model.device)
-    # Validation ignores spk_targets and lets the PE encoder run its embedded Sortformer.
+    # Validation ignores external targets and uses the encoder's diarization path.
     results = model.validation_step({"dummy_val_set": batch}, batch_idx=0)
     assert results is None
 
 
 @requires_cuda
 def test_salm_automodel_pee_generation(model):
-    # No spk_targets at inference -> the PE encoder predicts diarization internally.
+    # Without external targets, inference predicts diarization internally.
     answer = model.generate(
         prompts=[
             [
@@ -284,11 +276,10 @@ def test_salm_automodel_pee_generation(model):
 
 
 # ----------------------------------------------------------------------------- #
-# CPU-only: spk_targets -> spk_targets routing in prepare_inputs.
+# CPU-only: external speaker-target routing in prepare_inputs.
 #
 # Uses a bare SALMAutomodel (no LLM/ASR download) with a stub perception whose
-# `.encoder` is the real dummy ParallelExpertEncoder, so `_uses_ext_spk_tgts`
-# takes the PEE branch and we can assert how speaker targets are forwarded.
+# encoder advertises external-target support so forwarding can be asserted.
 # ----------------------------------------------------------------------------- #
 class _PEETestTokenizer:
     pad = 0
@@ -314,11 +305,11 @@ class _PEETestLLM(torch.nn.Module):
 
 
 class _PEETestPerception(torch.nn.Module):
-    """Stub perception that exposes a real PE encoder and records the spk_targets it receives."""
+    """Expose the replacement encoder and record received speaker targets."""
 
     def __init__(self, pe_encoder: ParallelExpertEncoder):
         super().__init__()
-        self.encoder = pe_encoder  # real ParallelExpertEncoder -> drives the PEE branch
+        self.encoder = pe_encoder  # Drives the external-target branch.
         self.preprocessor = SimpleNamespace(featurizer=SimpleNamespace(sample_rate=16000, hop_length=160))
         self.spk_targets_calls = []
         self.online_flags = []

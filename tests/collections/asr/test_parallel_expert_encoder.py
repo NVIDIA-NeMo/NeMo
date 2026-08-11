@@ -82,7 +82,7 @@ def test_disable_dist_feature_sync_noop_when_uninitialized():
 
 
 # ----------------------------------------------------------------------------- #
-# Static pure helpers on ParallelExpertEncoder
+# Static pure helpers
 # ----------------------------------------------------------------------------- #
 @pytest.mark.unit
 @pytest.mark.parametrize("max_pos, dim", [(4, 8), (1, 16), (10, 4)])
@@ -119,7 +119,7 @@ def test_align_diar_frames_length_and_padding(cur_len, target_len):
 def test_match_module_io_casts_to_expert_dtype(param_dtype):
     """Mels arrive fp32; `_match_module_io` moves them onto the experts' device/dtype.
 
-    It reads the dtype off the PEE container's own parameters, so it is an instance
+    It reads the dtype off the container's own parameters, so it is an instance
     method rather than the free function it used to be.
     """
     enc = build_toy_pe_encoder().to(param_dtype)
@@ -141,7 +141,7 @@ def test_match_module_io_paramless_container_unchanged():
 # forward() offline/online dispatch
 # ----------------------------------------------------------------------------- #
 def dispatch_stub(online_inference_length, enabled):
-    """Bare ParallelExpertEncoder with both branch methods stubbed.
+    """Bare encoder with both branch methods stubbed.
 
     forward() dispatches purely on `online_inference_enabled` (set by the
     `online_inference()` context manager) AND a positive window -- NOT on the audio
@@ -227,7 +227,7 @@ def test_forward_online_output_length_telescopes(win, n_frames):
 
 
 # ----------------------------------------------------------------------------- #
-# ParallelExpertEncoderPT checkpoint helpers
+# Bundle checkpoint helpers
 # ----------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_extract_encoder_state_dict_selects_requested_expert_encoder():
@@ -298,7 +298,7 @@ def test_is_pe_nemo_rejects_bad_paths(tmp_path, bad_path):
 
 
 # ----------------------------------------------------------------------------- #
-# ParallelExpertEncoderPT.save_to_nemo guard rails
+# Bundle save guard rails
 # ----------------------------------------------------------------------------- #
 @pytest.mark.unit
 def test_save_to_nemo_rejects_non_encoder(tmp_path):
@@ -310,8 +310,7 @@ def test_save_to_nemo_rejects_non_encoder(tmp_path):
 
 @pytest.mark.unit
 def test_save_to_nemo_missing_template(tmp_path):
-    # __new__ produces a real ParallelExpertEncoder instance (passes isinstance)
-    # without running the heavy __init__, so we reach the template existence check.
+    # __new__ skips the heavy initializer so the test reaches the template check.
     fake_encoder = _PEE.__new__(_PEE)
     with pytest.raises(FileNotFoundError):
         ParallelExpertEncoderPT.save_to_nemo(
@@ -324,14 +323,14 @@ def test_save_to_nemo_missing_template(tmp_path):
 # ----------------------------------------------------------------------------- #
 # End-to-end fusion with real toy encoders
 #
-# ParallelExpertEncoder loads two real sub-encoders and fuses them:
+# The wrapper loads real sub-encoders and fuses them:
 #   * an ASR ConformerEncoder (cf. tests/collections/asr/test_conformer_encoder.py)
 #   * a Sortformer diarizer    (cf. tests/collections/speaker_tasks/test_diar_sortformer_models.py)
 # These tests build tiny-but-real instances of both and run the wrapper end to end.
 # ----------------------------------------------------------------------------- #
 _MEL_FEATURES = 128
 _ASR_D_MODEL = 32  # speech + sound expert width
-_DIAR_FC_D_MODEL = 16  # speaker expert width (half, as in PEE-v2)
+_DIAR_FC_D_MODEL = 16  # half-width speaker expert
 _DIAR_TF_D_MODEL = 16
 _N_SPK = 4
 _SUBSAMPLING_FACTOR = 8
@@ -345,7 +344,7 @@ _SPKCACHE_LEN = 16
 def _toy_expert_cfg(target: str, d_model: int, n_heads: int, **extra) -> DictConfig:
     """One tiny flex-encoder expert config.
 
-    All three PEE-v2 experts are the flex TransformerEncoder family with a shared
+    All three experts use the flex TransformerEncoder family with a shared
     front-end (same feat_in / subsampling / frame rate) and rope attention, which is
     what lets forward_packed batch them into one attention group.
     """
@@ -386,7 +385,7 @@ def toy_speech_expert_cfg() -> DictConfig:
 
 
 def toy_speaker_expert_cfg() -> DictConfig:
-    """Speaker expert: half-width, as in PEE-v2 (1024 against the wide experts' 2048)."""
+    """Speaker expert with half the width of the speech and sound experts."""
     return _toy_expert_cfg(
         'nemo.collections.asr.modules.TransformerEncoder',
         d_model=_DIAR_FC_D_MODEL,
@@ -445,7 +444,7 @@ def toy_sortformer_modules_cfg() -> DictConfig:
 
 
 def build_toy_pe_encoder(**overrides) -> ParallelExpertEncoder:
-    """Construct a real ParallelExpertEncoder from the tiny three-expert configs."""
+    """Construct a real encoder from the tiny three-expert configs."""
     kwargs = dict(
         speech_expert_cfg=toy_speech_expert_cfg(),
         speaker_expert_cfg=toy_speaker_expert_cfg(),
@@ -475,10 +474,10 @@ def test_pe_encoder_builds_and_wires_all_three_experts():
     assert isinstance(enc.pee.experts["speech"], _MOE_ENCODER_CLS)
     assert isinstance(enc.pee.experts["speaker"], _TF_ENCODER_CLS)
     assert isinstance(enc.pee.experts["sound"], _TF_ENCODER_CLS)
-    # Decoder/head metadata belongs to PEE, not the generic GGEMM container.
-    assert enc.get_expert_task("speech") == "asr_tdt"
+    # Decoder/head metadata belongs to the owning model, not the GGEMM container.
+    assert enc.get_expert_task("speech") == "asr_encoder"
     assert enc.get_expert_task("speaker") == "diarization"
-    assert enc.get_expert_task("sound") == "sound_rnnt"
+    assert enc.get_expert_task("sound") == "sound_ctc"
     assert not hasattr(enc.pee, "expert_tasks")
     # The speech expert is the backbone: it drives the drop-in ConformerEncoder props.
     assert enc.d_model == _ASR_D_MODEL
@@ -556,7 +555,7 @@ def test_pe_encoder_uses_separate_training_and_inference_compute_paths(monkeypat
 
 @pytest.mark.unit
 def test_pe_encoder_activation_checkpointing_is_pee_local(monkeypatch):
-    """PEE owns checkpointing without changing the native expert implementation."""
+    """The owning model controls checkpointing without changing native experts."""
     from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
     enc = build_toy_pe_encoder().train()

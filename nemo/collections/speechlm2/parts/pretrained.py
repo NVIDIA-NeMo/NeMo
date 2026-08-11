@@ -224,15 +224,15 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
 
 
 def setup_parallel_expert_encoder(model: torch.nn.Module):
-    """Mount a ParallelExpertEncoder bundle from ``model.pe_encoder_path``.
+    """Mount the external perception encoder from ``model.pe_encoder_path``.
 
     This is an encoder replacement, not a training-checkpoint restore. It keeps
     the existing SALM perception path intact:
 
-        preprocessor -> ParallelExpertEncoder -> modality_adapter -> proj
+        preprocessor -> encoder -> modality_adapter -> proj
 
-    The PE encoder expects un-normalised mels for its Sortformer branch and
-    replays ASR normalisation internally, so the outer perception preprocessor
+    The replacement expects un-normalised mels and applies ASR normalisation
+    internally, so the outer perception preprocessor
     normalisation is disabled when the bundle is mounted.
     """
     pe_encoder_path = model.cfg.get("pe_encoder_path", None)
@@ -256,9 +256,7 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
             "feature extractors) need a separate implementation."
         )
 
-    # Fail fast when a local .nemo is given but isn't a PE bundle. HuggingFace Hub /
-    # NGC ids are resolved + validated by ParallelExpertEncoderPT.load_from_nemo
-    # (from_pretrained -> restore_from, which checks the bundle target class).
+    # Validate local bundles immediately; resolve remote model identifiers in the loader.
     if pe_encoder_path.endswith(".nemo") and Path(pe_encoder_path).is_file():
         if not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
             raise ValueError(
@@ -273,11 +271,8 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
     if (spk_kernel_scale := model.cfg.get("spk_kernel_scale", None)) is not None:
         pe_encoder.spk_kernel_scale = float(spk_kernel_scale)
 
-    # The OUTGOING encoder's width is deliberately not a constraint. It is about to be
-    # discarded, and a bundle whose speech expert is wider than `pretrained_asr`'s encoder
-    # is the normal case: PEE-v2 ships a 2048-wide MoE while canary-1b-v2 is 1024. What
-    # has to agree is everything DOWNSTREAM of the encoder, which the two checks below
-    # cover, plus the mel front end, which is checked here.
+    # The outgoing width is unconstrained because that encoder is discarded.
+    # The unchanged mel frontend and downstream adapter/projection must still match.
     existing_d_model = int(getattr(model.perception.encoder, "d_model", -1))
     if existing_d_model > 0 and int(pe_encoder.d_model) != existing_d_model:
         logging.info(

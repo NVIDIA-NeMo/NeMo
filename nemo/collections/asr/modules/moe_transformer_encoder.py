@@ -195,13 +195,7 @@ class MoEFeedForward(nn.Module):
         gate_probs = self.router(x_flat)
 
         top_k_probs, top_k_indices = torch.topk(gate_probs, self.top_k, dim=-1)
-        # For top_k > 1 we renormalize so the weighted combination is a convex
-        # combination of the selected experts (standard practice).
-        # For top_k == 1 we KEEP the raw softmax probability so that the router
-        # receives a gradient from the main task loss (Switch Transformer style).
-        # Renormalizing to 1.0 in the top-1 case removes the router's task-loss
-        # gradient pathway entirely, leaving it driven only by the auxiliary
-        # load-balancing loss.
+        # Preserve top-1 router gradients; otherwise normalize the selected weights.
         if self.top_k > 1:
             top_k_probs = top_k_probs / (top_k_probs.sum(dim=-1, keepdim=True) + 1e-9)
 
@@ -228,39 +222,8 @@ class MoEFeedForward(nn.Module):
             mask = flat_expert == i
             tok_idx = flat_token[mask]
             if tok_idx.numel() == 0:
-                # DDP fix: ensure expert i's parameters appear in the autograd
-                # graph reachable from `loss` even when no token is routed to
-                # it on this rank, so the find_unused_parameters=true
-                # consensus collective stays in lock-step across ranks.
-                #
-                # IMPORTANT: a disconnected `_ = expert(x).sum() * 0.0` does
-                # NOT work -- DDP's unused-parameter detection walks the
-                # autograd graph backwards from the loss outputs (via
-                # prepare_for_backward), so any computation not threaded into
-                # `output` is invisible to it and the expert is still marked
-                # "unused" on this rank -> NCCL ALLREDUCE mask mismatch ->
-                # deadlock (this is exactly what killed the moe12_top8 and
-                # moe16_top12 runs).
-                #
-                # We instead run the expert on a single token, multiply by 0,
-                # and accumulate into `output` via the SAME index_add_ path
-                # used by live experts. Adds zeros (bit-identical forward
-                # value), keeps the expert reachable from loss via the
-                # autograd graph (so DDP sees it as "used"), and produces a
-                # zero gradient contribution (bit-identical optimizer step).
-                #
-                # DTYPE TRAP (fixed): under autocast, the expert (Linear ops)
-                # returns BF16 while `output = torch.zeros_like(x_flat)` is
-                # FP32 (post-LayerNorm x_flat is FP32). Multiplying by Python
-                # scalar 0.0 does NOT promote BF16 -> FP32, so
-                # `output.index_add_(..., anchor_out)` crashes with
-                # "self (Float) and source (BFloat16) must have the same
-                # scalar type". The LIVE path (line below) avoids this by
-                # multiplying by `flat_weight[mask]` which is FP32 (router
-                # weights) -- BF16 * FP32 promotes to FP32 via type promotion.
-                # We mirror that exactly by multiplying by an FP32 zero
-                # tensor, which both zeroes the contribution and promotes the
-                # BF16 expert output to FP32 to match `output`'s dtype.
+                # Keep every expert in DDP's autograd graph when it receives no tokens;
+                # an FP32 zero also matches ``output`` under autocast.
                 if x_flat.shape[0] > 0:
                     zero_idx = torch.zeros(1, dtype=torch.long, device=x_flat.device)
                     anchor_zero = x_flat.new_zeros(1, 1)  # FP32 (matches output)
@@ -439,20 +402,7 @@ class MoETransformerEncoder(TransformerEncoder):
             f"layers={self.moe_layer_indices})"
         )
 
-        # Cumulative MoE diagnostic state. Stored as plain attributes (NOT
-        # ``register_buffer``) on purpose: PyTorch DDP defaults to
-        # ``broadcast_buffers=True``, which would overwrite each rank's
-        # accumulator with rank 0's at the start of every forward and silently
-        # destroy the per-rank accumulation. Using plain attributes makes DDP
-        # ignore these tensors entirely; we do our own (sum) all-reduce at
-        # log time instead.
-        #
-        # Layout (allocated lazily in ``_ensure_cum_buffers`` on first use):
-        #   _cum_counts:   [num_moe_layers, num_experts]  long
-        #   _cum_prob_sum: [num_moe_layers, num_experts]  float32
-        #   _cum_tokens:   [num_moe_layers]               long
-        # float32 is enforced for prob_sum even under bf16 autocast to avoid
-        # quiet accumulation noise across many steps.
+        # Plain tensors avoid DDP buffer broadcasts; statistics are reduced explicitly.
         self._cum_counts: Optional[torch.Tensor] = None
         self._cum_prob_sum: Optional[torch.Tensor] = None
         self._cum_tokens: Optional[torch.Tensor] = None

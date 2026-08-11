@@ -42,12 +42,8 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.attention.flex_attention import and_masks, create_block_mask
 
-# SDPA backend preference for the packed / serial-SDPA attention paths. We ask
-# the dispatcher for FlashAttention-2 first (fastest; eligible only when the
-# attn_mask is None, i.e. no materialized padding/bias mask -- see
-# ``_packed_attention_step``), then the memory-efficient kernel (accepts an
-# additive float bias, used by rel_pos experts and the padded case), and finally
-# the math fallback so the call can never silently fail to dispatch.
+# Prefer FlashAttention (including FA4 when registered), then efficient attention,
+# with a math fallback for unsupported inputs.
 _SDPA_BACKENDS = [
     SDPBackend.FLASH_ATTENTION,
     SDPBackend.EFFICIENT_ATTENTION,
@@ -78,7 +74,15 @@ GROUPED_GEMM_BACKENDS = ('baddbmm', 'loop')
 
 
 def _autocast_compute_dtype(x: torch.Tensor) -> torch.dtype:
-    """Return the dtype GEMMs will use for ``x`` under the active autocast policy."""
+    """Return the dtype GEMMs will use for ``x`` under the active autocast policy.
+
+    Args:
+        x (torch.Tensor): Reference tensor whose device determines the autocast policy.
+            Shape: arbitrary
+
+    Returns:
+        dtype (torch.dtype): Active autocast dtype when autocast is enabled, else ``x.dtype``.
+    """
     if torch.is_autocast_enabled(x.device.type):
         return torch.get_autocast_dtype(x.device.type)
     return x.dtype
@@ -105,21 +109,26 @@ def grouped_ffn_compute(
     Linear -> Dropout``) exactly, but for all experts at once.
 
     Args:
-        x: ``(E, T, d_model)`` per-expert token batches (same ``T`` per expert).
-        w1: ``(E, d_model, d_hidden)``; b1: ``(E, 1, d_hidden)``.
-        w2: ``(E, d_hidden, d_model)``; b2: ``(E, 1, d_model)``.
-        drop_rate: Dropout probability (applied after GELU and after ``w2``).
-        training: Whether dropout is active (pass ``module.training``).
-        backend: One of :data:`GROUPED_GEMM_BACKENDS`.
+        x (torch.Tensor): Per-expert token batches (same ``T`` per expert).
+            Shape: (E, T, d_model)
+        w1 (torch.Tensor): Stacked input projection weights.
+            Shape: (E, d_model, d_hidden)
+        b1 (torch.Tensor): Stacked input projection biases.
+            Shape: (E, 1, d_hidden)
+        w2 (torch.Tensor): Stacked output projection weights.
+            Shape: (E, d_hidden, d_model)
+        b2 (torch.Tensor): Stacked output projection biases.
+            Shape: (E, 1, d_model)
+        drop_rate (float): Dropout probability (applied after GELU and after ``w2``).
+        training (bool): Whether dropout is active (pass ``module.training``).
+        backend (str): One of :data:`GROUPED_GEMM_BACKENDS`.
 
     Returns:
-        ``(E, T, d_model)`` stacked expert outputs.
+        out (torch.Tensor): Stacked expert outputs.
+            Shape: (E, T, d_model)
     """
-    # LayerNorm commonly leaves ``x`` in fp32 under autocast even though the GEMMs
-    # execute in bf16/fp16. Cast all operands explicitly to that compute dtype.
-    # This is especially important for eval-time packed weights: they are ordinary
-    # cached tensors (not Parameters), so autocast would otherwise re-cast the full
-    # multi-GB packed bank on every forward.
+    # Match cached weights to autocast's GEMM dtype; unlike parameters, cached
+    # tensors are not automatically recast on each forward.
     compute_dtype = _autocast_compute_dtype(x)
     x = x.to(compute_dtype)
     w1, b1 = w1.to(compute_dtype), b1.to(compute_dtype)
@@ -143,30 +152,6 @@ def grouped_ffn_compute(
 
     return F.dropout(out, p=drop_rate, training=training)
 
-
-# ---------------------------------------------------------------------------
-# Reconciling heterogeneous FFN widths
-# ---------------------------------------------------------------------------
-#
-# The grouped-GEMM batches FFN "units" that share the same ``(d_model, d_hidden)``
-# shape. Two exact strategies allow units with different ``d_model`` values to
-# participate in grouped execution:
-#
-#   (A) PAD -- widen a narrow unit to the bucket's maximum ``d_model``. Pad W1's
-#       input rows, W2's output columns, the corresponding bias, and the activation
-#       with zeros; slice the result back to its native width. The structural zeros
-#       preserve the original result while allowing one uniform grouped tensor.
-#       ``pad_feedforward`` builds such a unit standalone; ``_unified_weights``
-#       performs the same transformation inline.
-#
-#   (B) BUCKET -- retain each native ``(d_model, d_hidden)`` shape and issue one
-#       grouped-GEMM call per shape bucket. This avoids padded FLOPs at the cost of
-#       additional launches. ``bucket_ffns_by_shape`` implements the grouping.
-#
-# The fused encoder paths use padding within each ``d_hidden`` bucket to minimize
-# launches. Shape bucketing remains available when avoiding padded work is more
-# important, and a ragged/variable-K backend can be added at the
-# ``grouped_ffn_compute`` seam.
 
 
 class GroupedFeedForward(nn.Module):
@@ -192,11 +177,11 @@ class GroupedFeedForward(nn.Module):
     - ``b2``: ``(E, 1, d_model)``
 
     Args:
-        num_experts: Number of expert FFNs ``E`` batched together.
-        d_model: Input/output width shared by every expert in this group.
-        d_hidden: FFN inner width shared by every expert in this group.
-        drop_rate: Dropout probability (matches ``FeedForward``). Defaults to 0.0.
-        backend: Grouped-GEMM backend, one of :data:`GROUPED_GEMM_BACKENDS`.
+        num_experts (int): Number of expert FFNs ``E`` batched together.
+        d_model (int): Input/output width shared by every expert in this group.
+        d_hidden (int): FFN inner width shared by every expert in this group.
+        drop_rate (float): Dropout probability (matches ``FeedForward``). Defaults to 0.0.
+        backend (str): Grouped-GEMM backend, one of :data:`GROUPED_GEMM_BACKENDS`.
             Defaults to ``'baddbmm'``.
     """
 
@@ -208,6 +193,15 @@ class GroupedFeedForward(nn.Module):
         drop_rate: float = 0.0,
         backend: str = 'baddbmm',
     ):
+        """Initialize stacked expert FFN parameters.
+
+        Args:
+            num_experts (int): Number of expert FFNs ``E`` batched together.
+            d_model (int): Input/output width shared by every expert in this group.
+            d_hidden (int): FFN inner width shared by every expert in this group.
+            drop_rate (float): Dropout probability (matches ``FeedForward``).
+            backend (str): Grouped-GEMM backend, one of :data:`GROUPED_GEMM_BACKENDS`.
+        """
         super().__init__()
         if backend not in GROUPED_GEMM_BACKENDS:
             raise ValueError(f"Unknown backend '{backend}'; expected one of {GROUPED_GEMM_BACKENDS}.")
@@ -232,13 +226,14 @@ class GroupedFeedForward(nn.Module):
         """Evaluate all grouped FFNs on their corresponding token batches.
 
         Args:
-            x: ``(E, T, d_model)`` -- the ``e``-th slice is the (dense) token
-               batch for expert ``e``. Every expert sees the same number of
-               tokens ``T``. For ragged or routed token counts, pad to a common
-               ``T`` or use a grouped-GEMM backend with per-group offsets.
+            x (torch.Tensor): Per-expert token batches; the ``e``-th slice is the
+                dense token batch for expert ``e``. Every expert sees the same
+                number of tokens ``T``.
+                Shape: (E, T, d_model)
 
         Returns:
-            ``(E, T, d_model)`` -- the stacked expert outputs.
+            out (torch.Tensor): Stacked expert outputs.
+                Shape: (E, T, d_model)
         """
         if x.dim() != 3 or x.shape[0] != self.num_experts or x.shape[2] != self.d_model:
             raise ValueError(
@@ -264,6 +259,16 @@ class GroupedFeedForward(nn.Module):
 
         The resulting module is numerically equivalent (up to float reduction
         order) to running each input ``FeedForward`` on its own token batch.
+
+        Args:
+            ffns (Sequence): Sequence of ``FeedForward`` modules sharing the same
+                ``(d_model, d_hidden)`` shape.
+            drop_rate (float): Dropout probability for the grouped module.
+            backend (str): Grouped-GEMM backend, one of :data:`GROUPED_GEMM_BACKENDS`.
+
+        Returns:
+            grouped (GroupedFeedForward): Stacked FFN module with weights copied
+                from ``ffns``.
         """
         if len(ffns) == 0:
             raise ValueError("from_feedforwards requires at least one FeedForward.")
@@ -303,11 +308,12 @@ def pad_feedforward(ffn: FeedForward, target_d_model: int) -> FeedForward:
     uniform ``target_d_model`` grouped-GEMM bucket without changing the result.
 
     Args:
-        ffn: Source feed-forward with ``in_features = out_features = d_model``.
-        target_d_model: Wider model width to pad up to (>= the source ``d_model``).
+        ffn (FeedForward): Source feed-forward with ``in_features = out_features = d_model``.
+        target_d_model (int): Wider model width to pad up to (>= the source ``d_model``).
 
     Returns:
-        A ``FeedForward`` of width ``target_d_model`` and the same hidden width.
+        padded (FeedForward): New feed-forward of width ``target_d_model`` with
+            the same hidden width as ``ffn``.
     """
     l1, l2 = ffn.net[0], ffn.net[3]
     d_model = l1.in_features
@@ -348,8 +354,12 @@ def bucket_ffns_by_shape(
     one grouped-GEMM call. Heterogeneous FFNs land in separate buckets, avoiding
     the extra computation introduced by padding them to a common width.
 
+    Args:
+        ffns (Sequence): Sequence of feed-forward modules to bucket by shape.
+
     Returns:
-        Mapping ``(d_model, d_hidden) -> [indices into ``ffns``]``.
+        buckets (Dict[Tuple[int, int], List[int]]): Mapping
+            ``(d_model, d_hidden) -> [indices into ffns]``.
     """
     buckets: Dict[Tuple[int, int], List[int]] = {}
     for i, ff in enumerate(ffns):
@@ -358,19 +368,57 @@ def bucket_ffns_by_shape(
     return buckets
 
 
-# FlexAttention mask closures. These intentionally mirror the (private) helpers in
-# ``transformer_encoder.py`` so the lockstep path builds an identical block mask to
-# each expert's own ``forward_internal``. They are trivial and stable; the
-# ``verify_grouped_equivalence`` self-check guards against any drift.
 def _padding_mask_mod(lengths):
+    """Build a FlexAttention mask mod that masks padded key positions.
+
+    Args:
+        lengths (torch.Tensor): Valid frame counts per batch sample.
+            Shape: (B,)
+
+    Returns:
+        pad_mask (Callable): FlexAttention mask mod; ``True`` when ``kv_idx`` is
+            within the valid prefix for batch index ``b``.
+    """
+
     def pad_mask(b, h, q_idx, kv_idx):
+        """Return whether key position ``kv_idx`` is valid for batch ``b``.
+
+        Args:
+            b (int): Batch index.
+            h (int): Head index (unused).
+            q_idx (int): Query position index (unused).
+            kv_idx (int): Key position index.
+
+        Returns:
+            mask_value (torch.Tensor): Whether the key position is valid.
+                Shape: scalar
+        """
         return kv_idx < lengths[b]
 
     return pad_mask
 
 
 def _causal_mask_mod():
+    """Build a FlexAttention mask mod for causal (lower-triangular) attention.
+
+    Returns:
+        causal (Callable): FlexAttention mask mod; ``True`` when
+            ``q_idx >= kv_idx``.
+    """
+
     def causal(b, h, q_idx, kv_idx):
+        """Return whether query position ``q_idx`` may attend to key ``kv_idx``.
+
+        Args:
+            b (int): Batch index (unused).
+            h (int): Head index (unused).
+            q_idx (int): Query position index.
+            kv_idx (int): Key position index.
+
+        Returns:
+            mask_value (torch.Tensor): Whether the query may attend to the key.
+                Shape: scalar
+        """
         return q_idx >= kv_idx
 
     return causal
@@ -379,54 +427,47 @@ def _causal_mask_mod():
 class GGEMMTransformerEncoder(nn.Module):
     """Grouped-GEMM execution container for named Transformer encoders.
 
-    The container registers already-constructed encoders and provides several
-    execution strategies. :meth:`forward` delegates to one encoder unchanged;
-    :meth:`forward_all` is the serial reference; :meth:`forward_grouped` combines
-    compatible FFN units; and :meth:`forward_packed` additionally batches
-    compatible attention heads. Grouping changes how compatible matrix
-    multiplications are launched, not the encoders' routing decisions or outputs.
-
-    Encoders may differ in model width and positional encoding. The grouped
-    methods validate the additional compatibility they require, including a
-    common layer count and input frame rate, and reconcile compatible FFNs using
-    shape buckets and structural zero padding. Task-specific heads, fusion, and
-    checkpoint assembly belong to the model that owns this container.
+    Registers encoders and runs them via :meth:`forward`, :meth:`forward_all`,
+    :meth:`forward_grouped` (FFN GEMMs), or :meth:`forward_packed` (heads + FFNs).
+    Grouping changes launch strategy only; widths/pos-enc may differ, with shared
+    layer count and frame rate required. Heads, fusion, and checkpoints stay owner-side.
 
     Args:
-        experts: Mapping from a stable name to an already-constructed
+        experts (dict): Mapping from a stable name to an already-constructed
             ``TransformerEncoder``-family module.
     """
 
     def __init__(self, experts: Dict[str, nn.Module]):
+        """Register named Transformer encoders for grouped execution.
+
+        Args:
+            experts (dict): Mapping from a stable name to an already-constructed
+                ``TransformerEncoder``-family module.
+        """
         super().__init__()
         if not experts:
             raise ValueError("GGEMMTransformerEncoder requires at least one expert encoder.")
         self.experts = nn.ModuleDict(experts)
         self.expert_names: List[str] = list(experts.keys())
 
-        # Cache of pre-packed grouped-FFN weights for forward_grouped, keyed by
-        # (layer_idx, bucket_names, dtype) -> (w1, b1, w2, b2) in bmm layout. Built
-        # lazily in eval (never while training, where params change every step) so
-        # forward_grouped stops re-stacking + re-casting weights on every call.
-        # Stale after a weight change: call clear_packed_weights() (done automatically
-        # on train()/load_state_dict()) to rebuild.
+        # Eval-only grouped-FFN weights; clear on parameter or device changes.
         self._use_packed_grouped: bool = True
         self._packed_cache: Dict[Tuple[object, ...], Tuple[torch.Tensor, ...]] = {}
-        # Runtime-dtype RoPE buffers keyed by the source buffer identity. The
-        # Transformer encoders store cos/sin in model dtype (usually fp32), while
-        # q/k may run in a lower-precision autocast dtype; caching avoids repeated
-        # buffer casts for every encoder layer.
+        # Runtime-dtype RoPE buffers avoid repeated per-layer casts.
         self._rope_cache: Dict[Tuple[object, ...], Tuple[torch.Tensor, torch.Tensor]] = {}
 
-        # SDPA fast-path toggle. When True (default) the packed /
-        # serial-SDPA attention paths drop the additive mask for unpadded,
-        # non-causal groups so SDPA can dispatch FlashAttention-2, and wrap
-        # every SDPA call in ``sdpa_kernel([FLASH, EFFICIENT, MATH])`` to force the
-        # fused backends. Set False to restore the legacy behaviour (always
-        # materialize the padding mask; no backend hint) for A/B comparison.
+        # Enable fused SDPA backends for unpadded, non-causal inputs.
         self.sdpa_fastpath: bool = True
 
     def train(self, mode: bool = True):
+        """Set training mode and invalidate eval-time weight caches.
+
+        Args:
+            mode (bool): Whether to enable training mode.
+
+        Returns:
+            GGEMMTransformerEncoder: This module.
+        """
         # Packed weights are an eval-time optimization; invalidate when (re-)entering
         # training so we never read stale, pre-update weights.
         self._packed_cache.clear()
@@ -434,6 +475,15 @@ class GGEMMTransformerEncoder(nn.Module):
         return super().train(mode)
 
     def _apply(self, fn, recurse: bool = True):
+        """Apply ``fn`` to parameters/buffers and clear non-registered caches.
+
+        Args:
+            fn (Callable): Callable applied to each parameter and buffer (e.g. ``.to``).
+            recurse (bool): Whether to recurse into child modules.
+
+        Returns:
+            GGEMMTransformerEncoder: This module.
+        """
         # These caches are plain tensors rather than registered buffers, so Module.to()
         # cannot migrate them safely. Rebuild lazily after any device/dtype transform.
         self._packed_cache.clear()
@@ -455,7 +505,14 @@ class GGEMMTransformerEncoder(nn.Module):
         return {name: m.d_model for name, m in self.experts.items() if hasattr(m, 'd_model')}
 
     def get_expert(self, expert_name: str) -> nn.Module:
-        """Return the encoder registered as ``expert_name``."""
+        """Return the encoder registered as ``expert_name``.
+
+        Args:
+            expert_name (str): Name of the registered expert encoder.
+
+        Returns:
+            expert (nn.Module): The encoder module for ``expert_name``.
+        """
         if expert_name not in self.experts:
             raise KeyError(f"Unknown expert '{expert_name}'. Available: {self.expert_names}.")
         return self.experts[expert_name]
@@ -464,15 +521,16 @@ class GGEMMTransformerEncoder(nn.Module):
         """Run a single expert along its own (unmodified) inference path.
 
         Args:
-            expert_name: Which expert to run; must be one of ``self.expert_names``.
-            audio_signal: ``(B, C, T)`` features (or ``(B, T, D)`` if
-                ``bypass_pre_encode``), forwarded as-is to the expert.
-            length: ``(B,)`` valid frame counts per sample.
-            bypass_pre_encode: Passed through to the expert encoder.
+            expert_name (str): Which expert to run; must be one of ``self.expert_names``.
+            audio_signal (torch.Tensor): Input features forwarded as-is to the expert.
+                Shape: (B, C, T) mel/features, or (B, T, D) if ``bypass_pre_encode``.
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+            bypass_pre_encode (bool): Passed through to the expert encoder.
 
         Returns:
-            Whatever the chosen expert returns -- ``(B, D, T')`` encoded output
-            and output lengths for the NeMo Transformer encoders.
+            encoded (object): Expert-specific encoded output (typically ``(B, D, T')`` for NeMo
+                Transformer encoders) and output lengths.
         """
         if expert_name not in self.experts:
             raise KeyError(f"Unknown expert '{expert_name}'. Available experts: {self.expert_names}.")
@@ -483,32 +541,22 @@ class GGEMMTransformerEncoder(nn.Module):
 
         This is the non-grouped reference used to validate the grouped execution
         paths. Each encoder receives the same input and runs its native forward.
+
+        Args:
+            audio_signal (torch.Tensor): Input features shared by every encoder.
+                Shape: (B, C, T) mel/features, or (B, T, D) if ``bypass_pre_encode``.
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+            bypass_pre_encode (bool): Passed through to each expert encoder.
+
+        Returns:
+            outputs (Dict[str, object]): Mapping from expert name to that encoder's
+                native forward output.
         """
         return {
             name: self.experts[name](audio_signal, length, bypass_pre_encode=bypass_pre_encode)
             for name in self.expert_names
         }
-
-    # -----------------------------------------------------------------------
-    # Lockstep fused forward (grouped-GEMM FFN across experts)
-    # -----------------------------------------------------------------------
-    #
-    # Heterogeneous-encoder reconciliation:
-    #   * Attention, norms, and positional encoding stay **per-expert** -- each
-    #     expert runs its own attention sub-block with its own d_model and
-    #     positional scheme (``rel_pos`` vs ``rope``), so nothing is shared or
-    #     approximated there.
-    #   * Position-wise FFNs are fused when they can be expressed as dense
-    #     :class:`FeedForward` units. ``MoEFeedForward`` contributes its routed
-    #     expert FFNs; unsupported FFN implementations retain their native path.
-    #
-    # The pre-/post-layer and per-sub-block logic below mirrors
-    # ``TransformerEncoder.forward`` / ``forward_internal`` / ``TransformerBlock``
-    # by calling the experts' own public submodules (``pre_encode``, ``pos_enc``,
-    # ``embed_norm``, ``layers[i].{norm1,attn,drop,norm2,ffn}``, ``final_norm``,
-    # ``out_proj``). It does not modify the base encoder. ``allclose`` (not
-    # bitwise) equivalence vs :meth:`forward_all` is asserted by
-    # :meth:`verify_grouped_equivalence`; run it in eval mode (dropout off).
 
     @staticmethod
     def _prepend_prefix(
@@ -536,15 +584,24 @@ class GGEMMTransformerEncoder(nn.Module):
             ``[prefix | x[:, P:]]``, i.e. the cache *substitutes* for the expert's own
             leading ``P`` frames rather than extending past them. ``T`` is unchanged,
             so every expert in the group already agrees on ``T`` and nothing is padded.
-            The caller feeds a window extended ``P`` frames further back, which turns
-            what would have been zero padding for the unprefixed experts into ``P``
-            frames of real left context -- same FLOPs, real signal instead of zeros,
-            and the group can stay FlashAttention-2 eligible.
 
-        Returns the spliced ``x``, the updated ``length``, and ``chunk`` -- the slice of
-        ``x`` the prefixed expert treats as its current chunk (``x[:, P:]`` under
-        ``'replace'``, all of ``x`` under ``'extend'``). Streaming callers must push
-        ``chunk``, not the raw projection, into their cache.
+
+        Args:
+            x (torch.Tensor): Projected token embeddings before prefix splice.
+                Shape: (B, T, d_model)
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+            prefix (torch.Tensor, optional): Streaming-cache embeddings to prepend.
+                Shape: (B, P, d_model)
+            mode (str): Splice mode, either ``'extend'`` or ``'replace'``.
+
+        Returns:
+            x (torch.Tensor): Spliced embeddings (length may grow under ``'extend'``).
+                Shape: (B, T', d_model)
+            length (torch.Tensor): Updated valid frame counts.
+                Shape: (B,)
+            chunk (torch.Tensor): Current chunk embeddings for cache update.
+                Shape: (B, T_chunk, d_model)
         """
         if prefix is None:
             return x, length, x
@@ -569,12 +626,21 @@ class GGEMMTransformerEncoder(nn.Module):
 
     @staticmethod
     def _right_pad_to(x: torch.Tensor, t_max: int) -> torch.Tensor:
-        """Right-pad ``x`` ``(B, T, D)`` with zeros to ``T = t_max``.
+        """Right-pad ``x`` with zeros to ``T = t_max``.
 
         Padding on the RIGHT is load-bearing: every mask builder here assumes the
         valid frames of a sample are the prefix ``[0, length)``, so appending keeps
         ``_padding_additive_mask`` / ``_no_padding`` correct with ``length`` left at
         the true valid count.
+
+        Args:
+            x (torch.Tensor): Token embeddings to pad.
+                Shape: (B, T, D)
+            t_max (int): Target sequence length after right padding.
+
+        Returns:
+            x (torch.Tensor): Padded embeddings (unchanged when ``T >= t_max``).
+                Shape: (B, t_max, D)
         """
         pad = t_max - x.shape[1]
         if pad <= 0:
@@ -594,7 +660,7 @@ class GGEMMTransformerEncoder(nn.Module):
         prefix_mode: str = 'extend',
     ):
         """Run an expert's pre-layer stack (mirrors ``forward`` + pre-loop of
-        ``forward_internal``); returns ``(x, layer_pos_emb, block_mask, length)``.
+        ``forward_internal``).
 
         With ``prefix`` / ``t_max`` set, the streaming cache is prepended to the
         projected embeddings before the norm and the result is right-padded to a
@@ -602,6 +668,31 @@ class GGEMMTransformerEncoder(nn.Module):
         The final return value contains the projected chunk embeddings (pre-prefix,
         pre-norm) when ``return_pre_encode`` is true, so a caller can update its
         cache without recomputing the projection; otherwise it is ``None``.
+
+        Args:
+            expert (nn.Module): Transformer encoder module to prepare.
+            audio_signal (torch.Tensor): Raw input features.
+                Shape: (B, C, T) mel/features, or (B, T, D) if ``bypass_pre_encode``.
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+            bypass_pre_encode (bool): Skip the expert's pre-encode stack when True.
+            build_block_mask (bool): Whether to build a FlexAttention block mask.
+            prefix (torch.Tensor, optional): Streaming-cache embeddings.
+                Shape: (B, P, d_model)
+            t_max (int, optional): Optional common sequence length for right-padding.
+            return_pre_encode (bool): Also return projected chunk embeddings for caching.
+            prefix_mode (str): How ``prefix`` is spliced (``'extend'`` or ``'replace'``).
+
+        Returns:
+            x (torch.Tensor): Pre-layer embeddings ready for the encoder body.
+                Shape: (B, T, d_model)
+            layer_pos_emb (torch.Tensor, optional): Relative positional embeddings,
+                or ``None`` for RoPE / no positional encoding.
+            block_mask (object, optional): FlexAttention block mask, or ``None`` when not built.
+            length (torch.Tensor): Updated valid frame counts.
+                Shape: (B,)
+            pre_encode_out (tuple, optional): ``(x_proj, proj_length)`` when
+                ``return_pre_encode`` is True; otherwise ``None``.
         """
         if not bypass_pre_encode and audio_signal.shape[-2] != expert._feat_in:
             raise ValueError(f"Expert expects feat_in={expert._feat_in} on dim -2, got {audio_signal.shape[-2]}.")
@@ -694,13 +785,22 @@ class GGEMMTransformerEncoder(nn.Module):
         FlexAttention masks are also shared by experts with the same attention mode;
         SDPA callers request no block mask.
 
-        Streaming (``prefix``): a ``{name: (B, P, d_model)}`` map of cache embeddings
-        prepended to that expert's projected chunk before the norm. Because a prefixed
-        expert then runs longer than the others, every expert is right-padded with
-        zeros to the common ``T_max`` while ``length`` keeps its true valid count --
-        so the group can share one packed-attention call. ``return_pre_encode`` also
-        returns ``{name: (x_proj, out_length)}``, the projected chunk embeddings the
-        prefix path consumes, so a caller can update its cache without reprojecting.
+        Args:
+            encs (dict): Mapping of expert name to encoder module.
+            audio_signal (torch.Tensor): Shared input features.
+                Shape: (B, C, T) mel/features, or (B, T, D) if ``bypass_pre_encode``.
+            length (torch.Tensor, optional): Valid frame counts per sample.
+                Shape: (B,)
+            bypass_pre_encode (bool): Skip pre-encode stacks when True.
+            build_block_mask (bool): Whether to build FlexAttention block masks.
+            prefix (Dict[str, torch.Tensor], optional): Per-expert streaming caches.
+                Each value has shape (B, P, d_model).
+            return_pre_encode (bool): Also return projected chunk embeddings per expert.
+            prefix_mode (str): How prefixes are spliced (``'extend'`` or ``'replace'``).
+
+        Returns:
+            prepared (Dict): Mapping ``name -> (x, layer_pos_emb, block_mask, length)``,
+                or ``(prepared, pre_encode_out)`` when ``return_pre_encode`` is True.
         """
         names = list(encs)
         prefix = prefix or {}
@@ -807,11 +907,7 @@ class GGEMMTransformerEncoder(nn.Module):
             x = projected[slot, :, : expert.d_model].reshape(B, T_out, expert.d_model)
             n_before = x.shape[1]
             x, length_n, chunk = self._prepend_prefix(x, out_length, prefix.get(name), mode=prefix_mode)
-            # Pre-norm chunk embeddings a streaming caller pushes into its cache. Under
-            # 'replace' this excludes the leading frames the cache stood in for, so it
-            # lines up with the lc/rc the caller passes to streaming_update. Measure the
-            # drop against the PRE-splice frame count -- under 'extend' the chunk keeps
-            # all of them and its length must not move.
+            # Pre-norm chunk embeddings a streaming caller pushes into its cache.
             if return_pre_encode:
                 n_dropped = n_before - chunk.shape[1]
                 pre_encode_out[name] = (chunk, (out_length - n_dropped).clamp(min=0))
@@ -847,19 +943,27 @@ class GGEMMTransformerEncoder(nn.Module):
         return result
 
     def _expert_post(self, expert: nn.Module, x, length):
-        """Run an expert's post-layer stack (mirrors post-loop of ``forward_internal``)."""
+        """Run an expert's post-layer stack (mirrors post-loop of ``forward_internal``).
+
+        Args:
+            expert (nn.Module): Transformer encoder module.
+            x (torch.Tensor): Final-layer hidden states.
+                Shape: (B, T, D)
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+
+        Returns:
+            x (torch.Tensor): Encoded output in NeMo layout.
+                Shape: (B, D, T)
+            length (torch.Tensor): Output lengths as int64.
+                Shape: (B,)
+        """
         x = expert.final_norm(x)
         if expert.out_proj is not None:
             x = expert.out_proj(x)
         x = x.transpose(1, 2)  # (B, T, D) -> (B, D, T)
         return x, length.to(dtype=torch.int64)
 
-    # -----------------------------------------------------------------------
-    # Unified FFN step: fuse dense FFNs and MoE expert FFNs into one grouped GEMM
-    # per ``d_hidden`` bucket. Narrower units are structurally zero-padded to the
-    # bucket's widest ``d_model``. Under ``moe_mode='topk'``, routed MoE units use
-    # their own capacity-padded grouped call while dense units remain together.
-    # -----------------------------------------------------------------------
     def _unified_weights(self, group, target_d: int, d_hidden: int, layer_idx: int, dtype: torch.dtype):
         """Stack the FFN weights of every unit in ``group`` into the grouped-bmm
         layout, zero-padding any unit whose ``d_model < target_d`` (option A; the
@@ -868,6 +972,23 @@ class GGEMMTransformerEncoder(nn.Module):
         Cached per ``(layer_idx, d_hidden, target_d, names, dtype)`` in eval so
         repeated calls skip the ``stack`` + ``.to(dtype)`` that would otherwise
         dominate the FFN cost; rebuilt live (grad-preserving) under training.
+
+        Args:
+            group (list): List of FFN plan dicts, each with ``'units'`` feed-forward modules.
+            target_d (int): Padded model width for the grouped bucket.
+            d_hidden (int): Shared FFN inner width for the bucket.
+            layer_idx (int): Transformer layer index (used for cache keying).
+            dtype (torch.dtype): Runtime dtype for cached weight tensors.
+
+        Returns:
+            w1 (torch.Tensor): Stacked input weights.
+                Shape: (E_total, target_d, d_hidden)
+            b1 (torch.Tensor): Stacked input biases.
+                Shape: (E_total, 1, d_hidden)
+            w2 (torch.Tensor): Stacked output weights.
+                Shape: (E_total, d_hidden, target_d)
+            b2 (torch.Tensor): Stacked output biases.
+                Shape: (E_total, 1, target_d)
         """
         units, srcs = [], []
         for p in group:
@@ -876,6 +997,7 @@ class GGEMMTransformerEncoder(nn.Module):
                 srcs.append(ff.net[0].in_features)
 
         def _stack():
+            """Stack and pad the grouped FFN weights."""
             w1s, b1s, w2s, b2s = [], [], [], []
             for ff, src_d in zip(units, srcs):
                 w1 = ff.net[0].weight.t()  # (src_d, d_hidden)
@@ -913,9 +1035,7 @@ class GGEMMTransformerEncoder(nn.Module):
         """FFN sub-block for layer ``layer_idx`` fusing *all* experts' FFNs.
 
         Builds one grouped GEMM per inner-width (``d_hidden``) bucket over every
-        supported FFN unit. Dense encoders contribute one unit, narrower units
-        are zero-padded to the bucket's widest ``d_model``, and MoE FFNs are
-        handled according to ``moe_mode``:
+        supported FFN unit.
 
         - ``'dense'`` (default): the MoE's ``num_experts`` experts join the shared
           bucket and run on *all* tokens, then are recombined with the router's
@@ -927,6 +1047,13 @@ class GGEMMTransformerEncoder(nn.Module):
           when compute-bound, at the cost of gather/scatter + a second launch.
 
         Residual updates are applied in place.
+
+        Args:
+            encs (dict): Mapping of expert name to encoder module.
+            state (dict): Per-expert mutable state dicts (``'x'``, ``'length'``, etc.).
+            layer_idx (int): Transformer layer index to execute.
+            backend (str): Grouped-GEMM backend (:data:`GROUPED_GEMM_BACKENDS`).
+            moe_mode (str): MoE strategy, either ``'dense'`` or ``'topk'``.
         """
         if moe_mode not in ('dense', 'topk'):
             raise ValueError(f"moe_mode must be 'dense' or 'topk', got {moe_mode!r}.")
@@ -1014,10 +1141,27 @@ class GGEMMTransformerEncoder(nn.Module):
                 state[n]['x'] = state[n]['x'] + layer.drop(o)
 
     def _moe_weights(self, name: str, moe, layer_idx: int, dtype: torch.dtype):
-        """Stack the MoE's ``num_experts`` expert FFNs into grouped-bmm layout
-        ``(ne, d_model, d_hidden)`` / ``(ne, d_hidden, d_model)``; cached in eval."""
+        """Stack the MoE's ``num_experts`` expert FFNs into grouped-bmm layout; cached in eval.
+
+        Args:
+            name (str): Expert encoder name (used for cache keying).
+            moe (MoEFeedForward): ``MoEFeedForward`` module whose expert weights are stacked.
+            layer_idx (int): Transformer layer index (used for cache keying).
+            dtype (torch.dtype): Runtime dtype for cached weight tensors.
+
+        Returns:
+            w1 (torch.Tensor): Stacked input weights.
+                Shape: (ne, d_model, d_hidden)
+            b1 (torch.Tensor): Stacked input biases.
+                Shape: (ne, 1, d_hidden)
+            w2 (torch.Tensor): Stacked output weights.
+                Shape: (ne, d_hidden, d_model)
+            b2 (torch.Tensor): Stacked output biases.
+                Shape: (ne, 1, d_model)
+        """
 
         def _stack():
+            """Stack the MoE expert weights."""
             ffns = list(moe.experts)
             return (
                 torch.stack([f.net[0].weight.t() for f in ffns], 0),
@@ -1046,12 +1190,14 @@ class GGEMMTransformerEncoder(nn.Module):
         """Sparse MoE FFN: compute ONLY the routed top-k expert/token pairs.
 
         Mirrors :meth:`MoEFeedForward.forward` but batches the per-expert matmuls
-        into a single grouped GEMM. Tokens routed to each expert are gathered into
-        a capacity-padded buffer ``(num_experts, C, d_model)`` with ``C`` = the max
-        per-expert load (so nothing is dropped -> exact), run through one batched
-        GEMM, then scattered back with the router weights (fp32 accumulation, to
-        mirror the reference ``index_add_``). This computes ``~N*top_k`` token-FFNs
-        instead of the dense path's ``N*num_experts``.
+        into a single grouped GEMM.
+
+        Args:
+            encs (dict): Mapping of expert name to encoder module.
+            state (dict): Per-expert mutable state dicts updated in place.
+            layer_idx (int): Transformer layer index to execute.
+            p (dict): MoE FFN plan dict with ``'name'``, ``'moe'``, and related fields.
+            backend (str): Grouped-GEMM backend (:data:`GROUPED_GEMM_BACKENDS`).
         """
         n = p['name']
         moe = p['moe']
@@ -1124,16 +1270,20 @@ class GGEMMTransformerEncoder(nn.Module):
         Each layer first runs the encoders' attention blocks independently, then
         evaluates supported FFN units in one grouped GEMM per ``d_hidden`` bucket.
         Dense FFNs contribute one unit, MoE FFNs contribute their expert units,
-        and narrower units are structurally zero-padded to the bucket width. See
-        :meth:`_unified_ffn_step` for the ``dense`` and ``topk`` MoE strategies.
-
-        The returned ``name -> (encoded, length)`` mapping is numerically
-        equivalent to :meth:`forward_all` in eval mode. All encoders must share
-        ``n_layers`` and consume the same ``audio_signal`` and ``length``.
+        and narrower units are structurally zero-padded to the bucket width.
 
         Args:
-            audio_signal, length, bypass_pre_encode: as in :meth:`forward`.
-            backend: grouped-GEMM backend (:data:`GROUPED_GEMM_BACKENDS`).
+            audio_signal (torch.Tensor): Input features shared by every encoder.
+                Shape: (B, C, T) mel/features, or (B, T, D) if ``bypass_pre_encode``.
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+            bypass_pre_encode (bool): Passed through to each expert encoder.
+            backend (str): Grouped-GEMM backend (:data:`GROUPED_GEMM_BACKENDS`).
+            moe_mode (str): MoE strategy for fused FFN steps (``'dense'`` or ``'topk'``).
+
+        Returns:
+            outputs (Dict[str, object]): Mapping ``name -> (encoded, length)``,
+                numerically equivalent to :meth:`forward_all` in eval mode.
         """
         if backend not in GROUPED_GEMM_BACKENDS:
             raise ValueError(f"Unknown backend '{backend}'; expected one of {GROUPED_GEMM_BACKENDS}.")
@@ -1171,16 +1321,21 @@ class GGEMMTransformerEncoder(nn.Module):
             name: self._expert_post(encs[name], state[name]['x'], state[name]['length']) for name in self.expert_names
         }
 
-    # -----------------------------------------------------------------------
-    # Fully packed forward: batched-SDPA attention over packed heads plus grouped
-    # FFNs. This stays separate from forward_grouped so the per-encoder attention
-    # path remains an explicit reference and the SDPA kernel substitution remains
-    # visible to callers.
-    # -----------------------------------------------------------------------
-
     @staticmethod
     def _padding_additive_mask(length: torch.Tensor, T: int, dtype: torch.dtype) -> torch.Tensor:
-        """Additive key-padding mask ``(B, 1, 1, T)``: 0 for valid keys, -inf for pads."""
+        """Additive key-padding mask: 0 for valid keys, -inf for pads.
+
+        Args:
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+            T (int): Sequence length (number of key positions).
+            dtype (torch.dtype): Floating dtype for the additive mask values.
+
+        Returns:
+            mask (torch.Tensor): Additive key-padding mask broadcastable over heads
+                and queries.
+                Shape: (B, 1, 1, T)
+        """
         device = length.device
         valid = torch.arange(T, device=device)[None, :] < length[:, None]  # (B, T)
         mask = torch.zeros(length.shape[0], 1, 1, T, dtype=dtype, device=device)
@@ -1195,6 +1350,14 @@ class GGEMMTransformerEncoder(nn.Module):
         sync-free. When True the SDPA padding mask can be dropped entirely, which
         lets the dispatcher pick the FlashAttention-2 kernel (it requires
         ``attn_mask=None``).
+
+        Args:
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+            T (int): Sequence length to test against.
+
+        Returns:
+            no_pad (bool): ``True`` when every sample has ``length >= T``.
         """
         return bool(torch.all(length >= T))
 
@@ -1205,6 +1368,20 @@ class GGEMMTransformerEncoder(nn.Module):
         gets ``attn_mask=None`` and can dispatch FlashAttention-2). Otherwise
         returns a float bias broadcastable to ``(B, H, T, T)`` combining the
         key-padding mask (skipped when ``no_pad``) and the causal mask.
+
+        Args:
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+            T (int): Sequence length (query and key positions).
+            dtype (torch.dtype): Floating dtype for mask values.
+            device (torch.device): Device for mask tensor allocation.
+            no_pad (bool): Skip key-padding mask when every sequence is full.
+            causal (bool): Include upper-triangular causal masking.
+
+        Returns:
+            base (torch.Tensor, optional): Additive attention mask, or ``None``
+                when no masking is required. When present, broadcastable to
+                ``(B, H, T, T)`` or ``(B, 1, 1, T)``.
         """
         base = None
         if not no_pad:
@@ -1239,6 +1416,21 @@ class GGEMMTransformerEncoder(nn.Module):
         a full query-by-key mask for every packed head.
 
         The mask is cached on ``state`` because lengths do not change across layers.
+
+        Args:
+            gkey (tuple): Packed-head group key ``(head_dim, pos_scheme, attn_mode)``.
+            gnames (list): Expert names in this packed-head group.
+            head_counts (list): Per-expert head counts aligned with ``gnames``.
+            state (dict): Shared forward state dict (holds per-expert ``length``, ``no_pad``).
+            T (int): Sequence length for mask construction.
+            dtype (torch.dtype): Floating dtype for mask values.
+            device (torch.device): Device for mask tensor allocation.
+            causal (bool): Include upper-triangular causal masking.
+
+        Returns:
+            base (torch.Tensor, optional): Additive attention mask for the group,
+                or ``None`` when no masking is required. When present, shape is
+                ``(B, 1, 1, T)`` or ``(B, Hg, 1, T)``.
         """
         cache = state.setdefault('_mask_cache', {})
         ckey = (gkey, causal, dtype)
@@ -1268,7 +1460,21 @@ class GGEMMTransformerEncoder(nn.Module):
         return base
 
     def _apply_rope_cached(self, rope, q: torch.Tensor, k: torch.Tensor):
-        """Apply RoPE using cos/sin buffers cached in the q/k runtime dtype."""
+        """Apply RoPE using cos/sin buffers cached in the q/k runtime dtype.
+
+        Args:
+            rope (object): RoPE module providing ``cos``, ``sin``, and ``_apply_rotary``.
+            q (torch.Tensor): Query tensor before or after head split.
+                Shape: (B, H, T_q, D)
+            k (torch.Tensor): Key tensor.
+                Shape: (B, H, T_k, D)
+
+        Returns:
+            q (torch.Tensor): Rotary-embedded queries.
+                Shape: (B, H, T_q, D)
+            k (torch.Tensor): Rotary-embedded keys.
+                Shape: (B, H, T_k, D)
+        """
         cos = rope.cos
         sin = rope.sin
         key = (
@@ -1300,8 +1506,24 @@ class GGEMMTransformerEncoder(nn.Module):
         :class:`MultiHeadAttention` (rope rotation / Transformer-XL rel-pos) so the
         batched-SDPA result matches the per-expert flex path to ULP tolerance.
 
-        Returns ``(q, k, v, bias)`` with q/k/v shaped ``(B, H, T, D)`` and ``bias``
-        either ``None`` (rope / no_pos) or ``(B, H, T, T)`` (rel_pos, pre-scaled).
+        Args:
+            attn (object): Multi-head attention module for one expert.
+            x (torch.Tensor): Pre-attention hidden states.
+                Shape: (B, T, d_model)
+            pos_emb (torch.Tensor, optional): Relative positional embeddings for
+                rel-pos attention.
+                Shape: (B, 2T-1, d_model) when used; ``None`` for RoPE / no_pos.
+
+        Returns:
+            q (torch.Tensor): Query tensor.
+                Shape: (B, H, T, head_dim)
+            k (torch.Tensor): Key tensor.
+                Shape: (B, H, T, head_dim)
+            v (torch.Tensor): Value tensor.
+                Shape: (B, H, T, head_dim)
+            bias (torch.Tensor, optional): Additive relative-position bias, or
+                ``None`` for RoPE / no positional encoding.
+                Shape: (B, H, T, T) when present.
         """
         B, T, _ = x.shape
         H, D = attn.n_heads, attn.head_dim
@@ -1327,7 +1549,13 @@ class GGEMMTransformerEncoder(nn.Module):
     def _packed_attention_step(self, encs, state, layer_idx: int) -> None:
         """Run every expert's attention for layer ``layer_idx`` as batched SDPA over
         packed heads (one call per (head_dim, pos-scheme, attn_mode) group), then
-        apply each expert's out-projection + residual in place on ``state``."""
+        apply each expert's out-projection + residual in place on ``state``.
+
+        Args:
+            encs (dict): Mapping of expert name to encoder module.
+            state (dict): Per-expert mutable state dicts updated in place.
+            layer_idx (int): Transformer layer index to execute.
+        """
         names = self.expert_names
         # Compute per-expert q/k/v (+bias) from the pre-attn LayerNorm of each expert.
         qkv = {}
@@ -1352,12 +1580,7 @@ class GGEMMTransformerEncoder(nn.Module):
             V = torch.cat([qkv[n][2] for n in gnames], dim=1)
             has_bias = any(qkv[n][3] is not None for n in gnames)
             # Additive padding(+causal) mask; None when fully packed (no padding,
-            # non-causal) so the no-bias path can hit FlashAttention-2. Experts in a
-            # group can have DIFFERENT lengths (a streaming prefix lengthens one of
-            # them), so the mask is per expert, expanded over that expert's own heads
-            # -- using the first expert's length for the whole group would let the
-            # shorter experts attend to their own right padding. Lengths are
-            # layer-invariant, so this is built once per forward and cached.
+            # non-causal) so the no-bias path can hit FlashAttention-2.
             base = self._group_additive_mask(
                 gkey, gnames, [qkv[n][0].shape[1] for n in gnames], state, T, dtype, device, causal
             )
@@ -1421,25 +1644,22 @@ class GGEMMTransformerEncoder(nn.Module):
         to SDPA, equality is tolerance-based rather than bitwise.
 
         Args:
-            prefix: Optional ``{name: (B, P, d_model)}`` of streaming-cache embeddings
-                spliced into that expert's projected chunk before the norm, so the
-                expert attends over ``[cache | chunk]``.
-            prefix_mode: How the prefix is spliced (see :meth:`_prepend_prefix`).
-                ``'extend'`` grows the prefixed expert to ``P + T`` and right-pads the
-                others with zeros to match -- correct, but the pad frames are masked
-                out, so that work is wasted and the group loses FlashAttention-2
-                eligibility. ``'replace'`` has the cache stand in for the expert's own
-                leading ``P`` frames, leaving ``T`` unchanged and nothing padded; feed a
-                window extended ``P`` frames further back and the unprefixed experts
-                spend those slots on real left context instead of zeros.
-            return_pre_encode: Also return ``{name: (chunk, chunk_length)}`` -- the
-                pre-norm chunk embeddings -- so a streaming caller can push them into
-                its cache without reprojecting. Under ``'replace'`` this excludes the
-                leading frames the cache stood in for.
+            audio_signal (torch.Tensor): Input features shared by every encoder.
+                Shape: (B, C, T) mel/features, or (B, T, D) if ``bypass_pre_encode``.
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+            bypass_pre_encode (bool): Passed through to each expert encoder.
+            backend (str): Grouped-GEMM backend (:data:`GROUPED_GEMM_BACKENDS`).
+            moe_mode (str): MoE strategy for fused FFN steps (``'dense'`` or ``'topk'``).
+            prefix (Dict[str, torch.Tensor], optional): Per-expert streaming caches.
+                Each value has shape (B, P, d_model).
+            return_pre_encode (bool): Also return projected chunk embeddings per expert.
+            prefix_mode (str): How prefixes are spliced (see :meth:`_prepend_prefix`).
 
         Returns:
-            ``{name: (out, length)}``, or ``({name: (out, length)}, {name: (x_proj,
-            out_length)})`` when ``return_pre_encode``.
+            outputs (Dict[str, object]): ``{name: (out, length)}``, or
+                ``({name: (out, length)}, {name: (x_proj, out_length)})`` when
+                ``return_pre_encode`` is True.
         """
         encs = {name: self.experts[name] for name in self.expert_names}
         for name, e in encs.items():
@@ -1499,6 +1719,11 @@ class GGEMMTransformerEncoder(nn.Module):
         produce numerically equivalent attention. It provides the serial-SDPA
         reference used to isolate head packing from the attention backend change;
         see :meth:`forward_serial_sdpa`.
+
+        Args:
+            e (nn.Module): Transformer encoder module.
+            layer_idx (int): Transformer layer index to execute.
+            s (dict): Per-expert mutable state dict updated in place.
         """
         layer = e.layers[layer_idx]
         attn = layer.attn
@@ -1525,10 +1750,7 @@ class GGEMMTransformerEncoder(nn.Module):
     def forward_serial_sdpa(self, audio_signal, length, bypass_pre_encode: bool = False) -> Dict[str, object]:
         """Run every encoder serially with SDPA attention and native FFNs.
 
-        Each complete encoder stack runs before the next starts. Attention uses
-        SDPA without head packing, while FFNs run independently with no grouped
-        GEMM. Together with :meth:`forward_all` and :meth:`forward_packed`, this
-        reference separates two optimization effects:
+        Each complete encoder stack runs before the next starts.
 
         * ``forward_all`` to ``forward_serial_sdpa`` changes the attention backend.
         * ``forward_serial_sdpa`` to ``forward_packed`` adds head packing and
@@ -1537,6 +1759,17 @@ class GGEMMTransformerEncoder(nn.Module):
         Unlike lockstep execution, this path does not require equal ``n_layers``.
         Its output is numerically equivalent to :meth:`forward_all` in eval mode,
         but is not bitwise identical because the attention backend differs.
+
+        Args:
+            audio_signal (torch.Tensor): Input features shared by every encoder.
+                Shape: (B, C, T) mel/features, or (B, T, D) if ``bypass_pre_encode``.
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+            bypass_pre_encode (bool): Passed through to each expert encoder.
+
+        Returns:
+            outputs (Dict[str, object]): Mapping from expert name to that encoder's
+                encoded output and lengths.
         """
         encs = {name: self.experts[name] for name in self.expert_names}
         for name, e in encs.items():
@@ -1571,8 +1804,19 @@ class GGEMMTransformerEncoder(nn.Module):
     ) -> Dict[str, float]:
         """Measure grouped-FFN error against the serial reference by encoder name.
 
-        Returns ``name -> max(abs(reference - grouped))``. The comparison runs in
-        eval mode so dropout is disabled and restores the previous mode afterward.
+        The comparison runs in eval mode so dropout is disabled and restores the
+        previous mode afterward.
+
+        Args:
+            audio_signal (torch.Tensor): Input features shared by every encoder.
+                Shape: (B, C, T) mel/features, or (B, T, D) if ``bypass_pre_encode``.
+            length (torch.Tensor): Valid frame counts per sample.
+                Shape: (B,)
+            bypass_pre_encode (bool): Passed through to each expert encoder.
+            backend (str): Grouped-GEMM backend (:data:`GROUPED_GEMM_BACKENDS`).
+
+        Returns:
+            errors (Dict[str, float]): Mapping ``name -> max(abs(reference - grouped))``.
         """
         was_training = self.training
         self.eval()
@@ -1593,6 +1837,15 @@ class GGEMMTransformerEncoder(nn.Module):
         ``<name>.layers.<layer>...`` instead of the container's canonical
         ``experts.<name>.layers.<layer>...`` path. This hook rewrites those keys before
         standard loading. Keys already below ``experts.`` remain unchanged.
+
+        Args:
+            state_dict (dict): Checkpoint state dict to rewrite in place.
+            prefix (str): Module prefix for keys in ``state_dict``.
+            local_metadata (dict): PyTorch load metadata (unused).
+            strict (bool): Whether to enforce strict key matching.
+            missing_keys (list): List populated with missing keys after load.
+            unexpected_keys (list): List populated with unexpected keys after load.
+            error_msgs (list): List populated with load error messages.
         """
         already = re.compile(r'^' + re.escape(prefix) + r'experts\.')
         bare_expert = re.compile(

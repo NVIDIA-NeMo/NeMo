@@ -62,8 +62,8 @@ class SALMDataset(torch.utils.data.Dataset):
             Optional Serialized Output Training (SOT) speaker-activity settings.
             When provided, each batch additionally includes RTTM-derived
             ``spk_targets`` / ``spk_target_length``. Rows without an explicit
-            RTTM path contain the reserved value ``-1`` so PEE replaces them
-            with Sortformer predictions.
+            RTTM path contain the reserved value ``-1`` so the perception encoder
+            can replace them with inferred speaker activity.
 
             [ SOT Example for overlapping speakers ]
             Speaker-parallel transcription as a timeline:
@@ -211,7 +211,7 @@ class MultiSpeakerConfig:
 
 
 class SALMMultiSpeakerProcessor:
-    """Adds SOT activity targets, using ``-1`` rows to request PEE diarization."""
+    """Add SOT activity targets, using ``-1`` rows to request inferred diarization."""
 
     def __init__(self, cfg: MultiSpeakerConfig) -> None:
         self.cfg = cfg
@@ -256,9 +256,8 @@ class SALMMultiSpeakerProcessor:
 
                 speaker_activity = fix_speaker_activity(new_text, speaker_activity, cfg.num_speakers)
                 if not has_rttm:
-                    # Reserved sentinel consumed by ParallelExpertEncoder. It tells
-                    # PEE to replace this entire row with Sortformer predictions
-                    # instead of using the synthetic single-speaker fallback.
+                    # Request inferred activity instead of the synthetic
+                    # single-speaker fallback.
                     speaker_activity = torch.full_like(speaker_activity, -1.0)
                 speaker_activities.append(speaker_activity)
         return speaker_activities

@@ -61,8 +61,16 @@ def test_perception_sequence_packed_matches_legacy_and_preserves_state_dict():
 
     with torch.no_grad():
         legacy, output_lengths = perception(input_signal=features, input_signal_length=lengths)
+        legacy_with_encoder = perception(
+            input_signal=features,
+            input_signal_length=lengths,
+            return_encoder_emb=True,
+        )
         packed = perception.forward_sequence_packed(input_signal=features, input_signal_length=lengths)
 
+    assert len(legacy_with_encoder) == 3
+    torch.testing.assert_close(legacy_with_encoder[0], legacy)
+    assert torch.equal(legacy_with_encoder[1], output_lengths)
     restored = unpack_encoder_output(packed, total_length=legacy.shape[1])
     valid = torch.arange(legacy.shape[1])[None, :] < output_lengths[:, None]
     torch.testing.assert_close(restored[valid], legacy[valid], rtol=1e-5, atol=1e-6)

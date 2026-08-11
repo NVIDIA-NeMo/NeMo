@@ -137,16 +137,22 @@ class SALMDataset(torch.utils.data.Dataset):
                 packed_audio_samples, audio_cu_seqlens, audio_lens, conversations = (
                     collate_conversation_audio_packed_fault_tolerant(conversations, self.load_audio)
                 )
+                audio_inputs = {
+                    "packed_audio_samples": packed_audio_samples,
+                    "audio_cu_seqlens": audio_cu_seqlens,
+                }
             else:
                 audios, audio_lens, conversations = collate_conversation_audio_fault_tolerant(
                     conversations, self.load_audio
                 )
+                audio_inputs = {"audios": audios}
         except Exception as e:
             logging.warning(f"Error collating conversations: {e}")
             return None
         if not conversations:
             return None
         batch = {
+            **audio_inputs,
             "audio_lens": audio_lens,
             "input_ids": left_collate_vectors([c.input_ids for c in conversations], padding_value=self.pad_id),
             "loss_mask": left_collate_vectors(
@@ -154,11 +160,6 @@ class SALMDataset(torch.utils.data.Dataset):
             ).to(torch.bool),
             "conversations": drop_in_memory_data(conversations),
         }
-        if self.pack_audio:
-            batch["packed_audio_samples"] = packed_audio_samples
-            batch["audio_cu_seqlens"] = audio_cu_seqlens
-        else:
-            batch["audios"] = audios
         if self.multispeaker_processor is not None:
             self.multispeaker_processor(batch)
         return batch

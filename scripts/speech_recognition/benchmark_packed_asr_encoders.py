@@ -474,7 +474,6 @@ def _run_iteration(encoder_name, model, inputs, lengths, speaker_targets, implem
                 loss = loss + auxiliary_loss
             loss.backward()
             _clear_moe_auxiliary_loss(encoder_name, model)
-    del output
 
 
 def _valid_output(encoder_name, model, inputs, lengths, speaker_targets, implementation):

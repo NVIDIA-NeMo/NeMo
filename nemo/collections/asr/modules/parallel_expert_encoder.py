@@ -1656,9 +1656,10 @@ class ParallelExpertEncoder(nn.Module):
         use_online = self.online_inference_enabled and self.online_inference_length > 0
         runner = self._forward_online if use_online else self._forward
         outputs, lengths, experts = runner(audio_signal=audio_signal, length=length, spk_targets=spk_targets)
+        result = (outputs, lengths)
         if return_experts:
-            return outputs, lengths, experts
-        return outputs, lengths
+            result += (experts,)
+        return result
 
     def forward_sequence_packed(
         self,

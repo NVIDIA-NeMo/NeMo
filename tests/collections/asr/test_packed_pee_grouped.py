@@ -19,7 +19,6 @@ import torch
 
 import nemo.collections.asr.modules.ggemm_transformer_encoder as ggemm_module
 import nemo.collections.asr.modules.transformer_encoder as transformer_module
-from nemo.collections.asr.modules.ggemm_transformer_encoder import GGEMMTransformerEncoder, _ragged_grouped_mm
 from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, pack_encoder_output
 from tests.collections.asr.test_parallel_expert_encoder import (
     _MEL_FEATURES,
@@ -462,7 +461,7 @@ def test_sequence_packed_serial_capability_keeps_original_signature():
             return PackedEncoderActivations(audio_signal, length, cu_seqlens, int(length.max()))
 
     expert = PackedOnly()
-    container = GGEMMTransformerEncoder({'custom': expert})
+    container = ggemm_module.GGEMMTransformerEncoder({'custom': expert})
     data = torch.randn(3, 4)
     output = container.forward_all_sequence_packed(data, torch.tensor([3]))
     assert output['custom'].data is data
@@ -496,7 +495,7 @@ def test_ragged_grouped_mm_backward_handles_empty_expert_and_sum_loss(offset_val
     x = torch.randn(7, 16, device='cuda', dtype=torch.bfloat16, requires_grad=True)
     weights = [torch.randn(16, 8, device='cuda', requires_grad=True) for _ in range(3)]
     offsets = torch.tensor(offset_values, device='cuda', dtype=torch.int32)
-    output = _ragged_grouped_mm(x, offsets, weights)
+    output = ggemm_module._ragged_grouped_mm(x, offsets, weights)
     output.sum().backward()
 
     assert x.grad is not None and torch.isfinite(x.grad).all()

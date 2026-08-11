@@ -1624,7 +1624,6 @@ class GGEMMTransformerEncoder(nn.Module):
                     fused_qkv=fused_qkv,
                 )
                 continue
-            names = [item[0] for item in group]
             hidden = torch.stack([item[1] for item in group], dim=0)
             compute_dtype = _autocast_compute_dtype(hidden)
             hidden = hidden.to(compute_dtype)
@@ -1728,7 +1727,6 @@ class GGEMMTransformerEncoder(nn.Module):
                 layer = encs[name].layers[layer_idx]
                 state[name]['x'] = state[name]['x'] + layer.drop(output)
                 continue
-            names = [item[0] for item in group]
             hidden = torch.stack([item[1] for item in group], dim=0)
             compute_dtype = _autocast_compute_dtype(hidden)
             outputs = _grouped_linear(hidden.to(compute_dtype), [item[2] for item in group])

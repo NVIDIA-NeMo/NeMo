@@ -136,6 +136,23 @@ def test_pee_packed_can_return_raw_expert_outputs_without_changing_default():
     assert experts["speaker_preds"] is not None
 
 
+def test_pee_legacy_optional_expert_return_contract_is_unchanged():
+    encoder = build_toy_pe_encoder().eval()
+    mels = torch.randn(2, _MEL_FEATURES, 24)
+    lengths = torch.tensor([24, 11])
+    targets = torch.zeros(2, 3, _N_SPK)
+
+    with torch.no_grad():
+        default = encoder(mels, lengths, spk_targets=targets)
+        with_experts = encoder(mels, lengths, spk_targets=targets, return_experts=True)
+
+    assert len(default) == 2
+    assert len(with_experts) == 3
+    torch.testing.assert_close(with_experts[0], default[0])
+    assert torch.equal(with_experts[1], default[1])
+    assert set(with_experts[2]) == {"speech", "sound", "speaker_preds"}
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE sound-gradient parity requires CUDA")
 def test_pee_packed_matches_legacy_trainable_sound_gradients():
     torch.manual_seed(0)

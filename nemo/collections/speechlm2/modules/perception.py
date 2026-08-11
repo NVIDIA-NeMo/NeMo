@@ -222,10 +222,10 @@ class AudioPerceptionModule(NeuralModule, Exportable):
 
         # b, c, t -> b, t, c
         encoded = self.proj(encoded.transpose(1, 2))
+        result = (encoded, encoded_len)
         if return_encoder_emb:
-            return encoded, encoded_len, encoder_emb.transpose(1, 2)
-        else:
-            return encoded, encoded_len
+            result += (encoder_emb.transpose(1, 2),)
+        return result
 
     @typecheck.disable_checks()
     def forward_sequence_packed(

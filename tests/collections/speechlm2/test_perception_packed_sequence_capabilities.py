@@ -17,7 +17,6 @@ import copy
 import pytest
 import torch
 
-from nemo.collections.asr.parts.packed_sequence import unpack_encoder_output
 from tests.collections.speechlm2.test_perception_packed_sequence import _make_perception
 
 

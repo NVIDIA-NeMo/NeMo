@@ -229,11 +229,12 @@ def extract_speaker_embedding(model, context_audio_path: str, context_audio_dura
     ``(T_audio, embedding_dim)`` tensor consumed as the model's ``speaker_embedding``.
     """
     from nemo.collections.tts.modules.magpietts_modules import add_special_tokens
+    from nemo.collections.tts.models.easy_magpietts_inference import load_audio_for_inference, adjust_audio_to_duration_for_inference
 
     device = next(model.parameters()).device
 
-    context_audio = model._load_audio_for_inference(context_audio_path, model.sample_rate)
-    context_audio = model._adjust_audio_to_duration_for_inference(
+    context_audio = load_audio_for_inference(context_audio_path, model.sample_rate)
+    context_audio = adjust_audio_to_duration_for_inference(
         context_audio,
         model.sample_rate,
         context_audio_duration,

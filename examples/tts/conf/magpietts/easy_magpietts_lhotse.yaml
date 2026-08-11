@@ -8,18 +8,21 @@ quadratic_duration: 20
 
 model:
   use_lhotse: true
-  
+
   # Decoder backend selection
-  # Options: "huggingface" (default), "nemotron_h"
+  # Options: "huggingface" (default), "nemotron_h", "nemo_automodel"
   decoder_type: "huggingface"
   disable_lm_text_head: false
   disable_subword_embedding: false
   use_bpe_char_tokenizer: true
-  
+
   # HuggingFace backend config (used when decoder_type: "huggingface")
   transformer_hf_backend: "Qwen/Qwen2.5-1.5B"
-  
-  # NemotronH config (used when decoder_type: "nemotron_h")
+
+  # NeMo AutoModel config source (used when decoder_type: "nemo_automodel")
+  automodel_config_source: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+
+  # NemotronH config (used when decoder_type: "nemotron_h" or "nemo_automodel")
   # Hybrid Mamba2/MoE/Attention model (~3B total, ~600-800M active). Layer types via hybrid_override_pattern:
   # 'M' = Mamba2 layer, '*' = Attention layer, '-' = MLP layer, 'E' = MoE layer
   nemotron_h_config:
@@ -60,17 +63,17 @@ model:
     # Normalization
     layer_norm_epsilon: 1e-5
     residual_in_fp32: true
-  
+
   use_text_conditioning_encoder: true # If true, distilbert will be used to encode context_text if provided.
   context_duration_min: 5.0
   context_duration_max: 5.0
   load_cached_codes_if_available: true
-  
+
   embedding_dim: 1536
   hidden_dim: 1536
   audio_embedding_dim: 1536  # Can set a smaller dimension for audio embeddings to reduce parameters. Set equal to hidden_dim for no projection.
   codecmodel_path: ???
-  
+
   # Local transformer parameters for autoregressive codebook prediction within a frame
   local_transformer_type: "autoregressive" # "none", "autoregressive"
   # Below args are only relevant if use_local_transformer is autoregressive
@@ -81,7 +84,7 @@ model:
   local_transformer_hidden_dim: 1536
 
   cfg_unconditional_prob: 0.05
-  
+
   # Multi-mode training configuration
   training_modes:
     - text_input_mode: "streaming" # Options: "full", "streaming"
@@ -99,7 +102,7 @@ model:
   phoneme_as_text_prob: 0.0 # Probability of replacing training text with pronunciation-control G2P output.
   ignore_phoneme_languages: [] # Languages for which missing IPA phoneme fields are allowed during training.
   add_language_to_context_text: false # Prefix context text with language metadata for multilingual conditioning.
-  
+
   pronunciation_control_g2p:
     en:
       _target_: nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p
@@ -177,7 +180,7 @@ model:
         weight: 1.0
         tags:
           tokenizer_names: ["english_phoneme"]
-  
+
   optim:
     _target_: torch.optim.AdamW
     lr: 1e-4

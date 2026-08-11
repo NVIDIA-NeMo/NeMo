@@ -1,10 +1,9 @@
+# Runtime dependencies used by EasyMagpie or the speech-serving endpoint.
 numpy>=1.26
 PyYAML>=6.0
 safetensors>=0.8.0
 soundfile>=0.13.1
 tokenizers
-
-# Runtime dependencies used by EasyMagpie or the speech-serving endpoint.
 transformers>=5.5.3
 # vLLM and vLLM-Omni must use the same major/minor version.
 vllm==0.24.0

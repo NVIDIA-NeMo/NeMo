@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -20,6 +21,7 @@ from omegaconf import DictConfig, OmegaConf
 from transformers.utils import cached_file
 
 SAFETENSORS_SINGLE_FILE = "model.safetensors"
+SAFETENSORS_INDEX_FILE = "model.safetensors.index.json"
 LLM_BACKBONE_DIR = "llm_backbone"
 
 
@@ -214,10 +216,8 @@ def _distributed_from_pretrained(
     )
 
     # 3. Load weights
-    weight_file = cached_file(model_id, SAFETENSORS_SINGLE_FILE, **cached_file_kwargs)
-    if weight_file is None:
-        raise RuntimeError(f"Missing {SAFETENSORS_SINGLE_FILE} file for {model_id=}")
-    _load_state_dict_with_dtensors(instance, str(Path(weight_file).parent))
+    weight_dir = _resolve_safetensors_weight_dir(model_id, cached_file_kwargs)
+    _load_state_dict_with_dtensors(instance, str(weight_dir))
 
     return instance
 
@@ -279,3 +279,27 @@ def _inject_local_artifact_paths(cfg: dict, model_id: str, cached_file_kwargs: d
         cfg["pretrained_llm"] = llm_backbone_path
     if "pretrained_lm_name" in cfg:
         cfg["pretrained_lm_name"] = llm_backbone_path
+
+
+def _resolve_safetensors_weight_dir(model_id: str, cached_file_kwargs: dict) -> Path:
+    """Resolve and locally stage a single-file or indexed sharded checkpoint."""
+    weight_file = cached_file(model_id, SAFETENSORS_SINGLE_FILE, **cached_file_kwargs)
+    if weight_file is not None:
+        return Path(weight_file).parent
+
+    index_file = cached_file(model_id, SAFETENSORS_INDEX_FILE, **cached_file_kwargs)
+    if index_file is None:
+        raise RuntimeError(
+            f"Missing {SAFETENSORS_SINGLE_FILE} or {SAFETENSORS_INDEX_FILE} file for {model_id=}"
+        )
+    try:
+        index = json.loads(Path(index_file).read_text())
+        shard_names = sorted(set(index["weight_map"].values()))
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Invalid {SAFETENSORS_INDEX_FILE} for {model_id=}") from error
+    if not shard_names or not all(isinstance(name, str) and name for name in shard_names):
+        raise RuntimeError(f"Invalid empty shard map in {SAFETENSORS_INDEX_FILE} for {model_id=}")
+    for shard_name in shard_names:
+        if cached_file(model_id, shard_name, **cached_file_kwargs) is None:
+            raise RuntimeError(f"Missing safetensors shard {shard_name!r} for {model_id=}")
+    return Path(index_file).parent

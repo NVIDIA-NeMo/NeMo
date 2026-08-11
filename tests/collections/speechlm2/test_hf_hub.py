@@ -12,7 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.speechlm2.parts.hf_hub import _inject_local_artifact_paths
+import json
+from unittest.mock import patch
+
+from nemo.collections.speechlm2.parts.hf_hub import (
+    SAFETENSORS_INDEX_FILE,
+    SAFETENSORS_SINGLE_FILE,
+    _inject_local_artifact_paths,
+    _resolve_safetensors_weight_dir,
+)
 
 
 def _cached_file_kwargs():
@@ -73,3 +81,46 @@ def test_inject_local_artifact_paths_no_artifacts_keeps_old_config(tmp_path):
         "pretrained_llm": "remote-llm",
         "pretrained_weights": True,
     }
+
+
+def test_resolve_safetensors_weight_dir_accepts_sharded_checkpoint(tmp_path):
+    index = tmp_path / SAFETENSORS_INDEX_FILE
+    shards = [
+        tmp_path / "model-00001-of-00002.safetensors",
+        tmp_path / "model-00002-of-00002.safetensors",
+    ]
+    index.write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "first": shards[0].name,
+                    "second": shards[1].name,
+                }
+            }
+        )
+    )
+    for shard in shards:
+        shard.write_bytes(b"")
+
+    resolved = {
+        SAFETENSORS_SINGLE_FILE: None,
+        SAFETENSORS_INDEX_FILE: str(index),
+        **{shard.name: str(shard) for shard in shards},
+    }
+    with patch(
+        "nemo.collections.speechlm2.parts.hf_hub.cached_file",
+        side_effect=lambda _model_id, filename, **_kwargs: resolved.get(filename),
+    ):
+        assert _resolve_safetensors_weight_dir("sharded-model", {}) == tmp_path
+
+
+def test_resolve_safetensors_weight_dir_keeps_single_file_checkpoint(tmp_path):
+    weights = tmp_path / SAFETENSORS_SINGLE_FILE
+    weights.write_bytes(b"")
+    with patch(
+        "nemo.collections.speechlm2.parts.hf_hub.cached_file",
+        side_effect=lambda _model_id, filename, **_kwargs: str(weights)
+        if filename == SAFETENSORS_SINGLE_FILE
+        else None,
+    ):
+        assert _resolve_safetensors_weight_dir("single-model", {}) == tmp_path

@@ -2627,7 +2627,6 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         topk: int = 80,
         max_steps: int = 330,
         gt_phoneme_text: Optional[str] = None,
-        language: str = "en",
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Generate speech from transcript using EasyMagpie inference with optional context text/audio.

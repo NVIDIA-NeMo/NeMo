@@ -15,6 +15,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 from nemo.collections.speechlm2.parts.hf_hub import (
     SAFETENSORS_INDEX_FILE,
     SAFETENSORS_SINGLE_FILE,
@@ -124,3 +126,31 @@ def test_resolve_safetensors_weight_dir_keeps_single_file_checkpoint(tmp_path):
         else None,
     ):
         assert _resolve_safetensors_weight_dir("single-model", {}) == tmp_path
+
+
+def test_resolve_safetensors_weight_dir_rejects_malformed_index(tmp_path):
+    index = tmp_path / SAFETENSORS_INDEX_FILE
+    index.write_text("{")
+    with patch(
+        "nemo.collections.speechlm2.parts.hf_hub.cached_file",
+        side_effect=lambda _model_id, filename, **_kwargs: str(index)
+        if filename == SAFETENSORS_INDEX_FILE
+        else None,
+    ):
+        with pytest.raises(RuntimeError, match="Invalid model.safetensors.index.json"):
+            _resolve_safetensors_weight_dir("malformed-model", {})
+
+
+def test_resolve_safetensors_weight_dir_rejects_missing_indexed_shard(tmp_path):
+    index = tmp_path / SAFETENSORS_INDEX_FILE
+    index.write_text(json.dumps({"weight_map": {"tensor": "missing.safetensors"}}))
+    resolved = {
+        SAFETENSORS_SINGLE_FILE: None,
+        SAFETENSORS_INDEX_FILE: str(index),
+    }
+    with patch(
+        "nemo.collections.speechlm2.parts.hf_hub.cached_file",
+        side_effect=lambda _model_id, filename, **_kwargs: resolved.get(filename),
+    ):
+        with pytest.raises(RuntimeError, match="Missing safetensors shard"):
+            _resolve_safetensors_weight_dir("missing-shard-model", {})

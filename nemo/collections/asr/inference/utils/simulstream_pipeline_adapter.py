@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,9 +41,9 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
+from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import BoostingTreeModelConfig
-from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.utils import logging
 
 try:
@@ -76,6 +75,8 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
     output_manifest_path: Optional[str] = None
     wav_names: list[str] = []
     per_stream_boosting_requests: list[BiasingRequestItemConfig] | None = None
+    _wer_hyps: list[str] = []
+    _wer_refs: list[str] = []
 
     def __init__(self, config: SimpleNamespace):
         """
@@ -153,6 +154,8 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
             Path(cls.output_manifest_path).write_text("", encoding="utf-8")  # truncate at start of run
             logging.info(f"Prediction manifest output: {cls.output_manifest_path}")
         cls._wer_calculated = False
+        cls._wer_hyps = []
+        cls._wer_refs = []
 
         cls.wav_names = []
         wav_list_file = getattr(config, 'wav_list_file', None)
@@ -437,10 +440,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         self._last_partial_translation = ""
 
     def _write_prediction_manifest_line(self, pred_text: str, pred_translation: str) -> None:
-        """Write one NeMo-style manifest line with model predictions."""
-        if not self.output_manifest_path:
-            return
-
+        """Write one NeMo-style manifest line with model predictions, and accumulate WER inputs."""
         audio_filepath = ""
         if self.stream_id < len(self.wav_names):
             audio_filepath = self.wav_names[self.stream_id]
@@ -454,20 +454,24 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
             reference_text = reference_item.get("text", "")
             reference_translation = reference_item.get("answer", "")
 
-        item = {
-            "audio_filepath": audio_filepath,
-            "text": reference_text,
-            "translation": reference_translation,
-            "pred_text": pred_text,
-            "pred_translation": pred_translation,
-        }
+        if reference_text:
+            self._wer_hyps.append(pred_text)
+            self._wer_refs.append(reference_text)
 
-        with open(self.output_manifest_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        if self.output_manifest_path:
+            item = {
+                "audio_filepath": audio_filepath,
+                "text": reference_text,
+                "translation": reference_translation,
+                "pred_text": pred_text,
+                "pred_translation": pred_translation,
+            }
+            with open(self.output_manifest_path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-        # Compute WER once, when the last stream's line is flushed.
+        # Compute WER once, when the last stream finishes.
         if self.wav_names and self.stream_id == len(self.wav_names) - 1:
-            self._calculate_and_write_wer()
+            self._calculate_and_log_wer()
 
     def _get_reference_item(self, audio_filepath: str) -> Optional[dict]:
         """Get reference manifest item by absolute path, basename, or stream order."""
@@ -490,55 +494,31 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         return None
 
     @classmethod
-    def _calculate_and_write_wer(cls) -> None:
-        """Calculate WER from the output manifest and write summary artifacts."""
-        if cls._wer_calculated or not cls.output_manifest_path:
+    def _calculate_and_log_wer(cls) -> None:
+        """Calculate corpus-level WER from the accumulated (hypothesis, reference) pairs and log it."""
+        if cls._wer_calculated:
+            return
+        cls._wer_calculated = True
+
+        if not cls._wer_refs:
+            logging.warning("WER calculation skipped because no reference text is available (use --manifest).")
             return
 
-        gt_text_attr_name = "text"
-        clean_groundtruth_text = False
-        langid = "en"
-        use_cer = False
-        ignore_capitalization = False
-        ignore_punctuation = False
-
         try:
-            if cls.cfg is not None and cls.cfg.get("metrics") and cls.cfg.metrics.get("asr"):
-                asr_cfg = cls.cfg.metrics.asr
-                gt_text_attr_name = asr_cfg.get("gt_text_attr_name", gt_text_attr_name)
-                clean_groundtruth_text = asr_cfg.get("clean_groundtruth_text", clean_groundtruth_text)
-                langid = asr_cfg.get("langid", langid)
-                use_cer = asr_cfg.get("use_cer", use_cer)
-                ignore_capitalization = asr_cfg.get("ignore_capitalization", ignore_capitalization)
-                ignore_punctuation = asr_cfg.get("ignore_punctuation", ignore_punctuation)
-        except Exception as e:
-            logging.warning(f"Failed to read ASR metric config, using defaults: {e}")
-
-        try:
-            output_manifest_w_wer, total_res, _ = cal_write_wer(
-                pred_manifest=cls.output_manifest_path,
-                gt_text_attr_name=gt_text_attr_name,
-                pred_text_attr_name="pred_text",
-                output_filename=None,
-                clean_groundtruth_text=clean_groundtruth_text,
-                langid=langid,
-                use_cer=use_cer,
-                ignore_capitalization=ignore_capitalization,
-                ignore_punctuation=ignore_punctuation,
+            wer, tokens, ins_rate, del_rate, sub_rate = word_error_rate_detail(
+                hypotheses=cls._wer_hyps, references=cls._wer_refs
             )
-
-            if output_manifest_w_wer:
-                metrics_summary_path = str(Path(cls.output_manifest_path).with_suffix(".wer.txt"))
-                with open(metrics_summary_path, "w", encoding="utf-8") as f:
-                    f.write(str(total_res) + "\n")
-                logging.info(f"WER manifest: {output_manifest_w_wer}")
-                logging.info(f"WER summary: {metrics_summary_path}")
-            else:
-                logging.warning("WER calculation skipped because ground-truth text is unavailable in output manifest.")
+            total_res = {
+                "samples": len(cls._wer_hyps),
+                "tokens": tokens,
+                "wer": wer,
+                "ins_rate": ins_rate,
+                "del_rate": del_rate,
+                "sub_rate": sub_rate,
+            }
+            logging.info(f"WER: {total_res}")
         except Exception as e:
             logging.warning(f"Failed to calculate WER: {e}")
-        finally:
-            cls._wer_calculated = True
 
     def tokens_to_string(self, tokens: List[str]) -> str:
         """Convert a token sequence into a human-readable string (SpeechProcessor interface)."""
@@ -568,7 +548,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         handler so the vLLM engine shuts down gracefully instead of erroring on process exit.
         """
         if cls.pipeline is not None:
-            cls._calculate_and_write_wer()
+            cls._calculate_and_log_wer()
         if cls.pipeline is not None and cls.pipeline.nmt_model is not None:
             try:
                 if hasattr(cls.pipeline.nmt_model, 'nmt_model'):

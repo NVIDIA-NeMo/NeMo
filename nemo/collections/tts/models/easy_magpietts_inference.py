@@ -381,6 +381,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self.partial_phoneme_portion_max = cfg.get('partial_phoneme_portion_max', 0.75)
         self.phoneme_text_bop_marker = cfg.get('phoneme_text_bop_marker', '<bop>')
         self.phoneme_text_eop_marker = cfg.get('phoneme_text_eop_marker', '<eop>')
+        if (
+            not self.phoneme_text_bop_marker
+            or not self.phoneme_text_eop_marker
+            or self.phoneme_text_bop_marker == self.phoneme_text_eop_marker
+        ):
+            raise ValueError("Pronunciation-control markers must be non-empty and distinct.")
         self.bos_id = base_num_tokens
         self.eos_id = base_num_tokens + 1
         self.cfg_unk_token_id = base_num_tokens + 2

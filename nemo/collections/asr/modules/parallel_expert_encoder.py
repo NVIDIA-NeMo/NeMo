@@ -323,9 +323,7 @@ class ParallelExpertEncoderPT(ModelPT):
             sound_event_token_prefix=self._cfg.get('sound_event_token_prefix', '<ev:'),
             sound_event_token_pattern=self._cfg.get('sound_event_token_pattern', r'^<ev:[^>]+>$'),
             sound_style_token_prefix=self._cfg.get('sound_style_token_prefix', '<sty:'),
-            sound_style_token_pattern=self._cfg.get(
-                'sound_style_token_pattern', r'^<sty:(?:stt|end):[^>]+>$'
-            ),
+            sound_style_token_pattern=self._cfg.get('sound_style_token_pattern', r'^<sty:(?:stt|end):[^>]+>$'),
             tag_row_stride=self._cfg.get('tag_row_stride', 16),
             speaker_row_offset=self._cfg.get('speaker_row_offset', 0),
             sound_event_row_offset=self._cfg.get('sound_event_row_offset', 512),
@@ -885,9 +883,7 @@ class ParallelExpertEncoder(nn.Module):
         # kernels express gain in different units.
         if spk_kernel_scale is None:
             spk_kernel_scale = (
-                self.calibrated_spk_kernel_scale
-                if self.spk_kernel_calibrate
-                else self.legacy_spk_kernel_scale
+                self.calibrated_spk_kernel_scale if self.spk_kernel_calibrate else self.legacy_spk_kernel_scale
             )
         self.spk_kernel_scale = float(spk_kernel_scale)
 

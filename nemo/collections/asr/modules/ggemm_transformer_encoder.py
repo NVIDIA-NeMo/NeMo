@@ -153,7 +153,6 @@ def grouped_ffn_compute(
     return F.dropout(out, p=drop_rate, training=training)
 
 
-
 class GroupedFeedForward(nn.Module):
     """Batched, numerically-exact replacement for ``E`` same-shape ``FeedForward``s.
 

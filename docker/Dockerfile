@@ -141,7 +141,6 @@ ARG FLASH_ATTN_NVCC_THREADS=1
 ENV PIP_NO_CACHE_DIR=1
 
 COPY external/patches/deepep_v1_a100_disable_nvshmem.patch /tmp/patches/
-COPY external/patches/automodel_inline_shared_experts.patch /tmp/patches/
 RUN <<"EOF" bash -euxo pipefail
 apt-get update
 apt-get install -y \
@@ -234,19 +233,6 @@ import nemo_automodel
 print(Path(nemo_automodel.__file__).resolve().parent.parent)
 PY
 )"
-patch --batch --forward --fuzz=0 \
-    -d "${automodel_site_packages}" \
-    -p1 \
-    < /tmp/patches/automodel_inline_shared_experts.patch
-python - <<'PY'
-import inspect
-
-from nemo_automodel.components.moe.layers import MoE
-
-source = inspect.getsource(MoE.forward)
-assert "_shared_experts_stream" not in source
-assert "computed inline on the main" in source
-PY
 
 if [[ "${GPU_TARGET}" == "a100" ]]; then
     git clone "${DEEPEP_REPO}" /opt/automodel-src/DeepEP
@@ -261,18 +247,12 @@ fi
 if [[ "${GPU_TARGET}" == "h100plus" ]]; then
     # flash-attn-4 requires apache-tvm-ffi 0.1.11, while mamba-ssm
     # currently constrains the solved environment to apache-tvm-ffi<=0.1.9.
-    cutlass_packages=(
-        "nvidia-cutlass-dsl==4.5.2"
-        "nvidia-cutlass-dsl-libs-base==4.5.2"
-    )
-    if [[ "$(nemo-cuda-flavor)" == "cu13" ]]; then
-        cutlass_packages+=("nvidia-cutlass-dsl-libs-cu13==4.5.2")
-    fi
+    # Keep CUTLASS and Quack at the versions resolved by uv.lock. Automodel
+    # main now requires quack-kernels 0.6.1, which in turn requires CUTLASS
+    # 4.6.0; installing the old 4.5.2 override leaves the runtime inconsistent.
     uv pip install \
         --no-deps \
         "apache-tvm-ffi==0.1.11" \
-        "${cutlass_packages[@]}" \
-        "quack-kernels==0.5.0" \
         "torch-c-dlpack-ext==0.1.5"
 
     mkdir -p /opt/automodel-src/flash-attn-4 /tmp/flash-attn-4
@@ -290,6 +270,14 @@ if [[ "${GPU_TARGET}" == "h100plus" ]]; then
         --no-build-isolation \
         --no-deps \
         /opt/automodel-src/flash-attn-4
+fi
+EOF
+
+COPY external/patches/flash_attn_4_cutlass46_compat.patch /tmp/patches/
+RUN <<"EOF" bash -euxo pipefail
+if [[ "${GPU_TARGET}" == "h100plus" ]]; then
+    patch -d "${VIRTUAL_ENV}/lib/python${UV_PYTHON}/site-packages/flash_attn/cute" -p1 \
+        < /tmp/patches/flash_attn_4_cutlass46_compat.patch
 fi
 EOF
 

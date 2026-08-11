@@ -1,4 +1,0 @@
-implementation,iterations,profiled_benchmark_median_ms,mean_nvtx_cpu_submit_ms,mean_cuda_api_calls,mean_cuda_api_ms,mean_kernels,mean_kernel_ms,min_kernel_ms,max_kernel_ms
-legacy_bhsd,100,5.466272,5.491916,601.22,1.695020,494.0,3.981697,3.964820,3.994392
-serial_thd,100,9.686272,9.791598,1409.06,3.245036,1013.0,2.913625,2.906316,2.922959
-grouped_thd,100,5.831664,5.875747,662.12,1.457577,564.0,2.882431,2.875184,2.889360

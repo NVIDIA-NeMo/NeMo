@@ -69,7 +69,8 @@ s2s:
   use_perception_cudagraph: true              # Enable CUDA graph-accelerated perception encoder
   use_llm_cache: false                        # Keep the LLM KV cache across steps (native engine only).
                                               # False replays the whole history each step: O(n^2) and slow,
-                                              # but the only path validated so far for NemotronH.
+                                              # and is the portable compatibility default.
+                                              # NemotronH cache mode requires transformers >= 5.13.
 
   # TTS speedup flags (default to false; enable to speed up native inference)
   use_tts_torch_compile: false                # Compile TTS backbone with torch.compile (mode='default')
@@ -79,7 +80,7 @@ s2s:
   top_p: 0.5
   repetition_penalty: 1.1
   temperature: 0.3
-  force_turn_taking: true
+  force_turn_taking: true                     # Automatically disabled when the checkpoint has no ASR head.
   force_turn_taking_threshold: 40
   force_turn_taking_pad_window: 25
 

@@ -216,7 +216,10 @@ class NemotronVoicechatInferenceWrapper:
 
         # Tell from_pretrained to skip loading checkpoint weights for
         # submodules that vLLM will replace — avoids wasted I/O and memory.
-        skip_prefixes = set()
+        # The streaming pipeline intentionally does not instantiate the
+        # release checkpoint's auxiliary RNN-T decoder. Its weights are
+        # independent of the duplex text/audio path.
+        skip_prefixes = {"stt_model.rnnt_decoder.", "stt_model.rnnt_joint."}
         if self.use_vllm_llm:
             skip_prefixes.add("stt_model.llm.")
         if self.use_vllm_eartts:
@@ -224,10 +227,14 @@ class NemotronVoicechatInferenceWrapper:
 
         self.model = NemotronVoiceChat.from_pretrained(
             self.model_path,
-            local_files_only=True,
-            skip_prefixes=skip_prefixes or None,
+            skip_prefixes=skip_prefixes,
         )
         logging.info(f"NemotronVoiceChat initialized in {time.time() - start_model_init:.1f}s")
+
+        if self.model.stt_model.use_function_head and self.use_vllm_llm:
+            raise NotImplementedError(
+                "Function-channel feedback is currently supported only by the native LLM backend"
+            )
 
         # Remove skipped submodules (still on meta device / uninitialized)
         if self.use_vllm_llm:
@@ -264,6 +271,13 @@ class NemotronVoicechatInferenceWrapper:
         boost_values = {k: self.model.stt_model.cfg.get(k, None) for k in _BOOST_KEYS}
         logging.info(f"Inference logit boosts: {boost_values}")
         force_turn_taking_values = {k: self.model.stt_model.cfg.get(k, None) for k in _FORCE_TURN_TAKING_KEYS}
+        if self.model.stt_model.cfg.get("force_turn_taking", False) and not self.model.stt_model.predict_user_text:
+            logging.warning(
+                "Disabling force_turn_taking because this checkpoint has no ASR head. "
+                "The model's learned duplex turn-taking remains active."
+            )
+            OmegaConf.update(self.model.stt_model.cfg, "force_turn_taking", False)
+            force_turn_taking_values["force_turn_taking"] = False
         logging.info(f"Forced turn-taking config: {force_turn_taking_values}")
 
         # Create LLM backend
@@ -363,20 +377,28 @@ class NemotronVoicechatInferenceWrapper:
         prompt_embedded = self.model.stt_model.embed_tokens(prompt_tokens).to(dtype=self.dtype)
         prompt_len = prompt_tokens.shape[1]
 
-        pad_id = self.model.stt_model.text_pad_id
+        stt = self.model.stt_model
+        pad_id = stt.text_pad_id
         pad_token = torch.full((1,), fill_value=pad_id, device=self.device, dtype=torch.long)
-        pad_emb = self.model.stt_model.embed_tokens(pad_token).to(dtype=self.dtype)
-        pad_asr_emb = self.model.stt_model.embed_asr_tokens(pad_token).to(dtype=self.dtype)
+        pad_emb = stt.embed_tokens(pad_token).to(dtype=self.dtype)
+        bos_emb = stt._get_bos_embedding().to(dtype=self.dtype)
 
         if prompt_len > 1:
             prompt_embedded[:, 1:, :] += pad_emb
-            prompt_embedded[:, 1:, :] += pad_asr_emb
+            if stt.predict_user_text:
+                pad_asr_emb = stt.embed_asr_tokens(pad_token).to(dtype=self.dtype)
+                prompt_embedded[:, 1:, :] += pad_asr_emb
 
-        stt = self.model.stt_model
-        bos_emb = stt._get_bos_embedding().to(dtype=self.dtype)
-        asr_bos_emb = stt._get_asr_bos_embedding().to(dtype=self.dtype)
         prompt_embedded[:, 0, :] += bos_emb.squeeze(0)
-        prompt_embedded[:, 0, :] += asr_bos_emb.squeeze(0)
+        if stt.predict_user_text:
+            asr_bos_emb = stt._get_asr_bos_embedding().to(dtype=self.dtype)
+            prompt_embedded[:, 0, :] += asr_bos_emb.squeeze(0)
+        if stt.use_function_head:
+            # Keep the same current-NeMo channel order used by
+            # DuplexSTTModel.build_input_embedding.
+            prompt_embedded += pad_emb.expand(1, prompt_len, -1) * stt.cfg.get(
+                "duplex_function_channel_weight", 1.0
+            )
 
         return prompt_embedded, prompt_len
 
@@ -402,8 +424,13 @@ class NemotronVoicechatInferenceWrapper:
     def _init_token_buffers(self, max_len: int):
         stt_model = self.model.stt_model
         gen_text = torch.full((1, max_len), stt_model.text_pad_id, device=self.device, dtype=torch.long)
-        gen_asr_text = torch.full((1, max_len), stt_model.text_pad_id, device=self.device, dtype=torch.long)
-        return gen_text, gen_asr_text
+        gen_asr_text = None
+        if stt_model.predict_user_text:
+            gen_asr_text = torch.full((1, max_len), stt_model.text_pad_id, device=self.device, dtype=torch.long)
+        gen_function = None
+        if stt_model.use_function_head:
+            gen_function = torch.full((1, max_len), stt_model.text_pad_id, device=self.device, dtype=torch.long)
+        return gen_text, gen_asr_text, gen_function
 
     def _prepare_tts_initial_state(self):
         if not self.decode_audio:
@@ -455,7 +482,7 @@ class NemotronVoicechatInferenceWrapper:
         logging.info("TTS warmup state prepared")
 
     def create_decode_state(self, max_len: int) -> StreamingDecodeState:
-        gen_text, gen_asr_text = self._init_token_buffers(max_len)
+        gen_text, gen_asr_text, gen_function = self._init_token_buffers(max_len)
         llm_cache = self.model_llm_interface.create_cache()
         if self.decode_audio:
             subword_mask, tts_codec_cache = self.model_eartts_interface.create_codec_state(max_len, self.device)
@@ -475,6 +502,7 @@ class NemotronVoicechatInferenceWrapper:
             frame_idx=0,
             gen_text=gen_text,
             gen_asr_text=gen_asr_text,
+            gen_function=gen_function,
             input_embeds_history=[],
             llm_cache=llm_cache,
             tts_past_key_values=tts_past_key_values,
@@ -525,9 +553,11 @@ class NemotronVoicechatInferenceWrapper:
         predicted_tokens = torch.empty(
             (B, num_frames_per_chunk), dtype=state.gen_text.dtype, device=state.gen_text.device
         )
-        asr_predicted_tokens = torch.empty(
-            (B, num_frames_per_chunk), dtype=state.gen_text.dtype, device=state.gen_text.device
-        )
+        asr_predicted_tokens = None
+        if state.gen_asr_text is not None:
+            asr_predicted_tokens = torch.empty(
+                (B, num_frames_per_chunk), dtype=state.gen_text.dtype, device=state.gen_text.device
+            )
 
         debug_logger = IntermediateResultLogger() if return_debug else NullIntermediateResultLogger()
 
@@ -570,7 +600,8 @@ class NemotronVoicechatInferenceWrapper:
                 current_frame_idx,
                 state.gen_text,
                 state.gen_asr_text,
-                has_prompt,
+                state.gen_function,
+                has_prompt=has_prompt,
             )
             debug_logger.log_input_embeds(input_emb)
 
@@ -594,12 +625,18 @@ class NemotronVoicechatInferenceWrapper:
 
             state.gen_text[:, current_frame_idx] = ans["predicted_token"]
             predicted_tokens[:, frame_offset] = ans["predicted_token"]
-            state.gen_asr_text[:, current_frame_idx] = ans["asr_predicted_token"]
-            asr_predicted_tokens[:, frame_offset] = ans["asr_predicted_token"]
-
-            self.model.stt_model.streaming_inference._maybe_apply_forced_turn_taking(
-                current_frame_idx, state.gen_text, state.gen_asr_text
-            )
+            if state.gen_asr_text is not None:
+                if ans.get("asr_predicted_token") is None:
+                    raise RuntimeError("Checkpoint has an ASR head but the LLM backend returned no ASR token")
+                state.gen_asr_text[:, current_frame_idx] = ans["asr_predicted_token"]
+                asr_predicted_tokens[:, frame_offset] = ans["asr_predicted_token"]
+                self.model.stt_model.streaming_inference._maybe_apply_forced_turn_taking(
+                    current_frame_idx, state.gen_text, state.gen_asr_text
+                )
+            if state.gen_function is not None:
+                if ans.get("function_predicted_token") is None:
+                    raise RuntimeError("Checkpoint has a function head but the LLM backend returned no function token")
+                state.gen_function[:, current_frame_idx] = ans["function_predicted_token"]
             predicted_tokens[:, frame_offset] = state.gen_text[:, current_frame_idx]
 
             if self.decode_audio:
@@ -616,7 +653,9 @@ class NemotronVoicechatInferenceWrapper:
 
         # --- Stage 4: Token -> string conversion ---
         predicted_text_strs = self._tokens_to_strings(predicted_tokens)
-        asr_predicted_text_strs = self._tokens_to_strings(asr_predicted_tokens)
+        asr_predicted_text_strs = (
+            self._tokens_to_strings(asr_predicted_tokens) if asr_predicted_tokens is not None else None
+        )
 
         logging.debug(f'frame {frame_idx}: USER asr: {asr_predicted_text_strs}')
         logging.debug(f'frame {frame_idx}: AGENT txt: {predicted_text_strs}')

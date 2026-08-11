@@ -108,7 +108,8 @@ class StreamingDecodeState:
 
     frame_idx: int
     gen_text: torch.Tensor
-    gen_asr_text: torch.Tensor
+    gen_asr_text: torch.Tensor | None
+    gen_function: torch.Tensor | None
     input_embeds_history: list[torch.Tensor]
     llm_cache: Any  # DynamicCache for supported native transformer backbones, otherwise None.
     tts_past_key_values: Any
@@ -130,9 +131,9 @@ class InferenceStepResult:
     """
 
     predicted_text_tokens: torch.Tensor
-    asr_predicted_text_tokens: torch.Tensor
+    asr_predicted_text_tokens: torch.Tensor | None
     predicted_text_strs: list[str]
-    asr_predicted_text_strs: list[str]
+    asr_predicted_text_strs: list[str] | None
     decoded_audio: torch.Tensor | None = None
     debug: dict | None = None
 

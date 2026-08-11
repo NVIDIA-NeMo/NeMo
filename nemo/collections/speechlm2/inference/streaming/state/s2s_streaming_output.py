@@ -167,7 +167,7 @@ class S2SStreamingOutput:
     def finalize_tokens(
         self,
         gen_text: torch.Tensor,
-        gen_asr_text: torch.Tensor,
+        gen_asr_text: torch.Tensor | None,
         total_frames: int,
         tokenizer,
         pad_id: int,
@@ -178,7 +178,7 @@ class S2SStreamingOutput:
         is destroyed.
         """
         self.token_text = gen_text[:, :total_frames].clone().cpu()
-        self.token_asr_text = gen_asr_text[:, :total_frames].clone().cpu()
+        self.token_asr_text = gen_asr_text[:, :total_frames].clone().cpu() if gen_asr_text is not None else None
         self.token_length = total_frames
 
         lengths = torch.tensor([total_frames], dtype=torch.long)
@@ -187,9 +187,13 @@ class S2SStreamingOutput:
             return tokens_to_str(tokens, lengths, tokenizer=tokenizer, pad_id=pad_id, **kwargs)[0]
 
         self.text_with_timestamps = _to_str(self.token_text, eval_text_turn_taking=True)
-        self.asr_text_with_timestamps = _to_str(self.token_asr_text, eval_text_turn_taking=True)
         self.raw_text = _to_str(self.token_text, keep_pad=True)
-        self.raw_asr_text = _to_str(self.token_asr_text, keep_pad=True)
+        if self.token_asr_text is not None:
+            self.asr_text_with_timestamps = _to_str(self.token_asr_text, eval_text_turn_taking=True)
+            self.raw_asr_text = _to_str(self.token_asr_text, keep_pad=True)
+        else:
+            self.asr_text_with_timestamps = None
+            self.raw_asr_text = None
 
     def clear_audio_buffer(self) -> None:
         """Free in-memory audio chunks.

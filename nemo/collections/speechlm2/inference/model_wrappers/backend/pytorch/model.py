@@ -22,9 +22,11 @@ Used as ``model_llm_interface`` in the inference wrapper when
 ``engine_type="native_llm"``.
 """
 
+import inspect
 from typing import Any
 
 import torch
+from packaging.version import Version
 
 from nemo.collections.speechlm2.inference.model_wrappers.backend.interface import ModelInterface
 from nemo.collections.speechlm2.parts.text_utils import get_special_token_ids
@@ -83,6 +85,7 @@ class PyTorchLLM(ModelInterface):
 
         self.model = model
         self.use_llm_cache = use_llm_cache
+        self.cache_key = self._resolve_cache_key()
 
         logging.debug(f"Special token IDs: {self.special_token_ids}")
 
@@ -97,6 +100,25 @@ class PyTorchLLM(ModelInterface):
                 "Otherwise, EOS tokens may be randomly sampled and generation may not stop properly!"
             )
 
+    def _resolve_cache_key(self) -> str:
+        """Resolve the cache argument from the installed backbone API."""
+        configured = str(self.model.stt_model.cfg.get("cache_key", "past_key_values"))
+        try:
+            parameters = inspect.signature(self.model.stt_model.llm.forward).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+
+        if configured in parameters:
+            return configured
+        for candidate in ("past_key_values", "cache_params"):
+            if candidate in parameters:
+                if candidate != configured:
+                    logging.info(
+                        f"Using runtime LLM cache key {candidate!r} instead of checkpoint value {configured!r}"
+                    )
+                return candidate
+        return configured
+
     def create_cache(self):
         """Create an LLM KV cache, or None to replay the full history each step.
 
@@ -110,14 +132,21 @@ class PyTorchLLM(ModelInterface):
             return None
 
         stt_cfg = self.model.stt_model.cfg
-        cache_key = stt_cfg.get("cache_key", "cache_params")
-        if "Nemotron" in str(stt_cfg.get("pretrained_llm", "")) and cache_key != "past_key_values":
-            # transformers 5.x NemotronH takes the cache as `past_key_values`. With the
-            # older `cache_params` name it would be dropped, and the model would build a
-            # fresh cache every step, so fail loudly instead of decoding from position 0.
-            raise ValueError(
-                f"use_llm_cache needs cache_key='past_key_values' in the checkpoint config, got '{cache_key}'."
-            )
+        if "Nemotron" in str(stt_cfg.get("pretrained_llm", "")):
+            import transformers
+
+            installed = Version(transformers.__version__.split("+", 1)[0])
+            if installed < Version("5.13.0"):
+                raise RuntimeError(
+                    "Native NemotronH KV cache requires transformers>=5.13.0 "
+                    f"(installed: {transformers.__version__}). Set use_llm_cache=false "
+                    "or use a compatible runtime."
+                )
+            if self.cache_key != "past_key_values":
+                raise RuntimeError(
+                    "Installed NemotronH does not expose the expected past_key_values cache API "
+                    f"(resolved cache key: {self.cache_key!r})."
+                )
         from transformers import DynamicCache
 
         return DynamicCache(config=self.model.stt_model.llm.config)
@@ -157,7 +186,13 @@ class PyTorchLLM(ModelInterface):
         """
         if cache_position is None and cache_position_offset is not None:
             cache_position = torch.tensor([cache_position_offset], device=input_embeds.device)
-        result = self.model.stt_model(input_embeds, cache=cache, cache_position=cache_position, **kwargs)
+        result = self.model.stt_model(
+            input_embeds,
+            cache=cache,
+            cache_position=cache_position,
+            cache_key=self.cache_key,
+            **kwargs,
+        )
 
         if not isinstance(result, dict):
             raise TypeError(f"Model returned {type(result)}, expected dict")
@@ -180,17 +215,21 @@ class PyTorchLLM(ModelInterface):
             sampling_params=sampling_params,
         )
 
-        # ASR tokens use greedy decoding (no sampling)
-        asr_predicted_token = result["asr_logits"][:, -1].argmax(dim=-1)
-
         ans = {
             "predicted_token": predicted_token,
-            "asr_predicted_token": asr_predicted_token,
+            "asr_predicted_token": None,
+            "function_predicted_token": None,
             "cache": result.get("cache", None),
         }
+        # Auxiliary channels use greedy decoding and are independently optional.
+        if result.get("asr_logits") is not None:
+            ans["asr_predicted_token"] = result["asr_logits"][:, -1].argmax(dim=-1)
+        if result.get("function_logits") is not None:
+            ans["function_predicted_token"] = result["function_logits"][:, -1].argmax(dim=-1)
         if return_logits:
             ans["text_logits"] = result["text_logits"]
             ans["asr_logits"] = result.get("asr_logits")
+            ans["function_logits"] = result.get("function_logits")
         return ans
 
     def to(self, device_or_dtype: torch.device | torch.dtype) -> 'PyTorchLLM':
@@ -222,7 +261,13 @@ class PyTorchLLM(ModelInterface):
         Returns:
             Dictionary with updated 'cache'.
         """
-        result = self.model.stt_model(embeddings, cache=cache, cache_position=cache_position, **kwargs)
+        result = self.model.stt_model(
+            embeddings,
+            cache=cache,
+            cache_position=cache_position,
+            cache_key=self.cache_key,
+            **kwargs,
+        )
         if not isinstance(result, dict):
             raise TypeError(f"Model returned {type(result)}, expected dict")
         return {"cache": result.get("cache", cache)}

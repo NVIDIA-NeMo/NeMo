@@ -614,15 +614,16 @@ class StreamingS2SPipeline(S2SPipelineInterface):
             tokenizer,
             pad_id,
         )
-        self._write_ctm(
-            base,
-            state.token_asr_text[0, :total_frames],
-            total_frames,
-            total_samples,
-            tokenizer,
-            pad_id,
-            suffix="_asr",
-        )
+        if state.token_asr_text is not None:
+            self._write_ctm(
+                base,
+                state.token_asr_text[0, :total_frames],
+                total_frames,
+                total_samples,
+                tokenizer,
+                pad_id,
+                suffix="_asr",
+            )
 
     def _write_ctm(
         self,

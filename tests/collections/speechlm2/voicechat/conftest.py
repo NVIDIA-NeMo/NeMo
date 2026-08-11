@@ -40,7 +40,12 @@ if os.path.exists("/home/TestData/speechlm/pretrained_models"):
     _pretrained_llm = "/home/TestData/speechlm/pretrained_models/TinyLlama--TinyLlama_v1.1"
 
 
-def _tiny_voicechat_config(*, predict_user_text: bool = True, streaming_encoder: bool = False) -> dict:
+def _tiny_voicechat_config(
+    *,
+    predict_user_text: bool = True,
+    streaming_encoder: bool = False,
+    use_function_head: bool = False,
+) -> dict:
     """Return a minimal NemotronVoiceChat config with random weights.
 
     Args:
@@ -59,14 +64,16 @@ def _tiny_voicechat_config(*, predict_user_text: bool = True, streaming_encoder:
         "subsampling_factor": 8,
     }
     if streaming_encoder:
-        encoder_cfg.update({
-            "subsampling": "dw_striding",
-            "causal_downsampling": True,
-            "att_context_size": [70, 0],
-            "att_context_style": "chunked_limited",
-            "conv_kernel_size": 9,
-            "conv_context_size": "causal",
-        })
+        encoder_cfg.update(
+            {
+                "subsampling": "dw_striding",
+                "causal_downsampling": True,
+                "att_context_size": [70, 0],
+                "att_context_style": "chunked_limited",
+                "conv_kernel_size": 9,
+                "conv_context_size": "causal",
+            }
+        )
 
     return {
         "model": {
@@ -76,8 +83,10 @@ def _tiny_voicechat_config(*, predict_user_text: bool = True, streaming_encoder:
                     "pretrained_llm": _pretrained_llm,
                     "pretrained_weights": False,
                     "predict_user_text": predict_user_text,
+                    "use_function_head": use_function_head,
                     "audio_loss_weight": 1,
                     "text_loss_weight": 3,
+                    "duplex_function_channel_weight": 2.0,
                     "source_sample_rate": 16000,
                     "validation_save_path": "/tmp/test_duplex_stt_logs",
                     "perception": {
@@ -223,24 +232,18 @@ def _tiny_voicechat_config(*, predict_user_text: bool = True, streaming_encoder:
     }
 
 
-@pytest.fixture(scope="session")
-def tiny_model_artifacts(tmp_path_factory):
-    """Build a tiny NemotronVoiceChat with random weights, write test audio files.
-
-    Session-scoped so the model is built only once across all test modules.
-    The fixture returns only file paths (immutable), so sharing is safe.
-
-    Returns ``(model_dir, audio_path, speaker_ref_path)``.
-    """
-    base = tmp_path_factory.mktemp("tiny_model")
-
+def _build_tiny_model_artifacts(base, *, predict_user_text: bool, use_function_head: bool):
     audio_path = str(base / "test_audio.wav")
     sf.write(audio_path, np.random.RandomState(42).randn(3 * 16000).astype(np.float32), 16000)
 
     speaker_ref_path = str(base / "speaker_ref.wav")
     sf.write(speaker_ref_path, np.random.RandomState(99).randn(22050).astype(np.float32), 22050)
 
-    cfg = _tiny_voicechat_config(streaming_encoder=True)
+    cfg = _tiny_voicechat_config(
+        predict_user_text=predict_user_text,
+        streaming_encoder=True,
+        use_function_head=use_function_head,
+    )
     model = NemotronVoiceChat(cfg)
     model.to("cuda")
     model.eval()
@@ -264,6 +267,26 @@ def tiny_model_artifacts(tmp_path_factory):
     torch.cuda.empty_cache()
 
     return model_dir, audio_path, speaker_ref_path
+
+
+@pytest.fixture(scope="session")
+def tiny_model_artifacts(tmp_path_factory):
+    """Build the existing ASR-head tiny checkpoint used by pipeline tests."""
+    return _build_tiny_model_artifacts(
+        tmp_path_factory.mktemp("tiny_model"),
+        predict_user_text=True,
+        use_function_head=False,
+    )
+
+
+@pytest.fixture(scope="session")
+def tiny_function_model_artifacts(tmp_path_factory):
+    """Build a public-VoiceChat-style checkpoint: function head, no ASR head."""
+    return _build_tiny_model_artifacts(
+        tmp_path_factory.mktemp("tiny_function_model"),
+        predict_user_text=False,
+        use_function_head=True,
+    )
 
 
 @pytest.fixture(scope="session")

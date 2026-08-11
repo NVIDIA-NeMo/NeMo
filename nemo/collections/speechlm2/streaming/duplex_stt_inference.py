@@ -117,6 +117,9 @@ class DuplexSTTStreamingInference:
             gen_asr = torch.empty(B, T, device=self.model.device, dtype=torch.long)
         else:
             gen_asr = None
+        gen_function = None
+        if self.model.use_function_head:
+            gen_function = torch.full((B, T), self.model.text_pad_id, device=self.model.device, dtype=torch.long)
 
         if prompt_tokens is not None and prompt_token_lens is not None:
             for i, prompt_len in enumerate(prompt_token_lens):
@@ -133,6 +136,7 @@ class DuplexSTTStreamingInference:
             0,
             gen_text,
             gen_asr,
+            gen_function,
             has_prompt=has_prompt,
         )
 
@@ -161,6 +165,7 @@ class DuplexSTTStreamingInference:
             "use_cache": use_cache,
             "gen_text": gen_text,
             "gen_asr": gen_asr,
+            "gen_function": gen_function,
             "start_gen_pos": start_gen_pos,
             "has_prompt": has_prompt,
             "is_prompt_position_mask": is_prompt_position_mask,
@@ -177,6 +182,8 @@ class DuplexSTTStreamingInference:
             inference_state["gen_text"][:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
             if self.model.predict_user_text:
                 inference_state["gen_asr"][:, 0] = ans["asr_logits"][:, -1].argmax(dim=-1)
+            if self.model.use_function_head:
+                inference_state["gen_function"][:, 0] = ans["function_logits"][:, -1].argmax(dim=-1)
 
         return ans, inference_state
 
@@ -320,6 +327,7 @@ class DuplexSTTStreamingInference:
             t,
             inference_state["gen_text"],
             inference_state["gen_asr"],
+            inference_state["gen_function"],
             has_prompt=inference_state["has_prompt"],
         )
 
@@ -355,6 +363,12 @@ class DuplexSTTStreamingInference:
                 self._maybe_apply_forced_turn_taking(
                     t, inference_state["gen_text"], inference_state["gen_asr"], is_prompt_position
                 )
+
+        if self.model.use_function_head and not is_prompt_position.all():
+            generated_function = ans["function_logits"][:, -1].argmax(dim=-1)
+            inference_state["gen_function"][:, t] = torch.where(
+                is_prompt_position, inference_state["gen_function"][:, t], generated_function
+            )
 
         return ans
 

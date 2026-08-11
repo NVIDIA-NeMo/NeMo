@@ -27,7 +27,7 @@ There are two ways to use the pipeline:
               generate_step(frames)
                     │
                     ├─ incremental agent audio + text
-                    └─ incremental user ASR text
+                    └─ incremental user ASR text (when the checkpoint has an ASR head)
 
 Each audio file passed to ``run()`` is treated as one continuous audio stream. ``run()``
 accumulates the per-step outputs for each stream and writes final audio/text
@@ -66,8 +66,9 @@ The ``s2s_streaming_infer.py`` script follows this call path:
     Model                 NemotronVoiceChat
                             - DuplexSTTModel + DuplexEARTTS
 
-(With ``s2s.decode_audio=false``, the model still predicts text/ASR tokens but
-skips EarTTS generation and codec decoding.)
+(With ``s2s.decode_audio=false``, the model still predicts text and any
+checkpoint-provided auxiliary tokens, but skips EarTTS generation and codec
+decoding.)
 
 Quick Start
 -----------
@@ -98,6 +99,39 @@ This will:
 3. Save per-stream output files under ``output_dir``: generated ``.wav``,
    stereo input+output ``.wav``, ``.txt``, and per-token ``.ctm``.
 4. Write ``output_processed.json`` and ``output_raw.json`` summarising the run.
+
+Public NemotronLabs VoiceChat Checkpoint
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This is a backward-compatibility path for the
+`NVIDIA-NemotronLabs-VoiceChat-11B checkpoint
+<https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B>`_, whose
+config was designed for the experimental
+`nemotron-labs-voicechat Speech branch
+<https://github.com/NVIDIA-NeMo/Speech/tree/nemotron-labs-voicechat>`_.  It is
+not the canonical checkpoint schema for new current-NeMo exports.
+
+The pipeline accepts the Hugging Face repository ID directly:
+
+.. code-block:: yaml
+
+    s2s:
+      model_path: nvidia/NVIDIA-NemotronLabs-VoiceChat-11B
+
+The first run downloads the checkpoint into the Hugging Face cache. A
+pre-downloaded local checkpoint directory can be used as ``model_path`` for
+offline operation.
+
+The checkpoint has an internal function-token channel but no duplex ASR head.
+The native pipeline decodes the function channel because its previous token is
+part of the next frame's model input, but it does not expose or execute tool
+calls.  The bundled RNN-T weights are not loaded.  Consequently, user
+transcription fields are empty and ASR-based forced turn-taking is disabled;
+the model's learned duplex turn-taking remains active.
+
+Use ``engine_type=native`` and ``use_llm_cache=false`` for the compatibility
+path.  The public ``config.json`` can be used directly; no checkpoint key or
+config rewriting is required.
 
 Programmatic Usage
 ^^^^^^^^^^^^^^^^^^
@@ -180,6 +214,10 @@ S2S Model Settings (``s2s``)
    * - ``use_perception_cache``
      - ``true``
      - Cache-aware streaming for the perception encoder.
+   * - ``use_llm_cache``
+     - ``false``
+     - Reuse the native LLM KV cache instead of replaying history. NemotronH
+       requires Transformers 5.13 or newer; leave disabled on older runtimes.
    * - ``top_p``
      - ``0.5``
      - Top-p sampling threshold.
@@ -493,7 +531,7 @@ Inference Backends
 NemotronVoiceChat has two inference components that each need a backend:
 
 - **LLM** (DuplexSTT backbone) -- takes audio embeddings from the perception
-  encoder and predicts text tokens, ASR tokens, and optional function-call
+  encoder and predicts text tokens plus checkpoint-dependent ASR and function
   tokens at each frame.
 - **TTS** (EarTTS) -- takes the predicted text token and produces audio codec
   codes (RVQ acoustic tokens).
@@ -557,6 +595,10 @@ Each backend also exposes lifecycle methods that the wrapper calls uniformly:
   only; no-op for vLLM).
 - ``setup_subword_cache(cfg)`` -- Enable the TTS subword embedding cache
   (native only; no-op for vLLM).
+
+The public NemotronLabs VoiceChat checkpoint's function-token feedback is
+currently supported only by ``PyTorchLLM``.  Its vLLM path is outside this
+compatibility configuration.
 
 The ``factory.create_model()`` function is the single entry point that
 dispatches to the correct class based on a per-component ``engine_type``

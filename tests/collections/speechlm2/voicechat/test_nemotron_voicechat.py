@@ -19,7 +19,100 @@ from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.speechlm2 import DuplexSTTDataset
+from nemo.collections.speechlm2.models.nemotron_voicechat import (
+    _apply_nemotron_labs_voicechat_release_config_shim,
+    _is_nemotron_labs_voicechat_release,
+)
 from nemo.collections.speechlm2.streaming.duplex_stt_inference import DuplexSTTStreamingInference
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "nvidia/NVIDIA-NemotronLabs-VoiceChat-11B",
+        "/checkpoints/NVIDIA-NemotronLabs-VoiceChat-11B",
+        "/checkpoints/NVIDIA-NemotronLabs-VoiceChat-11B/",
+    ],
+)
+def test_identifies_nemotron_labs_voicechat_release(model_id):
+    assert _is_nemotron_labs_voicechat_release(model_id)
+
+
+def test_identifies_release_downloaded_to_an_arbitrary_directory():
+    cfg = {
+        "_rnnt_merge_info": {},
+        "model": {
+            "stt": {
+                "model": {
+                    "pretrained_llm": "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+                    "use_function_head": True,
+                    "predict_user_text": False,
+                }
+            }
+        },
+    }
+    assert _is_nemotron_labs_voicechat_release("/checkpoints/arbitrary-name", cfg)
+
+
+def test_does_not_apply_release_shim_to_other_checkpoints():
+    assert not _is_nemotron_labs_voicechat_release("/checkpoints/my-current-nemo-export")
+
+
+def test_nemotron_labs_release_config_shim():
+    cfg = {
+        "data": {"source_sample_rate": 8000},
+        "exp_manager": {"explicit_log_dir": "/global"},
+        "model": {
+            "stt": {
+                "model": {
+                    "pretrained_llm": "dummy",
+                    "base_model_name": "backbone",
+                    "embed_tokens_name": "embeddings",
+                },
+                "data": {"source_sample_rate": 16000},
+                "exp_manager": {"explicit_log_dir": "/stt"},
+            },
+            "speech_generation": {
+                "model": {"tts_config": {"cas_config": {"pretrained_tokenizer_name": "legacy-tokenizer"}}}
+            },
+        },
+    }
+
+    normalized = _apply_nemotron_labs_voicechat_release_config_shim(cfg)
+
+    assert normalized["model"]["stt"]["model"]["source_sample_rate"] == 16000
+    assert normalized["model"]["stt"]["model"]["validation_save_path"] == "/stt"
+    assert normalized["model"]["stt"]["model"]["llm_attr_name"] == "model"
+    assert normalized["model"]["stt"]["model"]["embed_tokens_attr_name"] == "embeddings"
+    assert "pretrained_tokenizer_name" not in (
+        normalized["model"]["speech_generation"]["model"]["tts_config"]["cas_config"]
+    )
+
+
+def test_nemotron_labs_release_config_shim_preserves_current_values():
+    cfg = {
+        "model": {
+            "stt": {
+                "model": {
+                    "source_sample_rate": 22050,
+                    "validation_save_path": "/already-flat",
+                    "llm_attr_name": "already-flat",
+                    "embed_tokens_attr_name": "already-flat",
+                    "base_model_name": "backbone",
+                    "embed_tokens_name": "embeddings",
+                },
+                "data": {"source_sample_rate": 16000},
+                "exp_manager": {"explicit_log_dir": "/nested"},
+            }
+        }
+    }
+
+    normalized = _apply_nemotron_labs_voicechat_release_config_shim(cfg)
+
+    assert normalized["model"]["stt"]["model"]["source_sample_rate"] == 22050
+    assert normalized["model"]["stt"]["model"]["validation_save_path"] == "/already-flat"
+    assert normalized["model"]["stt"]["model"]["llm_attr_name"] == "already-flat"
+    assert normalized["model"]["stt"]["model"]["embed_tokens_attr_name"] == "already-flat"
 
 
 @pytest.fixture(scope="session")

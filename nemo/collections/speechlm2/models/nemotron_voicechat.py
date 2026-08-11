@@ -35,6 +35,96 @@ from nemo.collections.speechlm2.parts.pretrained import set_model_dict_for_parti
 from nemo.utils import logging
 
 
+_NEMOTRON_LABS_VOICECHAT_RELEASE_ID = "nvidia/NVIDIA-NemotronLabs-VoiceChat-11B"
+
+
+def _is_nemotron_labs_voicechat_release(model_id: str | Path, cfg: dict | None = None) -> bool:
+    """Recognize the public repo ID, local directory name, or release config."""
+    model_id = str(model_id).rstrip("/")
+    if model_id == _NEMOTRON_LABS_VOICECHAT_RELEASE_ID or Path(model_id).name == Path(
+        _NEMOTRON_LABS_VOICECHAT_RELEASE_ID
+    ).name:
+        return True
+
+    # ``hf download --local-dir`` permits arbitrary directory names. In that
+    # case identify the release by its unique bundled RNN-T metadata plus the
+    # function/no-ASR channel configuration.
+    try:
+        stt_cfg = cfg["model"]["stt"]["model"]
+    except (KeyError, TypeError):
+        return False
+    return (
+        "_rnnt_merge_info" in cfg
+        and stt_cfg.get("pretrained_llm") == "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
+        and stt_cfg.get("use_function_head") is True
+        and stt_cfg.get("predict_user_text") is False
+    )
+
+
+def _apply_nemotron_labs_voicechat_release_config_shim(cfg: dict) -> dict:
+    """Adapt the experimental NemotronLabs VoiceChat release to current NeMo.
+
+    This is intentionally a narrow backward-compatibility shim for:
+
+    Checkpoint:
+      https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B
+    Reference code:
+      https://github.com/NVIDIA-NeMo/Speech/tree/nemotron-labs-voicechat
+
+    That checkpoint's config was designed for the experimental reference
+    branch, not as the canonical checkpoint schema for current NeMo. Do not
+    copy these legacy fields into new exports. The shim translates only the
+    known config/API differences and leaves the checkpoint unchanged on disk.
+
+    The release stores STT data and experiment settings next to
+    ``model.stt.model``. Current ``DuplexSTTModel`` receives only the inner
+    model dict, so copy the two runtime fields it requires when absent.
+    Existing current-NeMo exports remain unchanged.
+    """
+    try:
+        stt_section = cfg["model"]["stt"]
+        stt_model_cfg = stt_section["model"]
+    except (KeyError, TypeError):
+        return cfg
+
+    if "source_sample_rate" not in stt_model_cfg:
+        source_sample_rate = stt_section.get("data", {}).get("source_sample_rate")
+        if source_sample_rate is None:
+            source_sample_rate = cfg.get("data", {}).get("source_sample_rate")
+        if source_sample_rate is not None:
+            stt_model_cfg["source_sample_rate"] = source_sample_rate
+            logging.info("NemotronLabs release shim: mapped STT source_sample_rate")
+
+    if "validation_save_path" not in stt_model_cfg:
+        validation_save_path = stt_section.get("exp_manager", {}).get("explicit_log_dir")
+        if validation_save_path is None:
+            validation_save_path = cfg.get("exp_manager", {}).get("explicit_log_dir", "")
+        stt_model_cfg["validation_save_path"] = validation_save_path
+        logging.info("NemotronLabs release shim: mapped STT validation_save_path")
+
+    # The released branch used the old Transformers NemotronH attribute names
+    # (backbone/embeddings). Current Transformers exposes the causal-LM
+    # backbone as model while retaining embeddings on the inner module.
+    if "llm_attr_name" not in stt_model_cfg and "base_model_name" in stt_model_cfg:
+        stt_model_cfg["llm_attr_name"] = "model"
+        logging.info("NemotronLabs release shim: mapped NemotronH backbone to 'model'")
+    if "embed_tokens_attr_name" not in stt_model_cfg and "embed_tokens_name" in stt_model_cfg:
+        stt_model_cfg["embed_tokens_attr_name"] = stt_model_cfg["embed_tokens_name"]
+        logging.info(
+            "NemotronLabs release shim: mapped token embedding attribute to "
+            f"{stt_model_cfg['embed_tokens_attr_name']!r}"
+        )
+
+    try:
+        cas_cfg = cfg["model"]["speech_generation"]["model"]["tts_config"]["cas_config"]
+        if cas_cfg.pop("pretrained_tokenizer_name", None) is not None:
+            logging.info("NemotronLabs release shim: removed legacy CAS pretrained_tokenizer_name")
+    except (KeyError, TypeError):
+        pass
+
+    return cfg
+
+
 class NemotronVoiceChat(LightningModule, HFHubMixin):
     """
     NemotronVoiceChat: End-to-End Duplex Speech-to-Speech Model.
@@ -242,6 +332,9 @@ class NemotronVoiceChat(LightningModule, HFHubMixin):
             raise RuntimeError(f"Missing {CONFIG_NAME} file for {model_id=}")
 
         model_kwargs['cfg'] = OmegaConf.to_container(OmegaConf.load(resolved_config_file))
+        if _is_nemotron_labs_voicechat_release(model_id, model_kwargs['cfg']):
+            logging.info(f"Applying compatibility shim for {_NEMOTRON_LABS_VOICECHAT_RELEASE_ID}")
+            _apply_nemotron_labs_voicechat_release_config_shim(model_kwargs['cfg'])
 
         # Skip loading child module weights natively
         model_kwargs['cfg']['pretrained_weights'] = False

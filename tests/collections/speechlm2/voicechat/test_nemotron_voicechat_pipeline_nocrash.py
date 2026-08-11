@@ -177,7 +177,9 @@ def test_pipeline_no_crash_tiny_model_decode_audio(tiny_model_artifacts, overrid
     output_dir = tempfile.mkdtemp(prefix="no-crash-audio-")
 
     pipeline = _build_no_crash_pipeline(
-        model_dir, audio_path, output_dir,
+        model_dir,
+        audio_path,
+        output_dir,
         {"s2s": {"decode_audio": True, "speaker_reference": speaker_ref_path}},
         overrides,
     )
@@ -190,3 +192,25 @@ def test_pipeline_no_crash_tiny_model_decode_audio(tiny_model_artifacts, overrid
     )
     result = pipeline.run([audio_path], progress_bar=progress_bar)
     assert result is not None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
+def test_pipeline_function_channel_without_asr(tiny_function_model_artifacts):
+    """The public checkpoint's function channel stays internal and ASR is optional."""
+    model_dir, audio_path, _ = tiny_function_model_artifacts
+    output_dir = tempfile.mkdtemp(prefix="no-crash-function-no-asr-")
+
+    pipeline = _build_no_crash_pipeline(
+        model_dir,
+        audio_path,
+        output_dir,
+        {"s2s": {"decode_audio": False, "force_turn_taking": True}},
+    )
+    assert pipeline.s2s_model.model.stt_model.use_function_head
+    assert not pipeline.s2s_model.model.stt_model.predict_user_text
+    assert not pipeline.s2s_model.model.stt_model.cfg.force_turn_taking
+
+    result = pipeline.run([audio_path])
+    assert result is not None
+    assert result[0].token_asr_text is None
+    assert result[0].raw_asr_text is None

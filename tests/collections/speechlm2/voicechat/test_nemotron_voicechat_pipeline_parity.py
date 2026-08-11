@@ -113,7 +113,9 @@ def _merge_incremental_debug_steps(steps: list[dict[str, Any]]) -> dict[str, Any
 
 
 def _load_and_pad_audio(
-    audio_path: str, device: torch.device, dtype: torch.dtype,
+    audio_path: str,
+    device: torch.device,
+    dtype: torch.dtype,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Load audio, zero-pad to a whole number of 80 ms frames, return ``(audio, lens)``."""
     import librosa
@@ -153,7 +155,9 @@ def run_parity_check(
     elif wrapper.speaker_reference:
         OmegaConf.update(wrapper.model.cfg, "inference_speaker_reference", wrapper.speaker_reference, force_add=True)
     speaker_kw: dict[str, Any] = {}
-    if not wrapper.model.cfg.get("inference_speaker_name") and not wrapper.model.cfg.get("inference_speaker_reference"):
+    if not wrapper.model.cfg.get("inference_speaker_name") and not wrapper.model.cfg.get(
+        "inference_speaker_reference"
+    ):
         speaker_kw["speaker_audio"] = torch.randn(1, 22050, device=wrapper.device)
         speaker_kw["speaker_audio_lens"] = torch.tensor([22050], device=wrapper.device, dtype=torch.long)
 
@@ -303,10 +307,29 @@ def test_parity_tiny_model(tiny_model_artifacts):
     output_dir = tempfile.mkdtemp(prefix="parity-tiny-")
 
     pipeline = _build_parity_pipeline(
-        model_dir, audio_path, output_dir,
+        model_dir,
+        audio_path,
+        output_dir,
         {"s2s": {"system_prompt": _MOCK_SYSTEM_PROMPT}},
     )
     report = run_parity_check(pipeline, audio_path, system_prompt=_MOCK_SYSTEM_PROMPT)
+    assert_parity(report, strict=True, atol=0.0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
+def test_parity_tiny_function_model_without_asr(tiny_function_model_artifacts):
+    """Function-token feedback matches offline inference without an ASR channel."""
+    model_dir, audio_path, _ = tiny_function_model_artifacts
+    output_dir = tempfile.mkdtemp(prefix="parity-tiny-function-")
+
+    pipeline = _build_parity_pipeline(
+        model_dir,
+        audio_path,
+        output_dir,
+        {"s2s": {"system_prompt": _MOCK_SYSTEM_PROMPT, "force_turn_taking": True}},
+    )
+    report = run_parity_check(pipeline, audio_path, system_prompt=_MOCK_SYSTEM_PROMPT)
+    assert report["asr_token_comparison"]["match"] is None
     assert_parity(report, strict=True, atol=0.0)
 
 
@@ -339,7 +362,9 @@ def test_parity_real_checkpoint():
     if speaker:
         parity_overrides["s2s"]["speaker_name"] = speaker
     pipeline = _build_parity_pipeline(
-        ckpt, audio, tempfile.mkdtemp(prefix="parity-"),
+        ckpt,
+        audio,
+        tempfile.mkdtemp(prefix="parity-"),
         parity_overrides,
     )
     report = run_parity_check(pipeline, audio, system_prompt=_MOCK_SYSTEM_PROMPT)

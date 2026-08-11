@@ -19,7 +19,9 @@ ngc registry model download-version nim/nvidia/nemotron-labs-voicechat:1.0.0
 chmod -R 777 nemotron-labs-voicechat_v1.0.0
 ```
 
-This creates a `nemotron-labs-voicechat_v1.0.0/` directory in the current working directory containing the Triton model repository.
+> **Note:** If you see `Missing org - If Authenticated, org is also required." error`, run `export NGC_API_KEY=""` and retry.
+
+Successful model download creates a `nemotron-labs-voicechat_v1.0.0/` directory with Triton model repository in the current working directory.
 
 ### Step 2 — Launch the container
 

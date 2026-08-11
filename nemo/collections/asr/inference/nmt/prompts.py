@@ -153,9 +153,7 @@ class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
 
         system_block = f"<|im_start|>system\n{cls.SYSTEM_MESSAGE}<|im_end|>\n"
         return (
-            system_block
-            + f"<|im_start|>user\n{user_content}<|im_end|>\n"
-            + f"<|im_start|>assistant\n{assistant_text}"
+            system_block + f"<|im_start|>user\n{user_content}<|im_end|>\n" + f"<|im_start|>assistant\n{assistant_text}"
         )
 
     @classmethod

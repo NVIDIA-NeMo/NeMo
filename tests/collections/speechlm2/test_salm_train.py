@@ -28,6 +28,36 @@ with patch("torch.cuda.is_available", return_value=False):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("precision", "use_nemo_automodel", "compile_enabled", "activation_checkpointing_llm", "expected"),
+    [
+        ("bf16-true", True, True, True, True),
+        ("bf16-true", False, True, True, False),
+        ("bf16-true", True, False, True, False),
+        ("bf16-true", True, True, False, False),
+        ("bf16-flash", True, True, True, False),
+    ],
+)
+def test_pin_bf16_default_dtype_only_for_compiled_activation_recompute(
+    precision, use_nemo_automodel, compile_enabled, activation_checkpointing_llm, expected
+):
+    cfg = _SALM_TRAIN.OmegaConf.create(
+        {
+            "model": {
+                "use_nemo_automodel": use_nemo_automodel,
+                "compile": {"enabled": compile_enabled},
+            },
+            "trainer": {
+                "precision": precision,
+                "strategy": {"activation_checkpointing_llm": activation_checkpointing_llm},
+            },
+        }
+    )
+
+    assert _SALM_TRAIN._should_pin_bf16_default_dtype(cfg) is expected
+
+
+@pytest.mark.unit
 def test_create_salm_dataset_omits_unset_multispeaker_config(monkeypatch):
     class LegacySALMDataset:
         def __init__(self, tokenizer):

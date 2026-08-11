@@ -27,6 +27,16 @@ if torch.cuda.is_available():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
+def _should_pin_bf16_default_dtype(cfg: DictConfig) -> bool:
+    """Return whether compiled BF16 checkpoint recompute needs a stable default dtype."""
+    return (
+        cfg.trainer.get("precision") == "bf16-true"
+        and bool(cfg.model.get("use_nemo_automodel", False))
+        and bool(OmegaConf.select(cfg, "model.compile.enabled", default=False))
+        and bool(OmegaConf.select(cfg, "trainer.strategy.activation_checkpointing_llm", default=False))
+    )
+
+
 def _create_salm_dataset(tokenizer, data_cfg: DictConfig | dict) -> SALMDataset:
     """Build SALMDataset without forwarding unset options to legacy NeMo packages."""
     multispeaker_cfg = data_cfg.get("multispeaker_cfg", None)
@@ -44,20 +54,12 @@ def train(cfg):
     seed_everything(cfg.data.train_ds.seed)
     torch.set_float32_matmul_precision("medium")
 
-    # Pin the process-global default dtype to match bf16-true precision. Under
-    # bf16-true, the default dtype is bf16 around the forward, but activation-
-    # checkpoint recompute runs in backward where it has reverted to fp32. Any
-    # @torch.compile'd kernel whose Dynamo GLOBAL_STATE guard includes
-    # default_dtype (e.g. Automodel's Float32RMSNorm) is then traced under bf16
-    # in the forward and re-entered under fp32 in recompute -> it recompiles every
-    # step until Dynamo's recompile_limit (8) raises, killing training ~33 min in
-    # (2904 mtp4r-v2 BSHD recipe, 2026-06-29). Pinning the global default makes the
-    # forward and the recompute agree so the guard never flips. This protects all
-    # compiled kernels (not just RMSNorm) and is numerically inert: bf16-true
-    # already trains in bf16, and fp32-critical modules/buffers are created with an
-    # explicit dtype (RMSNorm upcasts via .float(); RoPE/A_log/router bias are
-    # explicitly fp32), so they are unaffected by the default.
-    if cfg.trainer.get("precision") == "bf16-true":
+    # Under bf16-true, Lightning changes the default dtype only around the forward.
+    # A torch.compile-d LLM that is recomputed by activation checkpointing then sees
+    # fp32 during backward, invalidates its Dynamo global-state guard, and repeatedly
+    # recompiles. Pin the process default only for that exact combination; ordinary
+    # bf16-true and bf16-flash runs retain their precision plugin behavior.
+    if _should_pin_bf16_default_dtype(cfg):
         torch.set_default_dtype(torch.bfloat16)
 
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))

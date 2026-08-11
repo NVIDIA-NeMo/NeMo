@@ -164,7 +164,7 @@ def test_split_spk_targets_into_chunks_preserves_realistic_mixed_batch(
 ):
     """Preserve every valid RTTM frame in a realistic mixed-length batch.
 
-    This models the PEE recipe's production settings:
+    This models realistic multispeaker production settings:
 
     * batch size 4;
     * 100 mel frames per second;

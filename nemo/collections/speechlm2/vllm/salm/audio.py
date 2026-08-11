@@ -107,29 +107,10 @@ def _load_nemo_perception(perception_cfg: dict) -> nn.Module:
 
 
 def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) -> bool:
-    """Replace ``perception.encoder`` with a ParallelExpertEncoder bundle so PE-trained
-    checkpoints (nested ``asr_encoder.*`` / ``diarization_model.*`` weights) load correctly.
+    """Mount a configured perception encoder from a local bundle or model identifier.
 
-    ``pe_encoder_path`` comes straight from the checkpoint's ``config.json`` (the
-    training recipe's ``model.pe_encoder_path``) and may be **either**:
-
-    * a local ``.nemo`` file -- restored directly, or
-    * a pretrained model identifier (HuggingFace Hub ``{repo}/{name}`` or NGC
-      alias) -- resolved via ``ParallelExpertEncoderPT.load_from_nemo`` ->
-      ``Model.from_pretrained``, which honours the HuggingFace cache and
-      ``HF_HUB_OFFLINE`` so a prefetched cache works on offline compute nodes.
-
-    We therefore defer resolution to ``load_from_nemo`` (which dispatches local
-    vs. model-id) instead of pre-rejecting anything that is not already a local
-    file. The only fail-fast here is a local ``.nemo`` file that exists but is
-    not a PE bundle -- that is an unambiguous user error.
-
-    Args:
-        perception (nn.Module): Perception module whose ``encoder`` is swapped in place.
-        pe_encoder_path (str | None): Local ``.nemo`` path or pretrained model id; no-op if falsy.
-
-    Returns:
-        bool: True if a PE encoder was mounted, False otherwise.
+    Remote identifiers are resolved through the model cache; invalid local bundles
+    fail before the encoder is replaced.
     """
     if pe_encoder_path in (None, "", False):
         return False
@@ -138,9 +119,7 @@ def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) 
 
     from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
 
-    # Only fail-fast for a *local* ``.nemo`` file that is not a PE bundle. A
-    # non-local reference (HF repo id / NGC alias) is resolved offline from the
-    # HuggingFace cache by load_from_nemo -> from_pretrained, so do not reject it.
+    # Validate local bundles immediately; resolve remote identifiers in the loader.
     is_local_nemo_file = (
         isinstance(pe_encoder_path, str) and pe_encoder_path.endswith(".nemo") and os.path.isfile(pe_encoder_path)
     )
@@ -149,11 +128,8 @@ def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) 
 
     pe_encoder = ParallelExpertEncoderPT.load_from_nemo(pe_encoder_path, map_location="cpu", strict=True)
 
-    # The outgoing encoder's width is deliberately not a constraint. It is about to be
-    # discarded, and a bundle whose speech expert is wider than the pretrained ASR
-    # encoder is valid (for example, PEE-v2 is 2048-wide while Canary is 1024-wide).
-    # The unchanged mel frontend and downstream adapter/projection are the components
-    # that must agree with the replacement encoder.
+    # The outgoing width is unconstrained; unchanged frontend and downstream
+    # components must match the replacement encoder.
     existing_d_model = int(getattr(perception.encoder, "d_model", -1))
     if existing_d_model > 0 and int(pe_encoder.d_model) != existing_d_model:
         logging.info(
@@ -194,7 +170,7 @@ def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) 
     if ref_param is not None:
         pe_encoder = pe_encoder.to(device=ref_param.device, dtype=ref_param.dtype)
 
-    # PE encoder consumes un-normalised mels and replays ASR norm internally, so disable preprocessor norm.
+    # The replacement consumes un-normalised mels and applies ASR normalization internally.
     try:
         perception.preprocessor.featurizer.normalize = None
     except AttributeError:

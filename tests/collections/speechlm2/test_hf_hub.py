@@ -16,11 +16,14 @@ import json
 from unittest.mock import patch
 
 import pytest
+import torch
+from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.parts.hf_hub import (
     SAFETENSORS_INDEX_FILE,
     SAFETENSORS_SINGLE_FILE,
     _inject_local_artifact_paths,
+    _load_state_dict_with_dtensors,
     _resolve_safetensors_weight_dir,
 )
 
@@ -154,3 +157,63 @@ def test_resolve_safetensors_weight_dir_rejects_missing_indexed_shard(tmp_path):
     ):
         with pytest.raises(RuntimeError, match="Missing safetensors shard"):
             _resolve_safetensors_weight_dir("missing-shard-model", {})
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["../outside.safetensors", "/absolute/model.safetensors", "model.bin", 7],
+)
+def test_resolve_safetensors_weight_dir_rejects_unsafe_shard_filename(tmp_path, filename):
+    index = tmp_path / SAFETENSORS_INDEX_FILE
+    index.write_text(json.dumps({"weight_map": {"tensor": filename}}))
+    resolved = {
+        SAFETENSORS_SINGLE_FILE: None,
+        SAFETENSORS_INDEX_FILE: str(index),
+    }
+    with patch(
+        "nemo.collections.speechlm2.parts.hf_hub.cached_file",
+        side_effect=lambda _model_id, name, **_kwargs: resolved.get(name),
+    ):
+        with pytest.raises(RuntimeError, match="Invalid shard filename"):
+            _resolve_safetensors_weight_dir("unsafe-shard-model", {})
+
+
+def test_resolve_safetensors_weight_dir_rejects_unindexed_safetensors(tmp_path):
+    index = tmp_path / SAFETENSORS_INDEX_FILE
+    shard = tmp_path / "model-00001-of-00001.safetensors"
+    extra = tmp_path / "adapter.safetensors"
+    index.write_text(json.dumps({"weight_map": {"tensor": shard.name}}))
+    shard.write_bytes(b"indexed")
+    extra.write_bytes(b"not indexed")
+    resolved = {
+        SAFETENSORS_SINGLE_FILE: None,
+        SAFETENSORS_INDEX_FILE: str(index),
+        shard.name: str(shard),
+    }
+    with patch(
+        "nemo.collections.speechlm2.parts.hf_hub.cached_file",
+        side_effect=lambda _model_id, name, **_kwargs: resolved.get(name),
+    ):
+        with pytest.raises(RuntimeError, match="Unindexed safetensors files"):
+            _resolve_safetensors_weight_dir("extra-file-model", {})
+
+
+def test_distributed_reader_loads_valid_two_shard_safetensors(tmp_path):
+    first = tmp_path / "model-00001-of-00002.safetensors"
+    second = tmp_path / "model-00002-of-00002.safetensors"
+    save_file({"first": torch.tensor([1.0, 2.0])}, first)
+    save_file({"second": torch.tensor([3.0, 4.0])}, second)
+    (tmp_path / SAFETENSORS_INDEX_FILE).write_text(
+        json.dumps({"weight_map": {"first": first.name, "second": second.name}})
+    )
+
+    class TwoParameterModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.first = torch.nn.Parameter(torch.zeros(2))
+            self.second = torch.nn.Parameter(torch.zeros(2))
+
+    model = TwoParameterModel()
+    _load_state_dict_with_dtensors(model, str(tmp_path))
+    torch.testing.assert_close(model.first, torch.tensor([1.0, 2.0]))
+    torch.testing.assert_close(model.second, torch.tensor([3.0, 4.0]))

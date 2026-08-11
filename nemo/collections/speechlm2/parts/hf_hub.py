@@ -294,12 +294,35 @@ def _resolve_safetensors_weight_dir(model_id: str, cached_file_kwargs: dict) -> 
         )
     try:
         index = json.loads(Path(index_file).read_text())
-        shard_names = sorted(set(index["weight_map"].values()))
+        weight_map = index["weight_map"]
+        if not isinstance(weight_map, dict) or not weight_map:
+            raise TypeError("weight_map must be a non-empty object")
+        if not all(isinstance(name, str) and name for name in weight_map):
+            raise TypeError("weight_map keys must be non-empty strings")
+        shard_names = sorted(set(weight_map.values()))
     except (KeyError, TypeError, json.JSONDecodeError) as error:
         raise RuntimeError(f"Invalid {SAFETENSORS_INDEX_FILE} for {model_id=}") from error
-    if not shard_names or not all(isinstance(name, str) and name for name in shard_names):
-        raise RuntimeError(f"Invalid empty shard map in {SAFETENSORS_INDEX_FILE} for {model_id=}")
+    if not all(
+        isinstance(name, str)
+        and name
+        and Path(name).name == name
+        and name.endswith(".safetensors")
+        for name in shard_names
+    ):
+        raise RuntimeError(f"Invalid shard filename in {SAFETENSORS_INDEX_FILE} for {model_id=}")
     for shard_name in shard_names:
-        if cached_file(model_id, shard_name, **cached_file_kwargs) is None:
+        shard_file = cached_file(model_id, shard_name, **cached_file_kwargs)
+        if shard_file is None:
             raise RuntimeError(f"Missing safetensors shard {shard_name!r} for {model_id=}")
+        if Path(shard_file).parent != Path(index_file).parent:
+            raise RuntimeError(f"Indexed safetensors shard resolved outside checkpoint directory: {shard_name!r}")
+    unexpected = sorted(
+        path.name
+        for path in Path(index_file).parent.glob("*.safetensors")
+        if path.name not in shard_names
+    )
+    if unexpected:
+        raise RuntimeError(
+            f"Unindexed safetensors files would be scanned by the distributed reader: {unexpected}"
+        )
     return Path(index_file).parent

@@ -103,107 +103,6 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         # at the entrance of the modality adapter. ``None`` (default) is a no-op.
         self.rote = self.from_config_dict(cfg.rote) if cfg.get("rote") is not None else None
 
-    @typecheck.disable_checks()
-    def forward_sequence_packed(
-        self,
-        input_signal=None,
-        input_signal_length=None,
-        processed_signal=None,
-        processed_signal_length=None,
-        time_offset=None,
-        spk_targets=None,
-        input_signal_cu_seqlens=None,
-    ) -> PackedEncoderOutput:
-        """Encode audio natively as token-major variable-length sequences.
-
-        This opt-in API intentionally supports only an identity modality adapter,
-        no multi-layer feature extraction, and no RoTE. Existing ``forward`` and
-        checkpoint state dictionaries are unchanged.
-        """
-        if not self.supports_sequence_packed_output:
-            raise ValueError(
-                "Packed encoder sequences require an encoder with native packed support, "
-                "IdentityConnector, no multi-layer feature extraction, and rote=null."
-            )
-        processed_signal, processed_signal_length = self.maybe_preprocess_audio(
-            input_signal,
-            input_signal_length,
-            processed_signal,
-            processed_signal_length,
-            input_signal_cu_seqlens=input_signal_cu_seqlens,
-        )
-        if self.spec_augmentation is not None and self.training:
-            if isinstance(processed_signal, PackedEncoderOutput):
-                processed_signal = self.spec_augmentation.forward_packed(processed_signal)
-            else:
-                processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
-
-        encoder_kwargs = {"audio_signal": processed_signal, "length": processed_signal_length}
-        if spk_targets is not None:
-            if not self._encoder_accepts_spk_targets(self.encoder):
-                raise ValueError(
-                    "`spk_targets` were provided, but the mounted perception encoder "
-                    f"({type(self.encoder).__name__}) does not support speaker-target inputs."
-                )
-            encoder_kwargs["spk_targets"] = spk_targets
-        encoded = self.encoder.forward_sequence_packed(**encoder_kwargs)
-        return encoded.with_data(self.proj(encoded.data))
-
-    # disable type checks to avoid type-check errors when using Conformer as modality adapter
-    @typecheck.disable_checks()
-    def forward(
-        self,
-        input_signal=None,
-        input_signal_length=None,
-        processed_signal=None,
-        processed_signal_length=None,
-        return_encoder_emb=False,
-        time_offset=None,
-        spk_targets=None,
-        input_signal_cu_seqlens=None,
-    ):
-        processed_signal, processed_signal_length = self.maybe_preprocess_audio(
-            input_signal,
-            input_signal_length,
-            processed_signal,
-            processed_signal_length,
-            input_signal_cu_seqlens=input_signal_cu_seqlens,
-        )
-        if isinstance(processed_signal, PackedEncoderOutput):
-            processed_signal = unpack_encoder_output(
-                processed_signal, total_length=processed_signal.padded_length
-            ).transpose(1, 2)
-
-        # Spec augment is not applied during evaluation/testing
-        if self.spec_augmentation is not None and self.training:
-            processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
-
-        if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
-            encoder_emb, encoded_len = self.encoder_multilayer(
-                audio_signal=processed_signal, length=processed_signal_length
-            )
-        else:
-            encoder_kwargs = {"audio_signal": processed_signal, "length": processed_signal_length}
-            if spk_targets is not None:
-                if not self._encoder_accepts_spk_targets(self.encoder):
-                    raise ValueError(
-                        "`spk_targets` were provided, but the mounted perception encoder "
-                        f"({type(self.encoder).__name__}) does not support speaker-target inputs. "
-                        "spk_targets has no effect when the encoder does not support it."
-                    )
-                encoder_kwargs["spk_targets"] = spk_targets
-            encoder_emb, encoded_len = self.encoder(**encoder_kwargs)
-        if self.rote is not None:
-            encoder_emb = self._apply_rote(encoder_emb, time_offset)
-        encoded, encoded_len = self.modality_adapter(audio_signal=encoder_emb, length=encoded_len)
-
-        # b, c, t -> b, t, c
-        encoded = self.proj(encoded.transpose(1, 2))
-        if return_encoder_emb:
-            return encoded, encoded_len, encoder_emb.transpose(1, 2)
-        else:
-            return encoded, encoded_len
-
     def set_activation_checkpointing(self, enabled: bool) -> None:
         """Enable/disable activation checkpointing on the encoder's transformer layers.
 
@@ -273,6 +172,107 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         except (TypeError, ValueError):
             return False
 
+    # disable type checks to avoid type-check errors when using Conformer as modality adapter
+    @typecheck.disable_checks()
+    def forward(
+        self,
+        input_signal=None,
+        input_signal_length=None,
+        processed_signal=None,
+        processed_signal_length=None,
+        return_encoder_emb=False,
+        time_offset=None,
+        spk_targets=None,
+        input_signal_cu_seqlens=None,
+    ):
+        processed_signal, processed_signal_length = self.maybe_preprocess_audio(
+            input_signal,
+            input_signal_length,
+            processed_signal,
+            processed_signal_length,
+            input_signal_cu_seqlens=input_signal_cu_seqlens,
+        )
+        if isinstance(processed_signal, PackedEncoderOutput):
+            processed_signal = unpack_encoder_output(
+                processed_signal, total_length=processed_signal.padded_length
+            ).transpose(1, 2)
+
+        # Spec augment is not applied during evaluation/testing
+        if self.spec_augmentation is not None and self.training:
+            processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
+
+        if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
+            encoder_emb, encoded_len = self.encoder_multilayer(
+                audio_signal=processed_signal, length=processed_signal_length
+            )
+        else:
+            encoder_kwargs = {"audio_signal": processed_signal, "length": processed_signal_length}
+            if spk_targets is not None:
+                if not self._encoder_accepts_spk_targets(self.encoder):
+                    raise ValueError(
+                        "`spk_targets` were provided, but the mounted perception encoder "
+                        f"({type(self.encoder).__name__}) does not support speaker-target inputs. "
+                        "spk_targets has no effect when the encoder does not support it."
+                    )
+                encoder_kwargs["spk_targets"] = spk_targets
+            encoder_emb, encoded_len = self.encoder(**encoder_kwargs)
+        if self.rote is not None:
+            encoder_emb = self._apply_rote(encoder_emb, time_offset)
+        encoded, encoded_len = self.modality_adapter(audio_signal=encoder_emb, length=encoded_len)
+
+        # b, c, t -> b, t, c
+        encoded = self.proj(encoded.transpose(1, 2))
+        if return_encoder_emb:
+            return encoded, encoded_len, encoder_emb.transpose(1, 2)
+        else:
+            return encoded, encoded_len
+
+    @typecheck.disable_checks()
+    def forward_sequence_packed(
+        self,
+        input_signal=None,
+        input_signal_length=None,
+        processed_signal=None,
+        processed_signal_length=None,
+        time_offset=None,
+        spk_targets=None,
+        input_signal_cu_seqlens=None,
+    ) -> PackedEncoderOutput:
+        """Encode audio natively as token-major variable-length sequences.
+
+        This opt-in API intentionally supports only an identity modality adapter,
+        no multi-layer feature extraction, and no RoTE. Existing ``forward`` and
+        checkpoint state dictionaries are unchanged.
+        """
+        if not self.supports_sequence_packed_output:
+            raise ValueError(
+                "Packed encoder sequences require an encoder with native packed support, "
+                "IdentityConnector, no multi-layer feature extraction, and rote=null."
+            )
+        processed_signal, processed_signal_length = self.maybe_preprocess_audio(
+            input_signal,
+            input_signal_length,
+            processed_signal,
+            processed_signal_length,
+            input_signal_cu_seqlens=input_signal_cu_seqlens,
+        )
+        if self.spec_augmentation is not None and self.training:
+            if isinstance(processed_signal, PackedEncoderOutput):
+                processed_signal = self.spec_augmentation.forward_packed(processed_signal)
+            else:
+                processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
+
+        encoder_kwargs = {"audio_signal": processed_signal, "length": processed_signal_length}
+        if spk_targets is not None:
+            if not self._encoder_accepts_spk_targets(self.encoder):
+                raise ValueError(
+                    "`spk_targets` were provided, but the mounted perception encoder "
+                    f"({type(self.encoder).__name__}) does not support speaker-target inputs."
+                )
+            encoder_kwargs["spk_targets"] = spk_targets
+        encoded = self.encoder.forward_sequence_packed(**encoder_kwargs)
+        return encoded.with_data(self.proj(encoded.data))
+
 
 class IdentityConnector(nn.Module):
     """User to pass encoder's representations as-is to the LLM."""
@@ -286,6 +286,42 @@ class IdentityConnector(nn.Module):
 
     def forward(self, audio_signal, length=None, *args, **kwargs):
         return audio_signal, length
+
+
+def _set_encoder_activation_checkpointing(encoder: nn.Module, enabled: bool) -> None:
+    """Wrap the encoder's subsampling front-end and each transformer layer with
+    ``checkpoint_wrapper`` when enabled.
+
+    Covers ``encoder.pre_encode`` (the Conformer fbank→subsampled-activation
+    module: ``ConvSubsampling`` / ``StackingSubsampling`` / ``nn.Linear``) and
+    each entry in ``encoder.layers``. Missing attributes are skipped so
+    non-Conformer architectures degrade gracefully. No-op when ``enabled`` is
+    False.
+
+    Encoders whose execution bypasses ``encoder.layers[i](...)`` may implement
+    ``set_activation_checkpointing`` and own the policy themselves.
+    """
+    if not enabled:
+        return
+    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
+
+    own_policy = getattr(encoder, "set_activation_checkpointing", None)
+    if callable(own_policy):
+        own_policy(enabled)
+        return
+
+    pre_encode = getattr(encoder, "pre_encode", None)
+    # ConformerEncoder.forward dispatches on ``isinstance(pre_encode, nn.Linear)``
+    # to choose between positional and (x=, lengths=) kwargs. Wrapping a Linear
+    # hides its type and routes it to the wrong branch, so skip that case — the
+    # memory win is negligible anyway (one linear vs. a conv/stacking stack).
+    if pre_encode is not None and not isinstance(pre_encode, nn.Linear):
+        encoder.pre_encode = checkpoint_wrapper(pre_encode)
+
+    layers = getattr(encoder, "layers", None)
+    if layers is not None:
+        for i in range(len(layers)):
+            layers[i] = checkpoint_wrapper(layers[i])
 
 
 class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
@@ -516,42 +552,3 @@ class MultiLayerProjectionConnector(nn.Module):
         audio_signal = torch.cat(audio_signal, dim=1).transpose(1, 2)
         projected = self.proj(audio_signal).transpose(1, 2)
         return projected, length[0]
-
-
-def _set_encoder_activation_checkpointing(encoder: nn.Module, enabled: bool) -> None:
-    """Wrap the encoder's subsampling front-end and each transformer layer with
-    ``checkpoint_wrapper`` when enabled.
-
-    Covers ``encoder.pre_encode`` (the Conformer fbank→subsampled-activation
-    module: ``ConvSubsampling`` / ``StackingSubsampling`` / ``nn.Linear``) and
-    each entry in ``encoder.layers``. Missing attributes are skipped so
-    non-Conformer architectures degrade gracefully. No-op when ``enabled`` is
-    False.
-
-    Encoders that do not run their layers as ``encoder.layers[i](...)`` cannot be
-    checkpointed by wrapping submodules, so an encoder may implement
-    ``set_activation_checkpointing`` and own the policy itself. ParallelExpertEncoder
-    does: it fuses all three experts' layers into grouped GEMMs, and the wrapping below
-    would find no ``layers`` to wrap and silently leave every layer's activations live.
-    """
-    if not enabled:
-        return
-    from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
-
-    own_policy = getattr(encoder, "set_activation_checkpointing", None)
-    if callable(own_policy):
-        own_policy(enabled)
-        return
-
-    pre_encode = getattr(encoder, "pre_encode", None)
-    # ConformerEncoder.forward dispatches on ``isinstance(pre_encode, nn.Linear)``
-    # to choose between positional and (x=, lengths=) kwargs. Wrapping a Linear
-    # hides its type and routes it to the wrong branch, so skip that case — the
-    # memory win is negligible anyway (one linear vs. a conv/stacking stack).
-    if pre_encode is not None and not isinstance(pre_encode, nn.Linear):
-        encoder.pre_encode = checkpoint_wrapper(pre_encode)
-
-    layers = getattr(encoder, "layers", None)
-    if layers is not None:
-        for i in range(len(layers)):
-            layers[i] = checkpoint_wrapper(layers[i])

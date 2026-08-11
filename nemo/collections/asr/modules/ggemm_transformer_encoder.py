@@ -84,6 +84,21 @@ __all__ = [
 GROUPED_GEMM_BACKENDS = ('baddbmm', 'grouped_mm', 'loop')
 
 
+def _autocast_compute_dtype(x: torch.Tensor) -> torch.dtype:
+    """Return the dtype GEMMs will use for ``x`` under the active autocast policy.
+
+    Args:
+        x (torch.Tensor): Reference tensor whose device determines the autocast policy.
+            Shape: arbitrary
+
+    Returns:
+        dtype (torch.dtype): Active autocast dtype when autocast is enabled, else ``x.dtype``.
+    """
+    if torch.is_autocast_enabled(x.device.type):
+        return torch.get_autocast_dtype(x.device.type)
+    return x.dtype
+
+
 def grouped_ffn_compute(
     x: torch.Tensor,
     w1: torch.Tensor,
@@ -363,10 +378,60 @@ def bucket_ffns_by_shape(
     return buckets
 
 
-# FlexAttention mask closures. These intentionally mirror the (private) helpers in
-# ``transformer_encoder.py`` so the lockstep path builds an identical block mask to
-# each expert's own ``forward_internal``. They are trivial and stable; the
-# ``verify_grouped_equivalence`` self-check guards against any drift.
+def _padding_mask_mod(lengths):
+    """Build a FlexAttention mask mod that masks padded key positions.
+
+    Args:
+        lengths (torch.Tensor): Valid frame counts per batch sample.
+            Shape: (B,)
+
+    Returns:
+        pad_mask (Callable): FlexAttention mask mod; ``True`` when ``kv_idx`` is
+            within the valid prefix for batch index ``b``.
+    """
+
+    def pad_mask(b, h, q_idx, kv_idx):
+        """Return whether key position ``kv_idx`` is valid for batch ``b``.
+
+        Args:
+            b (int): Batch index.
+            h (int): Head index (unused).
+            q_idx (int): Query position index (unused).
+            kv_idx (int): Key position index.
+
+        Returns:
+            mask_value (torch.Tensor): Whether the key position is valid.
+                Shape: scalar
+        """
+        return kv_idx < lengths[b]
+
+    return pad_mask
+
+
+def _causal_mask_mod():
+    """Build a FlexAttention mask mod for causal (lower-triangular) attention.
+
+    Returns:
+        causal (Callable): FlexAttention mask mod; ``True`` when
+            ``q_idx >= kv_idx``.
+    """
+
+    def causal(b, h, q_idx, kv_idx):
+        """Return whether query position ``q_idx`` may attend to key ``kv_idx``.
+
+        Args:
+            b (int): Batch index (unused).
+            h (int): Head index (unused).
+            q_idx (int): Query position index.
+            kv_idx (int): Key position index.
+
+        Returns:
+            mask_value (torch.Tensor): Whether the query may attend to the key.
+                Shape: scalar
+        """
+        return q_idx >= kv_idx
+
+    return causal
 
 
 class GGEMMTransformerEncoder(nn.Module):
@@ -418,6 +483,22 @@ class GGEMMTransformerEncoder(nn.Module):
         self._packed_cache.clear()
         self._rope_cache.clear()
         return super().train(mode)
+
+    def _apply(self, fn, recurse: bool = True):
+        """Apply ``fn`` to parameters/buffers and clear non-registered caches.
+
+        Args:
+            fn (Callable): Callable applied to each parameter and buffer (e.g. ``.to``).
+            recurse (bool): Whether to recurse into child modules.
+
+        Returns:
+            GGEMMTransformerEncoder: This module.
+        """
+        # These caches are plain tensors rather than registered buffers, so Module.to()
+        # cannot migrate them safely. Rebuild lazily after any device/dtype transform.
+        self._packed_cache.clear()
+        self._rope_cache.clear()
+        return super()._apply(fn, recurse=recurse)
 
     def clear_packed_weights(self) -> None:
         """Drop eval-time grouped-FFN and RoPE caches.
@@ -541,69 +622,6 @@ class GGEMMTransformerEncoder(nn.Module):
             moe_mode=moe_mode,
             fused_qkv=fused_qkv,
         )
-
-    def forward_grouped(
-        self,
-        audio_signal,
-        length,
-        bypass_pre_encode: bool = False,
-        backend: str = 'baddbmm',
-        moe_mode: str = 'dense',
-    ) -> Dict[str, object]:
-        """Run encoders in lockstep while grouping compatible FFN units."""
-        return self._forward_grouped(
-            audio_signal,
-            length,
-            bypass_pre_encode=bypass_pre_encode,
-            backend=backend,
-            moe_mode=moe_mode,
-        )
-
-    def forward_packed(
-        self,
-        audio_signal,
-        length,
-        bypass_pre_encode: bool = False,
-        backend: str = 'baddbmm',
-        moe_mode: str = 'dense',
-        prefix: Optional[Dict[str, torch.Tensor]] = None,
-        return_pre_encode: bool = False,
-        prefix_mode: str = 'extend',
-    ) -> Dict[str, object]:
-        """Run the established padded head-packed SDPA and grouped-FFN path."""
-        return self._forward_packed(
-            audio_signal,
-            length,
-            bypass_pre_encode=bypass_pre_encode,
-            backend=backend,
-            moe_mode=moe_mode,
-            prefix=prefix,
-            return_pre_encode=return_pre_encode,
-            prefix_mode=prefix_mode,
-        )
-
-    def forward_serial_sdpa(self, audio_signal, length, bypass_pre_encode: bool = False) -> Dict[str, object]:
-        """Run every encoder serially with SDPA attention and native FFNs."""
-        return self._forward_serial_sdpa(audio_signal, length, bypass_pre_encode=bypass_pre_encode)
-
-    @torch.no_grad()
-    def verify_grouped_equivalence(
-        self, audio_signal, length, bypass_pre_encode: bool = False, backend: str = 'baddbmm'
-    ) -> Dict[str, float]:
-        """Measure grouped-FFN error against the serial reference by encoder name."""
-        return self._verify_grouped_equivalence(
-            audio_signal,
-            length,
-            bypass_pre_encode=bypass_pre_encode,
-            backend=backend,
-        )
-
-    def _apply(self, fn, recurse: bool = True):
-        # These caches are plain tensors rather than registered buffers, so Module.to()
-        # cannot migrate them safely. Rebuild lazily after any device/dtype transform.
-        self._packed_cache.clear()
-        self._rope_cache.clear()
-        return super()._apply(fn, recurse=recurse)
 
     # -----------------------------------------------------------------------
     # Lockstep fused forward (grouped-GEMM FFN across experts)
@@ -1014,7 +1032,11 @@ class GGEMMTransformerEncoder(nn.Module):
 
     def _experts_pre_packed(self, encs, audio_signal, length):
         names = list(encs)
-        if length is not None and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths):
+        if (
+            length is not None
+            and length is not audio_signal.lengths
+            and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths)
+        ):
             raise ValueError("length must match audio_signal.lengths for packed input.")
         feature_stackers = [encs[name].pre_encode for name in names]
         if not feature_stackers or not all(isinstance(pre, FeatureStacking) for pre in feature_stackers):
@@ -1714,7 +1736,7 @@ class GGEMMTransformerEncoder(nn.Module):
             trace['out_projection_groups'] += 1
             trace['out_grouped_experts'] += len(group)
 
-    def _forward_grouped(
+    def forward_grouped(
         self,
         audio_signal,
         length,
@@ -2078,7 +2100,7 @@ class GGEMMTransformerEncoder(nn.Module):
                 o = layer.attn.out_proj(o)
                 state[n]['x'] = state[n]['x'] + layer.drop(o)
 
-    def _forward_packed(
+    def forward_packed(
         self,
         audio_signal,
         length,
@@ -2204,7 +2226,7 @@ class GGEMMTransformerEncoder(nn.Module):
         o = attn.out_proj(o)
         s['x'] = s['x'] + layer.drop(o)
 
-    def _forward_serial_sdpa(self, audio_signal, length, bypass_pre_encode: bool = False) -> Dict[str, object]:
+    def forward_serial_sdpa(self, audio_signal, length, bypass_pre_encode: bool = False) -> Dict[str, object]:
         """Run every encoder serially with SDPA attention and native FFNs.
 
         Each complete encoder stack runs before the next starts.
@@ -2256,7 +2278,7 @@ class GGEMMTransformerEncoder(nn.Module):
         return out
 
     @torch.no_grad()
-    def _verify_grouped_equivalence(
+    def verify_grouped_equivalence(
         self, audio_signal, length, bypass_pre_encode: bool = False, backend: str = 'baddbmm'
     ) -> Dict[str, float]:
         """Measure grouped-FFN error against the serial reference by encoder name.
@@ -2485,24 +2507,3 @@ def _grouped_affine(
 
 def _ragged_grouped_mm(x: torch.Tensor, offsets: torch.Tensor, weights: Sequence[torch.Tensor]) -> torch.Tensor:
     return _RaggedGroupedMM.apply(x, offsets, *weights)
-
-
-def _autocast_compute_dtype(x: torch.Tensor) -> torch.dtype:
-    """Return the dtype GEMMs will use for ``x`` under the active autocast policy."""
-    if torch.is_autocast_enabled(x.device.type):
-        return torch.get_autocast_dtype(x.device.type)
-    return x.dtype
-
-
-def _padding_mask_mod(lengths):
-    def pad_mask(b, h, q_idx, kv_idx):
-        return kv_idx < lengths[b]
-
-    return pad_mask
-
-
-def _causal_mask_mod():
-    def causal(b, h, q_idx, kv_idx):
-        return q_idx >= kv_idx
-
-    return causal

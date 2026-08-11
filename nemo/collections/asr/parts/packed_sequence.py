@@ -149,8 +149,9 @@ def packed_encoder_position_ids(packed: PackedEncoderOutput) -> Tensor:
 
     if packed.total_tokens == 0:
         return packed.lengths.new_empty((0,))
-    sequence_starts = packed.cu_seqlens[:-1].to(torch.int64).repeat_interleave(packed.lengths)
-    return torch.arange(packed.total_tokens, device=packed.data.device, dtype=torch.int64) - sequence_starts
+    token_indices = torch.arange(packed.total_tokens, device=packed.data.device, dtype=torch.int64)
+    sequence_ids = torch.bucketize(token_indices, packed.cu_seqlens[1:], right=True)
+    return token_indices - packed.cu_seqlens[sequence_ids]
 
 
 def split_packed_data(data: Tensor, lengths: Tensor, cu_seqlens: Tensor) -> tuple[Tensor, ...]:

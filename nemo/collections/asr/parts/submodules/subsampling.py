@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 from torch.nn import LayerNorm
 
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput, _new_packed_encoder_output
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
 from nemo.utils import logging
 
@@ -87,30 +87,26 @@ class FeatureStacking(nn.Module):
             [output_lengths.new_zeros(1, dtype=torch.int32), output_lengths.cumsum(0, dtype=torch.int32)]
         )
         slot_count = int(output_cu_seqlens[-1].item()) * self.subsampling_factor
-        output_sequence_ids = torch.repeat_interleave(
-            torch.arange(packed.batch_size, device=packed.data.device), output_lengths
-        )
-        slot_sequence_ids = output_sequence_ids.repeat_interleave(self.subsampling_factor)
+        slot_indices = torch.arange(slot_count, device=packed.data.device)
+        slot_boundaries = output_cu_seqlens[1:].to(torch.int64) * self.subsampling_factor
+        slot_sequence_ids = torch.bucketize(slot_indices, slot_boundaries, right=True)
         if isinstance(packed.padding_value, torch.Tensor):
             slots = packed.padding_value.to(packed.data)[slot_sequence_ids].clone()
         else:
             slots = packed.data.new_full((slot_count, packed.data.shape[1]), packed.padding_value)
         if packed.padded_length is not None and slot_count:
             slot_starts = output_cu_seqlens[slot_sequence_ids].to(torch.int64) * self.subsampling_factor
-            local_slots = torch.arange(slot_count, device=packed.data.device) - slot_starts
+            local_slots = slot_indices - slot_starts
             slots.masked_fill_(local_slots.unsqueeze(1) >= packed.padded_length, 0.0)
         if packed.total_tokens:
-            sequence_ids = torch.repeat_interleave(
-                torch.arange(packed.batch_size, device=packed.data.device), packed.lengths
-            )
-            local_positions = (
-                torch.arange(packed.total_tokens, device=packed.data.device) - packed.cu_seqlens[sequence_ids]
-            )
+            token_indices = torch.arange(packed.total_tokens, device=packed.data.device)
+            sequence_ids = torch.bucketize(token_indices, packed.cu_seqlens[1:], right=True)
+            local_positions = token_indices - packed.cu_seqlens[sequence_ids]
             slot_positions = output_cu_seqlens[sequence_ids].to(torch.int64) * self.subsampling_factor
             slots[slot_positions + local_positions] = packed.data
         stacked = slots.reshape(-1, self.proj.in_features)
-        max_seqlen = int(output_lengths.max().item()) if output_lengths.numel() else 0
-        return PackedEncoderOutput(stacked, output_lengths, output_cu_seqlens, max_seqlen)
+        max_seqlen = self.compute_num_out_frames(packed.max_seqlen)
+        return _new_packed_encoder_output(stacked, output_lengths, output_cu_seqlens, max_seqlen)
 
 
 class StackingSubsampling(torch.nn.Module):

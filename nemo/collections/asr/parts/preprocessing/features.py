@@ -40,7 +40,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput, _new_packed_encoder_output
 from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.utils import logging
@@ -118,7 +118,7 @@ def normalize_packed_batch(packed: PackedEncoderOutput, normalize_type) -> Packe
         normalize_type,
         padding_value=packed.padding_value,
     )
-    return PackedEncoderOutput(
+    return _new_packed_encoder_output(
         data,
         packed.lengths,
         packed.cu_seqlens,
@@ -449,15 +449,18 @@ class FilterbankFeatures(nn.Module):
         ``pad_to`` is intentionally ignored: it is a dense-layout optimization and
         packed output contains exactly ``sum(output_lengths)`` frames.
         """
-        seq_len, cu_seqlens = _validate_packed_waveforms(x, seq_len, cu_seqlens)
+        seq_len, cu_seqlens, host_seq_len = _validate_packed_waveforms(x, seq_len, cu_seqlens)
         feature_lengths = torch.where(seq_len == 0, 0, self.get_seq_len(seq_len))
-        padded_length = _dense_feature_width(feature_lengths, self.pad_to, self.max_length)
-        if bool((feature_lengths < 0).any()):
+        host_feature_lengths = torch.where(host_seq_len == 0, 0, self.get_seq_len(host_seq_len))
+        padded_length = _dense_feature_width(host_feature_lengths, self.pad_to, self.max_length)
+        max_seqlen = int(host_feature_lengths.max()) if host_feature_lengths.numel() else 0
+        total_frames = int(host_feature_lengths.sum())
+        if bool((host_feature_lengths < 0).any()):
             raise ValueError(
                 "Packed waveform lengths are too short for this STFT configuration; "
-                f"computed feature lengths {feature_lengths.detach().cpu().tolist()}."
+                f"computed feature lengths {host_feature_lengths.tolist()}."
             )
-        if seq_len.numel() == 0 or int(feature_lengths.sum().item()) == 0:
+        if seq_len.numel() == 0 or total_frames == 0:
             feature_dim = self.n_fft // 2 + 1 if linear_spec else self.nfilt * self.frame_splicing
             return _empty_packed_features(
                 x,
@@ -465,16 +468,19 @@ class FilterbankFeatures(nn.Module):
                 feature_dim,
                 padding_value=self.pad_value,
                 padded_length=padded_length,
+                max_seqlen=max_seqlen,
             )
 
         guard = self.stft_pad_amount if self.stft_pad_amount is not None else self.n_fft // 2
         block_lengths = _round_up(seq_len + 2 * guard, self.hop_length)
         block_offsets = torch.cat([seq_len.new_zeros(1), block_lengths.cumsum(0)])
-        guarded = x.new_zeros(int(block_offsets[-1].item()))
+        guarded_size = int(_round_up(host_seq_len + 2 * guard, self.hop_length).sum())
+        guarded = x.new_zeros(guarded_size)
 
-        sample_sequence_ids = torch.repeat_interleave(torch.arange(seq_len.numel(), device=x.device), seq_len)
-        sample_positions = torch.arange(x.numel(), device=x.device) - cu_seqlens[sample_sequence_ids]
-        guarded_positions = block_offsets[sample_sequence_ids] + guard + sample_positions
+        guarded_positions = torch.arange(x.numel(), device=x.device)
+        sample_sequence_ids = torch.bucketize(guarded_positions, cu_seqlens[1:], right=True)
+        guarded_positions -= cu_seqlens[sample_sequence_ids]
+        guarded_positions += block_offsets[sample_sequence_ids] + guard
 
         if self.stft_pad_amount is None:
             samples = _dither_and_preemphasize_packed(
@@ -491,15 +497,15 @@ class FilterbankFeatures(nn.Module):
                 self.preemph,
                 self.dither if self.training else 0.0,
             )
+        del guarded_positions, sample_sequence_ids
 
         with torch.amp.autocast(x.device.type, enabled=False):
             spectra = self.stft(guarded.unsqueeze(0), center=False)[0]
 
         frame_cu_seqlens = torch.cat([feature_lengths.new_zeros(1), feature_lengths.cumsum(0)])
-        frame_sequence_ids = torch.repeat_interleave(
-            torch.arange(feature_lengths.numel(), device=x.device), feature_lengths
-        )
-        local_frames = torch.arange(frame_cu_seqlens[-1], device=x.device) - frame_cu_seqlens[frame_sequence_ids]
+        frame_indices = torch.arange(total_frames, device=x.device)
+        frame_sequence_ids = torch.bucketize(frame_indices, frame_cu_seqlens[1:], right=True)
+        local_frames = frame_indices - frame_cu_seqlens[frame_sequence_ids]
         global_frames = torch.div(block_offsets[frame_sequence_ids], self.hop_length, rounding_mode="floor")
         global_frames = global_frames + local_frames
         spectra = spectra.index_select(-1, global_frames).transpose(0, 1)
@@ -521,7 +527,11 @@ class FilterbankFeatures(nn.Module):
             spectra = spectra.pow(self.mag_power)
         if linear_spec:
             return _make_packed_features(
-                spectra, feature_lengths, padding_value=self.pad_value, padded_length=padded_length
+                spectra,
+                feature_lengths,
+                padding_value=self.pad_value,
+                padded_length=padded_length,
+                max_seqlen=max_seqlen,
             )
 
         with torch.amp.autocast(x.device.type, enabled=False):
@@ -538,7 +548,11 @@ class FilterbankFeatures(nn.Module):
         if self.normalize:
             features = _normalize_packed_features(features, feature_lengths, frame_sequence_ids, self.normalize)
         return _make_packed_features(
-            features, feature_lengths, padding_value=self.pad_value, padded_length=padded_length
+            features,
+            feature_lengths,
+            padding_value=self.pad_value,
+            padded_length=padded_length,
+            max_seqlen=max_seqlen,
         )
 
     def forward(self, x, seq_len, linear_spec=False):
@@ -638,15 +652,20 @@ def _validate_packed_waveforms(x, seq_len, cu_seqlens):
         raise ValueError("packed waveform data, length, and cu_seqlens must be on the same device.")
     seq_len = seq_len.to(torch.int64)
     cu_seqlens = cu_seqlens.to(torch.int64)
-    if cu_seqlens.numel() and int(cu_seqlens[0].item()) != 0:
+    host_metadata = torch.cat((seq_len, cu_seqlens)).detach().cpu()
+    host_seq_len = host_metadata[: seq_len.numel()]
+    host_cu_seqlens = host_metadata[seq_len.numel() :]
+    if host_cu_seqlens.numel() and int(host_cu_seqlens[0]) != 0:
         raise ValueError("cu_seqlens must start at zero.")
-    if not torch.equal(cu_seqlens[1:] - cu_seqlens[:-1], seq_len):
+    if not torch.equal(host_cu_seqlens[1:] - host_cu_seqlens[:-1], host_seq_len):
         raise ValueError("Differences in cu_seqlens must equal length.")
-    if bool((seq_len < 0).any()):
+    if bool((host_seq_len < 0).any()):
         raise ValueError("length must be non-negative.")
-    if int(cu_seqlens[-1].item()) != x.shape[0]:
-        raise ValueError(f"packed waveform data has {x.shape[0]} samples, but cu_seqlens ends at {cu_seqlens[-1]}.")
-    return seq_len, cu_seqlens
+    if int(host_cu_seqlens[-1]) != x.shape[0]:
+        raise ValueError(
+            f"packed waveform data has {x.shape[0]} samples, but cu_seqlens ends at {host_cu_seqlens[-1]}."
+        )
+    return seq_len, cu_seqlens, host_seq_len
 
 
 def _round_up(values, multiple):
@@ -697,20 +716,18 @@ def _normalize_packed_features(features, lengths, sequence_ids, normalize_type):
 def _normalize_packed_features_and_padding(features, lengths, sequence_ids, normalize_type, *, padding_value=None):
     if normalize_type == "per_feature":
         denominator = lengths.clamp_min(1).unsqueeze(1)
-        mean = torch.segment_reduce(features, "sum", lengths=lengths) / denominator
+        mean = _packed_segment_sum(features, lengths) / denominator
         centered = features - mean[sequence_ids]
-        variance = torch.segment_reduce(centered.square(), "sum", lengths=lengths) / (denominator - 1)
+        variance = _packed_segment_sum(centered.square(), lengths) / (denominator - 1)
         std = torch.sqrt(variance).masked_fill(variance.isnan(), 0.0) + CONSTANT
         normalized = centered / std[sequence_ids]
         normalized_padding = features.new_zeros((lengths.numel(), features.shape[1]))
         return normalized, normalized_padding
     if normalize_type == "all_features":
         denominator = lengths * features.shape[1]
-        mean = torch.segment_reduce(features.sum(1), "sum", lengths=lengths) / denominator.clamp_min(1)
+        mean = _packed_segment_sum(features.sum(1), lengths) / denominator.clamp_min(1)
         centered = features - mean[sequence_ids].unsqueeze(1)
-        variance = torch.segment_reduce(centered.square().sum(1), "sum", lengths=lengths) / (
-            denominator.clamp_min(1) - 1
-        )
+        variance = _packed_segment_sum(centered.square().sum(1), lengths) / (denominator.clamp_min(1) - 1)
         std = torch.sqrt(variance).masked_fill(variance.isnan(), 0.0) + CONSTANT
         normalized = centered / std[sequence_ids].unsqueeze(1)
         padding = _expand_packed_padding(padding_value, features, lengths)
@@ -733,6 +750,11 @@ def _normalize_packed_features_and_padding(features, lengths, sequence_ids, norm
     return features, padding_value
 
 
+def _packed_segment_sum(values, lengths):
+    # Public packed entry points validate lengths; avoid repeating their synchronizing checks here.
+    return torch.segment_reduce(values, "sum", lengths=lengths, unsafe=True)
+
+
 def _expand_packed_padding(padding_value, features, lengths):
     if padding_value is None:
         return None
@@ -741,16 +763,20 @@ def _expand_packed_padding(padding_value, features, lengths):
     return features.new_full((lengths.numel(), features.shape[1]), padding_value)
 
 
-def _make_packed_features(features, lengths, *, padding_value=0.0, padded_length=None):
+def _make_packed_features(features, lengths, *, padding_value=0.0, padded_length=None, max_seqlen=None):
     cu_seqlens = torch.cat([lengths.new_zeros(1, dtype=torch.int32), lengths.cumsum(0, dtype=torch.int32)])
-    max_seqlen = int(lengths.max().item()) if lengths.numel() else 0
-    return PackedEncoderOutput(features, lengths.to(torch.int64), cu_seqlens, max_seqlen, padding_value, padded_length)
+    if max_seqlen is None:
+        max_seqlen = int(lengths.max().item()) if lengths.numel() else 0
+    return _new_packed_encoder_output(
+        features, lengths.to(torch.int64), cu_seqlens, max_seqlen, padding_value, padded_length
+    )
 
 
-def _empty_packed_features(x, lengths, feature_dim, *, padding_value=0.0, padded_length=None):
+def _empty_packed_features(x, lengths, feature_dim, *, padding_value=0.0, padded_length=None, max_seqlen=None):
     return _make_packed_features(
         x.new_empty((0, feature_dim)),
         lengths,
         padding_value=padding_value,
         padded_length=padded_length,
+        max_seqlen=max_seqlen,
     )

@@ -96,8 +96,8 @@ from tqdm import tqdm
 
 from nemo.collections.asr.modules.ggemm_transformer_encoder import GGEMMTransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import (
-    PackedEncoderOutput,
-    _new_packed_encoder_output,
+    PackedEncoderActivations,
+    _new_packed_encoder_activations,
     unpack_encoder_output,
 )
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch, normalize_packed_batch
@@ -1579,7 +1579,7 @@ class ParallelExpertEncoder(nn.Module):
         Returns:
             tuple: ``(audio_signal, length)`` normalized, cast, and on the experts' device.
         """
-        if isinstance(audio_signal, PackedEncoderOutput):
+        if isinstance(audio_signal, PackedEncoderActivations):
             if (
                 length is not None
                 and length is not audio_signal.lengths
@@ -1595,7 +1595,7 @@ class ParallelExpertEncoder(nn.Module):
             if isinstance(padding_value, torch.Tensor):
                 padding_value = padding_value.to(data)
             return (
-                PackedEncoderOutput(
+                PackedEncoderActivations(
                     data,
                     lengths,
                     cu_seqlens,
@@ -1666,7 +1666,7 @@ class ParallelExpertEncoder(nn.Module):
         length,
         spk_targets=None,
         return_experts: bool = False,
-    ) -> PackedEncoderOutput | tuple[PackedEncoderOutput, dict[str, object]]:
+    ) -> PackedEncoderActivations | tuple[PackedEncoderActivations, dict[str, object]]:
         """Encode offline while keeping expert Transformer activations token-flat.
 
         Online/windowed inference retains its established prefix/cache path. Existing
@@ -1731,7 +1731,7 @@ class ParallelExpertEncoder(nn.Module):
         *data_outputs, output_lengths, cu_seqlens, max_seqlen = flat_outputs
         max_seqlen = int(max_seqlen)
         return {
-            name: _new_packed_encoder_output(data, output_lengths, cu_seqlens, max_seqlen)
+            name: _new_packed_encoder_activations(data, output_lengths, cu_seqlens, max_seqlen)
             for name, data in zip(names, data_outputs)
         }
 

@@ -40,7 +40,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput, _new_packed_encoder_output
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, _new_packed_encoder_activations
 from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.utils import logging
@@ -106,7 +106,7 @@ def normalize_batch(x, seq_len, normalize_type):
         return x, x_mean, x_std
 
 
-def normalize_packed_batch(packed: PackedEncoderOutput, normalize_type) -> PackedEncoderOutput:
+def normalize_packed_batch(packed: PackedEncoderActivations, normalize_type) -> PackedEncoderActivations:
     """Normalize token-flat features independently within each sequence."""
     if not normalize_type or packed.total_tokens == 0:
         return packed
@@ -118,7 +118,7 @@ def normalize_packed_batch(packed: PackedEncoderOutput, normalize_type) -> Packe
         normalize_type,
         padding_value=packed.padding_value,
     )
-    return _new_packed_encoder_output(
+    return _new_packed_encoder_activations(
         data,
         packed.lengths,
         packed.cu_seqlens,
@@ -438,7 +438,7 @@ class FilterbankFeatures(nn.Module):
     def filter_banks(self):
         return self.fb
 
-    def forward_packed(self, x, seq_len, cu_seqlens, linear_spec=False) -> PackedEncoderOutput:
+    def forward_packed(self, x, seq_len, cu_seqlens, linear_spec=False) -> PackedEncoderActivations:
         """Compute features from concatenated waveforms with one vectorized STFT.
 
         Each utterance is placed in a hop-aligned block with the same zero guard
@@ -767,7 +767,7 @@ def _make_packed_features(features, lengths, *, padding_value=0.0, padded_length
     cu_seqlens = torch.cat([lengths.new_zeros(1, dtype=torch.int32), lengths.cumsum(0, dtype=torch.int32)])
     if max_seqlen is None:
         max_seqlen = int(lengths.max().item()) if lengths.numel() else 0
-    return _new_packed_encoder_output(
+    return _new_packed_encoder_activations(
         features, lengths.to(torch.int64), cu_seqlens, max_seqlen, padding_value, padded_length
     )
 

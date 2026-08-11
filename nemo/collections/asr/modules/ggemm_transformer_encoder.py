@@ -58,8 +58,8 @@ from nemo.collections.asr.modules.transformer_encoder import (
     _can_use_flash_attention_varlen_layout,
 )
 from nemo.collections.asr.parts.packed_sequence import (
-    PackedEncoderOutput,
-    _new_packed_encoder_output,
+    PackedEncoderActivations,
+    _new_packed_encoder_activations,
     pack_encoder_output,
     packed_encoder_position_ids,
 )
@@ -575,7 +575,7 @@ class GGEMMTransformerEncoder(nn.Module):
         bypass_pre_encode: bool = False,
         *,
         fused_qkv: bool = False,
-    ) -> Dict[str, PackedEncoderOutput]:
+    ) -> Dict[str, PackedEncoderActivations]:
         """Run every encoder serially with token-flat sequence-packed activations.
 
         This is the compatibility and numerical-reference path. The optional
@@ -606,7 +606,7 @@ class GGEMMTransformerEncoder(nn.Module):
         backend: str = 'baddbmm',
         moe_mode: str = 'dense',
         fused_qkv: bool = False,
-    ) -> Dict[str, PackedEncoderOutput]:
+    ) -> Dict[str, PackedEncoderActivations]:
         """Run all experts in layer lockstep using native THD grouped kernels.
 
         Compatible experts share QKV/output projection GEMMs, concatenate their
@@ -902,7 +902,7 @@ class GGEMMTransformerEncoder(nn.Module):
                 "prefix is only supported on the SDPA paths (build_block_mask=False); "
                 "forward_grouped's FlexAttention masks cannot describe the padded T."
             )
-        if isinstance(audio_signal, PackedEncoderOutput):
+        if isinstance(audio_signal, PackedEncoderActivations):
             if prefix or return_pre_encode or build_block_mask or bypass_pre_encode:
                 raise ValueError(
                     "Packed feature preparation supports offline sequence-packed execution without prefixes."
@@ -1488,7 +1488,7 @@ class GGEMMTransformerEncoder(nn.Module):
         backend: str,
         moe_mode: str,
         fused_qkv: bool,
-    ) -> Dict[str, PackedEncoderOutput]:
+    ) -> Dict[str, PackedEncoderActivations]:
         if backend not in GROUPED_GEMM_BACKENDS:
             raise ValueError(f"Unknown grouped-GEMM backend '{backend}'; expected one of {GROUPED_GEMM_BACKENDS}.")
         encs = {name: self.experts[name] for name in self.expert_names}
@@ -1524,7 +1524,7 @@ class GGEMMTransformerEncoder(nn.Module):
         state = {}
         for name, expert in encs.items():
             padded, pos_emb, _block_mask, output_lengths = prepared[name]
-            if isinstance(padded, PackedEncoderOutput):
+            if isinstance(padded, PackedEncoderActivations):
                 packed = padded
                 if share_metadata and shared_metadata is None:
                     shared_metadata = (packed.lengths, packed.cu_seqlens, packed.max_seqlen)
@@ -1536,7 +1536,7 @@ class GGEMMTransformerEncoder(nn.Module):
                     shared_mask = positions.unsqueeze(0) < packed.lengths.unsqueeze(1)
             else:
                 data = padded[shared_mask]
-                packed = _new_packed_encoder_output(data, *shared_metadata)
+                packed = _new_packed_encoder_activations(data, *shared_metadata)
 
             position_ids = packed_encoder_position_ids(packed) if expert.self_attention_model == 'rope' else None
             use_fast_layout = expert.self_attention_model != 'rel_pos' and _can_use_flash_attention_varlen_layout(
@@ -1555,7 +1555,9 @@ class GGEMMTransformerEncoder(nn.Module):
                 'metadata': (packed.lengths, packed.cu_seqlens, packed.max_seqlen),
                 'position_ids': position_ids,
                 'pos_emb': pos_emb if expert.self_attention_model == 'rel_pos' else None,
-                'padded_length': packed.max_seqlen if isinstance(padded, PackedEncoderOutput) else padded.shape[1],
+                'padded_length': (
+                    packed.max_seqlen if isinstance(padded, PackedEncoderActivations) else padded.shape[1]
+                ),
                 'sequence_offsets': sequence_offsets,
                 'metadata_key': ('shared',) if share_metadata else tuple(packed.lengths.detach().cpu().tolist()),
             }
@@ -1593,7 +1595,7 @@ class GGEMMTransformerEncoder(nn.Module):
             x = expert.final_norm(state[name]['x'])
             if expert.out_proj is not None:
                 x = expert.out_proj(x)
-            outputs[name] = _new_packed_encoder_output(x, *state[name]['metadata'])
+            outputs[name] = _new_packed_encoder_activations(x, *state[name]['metadata'])
             if (
                 expert.training
                 and hasattr(expert, 'accumulate_moe_stats')
@@ -2366,9 +2368,9 @@ def _can_share_packed_metadata(encs, prepared, bypass_pre_encode: bool) -> bool:
     if not items:
         return False
     first_padded, _, _, first_lengths = items[0]
-    if isinstance(first_padded, PackedEncoderOutput):
+    if isinstance(first_padded, PackedEncoderActivations):
         return all(
-            isinstance(padded, PackedEncoderOutput)
+            isinstance(padded, PackedEncoderActivations)
             and padded.lengths is first_padded.lengths
             and padded.cu_seqlens is first_padded.cu_seqlens
             for padded, _, _, _ in items[1:]

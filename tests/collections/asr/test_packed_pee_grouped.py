@@ -20,7 +20,7 @@ import torch
 import nemo.collections.asr.modules.ggemm_transformer_encoder as ggemm_module
 import nemo.collections.asr.modules.transformer_encoder as transformer_module
 from nemo.collections.asr.modules.ggemm_transformer_encoder import GGEMMTransformerEncoder, _ragged_grouped_mm
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput, pack_encoder_output
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, pack_encoder_output
 from tests.collections.asr.test_parallel_expert_encoder import (
     _MEL_FEATURES,
     _N_SPK,
@@ -102,7 +102,7 @@ def test_pee_grouped_preserves_nonzero_partial_stack_padding():
     mels = torch.randn(2, _MEL_FEATURES, 40)
     mels.masked_fill_(torch.arange(40)[None, None, :] >= lengths[:, None, None], -3.0)
     source = pack_encoder_output(mels.transpose(1, 2), lengths)
-    packed_mels = PackedEncoderOutput(
+    packed_mels = PackedEncoderActivations(
         source.data,
         source.lengths,
         source.cu_seqlens,
@@ -130,7 +130,7 @@ def test_pee_grouped_token_flat_mel_gradients_match_dense_input_with_checkpointi
     dense_mels.masked_fill_(torch.arange(40)[None, None, :] >= lengths[:, None, None], 0.0)
     dense_mels.requires_grad_()
     packed_source = pack_encoder_output(dense_mels.detach().transpose(1, 2), lengths)
-    packed_mels = PackedEncoderOutput(
+    packed_mels = PackedEncoderActivations(
         packed_source.data.clone().requires_grad_(),
         packed_source.lengths,
         packed_source.cu_seqlens,
@@ -459,7 +459,7 @@ def test_sequence_packed_serial_capability_keeps_original_signature():
 
         def forward_sequence_packed(self, audio_signal, length, bypass_pre_encode=False):
             cu_seqlens = torch.tensor([0, audio_signal.shape[0]], dtype=torch.int32)
-            return PackedEncoderOutput(audio_signal, length, cu_seqlens, int(length.max()))
+            return PackedEncoderActivations(audio_signal, length, cu_seqlens, int(length.max()))
 
     expert = PackedOnly()
     container = GGEMMTransformerEncoder({'custom': expert})

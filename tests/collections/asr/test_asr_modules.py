@@ -20,7 +20,11 @@ import torch
 from omegaconf import OmegaConf
 
 from nemo.collections.asr import modules
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput, pack_encoder_output, split_encoder_output
+from nemo.collections.asr.parts.packed_sequence import (
+    PackedEncoderActivations,
+    pack_encoder_output,
+    split_encoder_output,
+)
 from nemo.collections.asr.parts.preprocessing.features import (
     FilterbankFeatures,
     normalize_batch,
@@ -81,7 +85,7 @@ class TestASRModulesBasicTests:
             input_signal_cu_seqlens=audio_cu_seqlens,
         )
 
-        assert isinstance(actual, PackedEncoderOutput)
+        assert isinstance(actual, PackedEncoderActivations)
         assert torch.equal(actual.lengths, expected_lens)
         assert actual.padded_length == expected.shape[2]
         assert actual.data.shape == (int(expected_lens.sum()), expected.shape[1])
@@ -314,7 +318,7 @@ class TestASRModulesBasicTests:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("use_vectorized_code", [False, True])
-    def test_SpectrogramAugmentation_forward_packed_matches_dense_masks(self, use_vectorized_code):
+    def test_SpectrogramAugmentation_forward_packed_matches_dense_vectorized_masks(self, use_vectorized_code):
         augment = modules.SpectrogramAugmentation(
             freq_masks=2,
             time_masks=2,
@@ -332,6 +336,7 @@ class TestASRModulesBasicTests:
         features.masked_fill_(torch.arange(12)[None, None, :] >= lengths[:, None, None], 0.0)
         packed = pack_encoder_output(features.transpose(1, 2), lengths)
         packed_augment = copy.deepcopy(augment)
+        augment.spec_augment.use_vectorized_code = True
 
         torch.manual_seed(29)
         expected = augment(input_spec=features.clone(), length=lengths)
@@ -374,7 +379,7 @@ class TestASRModulesBasicTests:
     @pytest.mark.unit
     def test_SpectrogramAugmentation_packed_cutout_accepts_all_empty_batch(self):
         augment = modules.SpectrogramAugmentation(rect_masks=1, rect_time=5, rect_freq=2)
-        packed = PackedEncoderOutput(
+        packed = PackedEncoderActivations(
             torch.empty(0, 8),
             torch.tensor([0, 0]),
             torch.tensor([0, 0, 0], dtype=torch.int32),
@@ -400,7 +405,7 @@ class TestASRModulesBasicTests:
         lengths = torch.tensor([7, 4])
         features = torch.randn(2, 4, 7)
         features.masked_fill_(torch.arange(7)[None, None, :] >= lengths[:, None, None], -3.0)
-        packed = PackedEncoderOutput(
+        packed = PackedEncoderActivations(
             pack_encoder_output(features.transpose(1, 2), lengths).data,
             lengths,
             torch.tensor([0, 7, 11], dtype=torch.int32),

@@ -22,7 +22,7 @@ from transformers.models.bert.modeling_bert import BertEncoder
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
 from nemo.collections.asr.parts.mixins import TranscribeConfig
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput, unpack_encoder_output
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, unpack_encoder_output
 from nemo.core import Exportable, NeuralModule, typecheck
 
 
@@ -192,7 +192,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             processed_signal_length,
             input_signal_cu_seqlens=input_signal_cu_seqlens,
         )
-        if isinstance(processed_signal, PackedEncoderOutput):
+        if isinstance(processed_signal, PackedEncoderActivations):
             processed_signal = unpack_encoder_output(
                 processed_signal, total_length=processed_signal.padded_length
             ).transpose(1, 2)
@@ -237,7 +237,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         time_offset=None,
         spk_targets=None,
         input_signal_cu_seqlens=None,
-    ) -> PackedEncoderOutput:
+    ) -> PackedEncoderActivations:
         """Encode audio natively as token-major variable-length sequences.
 
         This opt-in API intentionally supports only an identity modality adapter,
@@ -257,7 +257,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             input_signal_cu_seqlens=input_signal_cu_seqlens,
         )
         if self.spec_augmentation is not None and self.training:
-            if isinstance(processed_signal, PackedEncoderOutput):
+            if isinstance(processed_signal, PackedEncoderActivations):
                 processed_signal = self.spec_augmentation.forward_packed(processed_signal)
             else:
                 processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)

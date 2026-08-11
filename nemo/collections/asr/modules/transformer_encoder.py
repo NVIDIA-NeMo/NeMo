@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from torch.nn.attention.flex_attention import and_masks, create_block_mask, flex_attention
 
 from nemo.collections.asr.parts.packed_sequence import (
-    PackedEncoderOutput,
+    PackedEncoderActivations,
     pack_encoder_output,
     packed_encoder_position_ids,
 )
@@ -819,7 +819,7 @@ class TransformerEncoder(nn.Module):
 
     def forward_sequence_packed(
         self, audio_signal, length, bypass_pre_encode=False, *, fused_qkv: bool = False
-    ) -> PackedEncoderOutput:
+    ) -> PackedEncoderActivations:
         """Encode a batch while keeping all Transformer-layer states token-flat.
 
         This opt-in method leaves :meth:`forward` and its channels-first padded
@@ -842,7 +842,7 @@ class TransformerEncoder(nn.Module):
                 "use rope, abs_pos, or no_pos for the CUDA varlen fast path."
             )
             self._packed_rel_pos_warned = True
-        if isinstance(audio_signal, PackedEncoderOutput):
+        if isinstance(audio_signal, PackedEncoderActivations):
             if (
                 length is not None
                 and length is not audio_signal.lengths
@@ -939,7 +939,7 @@ class TransformerEncoder(nn.Module):
             pos_emb = None
         return self.embed_norm(x), length, pos_emb
 
-    def _prepare_packed_input(self, audio_signal: PackedEncoderOutput, bypass_pre_encode: bool):
+    def _prepare_packed_input(self, audio_signal: PackedEncoderActivations, bypass_pre_encode: bool):
         if bypass_pre_encode:
             packed = audio_signal
         else:
@@ -952,7 +952,7 @@ class TransformerEncoder(nn.Module):
             packed = self.pre_encode(audio_signal)
         return self._apply_packed_position(packed)
 
-    def _apply_packed_position(self, packed: PackedEncoderOutput):
+    def _apply_packed_position(self, packed: PackedEncoderActivations):
         x = packed.data
         if self.self_attention_model == "rope":
             if self.xscale:

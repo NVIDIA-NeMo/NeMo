@@ -18,7 +18,7 @@ import pytest
 import torch
 
 from nemo.collections.asr.modules.moe_transformer_encoder import MoEFeedForward, MoETransformerEncoder
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput, pack_encoder_output
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, pack_encoder_output
 from tests.collections.asr.test_parallel_expert_encoder import _MEL_FEATURES, _N_SPK, build_toy_pe_encoder
 
 
@@ -128,11 +128,11 @@ def test_pee_packed_can_return_raw_expert_outputs_without_changing_default():
             return_experts=True,
         )
 
-    assert isinstance(default, PackedEncoderOutput)
+    assert isinstance(default, PackedEncoderActivations)
     torch.testing.assert_close(fused.data, default.data)
     assert set(experts) == {"speech", "sound", "speaker_preds"}
-    assert isinstance(experts["speech"], PackedEncoderOutput)
-    assert isinstance(experts["sound"], PackedEncoderOutput)
+    assert isinstance(experts["speech"], PackedEncoderActivations)
+    assert isinstance(experts["sound"], PackedEncoderActivations)
     assert experts["speaker_preds"] is not None
 
 

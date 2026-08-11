@@ -28,7 +28,7 @@ from nemo.collections.asr.modules.transformer_encoder import (
     TransformerEncoderConfig,
 )
 from nemo.collections.asr.parts.packed_sequence import (
-    PackedEncoderOutput,
+    PackedEncoderActivations,
     pack_encoder_output,
     packed_encoder_position_ids,
     split_encoder_output,
@@ -112,7 +112,7 @@ def test_pack_encoder_output_uses_prevalidated_metadata_constructor(monkeypatch)
     def fail_if_revalidated(*args, **kwargs):
         raise AssertionError("pack_encoder_output must not revalidate CUDA metadata")
 
-    monkeypatch.setattr(packed_sequence_module, "_validate_packed_encoder_output", fail_if_revalidated)
+    monkeypatch.setattr(packed_sequence_module, "_validate_packed_encoder_activations", fail_if_revalidated)
     packed = pack_encoder_output(torch.randn(2, 3, 4), torch.tensor([3, 1]))
 
     assert packed.cu_seqlens.tolist() == [0, 3, 4]
@@ -121,7 +121,7 @@ def test_pack_encoder_output_uses_prevalidated_metadata_constructor(monkeypatch)
 
 def test_packed_encoder_output_validates_manual_metadata():
     with pytest.raises(ValueError, match="differences equal to lengths"):
-        PackedEncoderOutput(
+        PackedEncoderActivations(
             data=torch.randn(3, 4),
             lengths=torch.tensor([1, 2]),
             cu_seqlens=torch.tensor([0, 2, 3], dtype=torch.int32),
@@ -133,7 +133,7 @@ def test_packed_encoder_output_rejects_noncontiguous_cu_seqlens():
     cu_seqlens = torch.tensor([0, 99, 1, 99, 3, 99], dtype=torch.int32)[::2]
     assert not cu_seqlens.is_contiguous()
     with pytest.raises(ValueError, match="cu_seqlens must be contiguous"):
-        PackedEncoderOutput(
+        PackedEncoderActivations(
             data=torch.randn(3, 4),
             lengths=torch.tensor([1, 2]),
             cu_seqlens=cu_seqlens,
@@ -226,7 +226,7 @@ def test_sequence_packed_token_flat_feature_outputs_and_gradients_match_dense_in
     dense_features.masked_fill_(torch.arange(12)[None, None, :] >= lengths[:, None, None], 0.0)
     dense_features.requires_grad_()
     packed_source = pack_encoder_output(dense_features.detach().transpose(1, 2), lengths)
-    packed_features = PackedEncoderOutput(
+    packed_features = PackedEncoderActivations(
         packed_source.data.clone().requires_grad_(),
         packed_source.lengths,
         packed_source.cu_seqlens,
@@ -256,7 +256,7 @@ def test_sequence_packed_token_flat_feature_stacking_preserves_activation_checkp
     padded = torch.randn(2, 12, 8)
     padded.masked_fill_(torch.arange(12)[None, :, None] >= lengths[:, None, None], 0.0)
     packed = pack_encoder_output(padded, lengths)
-    packed = PackedEncoderOutput(
+    packed = PackedEncoderActivations(
         packed.data.detach().clone().requires_grad_(), packed.lengths, packed.cu_seqlens, packed.max_seqlen
     )
 

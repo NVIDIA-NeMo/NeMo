@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 import torch
 
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations
 from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures
 from nemo.collections.asr.parts.submodules.spectr_augment import SpecAugment, SpecCutout
 from nemo.collections.audio.parts.utils.transforms import MFCC
@@ -93,7 +93,7 @@ class AudioPreprocessor(NeuralModule, ABC):
         return processed_signal, processed_length
 
     @torch.no_grad()
-    def forward_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderOutput:
+    def forward_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderActivations:
         """Preprocess concatenated waveforms into token-flat features.
 
         The packed frontend uses one vectorized guarded STFT and returns exactly
@@ -122,7 +122,7 @@ class AudioPreprocessor(NeuralModule, ABC):
         # Called by forward(). Subclasses should implement this.
         pass
 
-    def get_features_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderOutput:
+    def get_features_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderActivations:
         raise NotImplementedError(f"{type(self).__name__} does not implement packed waveform preprocessing.")
 
 
@@ -312,7 +312,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
     def get_features(self, input_signal, length):
         return self.featurizer(input_signal, length)
 
-    def get_features_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderOutput:
+    def get_features_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderActivations:
         return self.featurizer.forward_packed(input_signal, length, input_signal_cu_seqlens)
 
     @property
@@ -560,7 +560,7 @@ class SpectrogramAugmentation(NeuralModule):
         return augmented_spec
 
     @torch.no_grad()
-    def forward_packed(self, input_spec: PackedEncoderOutput) -> PackedEncoderOutput:
+    def forward_packed(self, input_spec: PackedEncoderActivations) -> PackedEncoderActivations:
         """Apply sequence-local augmentation without padding token-flat features."""
         if isinstance(self.spec_cutout, SpecCutout):
             input_spec = self.spec_cutout.forward_packed(input_spec)

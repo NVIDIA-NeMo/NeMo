@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Token-flat encoder outputs and conversions for sequence-packed ASR execution."""
+"""Token-flat encoder activations and conversions for sequence-packed ASR execution."""
 
 from dataclasses import dataclass
 
@@ -20,7 +20,7 @@ import torch
 from torch import Tensor
 
 __all__ = [
-    "PackedEncoderOutput",
+    "PackedEncoderActivations",
     "pack_encoder_output",
     "packed_encoder_position_ids",
     "split_packed_data",
@@ -30,7 +30,7 @@ __all__ = [
 
 
 @dataclass(frozen=True)
-class PackedEncoderOutput:
+class PackedEncoderActivations:
     """An ASR encoder batch stored without inter-utterance padding.
 
     Args:
@@ -59,7 +59,7 @@ class PackedEncoderOutput:
     padded_length: int | None = None
 
     def __post_init__(self) -> None:
-        _validate_packed_encoder_output(self)
+        _validate_packed_encoder_activations(self)
 
     @property
     def batch_size(self) -> int:
@@ -73,7 +73,7 @@ class PackedEncoderOutput:
 
         return int(self.data.shape[0])
 
-    def with_data(self, data: Tensor) -> "PackedEncoderOutput":
+    def with_data(self, data: Tensor) -> "PackedEncoderActivations":
         """Reuse validated sequence metadata with replacement token data.
 
         Internal encoder stages use this to avoid revalidating unchanged CUDA
@@ -83,7 +83,7 @@ class PackedEncoderOutput:
             raise ValueError(f"replacement data must have shape ({self.total_tokens}, D), got {tuple(data.shape)}.")
         if data.device != self.data.device:
             raise ValueError(f"replacement data must be on {self.data.device}, got {data.device}.")
-        return _new_packed_encoder_output(
+        return _new_packed_encoder_activations(
             data,
             self.lengths,
             self.cu_seqlens,
@@ -93,7 +93,7 @@ class PackedEncoderOutput:
         )
 
 
-def pack_encoder_output(padded: Tensor, lengths: Tensor) -> PackedEncoderOutput:
+def pack_encoder_output(padded: Tensor, lengths: Tensor) -> PackedEncoderActivations:
     """Compact valid prefixes from a channels-last encoder batch.
 
     Args:
@@ -101,7 +101,7 @@ def pack_encoder_output(padded: Tensor, lengths: Tensor) -> PackedEncoderOutput:
         lengths: Valid prefix lengths with shape ``(B,)``.
 
     Returns:
-        A :class:`PackedEncoderOutput` whose data has shape ``(sum(lengths), D)``.
+        A :class:`PackedEncoderActivations` whose data has shape ``(sum(lengths), D)``.
     """
 
     if padded.ndim != 3:
@@ -112,10 +112,10 @@ def pack_encoder_output(padded: Tensor, lengths: Tensor) -> PackedEncoderOutput:
     mask = _length_mask(lengths, padded.shape[1])
     data = padded[mask]
     cu_seqlens = _lengths_to_cu_seqlens(lengths)
-    return _new_packed_encoder_output(data, lengths, cu_seqlens, max_seqlen, padded_length=padded.shape[1])
+    return _new_packed_encoder_activations(data, lengths, cu_seqlens, max_seqlen, padded_length=padded.shape[1])
 
 
-def unpack_encoder_output(packed: PackedEncoderOutput, *, total_length: int | None = None) -> Tensor:
+def unpack_encoder_output(packed: PackedEncoderActivations, *, total_length: int | None = None) -> Tensor:
     """Restore a packed encoder output to channels-last ``(B, T, D)`` form.
 
     ``total_length`` defaults to ``packed.max_seqlen``. A larger value is useful at
@@ -137,14 +137,14 @@ def unpack_encoder_output(packed: PackedEncoderOutput, *, total_length: int | No
     return output
 
 
-def split_encoder_output(packed: PackedEncoderOutput) -> tuple[Tensor, ...]:
+def split_encoder_output(packed: PackedEncoderActivations) -> tuple[Tensor, ...]:
     """Return one unpadded ``(T_i, D)`` view per utterance."""
 
     offsets = packed.cu_seqlens.tolist()
     return tuple(packed.data[offsets[i] : offsets[i + 1]] for i in range(packed.batch_size))
 
 
-def packed_encoder_position_ids(packed: PackedEncoderOutput) -> Tensor:
+def packed_encoder_position_ids(packed: PackedEncoderActivations) -> Tensor:
     """Return zero-based positions for every packed token, resetting per utterance."""
 
     if packed.total_tokens == 0:
@@ -158,7 +158,7 @@ def split_packed_data(data: Tensor, lengths: Tensor, cu_seqlens: Tensor) -> tupl
     """Validate packed leading-dimension metadata and return one view per sequence.
 
     This lower-level representation is useful before encoder features exist, such as
-    for concatenated waveform samples. Unlike :class:`PackedEncoderOutput`, it allows
+    for concatenated waveform samples. Unlike :class:`PackedEncoderActivations`, it allows
     any data rank and integer offset dtype.
     """
 
@@ -219,7 +219,7 @@ def _normalize_lengths(lengths: Tensor, *, batch_size: int, max_length: int, dev
     return lengths, max_seqlen
 
 
-def _validate_packed_encoder_output(packed: PackedEncoderOutput) -> None:
+def _validate_packed_encoder_activations(packed: PackedEncoderActivations) -> None:
     if packed.data.ndim != 2:
         raise ValueError(f"data must have shape (T_total, D), got {tuple(packed.data.shape)}.")
     if packed.lengths.ndim != 1 or packed.lengths.dtype != torch.int64:
@@ -260,9 +260,9 @@ def _validate_packed_encoder_output(packed: PackedEncoderOutput) -> None:
         )
 
 
-def _new_packed_encoder_output(data, lengths, cu_seqlens, max_seqlen, padding_value=0.0, padded_length=None):
+def _new_packed_encoder_activations(data, lengths, cu_seqlens, max_seqlen, padding_value=0.0, padded_length=None):
     """Construct from metadata that a public constructor already validated."""
-    packed = object.__new__(PackedEncoderOutput)
+    packed = object.__new__(PackedEncoderActivations)
     object.__setattr__(packed, "data", data)
     object.__setattr__(packed, "lengths", lengths)
     object.__setattr__(packed, "cu_seqlens", cu_seqlens)

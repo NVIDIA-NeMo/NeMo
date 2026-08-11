@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 from torch.nn import LayerNorm
 
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput, _new_packed_encoder_output
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, _new_packed_encoder_activations
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
 from nemo.utils import logging
 
@@ -53,9 +53,9 @@ class FeatureStacking(nn.Module):
             x: (B, T', feat_out) stacked and projected features.
             lengths: (B,) updated lengths after subsampling.
         """
-        if isinstance(x, PackedEncoderOutput):
+        if isinstance(x, PackedEncoderActivations):
             if lengths is not None:
-                raise ValueError("lengths must be omitted when x is a PackedEncoderOutput.")
+                raise ValueError("lengths must be omitted when x is PackedEncoderActivations.")
             return self.forward_packed(x)
         if lengths is None:
             raise ValueError("lengths are required for padded FeatureStacking input.")
@@ -70,12 +70,12 @@ class FeatureStacking(nn.Module):
         lengths = self.compute_num_out_frames(lengths)
         return x, lengths
 
-    def forward_packed(self, packed: PackedEncoderOutput) -> PackedEncoderOutput:
+    def forward_packed(self, packed: PackedEncoderActivations) -> PackedEncoderActivations:
         """Stack and project token-flat feature sequences without batch padding."""
         stacked = self.stack_packed(packed)
         return stacked.with_data(self.proj(stacked.data))
 
-    def stack_packed(self, packed: PackedEncoderOutput) -> PackedEncoderOutput:
+    def stack_packed(self, packed: PackedEncoderActivations) -> PackedEncoderActivations:
         """Stack token-flat frames, retaining packed metadata for grouped projection."""
         if packed.data.shape[1] * self.subsampling_factor != self.proj.in_features:
             raise ValueError(
@@ -106,7 +106,7 @@ class FeatureStacking(nn.Module):
             slots[slot_positions + local_positions] = packed.data
         stacked = slots.reshape(-1, self.proj.in_features)
         max_seqlen = self.compute_num_out_frames(packed.max_seqlen)
-        return _new_packed_encoder_output(stacked, output_lengths, output_cu_seqlens, max_seqlen)
+        return _new_packed_encoder_activations(stacked, output_lengths, output_cu_seqlens, max_seqlen)
 
 
 class StackingSubsampling(torch.nn.Module):

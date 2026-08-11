@@ -132,8 +132,8 @@ def setup_distributed(
     This is a convenience function for inference scripts that need distributed
     model-parallel loading without a Lightning Trainer.
 
-    Returns an :class:`AutomodelParallelStrategy` with ``device_mesh``,
-    ``distributed_config``, ``moe_config``, and ``moe_mesh`` ready to use.
+    Returns an :class:`AutomodelParallelStrategy` with its resolved
+    ``distributed_setup`` ready to pass to a model.
     """
     if not dist.is_initialized():
         dist.init_process_group(backend=backend)
@@ -158,19 +158,18 @@ def setup_distributed(
 
 
 class AutomodelParallelStrategy(ModelParallelStrategy):
-    """A Lightning strategy using nemo_automodel for device mesh creation,
+    """A Lightning strategy using nemo_automodel for topology resolution,
     supporting extended parallelism: FSDP2, TP, PP, CP, EP, and HSDP.
 
     This is a drop-in replacement for ``ModelParallelStrategy`` that delegates
-    device mesh creation to
-    ``nemo_automodel.components.distributed.mesh_utils.create_device_mesh``.
+    topology resolution to Automodel's public ``DistributedSetup`` builder.
 
     The resulting device mesh has dimensions ``(pp, dp_replicate, dp_shard, cp, tp)``
     with flattened submeshes ``dp``, ``dp_shard_cp``, and ``dp_cp``.
 
-    Models using this strategy access the mesh in ``configure_model()`` via
-    ``self.device_mesh`` and can use dimension names like ``"tp"``, ``"dp"``,
-    ``"dp_shard"``, ``"cp"``, ``"pp"``, etc.
+    Models using this strategy receive ``self.distributed_setup`` in
+    ``configure_model()`` and can access its mesh dimensions through
+    ``distributed_setup.mesh_context.device_mesh``.
 
     Args:
         dp_size: Data parallel size. If None, inferred from world_size and
@@ -241,6 +240,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         self._activation_checkpointing_llm = activation_checkpointing_llm
         self._activation_checkpointing_perception = activation_checkpointing_perception
         self._moe_mesh = None
+        self._distributed_setup = None
 
     @property
     def moe_mesh(self):
@@ -270,6 +270,11 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         """Whether activation checkpointing is enabled for the perception encoder."""
         return self._activation_checkpointing_perception
 
+    @property
+    def distributed_setup(self):
+        """The resolved Automodel distributed setup, after mesh creation."""
+        return self._distributed_setup
+
     def create_device_mesh(self):
         """Create the device mesh from the configured parallelism sizes.
 
@@ -281,22 +286,29 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         Returns:
             Tuple of ``(device_mesh, moe_mesh)``.
         """
-        from nemo_automodel.components.distributed.config import FSDP2Config
-        from nemo_automodel.components.distributed.mesh_utils import create_device_mesh
+        from nemo_automodel.components.distributed import DistributedSetup, FSDP2Config, ParallelismSizes
 
         if self._distributed_config is None:
             self._distributed_config = FSDP2Config()
 
-        self._device_mesh, self._moe_mesh = create_device_mesh(
-            self._distributed_config,
-            dp_size=self._dp_size,
-            dp_replicate_size=self._dp_replicate_size,
-            tp_size=self._tp_size,
-            pp_size=self._pp_size,
-            cp_size=self._cp_size,
-            ep_size=self._ep_size,
+        self._distributed_setup = DistributedSetup.build(
+            strategy=self._distributed_config,
+            parallelism_sizes=ParallelismSizes(
+                dp_size=self._dp_size,
+                dp_replicate_size=self._dp_replicate_size,
+                tp_size=self._tp_size,
+                pp_size=self._pp_size,
+                cp_size=self._cp_size,
+                ep_size=self._ep_size,
+            ),
+            moe_parallel_config=self._moe_config,
+            activation_checkpointing=self._activation_checkpointing_llm,
             world_size=dist.get_world_size(),
         )
+        self._distributed_config = self._distributed_setup.strategy_config
+        self._moe_config = self._distributed_setup.moe_parallel_config
+        self._device_mesh = self._distributed_setup.mesh_context.device_mesh
+        self._moe_mesh = self._distributed_setup.mesh_context.moe_mesh
         return self._device_mesh, self._moe_mesh
 
     @override
@@ -310,6 +322,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         assert self.lightning_module is not None
         self.lightning_module._device_mesh = self._device_mesh
         self.lightning_module._moe_mesh = self._moe_mesh
+        self.lightning_module._distributed_setup = self._distributed_setup
 
     @property
     @override

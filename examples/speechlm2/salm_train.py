@@ -27,16 +27,6 @@ if torch.cuda.is_available():
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
-def _should_pin_bf16_default_dtype(cfg: DictConfig) -> bool:
-    """Return whether compiled BF16 checkpoint recompute needs a stable default dtype."""
-    return (
-        cfg.trainer.get("precision") == "bf16-true"
-        and bool(cfg.model.get("use_nemo_automodel", False))
-        and bool(OmegaConf.select(cfg, "model.compile.enabled", default=False))
-        and bool(OmegaConf.select(cfg, "trainer.strategy.activation_checkpointing_llm", default=False))
-    )
-
-
 def _create_salm_dataset(tokenizer, data_cfg: DictConfig | dict) -> SALMDataset:
     """Build SALMDataset without forwarding unset options to legacy NeMo packages."""
     multispeaker_cfg = data_cfg.get("multispeaker_cfg", None)
@@ -53,15 +43,6 @@ def train(cfg):
         torch.distributed.init_process_group(backend="nccl")
     seed_everything(cfg.data.train_ds.seed)
     torch.set_float32_matmul_precision("medium")
-
-    # Under bf16-true, Lightning changes the default dtype only around the forward.
-    # A torch.compile-d LLM that is recomputed by activation checkpointing then sees
-    # fp32 during backward, invalidates its Dynamo global-state guard, and repeatedly
-    # recompiles. Pin the process default only for that exact combination; ordinary
-    # bf16-true and bf16-flash runs retain their precision plugin behavior.
-    if _should_pin_bf16_default_dtype(cfg):
-        torch.set_default_dtype(torch.bfloat16)
-
     trainer = Trainer(**resolve_trainer_cfg(cfg.trainer))
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
     # Insert at position 0 so our ``on_train_batch_end`` runs BEFORE the
@@ -83,11 +64,6 @@ def train(cfg):
     dataset = _create_salm_dataset(model.tokenizer, cfg.data)
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 
-    # Evaluation-only path: run the Lightning validation loop without any
-    # training (e.g. to measure MTP per-head teacher-forced agreement on a checkpoint
-    # loaded via model.init_from_checkpoint). configure_model() still loads the
-    # checkpoint weights for validate, so this exercises the val metrics on the
-    # restored model without touching its weights.
     if cfg.get("run_validate_only", False):
         trainer.validate(model, datamodule)
     else:

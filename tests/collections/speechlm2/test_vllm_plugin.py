@@ -310,6 +310,17 @@ class TestHybridBackendWeightMapping:
         assert mapped_tensor is tensor
         assert torch.equal(mapped_tensor, original_values)
 
+    @pytest.mark.parametrize("holder_name", ["_fp32_params.A_log", "_fp32_params.dt_bias", "_fp32_params.D"])
+    def test_does_not_canonicalize_non_mixer_fp32_param_holders(self, backend, holder_name):
+        import torch
+
+        source_name = f"llm.model.layers.0.other.{holder_name}"
+        tensor = torch.tensor([1.0])
+        [(mapped_name, mapped_tensor)] = backend.nemo_to_hf_llm_weights([(source_name, tensor)])
+
+        assert mapped_name == f"backbone.layers.0.other.{holder_name}"
+        assert mapped_tensor is tensor
+
     @pytest.mark.parametrize("param_name", ["A", "dt_bias", "D"])
     def test_already_canonical_fp32_param_names_are_unchanged(self, backend, param_name):
         import torch
@@ -320,6 +331,36 @@ class TestHybridBackendWeightMapping:
 
         assert mapped_name == canonical_name
         assert mapped_tensor is tensor
+
+    def test_a_log_reaches_vllm_loader_and_is_transformed_once(self, backend, monkeypatch):
+        import torch
+        from torch import nn
+        from vllm.model_executor.layers.mamba import mamba_mixer2
+        from vllm.model_executor.model_loader import weight_utils
+        from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
+        from vllm.model_executor.models.utils import AutoWeightsLoader
+
+        a_log = torch.tensor([-2.0, 0.5, 3.0])
+        model = nn.Module()
+        model.model = nn.Module()
+        model.model.layers = nn.ModuleList([nn.Module()])
+        model.model.layers[0].mixer = nn.Module()
+        model.model.layers[0].mixer.A = nn.Parameter(torch.empty_like(a_log))
+
+        monkeypatch.setattr(weight_utils, "get_tensor_model_parallel_rank", lambda: 0)
+        model.model.layers[0].mixer.A.weight_loader = mamba_mixer2.composed_weight_loader(
+            mamba_mixer2.sharded_weight_loader(0),
+            lambda tensor: -torch.exp(tensor.float()),
+        )
+
+        hf_weights = backend.nemo_to_hf_llm_weights([("llm.model.layers.0.mixer._fp32_params.A_log", a_log)])
+        loaded = AutoWeightsLoader(model).load_weights(
+            hf_weights,
+            mapper=NemotronHForCausalLM.hf_to_vllm_mapper,
+        )
+
+        assert loaded == {"model.layers.0.mixer.A"}
+        assert torch.equal(model.model.layers[0].mixer.A, -torch.exp(a_log))
 
     def test_ordinary_and_moe_mappings_are_unchanged(self, backend):
         import torch

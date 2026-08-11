@@ -217,9 +217,9 @@ class TransformerBackend(_BaseBackend):
 
 
 _FP32_PARAM_HOLDER_RENAMES = {
-    "._fp32_params.A_log": ".A",
-    "._fp32_params.dt_bias": ".dt_bias",
-    "._fp32_params.D": ".D",
+    ".mixer._fp32_params.A_log": ".mixer.A",
+    ".mixer._fp32_params.dt_bias": ".mixer.dt_bias",
+    ".mixer._fp32_params.D": ".mixer.D",
 }
 
 

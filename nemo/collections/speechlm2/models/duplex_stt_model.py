@@ -13,7 +13,6 @@
 # limitations under the License.
 import copy
 import os
-from pathlib import Path
 
 import torch
 from lightning import LightningModule

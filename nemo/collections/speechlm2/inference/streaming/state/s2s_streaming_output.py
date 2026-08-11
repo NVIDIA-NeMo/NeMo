@@ -20,7 +20,6 @@ import torch
 
 from nemo.collections.speechlm2.inference.streaming.framing.s2s_request_options import S2SRequestOptions
 from nemo.collections.speechlm2.parts.text_utils import tokens_to_str
-from nemo.utils import logging
 
 
 @dataclass

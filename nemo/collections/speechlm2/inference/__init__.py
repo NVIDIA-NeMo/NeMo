@@ -20,3 +20,13 @@ from nemo.collections.speechlm2.inference.pipelines.streaming_s2s_pipeline impor
 )
 from nemo.collections.speechlm2.inference.streaming.framing.s2s_request_options import S2SRequestOptions
 from nemo.collections.speechlm2.inference.streaming.state.s2s_streaming_output import S2SStreamingOutput
+
+__all__ = [
+    'S2SPipelineBuilder',
+    'InferenceStepResult',
+    'StreamingDecodeState',
+    'GenerateStepOutput',
+    'StreamingS2SPipeline',
+    'S2SRequestOptions',
+    'S2SStreamingOutput',
+]

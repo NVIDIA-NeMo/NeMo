@@ -49,7 +49,9 @@ from nemo.utils.timers import SimpleTimer
 def main(cfg: DictConfig):
     default_system_prompt = cfg.get("s2s", {}).get("system_prompt", None)
     audio_filepaths, options, ground_truths = prepare_audio_data(
-        cfg.audio_file, default_system_prompt=default_system_prompt, sort_by_duration=False,
+        cfg.audio_file,
+        default_system_prompt=default_system_prompt,
+        sort_by_duration=False,
     )
     logging.info(f"Found {len(audio_filepaths)} audio files to generate")
 
@@ -70,9 +72,14 @@ def main(cfg: DictConfig):
     exec_dur = timer.total_sec()
     logging.info(f"Generated {len(audio_filepaths)} files in {exec_dur:.2f}s")
 
-    data_dur = sum(calculate_durations_incl_padding(
-        audio_filepaths, cfg.get("pad_audio_to_sec"), cfg.get("pad_silence_ratio"), cfg.get("pad_audio_by_sec"),
-    ))
+    data_dur = sum(
+        calculate_durations_incl_padding(
+            audio_filepaths,
+            cfg.get("pad_audio_to_sec"),
+            cfg.get("pad_silence_ratio"),
+            cfg.get("pad_audio_by_sec"),
+        )
+    )
     rtfx = data_dur / exec_dur if exec_dur > 0 else float('inf')
     logging.info(f"RTFX: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")
 

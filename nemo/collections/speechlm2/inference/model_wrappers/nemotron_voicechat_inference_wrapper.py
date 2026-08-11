@@ -396,9 +396,7 @@ class NemotronVoicechatInferenceWrapper:
         if stt.use_function_head:
             # Keep the same current-NeMo channel order used by
             # DuplexSTTModel.build_input_embedding.
-            prompt_embedded += pad_emb.expand(1, prompt_len, -1) * stt.cfg.get(
-                "duplex_function_channel_weight", 1.0
-            )
+            prompt_embedded += pad_emb.expand(1, prompt_len, -1) * stt.cfg.get("duplex_function_channel_weight", 1.0)
 
         return prompt_embedded, prompt_len
 

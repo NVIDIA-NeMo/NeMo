@@ -19,8 +19,17 @@ from nemo.collections.speechlm2.inference.model_wrappers.backend.pytorch.eartts 
 )
 from nemo.collections.speechlm2.inference.model_wrappers.backend.pytorch.model import PyTorchLLM
 
+__all__ = [
+    'ModelInterface',
+    'PyTorchEarTTS',
+    'TTSGenerationResult',
+    'PyTorchLLM',
+]
+
 try:
     from nemo.collections.speechlm2.inference.model_wrappers.backend.vllm.eartts import VLLMEarTTS
     from nemo.collections.speechlm2.inference.model_wrappers.backend.vllm.llm import VLLMLLM
+
+    __all__ += ['VLLMEarTTS', 'VLLMLLM']
 except ImportError:
     pass  # vLLM is an optional dependency

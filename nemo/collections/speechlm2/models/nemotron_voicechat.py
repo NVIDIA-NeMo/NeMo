@@ -41,9 +41,10 @@ _NEMOTRON_LABS_VOICECHAT_RELEASE_ID = "nvidia/NVIDIA-NemotronLabs-VoiceChat-11B"
 def _is_nemotron_labs_voicechat_release(model_id: str | Path, cfg: dict | None = None) -> bool:
     """Recognize the public repo ID, local directory name, or release config."""
     model_id = str(model_id).rstrip("/")
-    if model_id == _NEMOTRON_LABS_VOICECHAT_RELEASE_ID or Path(model_id).name == Path(
-        _NEMOTRON_LABS_VOICECHAT_RELEASE_ID
-    ).name:
+    if (
+        model_id == _NEMOTRON_LABS_VOICECHAT_RELEASE_ID
+        or Path(model_id).name == Path(_NEMOTRON_LABS_VOICECHAT_RELEASE_ID).name
+    ):
         return True
 
     # ``hf download --local-dir`` permits arbitrary directory names. In that

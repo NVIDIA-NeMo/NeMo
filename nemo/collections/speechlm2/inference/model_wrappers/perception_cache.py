@@ -146,7 +146,7 @@ class PerceptionCacheManager:
         else:
             self.sampling_frames = None
 
-        logging.info(f"Perception cache setup complete:")
+        logging.info("Perception cache setup complete:")
         logging.info(
             f"   Streaming config: chunk_size={self.streaming_cfg.chunk_size}, "
             f"shift_size={self.streaming_cfg.shift_size}"
@@ -155,9 +155,9 @@ class PerceptionCacheManager:
         logging.info(f"   Subsampling factor: {self.subsampling_factor}")
 
         if self.use_cudagraph:
-            logging.info(f"   Setting up CUDA graphs for perception encoder...")
+            logging.info("   Setting up CUDA graphs for perception encoder...")
             self.capture_cudagraphs()
-            logging.info(f"   CUDA graphs captured")
+            logging.info("   CUDA graphs captured")
 
         return True
 
@@ -211,7 +211,7 @@ class PerceptionCacheManager:
         if cache_last_channel_len is not None:
             state.static_cache_channel_len_in = cache_last_channel_len.clone()
 
-        logging.info(f"   Warming up encoder for CUDA graph capture...")
+        logging.info("   Warming up encoder for CUDA graph capture...")
         # PyTorch recommends a few eager warmup iterations before CUDA graph
         # capture on a side stream; its example uses three iterations:
         # https://pytorch.org/docs/stable/notes/cuda.html#cuda-graphs
@@ -332,7 +332,7 @@ class PerceptionCacheManager:
         state.static_cache_channel_len_out_subsequent = cache_channel_len_out_subsequent
 
         self.cudagraph_state = state
-        logging.info(f"   CUDA graphs captured successfully")
+        logging.info("   CUDA graphs captured successfully")
 
     def get_initial_state(self, batch_size: int = 1) -> PerceptionCacheState:
         """Get initial cache state for perception encoder."""

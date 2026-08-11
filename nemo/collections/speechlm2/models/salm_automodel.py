@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import re
 import warnings
 from collections import defaultdict
 from contextlib import contextmanager
@@ -359,6 +360,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self._validate_parallelism_compatibility()
         self._configure_moe_aux_loss_scaler()
 
+    def on_validation_start(self) -> None:
+        """Reject unsupported parallel layouts for fit and standalone validation."""
+        self._validate_parallelism_compatibility()
+
+    def on_test_start(self) -> None:
+        """Reject unsupported parallel layouts for standalone testing."""
+        self._validate_parallelism_compatibility()
+
     def _validate_parallelism_compatibility(self) -> None:
         """Raise on known-incompatible THD/CP/backend configurations.
 
@@ -370,11 +379,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         from nemo.collections.speechlm2.parts.parallel import validate_parallelism_compatibility
 
         cp_size = 1
+        tp_size = 1
         device_mesh = getattr(self, "_device_mesh", None)
         if device_mesh is not None:
             names = device_mesh.mesh_dim_names or ()
             if "cp" in names:
                 cp_size = device_mesh["cp"].size()
+            if "tp" in names:
+                tp_size = device_mesh["tp"].size()
 
         attn_backend = self.cfg.get("automodel_backend", {}).get("attn", "te")
         nvte_fused_attn = os.environ.get("NVTE_FUSED_ATTN")
@@ -388,10 +400,17 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             device_capability=device_capability,
         )
         mtp_cfg = self.cfg.get("mtp", None)
-        if cp_size > 1 and mtp_cfg is not None and bool(mtp_cfg.get("enabled", False)):
+        mtp_enabled = mtp_cfg is not None and bool(mtp_cfg.get("enabled", False))
+        if cp_size > 1 and mtp_enabled:
             raise ValueError(
                 "SALMAutomodel MTP currently requires cp_size=1. Context parallelism uses an interleaved "
                 "THD partition, so rank-local labels cannot be rolled into correct next-token MTP targets yet."
+            )
+        if tp_size > 1 and mtp_enabled:
+            raise ValueError(
+                "SALMAutomodel MTP currently requires tp_size=1. The MTP head has no tensor-parallel plan, "
+                "and fused MTP loss cannot materialize a TP-sharded LM-head weight with a DP-only "
+                "gradient-reduction group."
             )
 
     def training_step(self, dataloader_iter):
@@ -476,6 +495,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     model=self.llm,
                     scaling_factor=self._mtp_loss_scaling_factor,
                     num_label_tokens=num_frames_global,
+                    grad_reduce_group=dp_group,
                     cu_seqlens=mtp_cu_seqlens,
                 )
             mtp_loss = dp_size * mtp_loss
@@ -574,12 +594,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             if lss_vals:
                 self.log("val_lss", torch.stack(lss_vals).mean(), on_epoch=True, sync_dist=True)
 
-        # Multi-Token Prediction acceptance metrics. Each accumulated per-head count is already
-        # a prefix count: depth k contributes only when the verifier matched every draft through
-        # depth k. Therefore the expected greedy acceptance length is one always-accepted target
-        # token plus the sum of the measured prefix-acceptance probabilities.
+        # Multi-Token Prediction teacher-forced agreement metrics. Each accumulated per-head
+        # count is already a prefix count: depth k contributes only when every draft through
+        # depth k agrees with verifier logits from the ground-truth-conditioned validation
+        # forward. This is a cheap quality proxy, not speculative-decoding acceptance: exact
+        # acceptance requires verifier forwards conditioned on each proposed draft prefix.
         if self._partial_val_mtp_correct:
-            accept_lengths = []
+            agreement_lengths = []
             for name in self._partial_val_mtp_correct:
                 correct = torch.stack(self._partial_val_mtp_correct[name]).sum(dim=0)
                 valid = torch.stack(self._partial_val_mtp_valid[name]).sum(dim=0)
@@ -587,12 +608,24 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 reduced = self._reduce_validation_metric_sums(torch.cat([correct, valid]), reduction_group)
                 per_head = reduced[:D] / reduced[D:].clamp(min=1)
                 for head_idx, p in enumerate(per_head, start=1):
-                    self.log(f"val_mtp_acc_{name}/head_{head_idx}", p, on_epoch=True, sync_dist=True)
-                accept_length = 1.0 + per_head.sum()
-                self.log(f"val_mtp_accept_length_{name}", accept_length, on_epoch=True, sync_dist=True)
-                accept_lengths.append(accept_length)
-            if accept_lengths:
-                self.log("val_mtp_accept_length", torch.stack(accept_lengths).mean(), on_epoch=True, sync_dist=True)
+                    self.log(
+                        f"val_mtp_teacher_forced_agreement_{name}/head_{head_idx}",
+                        p,
+                        on_epoch=True,
+                        sync_dist=True,
+                    )
+                agreement_length = 1.0 + per_head.sum()
+                self.log(
+                    f"val_mtp_teacher_forced_prefix_length_{name}", agreement_length, on_epoch=True, sync_dist=True
+                )
+                agreement_lengths.append(agreement_length)
+            if agreement_lengths:
+                self.log(
+                    "val_mtp_teacher_forced_prefix_length",
+                    torch.stack(agreement_lengths).mean(),
+                    on_epoch=True,
+                    sync_dist=True,
+                )
 
         self._partial_val_loss_sums.clear()
         self._partial_val_corrects.clear()
@@ -631,14 +664,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     ignore_index=-100,
                 )
 
-            if isinstance(logits, DTensor):
-                logits = logits.full_tensor()
             if self.lss_loss is not None and num_frames > 0:
-                log_probs = torch.nn.functional.log_softmax(logits.float(), dim=-1)
+                lss_logits = logits.full_tensor() if isinstance(logits, DTensor) else logits
+                log_probs = torch.nn.functional.log_softmax(lss_logits.float(), dim=-1)
                 lss_val = self.lss_loss(log_probs=log_probs, labels=inputs["target_ids"])
                 self._partial_val_lss[name].append(lss_val.detach())
 
-            verifier_predictions = logits.argmax(dim=-1)
+            verifier_predictions = _vocab_parallel_argmax(logits)
             preds = verifier_predictions.view(-1)
             refs = inputs["target_ids"].reshape(-1)
             preds = preds[refs != -100]
@@ -649,12 +681,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             self._partial_val_corrects[name].append(correct.detach().to(loss_sum.dtype))
             self._partial_val_num_frames[name].append(num_frames.detach().to(loss_sum.dtype))
 
-            # Multi-Token Prediction acceptance: verifier-matched prefix rates for each
-            # depth, accumulated for epoch-end expected-length reporting.
+            # Multi-Token Prediction teacher-forced prefix agreement for each depth.
             mtp_h = forward_outputs.get("mtp_per_depth_h", None)
             if mtp_h is not None:
                 mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
-                correct_by_head, valid_by_head = _calculate_mtp_acceptance_with_heads(
+                correct_by_head, valid_by_head = _calculate_mtp_teacher_forced_agreement_with_heads(
                     mtp_per_depth_h=mtp_h,
                     labels=inputs["target_ids"],
                     model=self.llm,
@@ -1001,7 +1032,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
     def _apply_mtp_training_mode(self, training_mode: str) -> None:
         """Apply the optimizer-facing parameter policy for an MTP run.
 
-        ``joint`` preserves the recipe's ordinary freeze policy. ``head_only``
+        ``joint`` preserves the recipe's ordinary freeze policy while making
+        its documented ``llm.mtp`` keep rule wrapper-aware. ``head_only``
         freezes every parameter outside ``llm.mtp`` and guarantees that the
         head wins over any user-supplied ``freeze_params`` expression. The
         latter is intentionally strict: speech encoder, modality adapter,
@@ -1010,23 +1042,38 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         This runs after model/checkpoint setup so loading is unaffected, and
         before Lightning constructs the optimizer.
         """
-        if training_mode != "head_only":
+        if training_mode not in {"joint", "head_only"}:
             return
         if not self._mtp_enabled:
-            raise RuntimeError("MTP training_mode='head_only' requires an attached MTP head.")
+            if training_mode == "head_only":
+                raise RuntimeError("MTP training_mode='head_only' requires an attached MTP head.")
+            return
 
-        mtp_param_ids = {id(param) for param in self.llm.mtp.parameters()}
+        # freeze_and_subset applies recipe regexes when configure_optimizers is
+        # called. Resolve the live module path so wrappers such as torch.compile
+        # (``_orig_mod``), DDP, or PEFT cannot cause a broad ``^llm\\..+$`` rule
+        # to remove the one parameter namespace that head-only mode promises to train.
+        mtp_module = self.llm.mtp
+        mtp_module_name = next((name for name, module in self.named_modules() if module is mtp_module), None)
+        if not mtp_module_name:
+            raise RuntimeError("Could not resolve the attached MTP module's parameter namespace.")
+        keep_pattern = rf"^{re.escape(mtp_module_name)}\..+$"
+        if "prevent_freeze_params" not in self.cfg:
+            self.cfg.prevent_freeze_params = []
+
+        if training_mode == "joint":
+            canonical_keep_pattern = r"^llm\.mtp\..+$"
+            if canonical_keep_pattern in self.cfg.prevent_freeze_params:
+                if keep_pattern not in self.cfg.prevent_freeze_params:
+                    self.cfg.prevent_freeze_params.append(keep_pattern)
+            return
+
+        mtp_param_ids = {id(param) for param in mtp_module.parameters()}
         if not mtp_param_ids:
             raise RuntimeError("MTP training_mode='head_only' found an MTP module with no parameters.")
         for param in self.parameters():
             param.requires_grad_(id(param) in mtp_param_ids)
 
-        # freeze_and_subset applies recipe regexes when configure_optimizers is
-        # called. Ensure broad expressions such as '^llm\\..+$' cannot remove
-        # the one parameter namespace that head-only mode promises to train.
-        keep_pattern = r"^llm\.mtp\..+$"
-        if "prevent_freeze_params" not in self.cfg:
-            self.cfg.prevent_freeze_params = []
         if keep_pattern not in self.cfg.prevent_freeze_params:
             self.cfg.prevent_freeze_params.append(keep_pattern)
 
@@ -1051,14 +1098,18 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         llm = self.llm
         cfg_obj = llm.config
         cfg_obj.mtp_hybrid_override_pattern = str(mtp_cfg.get("hybrid_override_pattern", "*"))
-        # Persist depth count on the HF config so save_llm_backbone_config()
-        # writes a config.json that vLLM can use to instantiate MTP heads.
-        cfg_obj.num_nextn_predict_layers = int(mtp_cfg.get("num_nextn_predict_layers", 1))
+        requested_depth = int(mtp_cfg.get("num_nextn_predict_layers", 1))
+        cfg_obj.num_nextn_predict_layers = requested_depth
         mtp_config = build_mtp_config_from_hf(
             cfg_obj,
             loss_scaling_factor=self._mtp_loss_scaling_factor,
             use_repeated_layer=bool(mtp_cfg.get("use_repeated_layer", False)),
         )
+        # HF/vLLM config has no weight-tying flag for repeated MTP layers. Export
+        # the physical depth so reload constructs exactly the layers present in
+        # the state dict instead of D independent layers for one tied layer.
+        cfg_obj.num_nextn_predict_layers = mtp_config.num_physical_depths
+
         llm.mtp_config = mtp_config
         mtp = build_nemotron_v3_mtp(
             cfg_obj,
@@ -1070,7 +1121,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         device = (
             torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
         )
-        llm.mtp = mtp.to(device=device, dtype=dtype)
+        mtp = mtp.to(device=device, dtype=dtype)
+        for sublayer in mtp.layers:
+            sublayer.init_weights(buffer_device=device)
+        llm.mtp = mtp
         warnings.warn(
             f"MTP head attached (unsharded): num_layers={mtp_config.num_layers} "
             f"pattern={cfg_obj.mtp_hybrid_override_pattern!r}"
@@ -1174,12 +1228,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # boundaries (see training_step); the MTP sublayers already get the
             # THD context (qkv_format/cu_seqlens/seq_idx) from the model forward.
             self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1))
-            # Fuse the shared LM projection with CE so each MTP depth does not materialize
-            # a full [tokens, vocab] logits tensor. reduction="sum" lets the helper
-            # normalize by the global labeled-token count.
-            from nemo_automodel.components.loss.linear_ce import FusedLinearCrossEntropy
-
-            self._mtp_loss_fn = FusedLinearCrossEntropy(reduction="sum")
+            self._mtp_loss_fn = _build_mtp_loss_fn()
         else:
             # Some checkpoints (including Nemotron-3.5 Lightning) ship a native
             # MTP head in config.json. Explicitly override its depth to zero so
@@ -1314,6 +1363,28 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         }
 
 
+def _build_mtp_loss_fn() -> torch.nn.Module:
+    """Select the memory-efficient MTP loss with an optional-dependency fallback."""
+    from nemo_automodel.components.loss import linear_ce
+
+    if linear_ce.HAVE_CUT_CROSS_ENTROPY:
+        # Fuse the shared LM projection with CE so each MTP depth does not materialize
+        # a full [tokens, vocab] logits tensor. reduction="sum" lets the helper
+        # normalize by the global labeled-token count.
+        return linear_ce.FusedLinearCrossEntropy(reduction="sum")
+
+    # cut-cross-entropy is optional in Automodel and is absent from existing NeMo
+    # Speech containers. Retain the pre-fused compatibility path so enabling MTP
+    # does not introduce a new undeclared runtime requirement.
+    from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
+
+    logging.warning(
+        "cut_cross_entropy is unavailable; falling back to the unfused MTP loss. "
+        "Install cut-cross-entropy to reduce peak MTP loss memory."
+    )
+    return MaskedCrossEntropy(reduction="sum", fp32_upcast=False)
+
+
 def _calculate_mtp_loss_with_heads(
     loss_fn,
     *,
@@ -1323,6 +1394,7 @@ def _calculate_mtp_loss_with_heads(
     model: torch.nn.Module,
     scaling_factor: float = 0.1,
     num_label_tokens: torch.Tensor | None = None,
+    grad_reduce_group: dist.ProcessGroup | None = None,
     ignore_index: int = -100,
     cu_seqlens: torch.Tensor | None = None,
     seq_idx: torch.Tensor | None = None,
@@ -1365,7 +1437,11 @@ def _calculate_mtp_loss_with_heads(
         lm_weight = lm_head.weight
         if isinstance(lm_weight, DTensor):
             materialize = getattr(loss_fn, "materialize_lm_weight", None)
-            lm_weight = materialize(lm_weight) if materialize is not None else lm_weight.full_tensor()
+            lm_weight = (
+                materialize(lm_weight, grad_reduce_group=grad_reduce_group)
+                if materialize is not None
+                else lm_weight.full_tensor()
+            )
 
     if seq_idx is None and cu_seqlens is not None:
         cs = cu_seqlens
@@ -1417,6 +1493,7 @@ def _calculate_mtp_loss_with_heads(
                 model=model,
                 lm_weight=lm_weight,
                 num_label_tokens=num_label_tokens,
+                grad_reduce_group=grad_reduce_group,
             )
         else:
             lm_head = _get_lm_head_module(model)
@@ -1438,7 +1515,20 @@ def _calculate_mtp_loss_with_heads(
     return total, head_losses, raw_head_losses
 
 
-def _calculate_mtp_acceptance_with_heads(
+def _vocab_parallel_argmax(logits: torch.Tensor) -> torch.Tensor:
+    """Return global vocabulary argmax IDs without gathering full logits.
+
+    PyTorch's DTensor argmax handler reduces sharded maxima and their global
+    indices across the vocabulary mesh. Materialize only the resulting token-ID
+    tensor, whose vocabulary dimension has already been removed.
+    """
+    predictions = logits.argmax(dim=-1)
+    if isinstance(predictions, DTensor):
+        predictions = predictions.full_tensor()
+    return predictions
+
+
+def _calculate_mtp_teacher_forced_agreement_with_heads(
     *,
     mtp_per_depth_h: list[torch.Tensor],
     labels: torch.Tensor,
@@ -1448,13 +1538,15 @@ def _calculate_mtp_acceptance_with_heads(
     cu_seqlens: torch.Tensor | None = None,
     seq_idx: torch.Tensor | None = None,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """Per-head MTP token-acceptance counts for validation.
+    """Per-head teacher-forced MTP/verifier agreement counts for validation.
 
     For each MTP depth ``k`` the head's argmax prediction is compared with the
-    verifier's prediction for the same future position. Counts are prefix-based:
-    depth ``k`` is accepted only when every draft through ``k`` matches. The same
-    rolled/masked labels as the MTP loss define eligible validation positions,
-    including cross-sequence masking under packed THD.
+    verifier's prediction for the same future position from the validation
+    forward conditioned on ground-truth tokens. Counts are prefix-based: depth
+    ``k`` agrees only when every draft through ``k`` matches. This must not be
+    reported as speculative-decoding acceptance, which requires verifier logits
+    conditioned on the proposed draft prefix. The same rolled/masked labels as
+    the MTP loss define eligible positions, including packed-THD boundaries.
     """
     from nemo_automodel.components.loss.utils import _get_lm_head_module
     from nemo_automodel.components.models.common.mtp import roll_tensor
@@ -1500,9 +1592,7 @@ def _calculate_mtp_acceptance_with_heads(
             masked = torch.where(rolled_seq_idx != seq_idx, torch.full_like(masked, ignore_index), masked)
 
         logits = lm_head(mtp_output)
-        if isinstance(logits, DTensor):
-            logits = logits.full_tensor()
-        preds = logits.argmax(dim=-1)
+        preds = _vocab_parallel_argmax(logits)
         valid = masked != ignore_index
         verifier_for_depth = roll_tensor(verifier_predictions, shifts=-(k + 1), dim=-1)
         prefix_valid = prefix_valid & valid

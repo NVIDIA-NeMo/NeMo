@@ -633,7 +633,8 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
         # Optimizer states and other trainer state are ignored automatically
         # because we only provide the model's state_dict.
         state_dict = {"state_dict": model.state_dict()}
-        allow_partial = bool(model.cfg.get("init_from_checkpoint_allow_partial", False))
+        model_cfg = getattr(model, "cfg", None)
+        allow_partial = bool(model_cfg and model_cfg.get("init_from_checkpoint_allow_partial", False))
         planner = DefaultLoadPlanner(allow_partial_load=True) if allow_partial else None
         if allow_partial:
             logging.info("DCP partial load enabled; checkpoint-missing model keys keep their initialized values")

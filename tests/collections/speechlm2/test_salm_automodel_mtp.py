@@ -255,13 +255,13 @@ def test_forward_omits_mtp_per_depth_h_when_absent():
 
 
 # ---------------------------------------------------------------------------
-# validation MTP acceptance metrics
+# validation MTP teacher-forced agreement metrics
 # ---------------------------------------------------------------------------
 
 
-def test_validation_epoch_end_logs_mtp_acceptance():
-    '''on_validation_epoch_end reports verifier-prefix acceptance probabilities
-    and their expected acceptance length.'''
+def test_validation_epoch_end_logs_mtp_teacher_forced_agreement():
+    '''on_validation_epoch_end reports teacher-forced prefix agreement
+    probabilities and the corresponding prefix length.'''
     from collections import defaultdict
 
     model = _bare_model()
@@ -277,21 +277,21 @@ def test_validation_epoch_end_logs_mtp_acceptance():
     model._partial_val_num_frames = defaultdict(list, {'ds': [torch.tensor(10.0)]})
     model._partial_val_lss = defaultdict(list)
 
-    # Depth-1 prefix: 8/10 accepted; depth-2 prefix: 5/10 accepted.
+    # Depth-1 prefix: 8/10 agree; depth-2 prefix: 5/10 agree.
     model._partial_val_mtp_correct = defaultdict(list, {'ds': [torch.tensor([8.0, 5.0])]})
     model._partial_val_mtp_valid = defaultdict(list, {'ds': [torch.tensor([10.0, 10.0])]})
 
     SALMAutomodel.on_validation_epoch_end(model)
 
-    assert logged['val_mtp_acc_ds/head_1'] == pytest.approx(0.8)
-    assert logged['val_mtp_acc_ds/head_2'] == pytest.approx(0.5)
+    assert logged['val_mtp_teacher_forced_agreement_ds/head_1'] == pytest.approx(0.8)
+    assert logged['val_mtp_teacher_forced_agreement_ds/head_2'] == pytest.approx(0.5)
     # 1 (main verifier token) + P(A1) + P(A1 and A2) = 2.3.
-    assert logged['val_mtp_accept_length_ds'] == pytest.approx(2.3)
-    assert logged['val_mtp_accept_length'] == pytest.approx(2.3)
+    assert logged['val_mtp_teacher_forced_prefix_length_ds'] == pytest.approx(2.3)
+    assert logged['val_mtp_teacher_forced_prefix_length'] == pytest.approx(2.3)
 
 
-def test_calculate_mtp_acceptance_with_heads_counts(monkeypatch):
-    '''Acceptance compares drafts with verifier predictions and requires a matched prefix.'''
+def test_calculate_mtp_teacher_forced_agreement_with_heads_counts(monkeypatch):
+    '''Agreement compares drafts with teacher-forced verifier predictions and requires a matched prefix.'''
     # The helper imports these specific Automodel submodules; importorskip each so the test
     # skips cleanly when the installed Automodel rev predates them (rather than hard-failing).
     pytest.importorskip('nemo_automodel.components.loss.utils', reason='needs Automodel _get_lm_head_module')
@@ -312,11 +312,11 @@ def test_calculate_mtp_acceptance_with_heads_counts(monkeypatch):
     # Depth 1's verifier targets are [1, 2, 3, 0]. Drafts match positions 0, 2, 3.
     depth_1_ids = torch.tensor([[1, 0, 3, 0, 0]])
     # Depth 2 matches all three verifier targets [2, 3, 0], but position 1 cannot
-    # be accepted because depth 1 already mismatched there.
+    # agree at depth 2 because depth 1 already mismatched there.
     depth_2_ids = torch.tensor([[2, 3, 0, 0, 0]])
     mtp_h = [torch.nn.functional.one_hot(ids, num_classes=V).float() for ids in (depth_1_ids, depth_2_ids)]
 
-    correct, valid = salm_module._calculate_mtp_acceptance_with_heads(
+    correct, valid = salm_module._calculate_mtp_teacher_forced_agreement_with_heads(
         mtp_per_depth_h=mtp_h,
         labels=labels,
         model=model,
@@ -353,7 +353,8 @@ def test_mtp_validation_forward_uses_and_restores_native_gate():
     assert not llm.training
 
 
-def test_mtp_rejects_context_parallelism(monkeypatch):
+@pytest.mark.parametrize("hook_name", ["on_validation_start", "on_test_start"])
+def test_standalone_evaluation_rejects_mtp_context_parallelism(monkeypatch, hook_name):
     from omegaconf import DictConfig
 
     import nemo.collections.speechlm2.parts.parallel as parallel_module
@@ -375,7 +376,56 @@ def test_mtp_rejects_context_parallelism(monkeypatch):
     monkeypatch.setattr(parallel_module, "validate_parallelism_compatibility", lambda **_kwargs: None)
 
     with pytest.raises(ValueError, match="requires cp_size=1"):
+        getattr(model, hook_name)()
+
+
+def test_mtp_rejects_tensor_parallelism_before_training(monkeypatch):
+    from omegaconf import DictConfig
+
+    import nemo.collections.speechlm2.parts.parallel as parallel_module
+
+    class _Submesh:
+        def size(self):
+            return 2
+
+    class _Mesh:
+        mesh_dim_names = ("tp",)
+
+        def __getitem__(self, name):
+            assert name == "tp"
+            return _Submesh()
+
+    model = _bare_model()
+    model.cfg = DictConfig({"mtp": {"enabled": True}, "packed_sequences": False})
+    model._device_mesh = _Mesh()
+    monkeypatch.setattr(parallel_module, "validate_parallelism_compatibility", lambda **_kwargs: None)
+
+    with pytest.raises(ValueError, match="requires tp_size=1"):
         model._validate_parallelism_compatibility()
+
+
+def test_vocab_argmax_does_not_materialize_full_dtensor_logits(monkeypatch):
+    expected = torch.tensor([[3, 1]])
+
+    class _FakeDTensor:
+        def __init__(self, *, is_logits):
+            self.is_logits = is_logits
+
+        def argmax(self, dim):
+            assert self.is_logits
+            assert dim == -1
+            return _FakeDTensor(is_logits=False)
+
+        def full_tensor(self):
+            if self.is_logits:
+                pytest.fail("vocabulary-sharded logits must not be fully materialized")
+            return expected
+
+    monkeypatch.setattr(salm_module, "DTensor", _FakeDTensor)
+
+    predictions = salm_module._vocab_parallel_argmax(_FakeDTensor(is_logits=True))
+
+    assert predictions is expected
 
 
 def test_fused_mtp_loss_reuses_lm_weight_without_projecting_logits(monkeypatch):
@@ -399,6 +449,15 @@ def test_fused_mtp_loss_reuses_lm_weight_without_projecting_logits(monkeypatch):
 
     monkeypatch.setattr(loss_utils, "calculate_loss", _calculate_loss)
     mtp_h = [torch.randn(1, 4, 4, requires_grad=True) for _ in range(2)]
+    grad_reduce_group = object()
+    materialize_calls = []
+
+    def _materialize(weight, *, grad_reduce_group=None):
+        materialize_calls.append((weight, grad_reduce_group))
+        return weight
+
+    monkeypatch.setattr(salm_module, "DTensor", torch.nn.Parameter)
+    monkeypatch.setattr(loss_module.FusedLinearCrossEntropy, "materialize_lm_weight", staticmethod(_materialize))
 
     total, head_losses, raw_head_losses = salm_module._calculate_mtp_loss_with_heads(
         loss_fn=loss_module.FusedLinearCrossEntropy(reduction="sum"),
@@ -406,13 +465,169 @@ def test_fused_mtp_loss_reuses_lm_weight_without_projecting_logits(monkeypatch):
         labels=torch.tensor([[0, 1, 2, 3]]),
         model=model,
         scaling_factor=0.1,
+        grad_reduce_group=grad_reduce_group,
     )
 
     assert len(calls) == 2
     assert calls[0]["lm_weight"] is model.lm_head.weight
     assert calls[1]["lm_weight"] is calls[0]["lm_weight"]
+    assert materialize_calls == [(model.lm_head.weight, grad_reduce_group)]
+    assert all(call["grad_reduce_group"] is grad_reduce_group for call in calls)
     assert float(total.detach()) == pytest.approx(0.2)
     assert [float(value.detach()) for value in head_losses] == pytest.approx([0.1, 0.1])
     assert [float(value.detach()) for value in raw_head_losses] == pytest.approx([2.0, 2.0])
     total.backward()
     assert all(hidden.grad is not None for hidden in mtp_h)
+
+
+@pytest.mark.parametrize("cut_ce_available", [True, False])
+def test_mtp_loss_selection_handles_optional_cut_cross_entropy(monkeypatch, cut_ce_available):
+    from nemo_automodel.components.loss import linear_ce
+    from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
+
+    monkeypatch.setattr(linear_ce, "HAVE_CUT_CROSS_ENTROPY", cut_ce_available)
+
+    loss_fn = salm_module._build_mtp_loss_fn()
+
+    expected_type = linear_ce.FusedLinearCrossEntropy if cut_ce_available else MaskedCrossEntropy
+    assert isinstance(loss_fn, expected_type)
+
+
+def test_head_only_keep_pattern_follows_wrapped_mtp_namespace():
+    from omegaconf import DictConfig
+
+    from nemo.collections.speechlm2.parts.optim_setup import freeze_and_subset
+
+    class _LLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = torch.nn.Linear(4, 4)
+            self.mtp = torch.nn.Linear(4, 4)
+
+    class _CompiledWrapper(torch.nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self._orig_mod = module
+
+        @property
+        def mtp(self):
+            return self._orig_mod.mtp
+
+    model = _bare_model()
+    model.llm = _CompiledWrapper(_LLM())
+    model.perception = torch.nn.Linear(4, 4)
+    model.cfg = DictConfig({"freeze_params": [r"^llm\..+$"], "prevent_freeze_params": []})
+
+    model._apply_mtp_training_mode("head_only")
+
+    assert r"^llm\._orig_mod\.mtp\..+$" in model.cfg.prevent_freeze_params
+    optimizer_params = list(
+        freeze_and_subset(model.named_parameters(), model.cfg.freeze_params, model.cfg.prevent_freeze_params)
+    )
+    assert {id(param) for param in optimizer_params} == {id(param) for param in model.llm.mtp.parameters()}
+
+
+def test_joint_keep_pattern_follows_wrapped_mtp_namespace():
+    from omegaconf import DictConfig
+
+    from nemo.collections.speechlm2.parts.optim_setup import freeze_and_subset
+
+    class _LLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backbone = torch.nn.Linear(4, 4)
+            self.mtp = torch.nn.Linear(4, 4)
+
+    class _CompiledWrapper(torch.nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self._orig_mod = module
+
+        @property
+        def mtp(self):
+            return self._orig_mod.mtp
+
+    model = _bare_model()
+    model.llm = _CompiledWrapper(_LLM())
+    model.perception = torch.nn.Linear(4, 4)
+    model.cfg = DictConfig(
+        {
+            "freeze_params": [r"^llm\..+$"],
+            "prevent_freeze_params": [r"^llm\.mtp\..+$"],
+        }
+    )
+
+    model._apply_mtp_training_mode("joint")
+
+    assert r"^llm\._orig_mod\.mtp\..+$" in model.cfg.prevent_freeze_params
+    optimizer_params = list(
+        freeze_and_subset(model.named_parameters(), model.cfg.freeze_params, model.cfg.prevent_freeze_params)
+    )
+    optimizer_param_ids = {id(param) for param in optimizer_params}
+    assert {id(param) for param in model.llm.mtp.parameters()} <= optimizer_param_ids
+    assert all(param.requires_grad for param in model.llm.mtp.parameters())
+    assert all(not param.requires_grad for param in model.llm._orig_mod.backbone.parameters())
+
+
+def test_fresh_mtp_head_is_initialized_and_exports_physical_depth(monkeypatch):
+    from types import SimpleNamespace
+
+    from omegaconf import DictConfig
+
+    mtp_module = pytest.importorskip(
+        "nemo_automodel.components.models.nemotron_v3.mtp", reason="needs Automodel NemotronV3 MTP"
+    )
+    initialized_on = []
+
+    class _Layer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(2, 2))
+
+        def init_weights(self, buffer_device=None):
+            initialized_on.append(buffer_device)
+            with torch.no_grad():
+                self.weight.fill_(0.25)
+
+    class _MTP(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList([_Layer()])
+
+    class _LLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace()
+            self.backend = object()
+            self.model = SimpleNamespace(moe_config=None)
+            self.mtp = None
+
+    runtime_mtp_config = SimpleNamespace(num_layers=3, num_physical_depths=1)
+    fresh_mtp = _MTP()
+
+    def _build_config(config, **kwargs):
+        assert config.num_nextn_predict_layers == 3
+        assert kwargs["use_repeated_layer"]
+        return runtime_mtp_config
+
+    monkeypatch.setattr(mtp_module, "build_mtp_config_from_hf", _build_config)
+    monkeypatch.setattr(mtp_module, "build_nemotron_v3_mtp", lambda *_args, **_kwargs: fresh_mtp)
+
+    model = _bare_model()
+    model.llm = _LLM()
+    model._mtp_loss_scaling_factor = 0.1
+    cfg = DictConfig(
+        {
+            "num_nextn_predict_layers": 3,
+            "hybrid_override_pattern": "*",
+            "use_repeated_layer": True,
+        }
+    )
+
+    with pytest.warns(UserWarning, match="MTP head attached"):
+        model._build_and_attach_mtp_head(cfg, torch.float32)
+
+    assert model.llm.mtp is fresh_mtp
+    assert model.llm.config.num_nextn_predict_layers == 1
+    assert initialized_on == [next(fresh_mtp.parameters()).device]
+    assert torch.all(fresh_mtp.layers[0].weight == 0.25)

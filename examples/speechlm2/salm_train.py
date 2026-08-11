@@ -82,7 +82,7 @@ def train(cfg):
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 
     # Evaluation-only path: run the Lightning validation loop without any
-    # training (e.g. to measure MTP per-head token acceptance on a checkpoint
+    # training (e.g. to measure MTP per-head teacher-forced agreement on a checkpoint
     # loaded via model.init_from_checkpoint). configure_model() still loads the
     # checkpoint weights for validate, so this exercises the val metrics on the
     # restored model without touching its weights.

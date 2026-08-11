@@ -20,8 +20,10 @@ import torch
 from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.parts.hf_hub import (
+    HFHubMixin,
     SAFETENSORS_INDEX_FILE,
     SAFETENSORS_SINGLE_FILE,
+    _distributed_from_pretrained,
     _inject_local_artifact_paths,
     _load_state_dict_with_dtensors,
     _resolve_safetensors_weight_dir,
@@ -275,3 +277,95 @@ def test_distributed_reader_loads_single_file_safetensors(tmp_path):
     model = OneParameterModel()
     _load_state_dict_with_dtensors(model, str(tmp_path))
     torch.testing.assert_close(model.weight, torch.tensor([5.0, 6.0]))
+
+
+def test_distributed_reader_canonicalizes_activation_checkpoint_wrapper(tmp_path):
+    save_file({"block.weight": torch.tensor([[9.0]])}, tmp_path / SAFETENSORS_SINGLE_FILE)
+
+    class Wrapped(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = torch.nn.Module()
+            self.block._checkpoint_wrapped_module = torch.nn.Linear(1, 1, bias=False)
+            self.block._checkpoint_wrapped_module.weight.data.zero_()
+
+    model = Wrapped()
+    _load_state_dict_with_dtensors(model, str(tmp_path))
+    torch.testing.assert_close(
+        model.block._checkpoint_wrapped_module.weight,
+        torch.tensor([[9.0]]),
+    )
+
+
+def test_distributed_surface_is_applied_before_load_and_preserves_fp32(tmp_path):
+    value = torch.tensor([1.0001], dtype=torch.float32)
+    assert value.item() != value.to(torch.bfloat16).float().item()
+    save_file({"selected": value}, tmp_path / SAFETENSORS_SINGLE_FILE)
+
+    class Model(torch.nn.Module):
+        def __init__(self, cfg):
+            super().__init__()
+            self.cfg = cfg
+
+        def configure_model(self, **_kwargs):
+            self.selected = torch.nn.Parameter(torch.zeros(1, dtype=torch.bfloat16))
+
+    def promote(model):
+        model.selected = torch.nn.Parameter(model.selected.float())
+
+    with (
+        patch(
+            "nemo.collections.speechlm2.parts.hf_hub._resolve_safetensors_weight_dir",
+            return_value=tmp_path,
+        ),
+        patch(
+            "nemo.collections.speechlm2.dpo.surface.configure_partial_acoustic_surface",
+            side_effect=promote,
+        ),
+    ):
+        model = _distributed_from_pretrained(
+            cls=Model,
+            model_id="toy",
+            model_kwargs={"cfg": {}},
+            torch_dtype=torch.bfloat16,
+            device_mesh=object(),
+            distributed_config=object(),
+            moe_config=object(),
+            moe_mesh=None,
+            cached_file_kwargs={},
+            load_parameter_surface="hero3_dpo_269",
+        )
+    assert model.selected.dtype == torch.float32
+    torch.testing.assert_close(model.selected, value, rtol=0, atol=0)
+
+
+def test_load_parameter_surface_rejects_unknown_mode_before_resolution():
+    with pytest.raises(ValueError, match="unsupported load_parameter_surface"):
+        HFHubMixin._from_pretrained(
+            model_id="unused",
+            revision=None,
+            cache_dir=None,
+            force_download=False,
+            local_files_only=True,
+            token=None,
+            load_parameter_surface="unknown",
+        )
+
+
+def test_load_parameter_surface_rejects_non_distributed_route(tmp_path):
+    config = tmp_path / "config.json"
+    config.write_text("{}")
+    with patch(
+        "nemo.collections.speechlm2.parts.hf_hub.cached_file",
+        return_value=str(config),
+    ):
+        with pytest.raises(ValueError, match="only by distributed"):
+            HFHubMixin._from_pretrained(
+                model_id=str(tmp_path),
+                revision=None,
+                cache_dir=None,
+                force_download=False,
+                local_files_only=True,
+                token=None,
+                load_parameter_surface="hero3_dpo_269",
+            )

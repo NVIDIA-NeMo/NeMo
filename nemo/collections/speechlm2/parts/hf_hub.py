@@ -23,6 +23,7 @@ from transformers.utils import cached_file
 SAFETENSORS_SINGLE_FILE = "model.safetensors"
 SAFETENSORS_INDEX_FILE = "model.safetensors.index.json"
 LLM_BACKBONE_DIR = "llm_backbone"
+HERO3_DPO_269_SURFACE = "hero3_dpo_269"
 
 
 class HFHubMixin(
@@ -67,6 +68,9 @@ class HFHubMixin(
         moe_config = model_kwargs.pop("moe_config", None)
         moe_mesh = model_kwargs.pop("moe_mesh", None)
         torch_dtype = model_kwargs.pop("torch_dtype", None)
+        load_parameter_surface = model_kwargs.pop("load_parameter_surface", None)
+        if load_parameter_surface not in {None, HERO3_DPO_269_SURFACE}:
+            raise ValueError(f"unsupported load_parameter_surface: {load_parameter_surface!r}")
 
         _cached_file_kwargs = dict(
             cache_dir=cache_dir,
@@ -92,6 +96,10 @@ class HFHubMixin(
         model_kwargs['cfg']['pretrained_weights'] = False
 
         if device_mesh is None:
+            if load_parameter_surface is not None:
+                raise ValueError(
+                    "load_parameter_surface is supported only by distributed from_pretrained loading"
+                )
             # Non-distributed: for Automodel checkpoints we must build the modules
             # before ``PyTorchModelHubMixin`` applies checkpoint weights.
             if model_kwargs['cfg'].get("use_nemo_automodel", False):
@@ -128,6 +136,7 @@ class HFHubMixin(
             moe_config=moe_config,
             moe_mesh=moe_mesh,
             cached_file_kwargs=_cached_file_kwargs,
+            load_parameter_surface=load_parameter_surface,
         )
 
     def save_pretrained(
@@ -189,6 +198,7 @@ def _distributed_from_pretrained(
     moe_config,
     moe_mesh,
     cached_file_kwargs,
+    load_parameter_surface,
 ):
     """Create a distributed model instance outside of a classmethod frame.
 
@@ -214,6 +224,14 @@ def _distributed_from_pretrained(
         moe_config=moe_config,
         moe_mesh=moe_mesh,
     )
+
+    # Apply a model-owned precision surface before DCP copies checkpoint bytes
+    # into target parameters. This preserves FP32 Hero3 DPO values instead of
+    # first rounding them into BF16 targets and promoting only after the load.
+    if load_parameter_surface == HERO3_DPO_269_SURFACE:
+        from nemo.collections.speechlm2.dpo.surface import configure_partial_acoustic_surface
+
+        configure_partial_acoustic_surface(instance)
 
     # 3. Load weights
     weight_dir = _resolve_safetensors_weight_dir(model_id, cached_file_kwargs)
@@ -241,14 +259,28 @@ def _load_state_dict_with_dtensors(model, weight_dir):
     # Build state dict from named_parameters/named_buffers.
     # This avoids FSDP2 state-dict hooks that model.state_dict() triggers.
     # DCP will write directly into these tensors in-place.
-    all_params = dict(chain(model.named_parameters(), model.named_buffers()))
+    def checkpoint_name(name):
+        return ".".join(part for part in name.split(".") if part != "_checkpoint_wrapped_module")
+
+    all_params = {}
+    parameter_keys = set()
+    for raw_name, value in chain(model.named_parameters(), model.named_buffers()):
+        name = checkpoint_name(raw_name)
+        if name in all_params:
+            raise RuntimeError(f"Duplicate canonical model state name: {name!r}")
+        all_params[name] = value
+    for raw_name, _value in model.named_parameters():
+        name = checkpoint_name(raw_name)
+        if name in parameter_keys:
+            raise RuntimeError(f"Duplicate canonical model parameter name: {name!r}")
+        parameter_keys.add(name)
 
     # DCP is strict by default — it errors on model keys missing from the
     # checkpoint (e.g. positional-encoding buffers computed at init).
     # Read the checkpoint metadata first and keep only matching keys.
     reader = _HuggingFaceStorageReader(path=weight_dir)
     checkpoint_keys = set(reader.read_metadata().state_dict_metadata)
-    missing_parameters = sorted(set(dict(model.named_parameters())) - checkpoint_keys)
+    missing_parameters = sorted(parameter_keys - checkpoint_keys)
     if missing_parameters:
         raise RuntimeError(
             "Safetensors checkpoint is missing model parameters: "

@@ -279,6 +279,79 @@ class TestBackendSelection:
 
 
 @pytest.mark.skipif(not _HAS_VLLM, reason="vLLM not installed")
+class TestHybridBackendWeightMapping:
+    """Tests for the NeMo/Automodel -> vLLM NemotronH weight boundary."""
+
+    @pytest.fixture
+    def backend(self):
+        from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend
+
+        config = SimpleNamespace(text_config=SimpleNamespace(vocab_size=None))
+        return HybridBackend(config)
+
+    @pytest.mark.parametrize(
+        ("holder_name", "vllm_name"),
+        [
+            ("_fp32_params.A_log", "A"),
+            ("_fp32_params.dt_bias", "dt_bias"),
+            ("_fp32_params.D", "D"),
+        ],
+    )
+    def test_canonicalizes_fp32_param_holder_names_without_changing_tensors(self, backend, holder_name, vllm_name):
+        import torch
+
+        tensor = torch.tensor([-2.0, 0.5, 3.0])
+        original_values = tensor.clone()
+        [(mapped_name, mapped_tensor)] = backend.nemo_to_hf_llm_weights(
+            [(f"llm.model.layers.0.mixer.{holder_name}", tensor)]
+        )
+
+        assert mapped_name == f"backbone.layers.0.mixer.{vllm_name}"
+        assert mapped_tensor is tensor
+        assert torch.equal(mapped_tensor, original_values)
+
+    @pytest.mark.parametrize("param_name", ["A", "dt_bias", "D"])
+    def test_already_canonical_fp32_param_names_are_unchanged(self, backend, param_name):
+        import torch
+
+        canonical_name = f"backbone.layers.0.mixer.{param_name}"
+        tensor = torch.tensor([1.0])
+        [(mapped_name, mapped_tensor)] = backend.nemo_to_hf_llm_weights([(canonical_name, tensor)])
+
+        assert mapped_name == canonical_name
+        assert mapped_tensor is tensor
+
+    def test_ordinary_and_moe_mappings_are_unchanged(self, backend):
+        import torch
+
+        ordinary = torch.arange(6).reshape(2, 3)
+        down_projs = torch.arange(12).reshape(2, 2, 3)
+        gate_and_up_projs = torch.arange(24).reshape(2, 4, 3)
+        mapped = list(
+            backend.nemo_to_hf_llm_weights(
+                [
+                    ("llm.model.layers.1.mixer.in_proj.weight", ordinary),
+                    ("llm.model.layers.2.mixer.experts.down_projs", down_projs),
+                    ("llm.model.layers.2.mixer.experts.gate_and_up_projs", gate_and_up_projs),
+                ]
+            )
+        )
+
+        assert [name for name, _ in mapped] == [
+            "backbone.layers.1.mixer.in_proj.weight",
+            "backbone.layers.2.mixer.experts.0.down_proj.weight",
+            "backbone.layers.2.mixer.experts.1.down_proj.weight",
+            "backbone.layers.2.mixer.experts.0.up_proj.weight",
+            "backbone.layers.2.mixer.experts.1.up_proj.weight",
+        ]
+        assert mapped[0][1] is ordinary
+        assert torch.equal(mapped[1][1], down_projs[0].t())
+        assert torch.equal(mapped[2][1], down_projs[1].t())
+        assert torch.equal(mapped[3][1], gate_and_up_projs[0].t())
+        assert torch.equal(mapped[4][1], gate_and_up_projs[1].t())
+
+
+@pytest.mark.skipif(not _HAS_VLLM, reason="vLLM not installed")
 class TestSpecialTokens:
     """Tests for special token handling."""
 

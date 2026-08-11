@@ -1229,6 +1229,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # THD context (qkv_format/cu_seqlens/seq_idx) from the model forward.
             self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1))
             self._mtp_loss_fn = _build_mtp_loss_fn()
+            if mtp_cfg.get("use_repeated_layer", False):
+                # HF exports contain the physical depth so their state dict has the
+                # same number of layers on reload. Restore the logical iteration count
+                # from the SpeechLM config when constructing that physical head.
+                automodel_kwargs["num_nextn_predict_layers"] = int(mtp_cfg.get("num_nextn_predict_layers", 1))
+                automodel_kwargs["mtp_use_repeated_layer"] = True
         else:
             # Some checkpoints (including Nemotron-3.5 Lightning) ship a native
             # MTP head in config.json. Explicitly override its depth to zero so
@@ -1367,7 +1373,8 @@ def _build_mtp_loss_fn() -> torch.nn.Module:
     """Select the memory-efficient MTP loss with an optional-dependency fallback."""
     from nemo_automodel.components.loss import linear_ce
 
-    if linear_ce.HAVE_CUT_CROSS_ENTROPY:
+    gradient_safe_fused_api = callable(getattr(linear_ce.FusedLinearCrossEntropy, "materialize_lm_weight", None))
+    if linear_ce.HAVE_CUT_CROSS_ENTROPY and gradient_safe_fused_api:
         # Fuse the shared LM projection with CE so each MTP depth does not materialize
         # a full [tokens, vocab] logits tensor. reduction="sum" lets the helper
         # normalize by the global labeled-token count.
@@ -1378,10 +1385,16 @@ def _build_mtp_loss_fn() -> torch.nn.Module:
     # does not introduce a new undeclared runtime requirement.
     from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
 
-    logging.warning(
-        "cut_cross_entropy is unavailable; falling back to the unfused MTP loss. "
-        "Install cut-cross-entropy to reduce peak MTP loss memory."
-    )
+    if linear_ce.HAVE_CUT_CROSS_ENTROPY:
+        logging.warning(
+            "The installed Automodel lacks gradient-safe sharded LM-head materialization; "
+            "falling back to the unfused MTP loss. Upgrade Automodel to enable fused MTP loss."
+        )
+    else:
+        logging.warning(
+            "cut_cross_entropy is unavailable; falling back to the unfused MTP loss. "
+            "Install cut-cross-entropy to reduce peak MTP loss memory."
+        )
     return MaskedCrossEntropy(reduction="sum", fp32_upcast=False)
 
 
@@ -1437,11 +1450,11 @@ def _calculate_mtp_loss_with_heads(
         lm_weight = lm_head.weight
         if isinstance(lm_weight, DTensor):
             materialize = getattr(loss_fn, "materialize_lm_weight", None)
-            lm_weight = (
-                materialize(lm_weight, grad_reduce_group=grad_reduce_group)
-                if materialize is not None
-                else lm_weight.full_tensor()
-            )
+            if not callable(materialize):
+                raise RuntimeError(
+                    "Fused MTP loss requires Automodel's gradient-safe materialize_lm_weight API for DTensor weights"
+                )
+            lm_weight = materialize(lm_weight, grad_reduce_group=grad_reduce_group)
 
     if seq_idx is None and cu_seqlens is not None:
         cs = cu_seqlens

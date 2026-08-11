@@ -195,6 +195,61 @@ def test_invalid_mtp_training_mode_fails_before_loading(monkeypatch):
         SALMAutomodel.configure_model(model)
 
 
+def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
+    """Reload preserves logical MTP depth when the checkpoint stores one physical repeated layer."""
+    from omegaconf import DictConfig
+
+    captured_kwargs = {}
+
+    class _Perception(torch.nn.Module):
+        def set_activation_checkpointing(self, _enabled):
+            return None
+
+    class _LLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = type("Config", (), {"hidden_size": 4, "num_nextn_predict_layers": 1})()
+            self.mtp = torch.nn.Linear(4, 4)
+
+    def _load_llm(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _LLM()
+
+    model = _bare_model()
+    model.cfg = DictConfig(
+        {
+            "pretrained_llm": "repeated-mtp-checkpoint",
+            "pretrained_asr": "unused-in-test",
+            "pretrained_weights": True,
+            "freeze_params": [],
+            "prevent_freeze_params": [],
+            "mtp": {
+                "enabled": True,
+                "training_mode": "joint",
+                "num_nextn_predict_layers": 3,
+                "use_repeated_layer": True,
+            },
+        }
+    )
+    model._trainer = None
+    model._use_fsdp = False
+    model._use_tp = False
+    model.setup_moe_options = lambda: None
+
+    monkeypatch.setattr(salm_module, "load_pretrained_automodel_llm", _load_llm)
+    monkeypatch.setattr(salm_module, "_build_mtp_loss_fn", lambda: torch.nn.Identity())
+    monkeypatch.setattr(
+        salm_module, "setup_speech_encoder", lambda model, **_kwargs: setattr(model, "perception", _Perception())
+    )
+    monkeypatch.setattr(salm_module, "update_perception_output_dim", lambda _model: None)
+    monkeypatch.setattr(salm_module, "maybe_load_pretrained_models", lambda _model: None)
+
+    SALMAutomodel.configure_model(model)
+
+    assert captured_kwargs["num_nextn_predict_layers"] == 3
+    assert captured_kwargs["mtp_use_repeated_layer"] is True
+
+
 # ---------------------------------------------------------------------------
 # forward: mtp_per_depth_h extraction
 # ---------------------------------------------------------------------------
@@ -457,7 +512,12 @@ def test_fused_mtp_loss_reuses_lm_weight_without_projecting_logits(monkeypatch):
         return weight
 
     monkeypatch.setattr(salm_module, "DTensor", torch.nn.Parameter)
-    monkeypatch.setattr(loss_module.FusedLinearCrossEntropy, "materialize_lm_weight", staticmethod(_materialize))
+    monkeypatch.setattr(
+        loss_module.FusedLinearCrossEntropy,
+        "materialize_lm_weight",
+        staticmethod(_materialize),
+        raising=False,
+    )
 
     total, head_losses, raw_head_losses = salm_module._calculate_mtp_loss_with_heads(
         loss_fn=loss_module.FusedLinearCrossEntropy(reduction="sum"),
@@ -489,8 +549,23 @@ def test_mtp_loss_selection_handles_optional_cut_cross_entropy(monkeypatch, cut_
 
     loss_fn = salm_module._build_mtp_loss_fn()
 
-    expected_type = linear_ce.FusedLinearCrossEntropy if cut_ce_available else MaskedCrossEntropy
+    gradient_safe_fused_api = callable(getattr(linear_ce.FusedLinearCrossEntropy, "materialize_lm_weight", None))
+    expected_type = (
+        linear_ce.FusedLinearCrossEntropy if cut_ce_available and gradient_safe_fused_api else MaskedCrossEntropy
+    )
     assert isinstance(loss_fn, expected_type)
+
+
+def test_mtp_loss_selection_requires_gradient_safe_fused_api(monkeypatch):
+    from nemo_automodel.components.loss import linear_ce
+    from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
+
+    monkeypatch.setattr(linear_ce, "HAVE_CUT_CROSS_ENTROPY", True)
+    monkeypatch.delattr(linear_ce.FusedLinearCrossEntropy, "materialize_lm_weight", raising=False)
+
+    loss_fn = salm_module._build_mtp_loss_fn()
+
+    assert isinstance(loss_fn, MaskedCrossEntropy)
 
 
 def test_head_only_keep_pattern_follows_wrapped_mtp_namespace():

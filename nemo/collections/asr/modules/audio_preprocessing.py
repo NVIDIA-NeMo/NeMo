@@ -19,9 +19,8 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import torch
-from torch.nn.utils.rnn import pad_sequence
 
-from nemo.collections.asr.parts.packed_sequence import split_packed_data
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput
 from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures
 from nemo.collections.asr.parts.submodules.spectr_augment import SpecAugment, SpecCutout
 from nemo.collections.audio.parts.utils.transforms import MFCC
@@ -94,18 +93,12 @@ class AudioPreprocessor(NeuralModule, ABC):
         return processed_signal, processed_length
 
     @torch.no_grad()
-    def forward_packed(self, input_signal, length, input_signal_cu_seqlens):
-        """Preprocess concatenated waveforms without materializing a padded waveform batch.
+    def forward_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderOutput:
+        """Preprocess concatenated waveforms into token-flat features.
 
-        Each waveform view is passed through the existing dense frontend independently,
-        then the resulting features are collated. This preserves utterance boundaries for
-        pre-emphasis and STFT while keeping the historical :meth:`forward` implementation
-        and its checkpoint/state-dict contract unchanged.
-
-        Batched and per-utterance STFT kernels can differ by small floating-point noise.
-        Training-only dither also consumes a different RNG layout because packed input has
-        no padded samples. Eval/no-dither outputs are expected to agree within FP32 tolerance,
-        rather than bitwise.
+        The packed frontend uses one vectorized guarded STFT and returns exactly
+        the valid feature frames. The historical padded :meth:`forward` contract
+        and checkpoint state remain unchanged.
 
         Args:
             input_signal: Concatenated waveform samples with shape `(sum(length),)`.
@@ -113,35 +106,24 @@ class AudioPreprocessor(NeuralModule, ABC):
             input_signal_cu_seqlens: Cumulative sample offsets with shape `(B + 1,)`.
 
         Returns:
-            The usual dense processed feature batch and per-waveform processed lengths.
+            Packed time-major features and their sequence metadata.
         """
-        if input_signal.ndim != 1:
-            raise ValueError(f"packed input_signal must be 1D, got shape {tuple(input_signal.shape)}.")
-        waveforms = split_packed_data(input_signal, length, input_signal_cu_seqlens)
-        if not waveforms:
-            return input_signal.new_empty((0, 0, 0)), length.to(torch.long)
-
-        processed_rows = []
-        processed_lengths = []
-        for row, waveform in enumerate(waveforms):
-            # Dense batches may give short logical rows enough padded storage for
-            # the frontend's framing kernel. Recreate only that local minimum.
-            waveform = _pad_waveform_to_frontend_minimum(waveform, self)
-            processed, processed_length = self(
-                input_signal=waveform.unsqueeze(0),
-                length=length[row : row + 1],
+        if input_signal.dtype != torch.float32:
+            logging.warning(
+                f"AudioPreprocessor received an input signal of dtype {input_signal.dtype}, rather than "
+                "torch.float32. Packed preprocessing runs in float32 for numerical stability.",
+                mode=logging_mode.ONCE,
             )
-            processed_rows.append(processed[0].transpose(0, 1))
-            processed_lengths.append(processed_length)
-
-        padding_value = float(getattr(getattr(self, "featurizer", None), "pad_value", 0.0))
-        processed_signal = pad_sequence(processed_rows, batch_first=True, padding_value=padding_value)
-        return processed_signal.transpose(1, 2), torch.cat(processed_lengths)
+        processed = self.get_features_packed(input_signal.to(torch.float32), length, input_signal_cu_seqlens)
+        return processed.with_data(processed.data.to(self.dtype_sentinel_tensor.dtype))
 
     @abstractmethod
     def get_features(self, input_signal, length):
         # Called by forward(). Subclasses should implement this.
         pass
+
+    def get_features_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderOutput:
+        raise NotImplementedError(f"{type(self).__name__} does not implement packed waveform preprocessing.")
 
 
 class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
@@ -329,6 +311,9 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
 
     def get_features(self, input_signal, length):
         return self.featurizer(input_signal, length)
+
+    def get_features_packed(self, input_signal, length, input_signal_cu_seqlens) -> PackedEncoderOutput:
+        return self.featurizer.forward_packed(input_signal, length, input_signal_cu_seqlens)
 
     @property
     def filter_banks(self):
@@ -573,6 +558,15 @@ class SpectrogramAugmentation(NeuralModule):
         else:
             augmented_spec = self.spec_augment(input_spec=augmented_spec, length=length)
         return augmented_spec
+
+    @torch.no_grad()
+    def forward_packed(self, input_spec: PackedEncoderOutput) -> PackedEncoderOutput:
+        """Apply sequence-local augmentation without padding token-flat features."""
+        if isinstance(self.spec_cutout, SpecCutout):
+            input_spec = self.spec_cutout.forward_packed(input_spec)
+        if isinstance(self.spec_augment, SpecAugment):
+            input_spec = self.spec_augment.forward_packed(input_spec)
+        return input_spec
 
 
 class MaskedPatchAugmentation(NeuralModule):
@@ -822,13 +816,3 @@ class MaskedPatchAugmentationConfig:
     freq_masks: int = 0
     freq_width: int = 0
     _target_: str = "nemo.collections.asr.modules.MaskedPatchAugmentation"
-
-
-def _pad_waveform_to_frontend_minimum(waveform, preprocessor):
-    featurizer = getattr(preprocessor, "featurizer", None)
-    n_fft = getattr(featurizer, "n_fft", None)
-    stft_pad_amount = getattr(featurizer, "stft_pad_amount", None)
-    minimum_samples = 1 if n_fft is None or stft_pad_amount is None else max(1, n_fft + 1 - 2 * stft_pad_amount)
-    if waveform.numel() >= minimum_samples:
-        return waveform
-    return torch.nn.functional.pad(waveform, (0, minimum_samples - waveform.numel()))

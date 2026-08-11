@@ -182,6 +182,91 @@ def test_sequence_packed_matches_padded_valid_outputs_cpu(position, attention, q
     assert encoder.layers[0].attn._last_sequence_packed_provider is None
 
 
+@pytest.mark.parametrize("position", ["rope", "abs_pos", "no_pos", "rel_pos"])
+def test_sequence_packed_accepts_token_flat_features_without_dense_pre_encode(position):
+    torch.manual_seed(0)
+    encoder = _make_encoder(position=position)
+    audio = torch.randn(3, 8, 12)
+    lengths = torch.tensor([12, 7, 4])
+    audio.masked_fill_(torch.arange(audio.shape[-1])[None, None, :] >= lengths[:, None, None], 0.0)
+    packed_features = pack_encoder_output(audio.transpose(1, 2), lengths)
+
+    with torch.no_grad():
+        from_dense = encoder.forward_sequence_packed(audio, lengths)
+        from_packed = encoder.forward_sequence_packed(packed_features, lengths)
+
+    assert from_packed.total_tokens == int(from_packed.lengths.sum())
+    assert torch.equal(from_packed.lengths, from_dense.lengths)
+    torch.testing.assert_close(from_packed.data, from_dense.data, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("use_moe", [False, True])
+def test_sequence_packed_token_flat_feature_outputs_and_gradients_match_dense_input(use_moe):
+    torch.manual_seed(0)
+    if use_moe:
+        dense_encoder = MoETransformerEncoder(
+            feat_in=8,
+            d_model=32,
+            n_heads=2,
+            n_layers=2,
+            subsampling_factor=2,
+            drop_rate=0.0,
+            dropout_pre_encoder=0.0,
+            dropout_emb=0.0,
+            self_attention_model="rope",
+            moe_num_experts=4,
+            moe_top_k=2,
+            sync_max_audio_length=False,
+        ).train()
+    else:
+        dense_encoder = _make_encoder(position="rope").train()
+    packed_encoder = copy.deepcopy(dense_encoder)
+    lengths = torch.tensor([12, 7, 4])
+    dense_features = torch.randn(3, 8, 12)
+    dense_features.masked_fill_(torch.arange(12)[None, None, :] >= lengths[:, None, None], 0.0)
+    dense_features.requires_grad_()
+    packed_source = pack_encoder_output(dense_features.detach().transpose(1, 2), lengths)
+    packed_features = PackedEncoderOutput(
+        packed_source.data.clone().requires_grad_(),
+        packed_source.lengths,
+        packed_source.cu_seqlens,
+        packed_source.max_seqlen,
+    )
+
+    dense_output = dense_encoder.forward_sequence_packed(dense_features, lengths)
+    packed_output = packed_encoder.forward_sequence_packed(packed_features, lengths)
+    dense_output.data.square().mean().backward()
+    packed_output.data.square().mean().backward()
+
+    torch.testing.assert_close(packed_output.data, dense_output.data, rtol=1e-5, atol=1e-6)
+    dense_valid_grads = pack_encoder_output(dense_features.grad.transpose(1, 2), lengths).data
+    torch.testing.assert_close(packed_features.data.grad, dense_valid_grads, rtol=1e-5, atol=1e-6)
+    for (dense_name, dense_parameter), (packed_name, packed_parameter) in zip(
+        dense_encoder.named_parameters(), packed_encoder.named_parameters()
+    ):
+        assert dense_name == packed_name
+        if dense_parameter.grad is not None:
+            torch.testing.assert_close(packed_parameter.grad, dense_parameter.grad, rtol=1e-5, atol=1e-6)
+
+
+def test_sequence_packed_token_flat_feature_stacking_preserves_activation_checkpointing():
+    encoder = _make_encoder(position="rope").train()
+    encoder.pre_encode = checkpoint_wrapper(encoder.pre_encode)
+    lengths = torch.tensor([12, 7])
+    padded = torch.randn(2, 12, 8)
+    padded.masked_fill_(torch.arange(12)[None, :, None] >= lengths[:, None, None], 0.0)
+    packed = pack_encoder_output(padded, lengths)
+    packed = PackedEncoderOutput(
+        packed.data.detach().clone().requires_grad_(), packed.lengths, packed.cu_seqlens, packed.max_seqlen
+    )
+
+    output = encoder.forward_sequence_packed(packed, lengths)
+    output.data.square().mean().backward()
+
+    assert packed.data.grad is not None
+    assert encoder.pre_encode._checkpoint_wrapped_module.proj.weight.grad is not None
+
+
 @pytest.mark.parametrize(("position", "qk_norm"), [("rope", True), ("rel_pos", False)])
 @pytest.mark.parametrize("fused_qkv", [False, True])
 def test_sequence_packed_all_empty_keeps_attention_parameters_in_backward(position, qk_norm, fused_qkv):

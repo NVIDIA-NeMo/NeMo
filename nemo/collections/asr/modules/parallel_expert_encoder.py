@@ -100,7 +100,7 @@ from nemo.collections.asr.parts.packed_sequence import (
     _new_packed_encoder_output,
     unpack_encoder_output,
 )
-from nemo.collections.asr.parts.preprocessing.features import normalize_batch
+from nemo.collections.asr.parts.preprocessing.features import normalize_batch, normalize_packed_batch
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.module import freeze, unfreeze
@@ -1505,6 +1505,28 @@ class ParallelExpertEncoder(nn.Module):
         Returns:
             tuple: ``(audio_signal, length)`` normalized, cast, and on the experts' device.
         """
+        if isinstance(audio_signal, PackedEncoderOutput):
+            if length is not None and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths):
+                raise ValueError("length must match audio_signal.lengths for packed input.")
+            if self.asr_normalize_type:
+                audio_signal = normalize_packed_batch(audio_signal, self.asr_normalize_type)
+            data = self._match_module_io(audio_signal.data)
+            lengths = audio_signal.lengths.to(device=data.device)
+            cu_seqlens = audio_signal.cu_seqlens.to(device=data.device)
+            padding_value = audio_signal.padding_value
+            if isinstance(padding_value, torch.Tensor):
+                padding_value = padding_value.to(data)
+            return (
+                PackedEncoderOutput(
+                    data,
+                    lengths,
+                    cu_seqlens,
+                    audio_signal.max_seqlen,
+                    padding_value=padding_value,
+                    padded_length=audio_signal.padded_length,
+                ),
+                lengths,
+            )
         if self.asr_normalize_type:
             audio_signal, _, _ = normalize_batch(audio_signal, length, normalize_type=self.asr_normalize_type)
         audio_signal = self._match_module_io(audio_signal)

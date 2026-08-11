@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+
 import pytest
 import torch
 
 import nemo.collections.asr.modules.ggemm_transformer_encoder as ggemm_module
 import nemo.collections.asr.modules.transformer_encoder as transformer_module
 from nemo.collections.asr.modules.ggemm_transformer_encoder import GGEMMTransformerEncoder, _ragged_grouped_mm
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput, pack_encoder_output
 from tests.collections.asr.test_parallel_expert_encoder import (
     _MEL_FEATURES,
     _N_SPK,
@@ -70,6 +72,84 @@ def test_pee_grouped_and_serial_thd_fusion_match():
     assert torch.equal(grouped.lengths, serial.lengths)
     assert torch.equal(grouped.cu_seqlens, serial.cu_seqlens)
     torch.testing.assert_close(grouped.data, serial.data, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.unit
+def test_pee_grouped_accepts_token_flat_mels_and_matches_dense_mel_input():
+    torch.manual_seed(0)
+    encoder = build_toy_pe_encoder().eval()
+    mels = torch.randn(2, _MEL_FEATURES, 40)
+    lengths = torch.tensor([40, 17])
+    mels.masked_fill_(torch.arange(mels.shape[-1])[None, None, :] >= lengths[:, None, None], 0.0)
+    packed_mels = pack_encoder_output(mels.transpose(1, 2), lengths)
+    targets = torch.zeros(2, 5, _N_SPK)
+
+    with torch.no_grad():
+        dense_input = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+        packed_input = encoder.forward_sequence_packed(packed_mels, lengths, spk_targets=targets)
+
+    assert torch.equal(packed_input.lengths, dense_input.lengths)
+    assert packed_input.total_tokens == int(packed_input.lengths.sum())
+    torch.testing.assert_close(packed_input.data, dense_input.data, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.unit
+def test_pee_grouped_preserves_nonzero_partial_stack_padding():
+    torch.manual_seed(0)
+    encoder = build_toy_pe_encoder().eval()
+    encoder.asr_normalize_type = None
+    lengths = torch.tensor([39, 17])
+    mels = torch.randn(2, _MEL_FEATURES, 40)
+    mels.masked_fill_(torch.arange(40)[None, None, :] >= lengths[:, None, None], -3.0)
+    source = pack_encoder_output(mels.transpose(1, 2), lengths)
+    packed_mels = PackedEncoderOutput(
+        source.data,
+        source.lengths,
+        source.cu_seqlens,
+        source.max_seqlen,
+        padding_value=-3.0,
+        padded_length=40,
+    )
+    targets = torch.zeros(2, 5, _N_SPK)
+
+    with torch.no_grad():
+        expected = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+        actual = encoder.forward_sequence_packed(packed_mels, lengths, spk_targets=targets)
+
+    torch.testing.assert_close(actual.data, expected.data, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.unit
+def test_pee_grouped_token_flat_mel_gradients_match_dense_input_with_checkpointing():
+    torch.manual_seed(0)
+    dense_encoder = build_toy_pe_encoder().train()
+    dense_encoder.set_activation_checkpointing(True)
+    packed_encoder = copy.deepcopy(dense_encoder)
+    lengths = torch.tensor([40, 17])
+    dense_mels = torch.randn(2, _MEL_FEATURES, 40)
+    dense_mels.masked_fill_(torch.arange(40)[None, None, :] >= lengths[:, None, None], 0.0)
+    dense_mels.requires_grad_()
+    packed_source = pack_encoder_output(dense_mels.detach().transpose(1, 2), lengths)
+    packed_mels = PackedEncoderOutput(
+        packed_source.data.clone().requires_grad_(),
+        packed_source.lengths,
+        packed_source.cu_seqlens,
+        packed_source.max_seqlen,
+    )
+    targets = torch.zeros(2, 5, _N_SPK)
+
+    dense_output = dense_encoder.forward_sequence_packed(dense_mels, lengths, spk_targets=targets)
+    packed_output = packed_encoder.forward_sequence_packed(packed_mels, lengths, spk_targets=targets)
+    dense_output.data.square().mean().backward()
+    packed_output.data.square().mean().backward()
+
+    torch.testing.assert_close(packed_output.data, dense_output.data, rtol=1e-5, atol=1e-6)
+    dense_valid_grads = pack_encoder_output(dense_mels.grad.transpose(1, 2), lengths).data
+    torch.testing.assert_close(packed_mels.data.grad, dense_valid_grads, rtol=1e-5, atol=1e-6)
+    for name in dense_encoder.pee.expert_names:
+        dense_grad = dense_encoder.pee.experts[name].pre_encode.proj.weight.grad
+        packed_grad = packed_encoder.pee.experts[name].pre_encode.proj.weight.grad
+        torch.testing.assert_close(packed_grad, dense_grad, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.unit

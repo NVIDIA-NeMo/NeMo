@@ -734,24 +734,35 @@ class TransformerEncoder(nn.Module):
                 "use rope, abs_pos, or no_pos for the CUDA varlen fast path."
             )
             self._packed_rel_pos_warned = True
-        if not bypass_pre_encode and audio_signal.shape[-2] != self._feat_in:
-            raise ValueError(
-                f"If bypass_pre_encode is False, audio_signal should have shape "
-                f"(batch, {self._feat_in}, n_frame) but got last dimension {audio_signal.shape[-2]}."
-            )
-        if bypass_pre_encode and audio_signal.shape[-1] != self.d_model:
-            raise ValueError(
-                f"If bypass_pre_encode is True, audio_signal should have shape "
-                f"(batch, n_frame, {self.d_model}) but got last dimension {audio_signal.shape[-1]}."
-            )
-        if bypass_pre_encode:
-            self.update_max_seq_length(seq_length=audio_signal.size(1), device=audio_signal.device)
+        if isinstance(audio_signal, PackedEncoderOutput):
+            if length is not None and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths):
+                raise ValueError("length must match audio_signal.lengths for packed input.")
+            expected_width = self.d_model if bypass_pre_encode else self._feat_in
+            if audio_signal.data.shape[-1] != expected_width:
+                raise ValueError(
+                    f"Packed audio_signal must have feature width {expected_width}, "
+                    f"got {audio_signal.data.shape[-1]}."
+                )
+            self.update_max_seq_length(seq_length=audio_signal.max_seqlen, device=audio_signal.data.device)
+            packed, pos_emb, padded_length = self._prepare_packed_input(audio_signal, bypass_pre_encode)
         else:
-            self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
-
-        x, length, pos_emb = self._prepare_input(audio_signal, length, bypass_pre_encode)
-        padded_length = x.shape[1]
-        packed = pack_encoder_output(x, length)
+            if not bypass_pre_encode and audio_signal.shape[-2] != self._feat_in:
+                raise ValueError(
+                    f"If bypass_pre_encode is False, audio_signal should have shape "
+                    f"(batch, {self._feat_in}, n_frame) but got last dimension {audio_signal.shape[-2]}."
+                )
+            if bypass_pre_encode and audio_signal.shape[-1] != self.d_model:
+                raise ValueError(
+                    f"If bypass_pre_encode is True, audio_signal should have shape "
+                    f"(batch, n_frame, {self.d_model}) but got last dimension {audio_signal.shape[-1]}."
+                )
+            if bypass_pre_encode:
+                self.update_max_seq_length(seq_length=audio_signal.size(1), device=audio_signal.device)
+            else:
+                self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
+            x, length, pos_emb = self._prepare_input(audio_signal, length, bypass_pre_encode)
+            padded_length = x.shape[1]
+            packed = pack_encoder_output(x, length)
         position_ids = packed_encoder_position_ids(packed) if self.self_attention_model == "rope" else None
         x = packed.data
         fast_path = self.self_attention_model != "rel_pos" and _can_use_flash_attention_varlen_layout(
@@ -868,6 +879,49 @@ class TransformerEncoder(nn.Module):
         else:
             pos_emb = None
         return self.embed_norm(x), length, pos_emb
+
+    def _prepare_packed_input(self, audio_signal: PackedEncoderOutput, bypass_pre_encode: bool):
+        if bypass_pre_encode:
+            packed = audio_signal
+        else:
+            pre_encode_module = getattr(self.pre_encode, "_checkpoint_wrapped_module", self.pre_encode)
+            if type(pre_encode_module).__name__ != "FeatureStacking":
+                raise TypeError(
+                    "Packed feature input currently requires subsampling='feature_stacking'; "
+                    f"got {type(pre_encode_module).__name__}."
+                )
+            packed = self.pre_encode(audio_signal)
+        return self._apply_packed_position(packed)
+
+    def _apply_packed_position(self, packed: PackedEncoderOutput):
+        x = packed.data
+        if self.self_attention_model == "rope":
+            if self.xscale:
+                x = x * self.xscale
+            x = self.dropout_pre_encoder(x)
+            pos_emb = None
+        elif self.self_attention_model == "abs_pos":
+            position_ids = packed_encoder_position_ids(packed)
+            if self.pos_enc.xscale:
+                x = x * self.pos_enc.xscale
+            pos_emb = self.pos_enc.pe[:, : packed.max_seqlen]
+            token_pos_emb = pos_emb[0].index_select(0, position_ids)
+            if self.pos_enc.dropout_emb:
+                token_pos_emb = self.pos_enc.dropout_emb(token_pos_emb)
+            x = self.pos_enc.dropout(x + token_pos_emb)
+        elif self.self_attention_model == "rel_pos":
+            if self.pos_enc.xscale:
+                x = x * self.pos_enc.xscale
+            x = self.pos_enc.dropout(x)
+            center_pos = self.pos_enc.pe.size(1) // 2 + 1
+            start_pos = center_pos - packed.max_seqlen
+            end_pos = center_pos + packed.max_seqlen - 1
+            pos_emb = self.pos_enc.pe[:, start_pos:end_pos]
+            if self.pos_enc.dropout_emb:
+                pos_emb = self.pos_enc.dropout_emb(pos_emb)
+        else:
+            pos_emb = None
+        return packed.with_data(self.embed_norm(x)), pos_emb, packed.max_seqlen
 
 
 def _apply_packed_rope(rope, q, k, position_ids):

@@ -38,6 +38,13 @@ class PackedEncoderOutput:
         lengths: Per-utterance token counts, shape ``(B,)`` and dtype ``int64``.
         cu_seqlens: Cumulative token counts, shape ``(B + 1,)`` and dtype ``int32``.
         max_seqlen: Largest value in ``lengths`` (zero for an empty batch).
+        padding_value: Value to use when a downstream frame-stacking operation
+            needs to complete the final partial group. A scalar applies to the
+            whole batch; a ``(B, D)`` tensor supports sequence-specific normalized
+            feature padding. Encoder outputs use zero.
+        padded_length: Optional dense time dimension associated with the packed
+            data. Frontends preserve it solely for dense-compatible augmentation
+            RNG ranges; packed kernels continue to use ``max_seqlen``.
 
     The representation deliberately has an ASR-specific name rather than reusing
     :class:`torch.nn.utils.rnn.PackedSequence`: the latter stores sort/unsort metadata
@@ -48,6 +55,8 @@ class PackedEncoderOutput:
     lengths: Tensor
     cu_seqlens: Tensor
     max_seqlen: int
+    padding_value: float | Tensor = 0.0
+    padded_length: int | None = None
 
     def __post_init__(self) -> None:
         _validate_packed_encoder_output(self)
@@ -74,7 +83,14 @@ class PackedEncoderOutput:
             raise ValueError(f"replacement data must have shape ({self.total_tokens}, D), got {tuple(data.shape)}.")
         if data.device != self.data.device:
             raise ValueError(f"replacement data must be on {self.data.device}, got {data.device}.")
-        return _new_packed_encoder_output(data, self.lengths, self.cu_seqlens, self.max_seqlen)
+        return _new_packed_encoder_output(
+            data,
+            self.lengths,
+            self.cu_seqlens,
+            self.max_seqlen,
+            padding_value=self.padding_value,
+            padded_length=self.padded_length,
+        )
 
 
 def pack_encoder_output(padded: Tensor, lengths: Tensor) -> PackedEncoderOutput:
@@ -96,7 +112,7 @@ def pack_encoder_output(padded: Tensor, lengths: Tensor) -> PackedEncoderOutput:
     mask = _length_mask(lengths, padded.shape[1])
     data = padded[mask]
     cu_seqlens = _lengths_to_cu_seqlens(lengths)
-    return _new_packed_encoder_output(data, lengths, cu_seqlens, max_seqlen)
+    return _new_packed_encoder_output(data, lengths, cu_seqlens, max_seqlen, padded_length=padded.shape[1])
 
 
 def unpack_encoder_output(packed: PackedEncoderOutput, *, total_length: int | None = None) -> Tensor:
@@ -111,7 +127,11 @@ def unpack_encoder_output(packed: PackedEncoderOutput, *, total_length: int | No
     if int(total_length) != total_length or total_length < packed.max_seqlen:
         raise ValueError(f"total_length must be an integer >= max_seqlen ({packed.max_seqlen}), got {total_length}.")
     total_length = int(total_length)
-    output = packed.data.new_zeros(packed.batch_size, total_length, packed.data.shape[-1])
+    if isinstance(packed.padding_value, Tensor):
+        padding = packed.padding_value.to(device=packed.data.device, dtype=packed.data.dtype)
+        output = padding.unsqueeze(1).expand(-1, total_length, -1).clone()
+    else:
+        output = packed.data.new_full((packed.batch_size, total_length, packed.data.shape[-1]), packed.padding_value)
     if packed.total_tokens:
         output[_length_mask(packed.lengths, total_length)] = packed.data
     return output
@@ -129,8 +149,8 @@ def packed_encoder_position_ids(packed: PackedEncoderOutput) -> Tensor:
 
     if packed.total_tokens == 0:
         return packed.lengths.new_empty((0,))
-    positions = torch.arange(packed.max_seqlen, device=packed.data.device, dtype=torch.int64)
-    return positions.unsqueeze(0).expand(packed.batch_size, -1)[_length_mask(packed.lengths, packed.max_seqlen)]
+    sequence_starts = packed.cu_seqlens[:-1].to(torch.int64).repeat_interleave(packed.lengths)
+    return torch.arange(packed.total_tokens, device=packed.data.device, dtype=torch.int64) - sequence_starts
 
 
 def split_packed_data(data: Tensor, lengths: Tensor, cu_seqlens: Tensor) -> tuple[Tensor, ...]:
@@ -221,13 +241,31 @@ def _validate_packed_encoder_output(packed: PackedEncoderOutput) -> None:
     expected_max = int(packed.lengths.max().item()) if packed.lengths.numel() else 0
     if int(packed.max_seqlen) != packed.max_seqlen or packed.max_seqlen != expected_max:
         raise ValueError(f"max_seqlen must equal max(lengths)={expected_max}, got {packed.max_seqlen}.")
+    if isinstance(packed.padding_value, Tensor):
+        expected_shape = (packed.batch_size, packed.data.shape[1])
+        if packed.padding_value.shape != expected_shape:
+            raise ValueError(
+                f"tensor padding_value must have shape {expected_shape}, got {tuple(packed.padding_value.shape)}."
+            )
+        if packed.padding_value.device != packed.data.device:
+            raise ValueError(
+                f"tensor padding_value must be on {packed.data.device}, got {packed.padding_value.device}."
+            )
+    if packed.padded_length is not None and (
+        int(packed.padded_length) != packed.padded_length or packed.padded_length < packed.max_seqlen
+    ):
+        raise ValueError(
+            f"padded_length must be an integer >= max_seqlen ({packed.max_seqlen}), got {packed.padded_length}."
+        )
 
 
-def _new_packed_encoder_output(data, lengths, cu_seqlens, max_seqlen):
+def _new_packed_encoder_output(data, lengths, cu_seqlens, max_seqlen, padding_value=0.0, padded_length=None):
     """Construct from metadata that a public constructor already validated."""
     packed = object.__new__(PackedEncoderOutput)
     object.__setattr__(packed, "data", data)
     object.__setattr__(packed, "lengths", lengths)
     object.__setattr__(packed, "cu_seqlens", cu_seqlens)
     object.__setattr__(packed, "max_seqlen", max_seqlen)
+    object.__setattr__(packed, "padding_value", padding_value)
+    object.__setattr__(packed, "padded_length", padded_length)
     return packed

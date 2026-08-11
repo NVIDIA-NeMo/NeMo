@@ -884,6 +884,12 @@ class GGEMMTransformerEncoder(nn.Module):
                 "prefix is only supported on the SDPA paths (build_block_mask=False); "
                 "forward_grouped's FlexAttention masks cannot describe the padded T."
             )
+        if isinstance(audio_signal, PackedEncoderOutput):
+            if prefix or return_pre_encode or build_block_mask or bypass_pre_encode:
+                raise ValueError(
+                    "Packed feature preparation supports offline sequence-packed execution without prefixes."
+                )
+            return self._experts_pre_packed(encs, audio_signal, length)
         feature_stackers = [encs[name].pre_encode for name in names]
         can_batch = (
             not bypass_pre_encode
@@ -945,24 +951,14 @@ class GGEMMTransformerEncoder(nn.Module):
 
         target_d = max(pre.proj.out_features for pre in feature_stackers)
         compute_dtype = _autocast_compute_dtype(stacked)
-
-        def stack_weights():
-            weights = []
-            for pre in feature_stackers:
-                weight = pre.proj.weight.t()
-                weights.append(F.pad(weight, (0, target_d - weight.shape[1])))
-            return torch.stack(weights).to(compute_dtype).contiguous()
-
-        if self.training or torch.is_grad_enabled():
-            weights = stack_weights()
-        else:
-            key = ('pre_encode', tuple(names), target_d, compute_dtype)
-            packed = self._packed_cache.get(key)
-            if packed is None:
-                with torch.no_grad():
-                    packed = (stack_weights(),)
-                self._packed_cache[key] = packed
-            weights = packed[0]
+        weights = _grouped_projection_weights(
+            feature_stackers,
+            names,
+            target_d,
+            compute_dtype,
+            cache=self._packed_cache,
+            use_cache=not self.training and not torch.is_grad_enabled(),
+        )
         shared_input = stacked.to(compute_dtype).unsqueeze(0).expand(len(names), -1, -1)
         projected = torch.bmm(shared_input, weights)
 
@@ -1014,6 +1010,45 @@ class GGEMMTransformerEncoder(nn.Module):
             result[name] = (x, layer_pos_emb, block_mask, length_n)
         if return_pre_encode:
             return result, pre_encode_out
+        return result
+
+    def _experts_pre_packed(self, encs, audio_signal, length):
+        names = list(encs)
+        if length is not None and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths):
+            raise ValueError("length must match audio_signal.lengths for packed input.")
+        feature_stackers = [encs[name].pre_encode for name in names]
+        if not feature_stackers or not all(isinstance(pre, FeatureStacking) for pre in feature_stackers):
+            raise TypeError("Grouped packed feature input requires FeatureStacking for every expert.")
+        if len({pre.subsampling_factor for pre in feature_stackers}) != 1:
+            raise ValueError("Grouped packed feature input requires a common subsampling factor.")
+        if len({pre.proj.in_features for pre in feature_stackers}) != 1:
+            raise ValueError("Grouped packed feature input requires a common stacked feature width.")
+        feat_in = encs[names[0]]._feat_in
+        if audio_signal.data.shape[1] != feat_in:
+            raise ValueError(f"Experts expect packed feature width {feat_in}, got {audio_signal.data.shape[1]}.")
+
+        stacked = feature_stackers[0].stack_packed(audio_signal)
+
+        target_d = max(pre.proj.out_features for pre in feature_stackers)
+        compute_dtype = _autocast_compute_dtype(stacked.data)
+        weights = _grouped_projection_weights(
+            feature_stackers,
+            names,
+            target_d,
+            compute_dtype,
+            cache=self._packed_cache,
+            use_cache=not self.training and not torch.is_grad_enabled(),
+        )
+        shared_input = stacked.data.to(compute_dtype).unsqueeze(0).expand(len(names), -1, -1)
+        projected = torch.bmm(shared_input, weights)
+
+        result = {}
+        for slot, name in enumerate(names):
+            expert = encs[name]
+            expert.update_max_seq_length(seq_length=stacked.max_seqlen, device=audio_signal.data.device)
+            packed = stacked.with_data(projected[slot, :, : expert.d_model])
+            packed, pos_emb, _ = expert._apply_packed_position(packed)
+            result[name] = (packed, pos_emb, None, stacked.lengths)
         return result
 
     def _expert_post(self, expert: nn.Module, x, length):
@@ -1467,7 +1502,11 @@ class GGEMMTransformerEncoder(nn.Module):
         state = {}
         for name, expert in encs.items():
             padded, pos_emb, _block_mask, output_lengths = prepared[name]
-            if shared_metadata is None or not share_metadata:
+            if isinstance(padded, PackedEncoderOutput):
+                packed = padded
+                if share_metadata and shared_metadata is None:
+                    shared_metadata = (packed.lengths, packed.cu_seqlens, packed.max_seqlen)
+            elif shared_metadata is None or not share_metadata:
                 packed = pack_encoder_output(padded, output_lengths)
                 if share_metadata:
                     shared_metadata = (packed.lengths, packed.cu_seqlens, packed.max_seqlen)
@@ -1494,7 +1533,7 @@ class GGEMMTransformerEncoder(nn.Module):
                 'metadata': (packed.lengths, packed.cu_seqlens, packed.max_seqlen),
                 'position_ids': position_ids,
                 'pos_emb': pos_emb if expert.self_attention_model == 'rel_pos' else None,
-                'padded_length': padded.shape[1],
+                'padded_length': packed.max_seqlen if isinstance(padded, PackedEncoderOutput) else padded.shape[1],
                 'sequence_offsets': sequence_offsets,
                 'metadata_key': ('shared',) if share_metadata else tuple(packed.lengths.detach().cpu().tolist()),
             }
@@ -2305,6 +2344,13 @@ def _can_share_packed_metadata(encs, prepared, bypass_pre_encode: bool) -> bool:
     if not items:
         return False
     first_padded, _, _, first_lengths = items[0]
+    if isinstance(first_padded, PackedEncoderOutput):
+        return all(
+            isinstance(padded, PackedEncoderOutput)
+            and padded.lengths is first_padded.lengths
+            and padded.cu_seqlens is first_padded.cu_seqlens
+            for padded, _, _, _ in items[1:]
+        )
     if any(
         padded.shape[:2] != first_padded.shape[:2]
         or padded.device != first_padded.device
@@ -2322,6 +2368,27 @@ def _can_share_packed_metadata(encs, prepared, bypass_pre_encode: bool) -> bool:
         all(isinstance(pre_encode, FeatureStacking) for pre_encode in pre_encoders)
         and len({pre_encode.subsampling_factor for pre_encode in pre_encoders}) == 1
     )
+
+
+def _grouped_projection_weights(feature_stackers, names, target_d, compute_dtype, *, cache, use_cache):
+    def stack_weights():
+        return (
+            torch.stack(
+                [F.pad(pre.proj.weight.t(), (0, target_d - pre.proj.out_features)) for pre in feature_stackers]
+            )
+            .to(compute_dtype)
+            .contiguous()
+        )
+
+    if not use_cache:
+        return stack_weights()
+    key = ('pre_encode', tuple(names), target_d, compute_dtype)
+    cached = cache.get(key)
+    if cached is None:
+        with torch.no_grad():
+            cached = (stack_weights(),)
+        cache[key] = cached
+    return cached[0]
 
 
 def _can_use_ragged_grouped_mm(x: torch.Tensor, compute_dtype: torch.dtype, *feature_dims: int) -> bool:

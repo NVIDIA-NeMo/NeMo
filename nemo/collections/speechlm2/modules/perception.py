@@ -22,7 +22,7 @@ from transformers.models.bert.modeling_bert import BertEncoder
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
 from nemo.collections.asr.parts.mixins import TranscribeConfig
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput
+from nemo.collections.asr.parts.packed_sequence import PackedEncoderOutput, unpack_encoder_output
 from nemo.core import Exportable, NeuralModule, typecheck
 
 
@@ -133,7 +133,10 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             input_signal_cu_seqlens=input_signal_cu_seqlens,
         )
         if self.spec_augmentation is not None and self.training:
-            processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
+            if isinstance(processed_signal, PackedEncoderOutput):
+                processed_signal = self.spec_augmentation.forward_packed(processed_signal)
+            else:
+                processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
 
         encoder_kwargs = {"audio_signal": processed_signal, "length": processed_signal_length}
         if spk_targets is not None:
@@ -166,6 +169,10 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             processed_signal_length,
             input_signal_cu_seqlens=input_signal_cu_seqlens,
         )
+        if isinstance(processed_signal, PackedEncoderOutput):
+            processed_signal = unpack_encoder_output(
+                processed_signal, total_length=processed_signal.padded_length
+            ).transpose(1, 2)
 
         # Spec augment is not applied during evaluation/testing
         if self.spec_augmentation is not None and self.training:
@@ -229,11 +236,12 @@ class AudioPerceptionModule(NeuralModule, Exportable):
                     length=input_signal_length,
                 )
             else:
-                processed_signal, processed_signal_length = self.preprocessor.forward_packed(
+                processed_signal = self.preprocessor.forward_packed(
                     input_signal=input_signal,
                     length=input_signal_length,
                     input_signal_cu_seqlens=input_signal_cu_seqlens,
                 )
+                processed_signal_length = processed_signal.lengths
         return processed_signal, processed_signal_length
 
     def _apply_rote(self, encoder_emb, time_offset=None):

@@ -903,7 +903,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
             state.past_key_values = out.past_key_values
             state.cache_seq_len += T
-            state.last_hidden = out.last_hidden_state
+            state.last_hidden = get_last_hidden_state(out)
 
             # Advance logical streams consumed by this profile prefill.
             state.text_tokens_seen += T

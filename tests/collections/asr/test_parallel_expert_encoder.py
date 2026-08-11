@@ -487,13 +487,28 @@ def test_pe_encoder_builds_and_wires_all_three_experts():
     assert enc.diar_kernel.shape == (_N_SPK, _ASR_D_MODEL)
     # The sound merge is an elementwise add, so sound must match the speech width.
     assert enc.pee.experts["sound"].d_model == enc.d_model
-    # Defaults: ONLY the speaker branch is frozen. Its kernel comes from a hard
-    # threshold on the speaker activities, so no gradient reaches it through the
-    # fusion anyway. Speech and sound both train.
+    # Defaults: the auxiliary speaker and sound experts are frozen; only the speech
+    # backbone and fusion layers train.
     assert all(not p.requires_grad for p in enc.pee.experts["speaker"].parameters())
     assert all(not p.requires_grad for p in enc.sortformer_modules.parameters())
     assert any(p.requires_grad for p in enc.pee.experts["speech"].parameters())
-    assert any(p.requires_grad for p in enc.pee.experts["sound"].parameters())
+    assert all(not p.requires_grad for p in enc.pee.experts["sound"].parameters())
+
+
+@pytest.mark.unit
+def test_pe_encoder_train_and_unfreeze_preserve_auxiliary_freezing():
+    enc = build_toy_pe_encoder()
+
+    enc.train()
+    enc.unfreeze()
+
+    assert enc.pee.experts["speech"].training
+    assert any(p.requires_grad for p in enc.pee.experts["speech"].parameters())
+    for role in ("speaker", "sound"):
+        assert not enc.pee.experts[role].training
+        assert all(not p.requires_grad for p in enc.pee.experts[role].parameters())
+    assert not enc.sortformer_modules.training
+    assert all(not p.requires_grad for p in enc.sortformer_modules.parameters())
 
 
 @pytest.mark.unit
@@ -590,12 +605,12 @@ def test_pe_encoder_activation_checkpointing_is_pee_local(monkeypatch):
     lengths = torch.tensor([64])
     outputs = enc._forward_all_training(mels, lengths)
 
-    assert checkpointed == [enc.pee.experts["speech"], enc.pee.experts["sound"]]
+    assert checkpointed == [enc.pee.experts["speech"]]
     assert set(outputs) == {"speech", "speaker", "sound"}
     assert all(torch.isfinite(output).all() for output, _ in outputs.values())
     sum(output.float().sum() for output, _ in outputs.values()).backward()
     assert any(parameter.grad is not None for parameter in enc.pee.experts["speech"].parameters())
-    assert any(parameter.grad is not None for parameter in enc.pee.experts["sound"].parameters())
+    assert all(parameter.grad is None for parameter in enc.pee.experts["sound"].parameters())
     assert all(parameter.grad is None for parameter in enc.pee.experts["speaker"].parameters())
 
 
@@ -615,7 +630,7 @@ def test_pe_encoder_activation_checkpointing_real_cuda_backward():
 
     assert torch.isfinite(output).all()
     assert any(parameter.grad is not None for parameter in enc.pee.experts["speech"].parameters())
-    assert any(parameter.grad is not None for parameter in enc.pee.experts["sound"].parameters())
+    assert all(parameter.grad is None for parameter in enc.pee.experts["sound"].parameters())
     assert all(parameter.grad is None for parameter in enc.pee.experts["speaker"].parameters())
 
 

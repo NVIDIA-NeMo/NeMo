@@ -308,7 +308,7 @@ class ParallelExpertEncoderPT(ModelPT):
             asr_normalize_type=self._cfg.get('asr_normalize_type', 'per_feature'),
             freeze_speaker=self._cfg.get('freeze_speaker', True),
             freeze_speech=self._cfg.get('freeze_speech', False),
-            freeze_sound=self._cfg.get('freeze_sound', False),
+            freeze_sound=self._cfg.get('freeze_sound', True),
             online_inference_length=self._cfg.get('online_inference_length', 375),
             chunk_left_context=self._cfg.get('chunk_left_context', 50),
             chunk_right_context=self._cfg.get('chunk_right_context', 50),
@@ -744,7 +744,7 @@ class ParallelExpertEncoder(nn.Module):
         asr_normalize_type: Optional[str] = 'per_feature',
         freeze_speaker: bool = True,
         freeze_speech: bool = False,
-        freeze_sound: bool = False,
+        freeze_sound: bool = True,
         online_inference_length: int = 375,
         chunk_left_context: int = 50,
         chunk_right_context: int = 50,
@@ -1052,6 +1052,22 @@ class ParallelExpertEncoder(nn.Module):
 
         self._apply_freezing()
 
+    def freeze_experts(self, *roles: str) -> None:
+        """Permanently freeze selected expert branches for this encoder instance.
+
+        The matching ``freeze_<role>`` flags are set as well as ``requires_grad`` so
+        later calls to :meth:`train` or :meth:`unfreeze` preserve the policy.
+
+        Args:
+            roles (str): Expert roles to freeze (``'speech'``, ``'speaker'``, or ``'sound'``).
+        """
+        unknown = set(roles) - set(EXPERT_ROLES)
+        if unknown:
+            raise ValueError(f"Unknown expert roles {sorted(unknown)}; expected roles from {EXPERT_ROLES}.")
+        for role in roles:
+            setattr(self, f'freeze_{role}', True)
+        self._apply_freezing()
+
     def _apply_freezing(self) -> None:
         """Put each frozen branch in eval and drop its grads."""
         frozen = {
@@ -1065,18 +1081,18 @@ class ParallelExpertEncoder(nn.Module):
             expert = self.pee.experts[role]
             expert.eval()
             for p in expert.parameters():
-                p.requires_grad = False
+                p.requires_grad_(False)
         if self.freeze_speaker:
             # The head travels with the speaker expert.
             self.sortformer_modules.eval()
             for p in self.sortformer_modules.parameters():
-                p.requires_grad = False
+                p.requires_grad_(False)
         if self.sound_ctc_head is not None:
             # Unconditionally frozen, unlike the speaker head: the event tags are
             # binarized before the kernel, so nothing could train it through the fusion.
             self.sound_ctc_head.eval()
             for p in self.sound_ctc_head.parameters():
-                p.requires_grad = False
+                p.requires_grad_(False)
 
     def train(self, mode: bool = True) -> "ParallelExpertEncoder":
         """Set training mode, but keep frozen experts in eval.
@@ -1092,17 +1108,7 @@ class ParallelExpertEncoder(nn.Module):
             ParallelExpertEncoder: ``self``, matching ``nn.Module.train``.
         """
         super().train(mode)
-        for role, is_frozen in (
-            ('speech', self.freeze_speech),
-            ('speaker', self.freeze_speaker),
-            ('sound', self.freeze_sound),
-        ):
-            if is_frozen:
-                self.pee.experts[role].eval()
-        if self.freeze_speaker:
-            self.sortformer_modules.eval()
-        if self.sound_ctc_head is not None:
-            self.sound_ctc_head.eval()
+        self._apply_freezing()
         return self
 
     # ConformerEncoder-compatible properties (drop-in for SALM perception).
@@ -1194,12 +1200,13 @@ class ParallelExpertEncoder(nn.Module):
         freeze(self)
 
     def unfreeze(self, partial: bool = False) -> None:
-        """Unfreeze module parameters (re-exposes :func:`nemo.core.classes.module.unfreeze`).
+        """Unfreeze trainable branches while preserving expert freeze policy.
 
         Args:
             partial (bool): If ``True``, unfreeze only parameters that were partially frozen.
         """
         unfreeze(self, partial=partial)
+        self._apply_freezing()
 
     # Fusion helpers
     @staticmethod

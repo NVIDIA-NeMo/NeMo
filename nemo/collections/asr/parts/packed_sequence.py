@@ -151,7 +151,7 @@ def _normalize_lengths(lengths: Tensor, *, batch_size: int, max_length: int, dev
         raise ValueError(f"lengths must have shape ({batch_size},), got {tuple(lengths.shape)}.")
     if lengths.device != device:
         raise ValueError(f"lengths must be on {device}, got {lengths.device}.")
-    if lengths.is_floating_point() or lengths.is_complex():
+    if lengths.dtype == torch.bool or lengths.is_floating_point() or lengths.is_complex():
         raise TypeError(f"lengths must have an integer dtype, got {lengths.dtype}.")
     lengths = lengths.to(torch.int64)
     # Varlen kernels need a host max length. Validate the same host copy so the

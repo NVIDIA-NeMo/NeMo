@@ -84,6 +84,7 @@ def test_packed_encoder_output_all_empty_is_differentiable():
         (torch.tensor([-1, 1]), "between"),
         (torch.tensor([3, 1]), "between"),
         (torch.tensor([1.0, 1.0]), "integer dtype"),
+        (torch.tensor([True, False]), "integer dtype"),
     ],
 )
 def test_pack_encoder_output_rejects_invalid_lengths(lengths, match):

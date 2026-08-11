@@ -30,8 +30,8 @@ Opt-in entry points are collision-free:
 - `TransformerEncoder.forward_sequence_packed(...)` (also used by `MoETransformerEncoder`).
 - `GGEMMTransformerEncoder.forward_all_sequence_packed(...)`: serial THD oracle.
 - `GGEMMTransformerEncoder.forward_grouped_sequence_packed(...)`: layer-synchronous grouped THD.
-- `ParallelExpertEncoder.forward_sequence_packed(..., grouped=True)`: grouped production default; `grouped=False` is an
-  explicit numerical/benchmark oracle.
+- `ParallelExpertEncoder.forward_sequence_packed(...)`: layer-synchronous grouped production path; the low-level GGEMM
+  container retains the serial numerical/benchmark oracle.
 - `AudioPerceptionModule.forward_sequence_packed(...)`.
 
 Capability selection requires `supports_sequence_packed_output=True` plus the exact method. `packed_encoder_sequences`
@@ -94,8 +94,8 @@ only fields receive defaults during construction/restoration.
   the common production case.
 - Layer state stores metadata separately from initial packed data, and padded pre-encoder tensors are released before the
   Transformer loop.
-- Production uses non-strict attention bucketing, allowing old rel-pos, causal, mixed-head-dimension, and mixed-mode
-  checkpoints to use correct multiple THD buckets. `strict=True` remains an explicit diagnostic asserting one bucket.
+- Automatic attention bucketing allows old rel-pos, causal, mixed-head-dimension, and mixed-mode checkpoints to use
+  the correct number of THD buckets without exposing a diagnostic-only strict mode.
 - Unsupported custom experts keep the serial packed capability protocol. Existing legacy
   `GGEMMTransformerEncoder.forward_packed` keeps its older head-packed meaning and behavior.
 

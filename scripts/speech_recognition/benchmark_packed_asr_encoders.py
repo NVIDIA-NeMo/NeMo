@@ -479,13 +479,16 @@ def _run_iteration(encoder_name, model, inputs, lengths, speaker_targets, implem
 
 def _valid_output(encoder_name, model, inputs, lengths, speaker_targets, implementation):
     if encoder_name == "pee":
-        if implementation in ('serial_thd', 'grouped_thd'):
-            packed = model.forward_sequence_packed(
+        if implementation == 'serial_thd':
+            packed = model._forward_sequence_packed(
                 inputs,
                 lengths,
                 spk_targets=speaker_targets,
-                grouped=implementation == 'grouped_thd',
+                grouped=False,
             )
+            return packed.data, packed.lengths
+        if implementation == 'grouped_thd':
+            packed = model.forward_sequence_packed(inputs, lengths, spk_targets=speaker_targets)
             return packed.data, packed.lengths
         output, output_lengths = model(inputs, lengths, spk_targets=speaker_targets)
     elif implementation == 'native_thd':

@@ -525,7 +525,6 @@ class GGEMMTransformerEncoder(nn.Module):
         backend: str = 'baddbmm',
         moe_mode: str = 'dense',
         fused_qkv: bool = False,
-        strict: bool = False,
     ) -> Dict[str, PackedEncoderOutput]:
         """Run all experts in layer lockstep using native THD grouped kernels.
 
@@ -541,7 +540,6 @@ class GGEMMTransformerEncoder(nn.Module):
             backend=backend,
             moe_mode=moe_mode,
             fused_qkv=fused_qkv,
-            strict=strict,
         )
 
     def forward_grouped(
@@ -1433,7 +1431,6 @@ class GGEMMTransformerEncoder(nn.Module):
         backend: str,
         moe_mode: str,
         fused_qkv: bool,
-        strict: bool,
     ) -> Dict[str, PackedEncoderOutput]:
         if backend not in GROUPED_GEMM_BACKENDS:
             raise ValueError(f"Unknown grouped-GEMM backend '{backend}'; expected one of {GROUPED_GEMM_BACKENDS}.")
@@ -1502,24 +1499,6 @@ class GGEMMTransformerEncoder(nn.Module):
                 'metadata_key': ('shared',) if share_metadata else tuple(packed.lengths.detach().cpu().tolist()),
             }
         del prepared, padded, packed, output_lengths, shared_mask
-
-        if strict:
-            incompatibilities = []
-            if any(expert.self_attention_model == 'rel_pos' for expert in encs.values()):
-                incompatibilities.append('relative-position attention')
-            if len({expert.d_model // expert.n_heads for expert in encs.values()}) != 1:
-                incompatibilities.append('head dimensions')
-            if len({expert.attn_mode for expert in encs.values()}) != 1:
-                incompatibilities.append('attention modes')
-            if len({state[name]['metadata_key'] for name in self.expert_names}) != 1:
-                incompatibilities.append('packed sequence boundaries')
-            if len({(state[name]['x'].device, state[name]['x'].dtype) for name in self.expert_names}) != 1:
-                incompatibilities.append('devices/dtypes')
-            if incompatibilities:
-                raise ValueError(
-                    "Strict grouped sequence-packed execution requires one compatible attention bucket; "
-                    f"incompatible {', '.join(incompatibilities)}."
-                )
 
         trace = {
             'mode': 'grouped_thd',

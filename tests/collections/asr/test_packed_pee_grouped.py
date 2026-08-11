@@ -65,7 +65,7 @@ def test_pee_grouped_and_serial_thd_fusion_match():
     lengths = torch.tensor([40, 17])
     targets = torch.zeros(2, 5, _N_SPK)
     with torch.no_grad():
-        serial = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets, grouped=False)
+        serial = encoder._forward_sequence_packed(mels, lengths, spk_targets=targets, grouped=False)
         grouped = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
     assert torch.equal(grouped.lengths, serial.lengths)
     assert torch.equal(grouped.cu_seqlens, serial.cu_seqlens)
@@ -240,7 +240,7 @@ def test_grouped_sequence_packed_preserves_independent_ffn_dropout_sites():
 
 
 @pytest.mark.unit
-def test_grouped_sequence_packed_non_strict_buckets_mixed_attention_features():
+def test_grouped_sequence_packed_buckets_mixed_attention_features():
     speech_config = toy_speech_expert_cfg()
     sound_config = toy_sound_expert_cfg()
     speaker_config = toy_speaker_expert_cfg()
@@ -265,7 +265,6 @@ def test_grouped_sequence_packed_non_strict_buckets_mixed_attention_features():
             signal,
             signal_lengths,
             fused_qkv=True,
-            strict=False,
         )
 
     for name in encoder.pee.expert_names:
@@ -389,18 +388,6 @@ def test_sequence_packed_serial_capability_keeps_original_signature():
     assert output['custom'].data is data
     with pytest.raises(TypeError, match='does not advertise fused'):
         container.forward_all_sequence_packed(data, torch.tensor([3]), fused_qkv=True)
-
-
-@pytest.mark.unit
-def test_strict_grouped_sequence_packed_rejects_multiple_attention_buckets():
-    encoder = build_toy_pe_encoder().eval()
-    encoder.pee.experts['speaker'].attn_mode = 'causal'
-    signal, signal_lengths = encoder._prepare_input(
-        torch.randn(2, _MEL_FEATURES, 32),
-        torch.tensor([32, 17]),
-    )
-    with pytest.raises(ValueError, match='one compatible attention bucket'):
-        encoder.pee.forward_grouped_sequence_packed(signal, signal_lengths, strict=True)
 
 
 @pytest.mark.unit

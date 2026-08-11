@@ -931,8 +931,6 @@ class ParallelExpertEncoder(nn.Module):
         length,
         spk_targets=None,
         return_experts: bool = False,
-        *,
-        grouped: bool = True,
     ) -> PackedEncoderOutput | tuple[PackedEncoderOutput, dict[str, object]]:
         """Encode offline while keeping expert Transformer activations token-flat.
 
@@ -940,16 +938,14 @@ class ParallelExpertEncoder(nn.Module):
         :meth:`forward` remains the Conformer-compatible padded API.
 
         Set ``return_experts=True`` to also return packed speech/sound states and
-        the padded Sortformer speaker predictions. ``grouped=False`` retains a
-        serial THD numerical/benchmark oracle; production execution is grouped.
+        the padded Sortformer speaker predictions. Production execution is always
+        layer-synchronous and grouped; the low-level container retains a serial oracle.
         """
         if self.online_inference_enabled:
             raise RuntimeError(
                 "forward_sequence_packed is an offline API and cannot run while online_inference() is enabled."
             )
-        return self._forward_sequence_packed(
-            audio_signal, length, spk_targets, return_experts=return_experts, grouped=grouped
-        )
+        return self._forward_sequence_packed(audio_signal, length, spk_targets, return_experts=return_experts)
 
     def train(self, mode: bool = True) -> "ParallelExpertEncoder":
         """Set training mode, but keep frozen experts in eval.
@@ -1139,7 +1135,6 @@ class ParallelExpertEncoder(nn.Module):
             'backend': self.sequence_packed_ggemm_backend,
             'moe_mode': self._sequence_packed_moe_execution_mode(),
             'fused_qkv': True,
-            'strict': False,
         }
         if not self.activation_checkpointing or not torch.is_grad_enabled():
             return grouped_forward(audio_signal, length, **grouped_kwargs)
@@ -1633,7 +1628,6 @@ class ParallelExpertEncoder(nn.Module):
                     backend=self.sequence_packed_ggemm_backend,
                     moe_mode=self._sequence_packed_moe_execution_mode(),
                     fused_qkv=True,
-                    strict=False,
                 )
 
         _validate_packed_expert_lengths(packed)

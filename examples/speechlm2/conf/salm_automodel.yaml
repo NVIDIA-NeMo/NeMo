@@ -33,6 +33,7 @@ model:
   encoder_chunk_size_seconds: 30.0
 
   # Opt in to native token-major (THD) Transformer/MoE activations during training/validation.
+  # The training dataset also keeps raw waveforms packed through preprocessing when enabled.
   # Existing checkpoints and generation behavior stay unchanged; unsupported adapters fail early.
   packed_encoder_sequences: false
   # Separately opt in to the flattened differentiable CP gather.

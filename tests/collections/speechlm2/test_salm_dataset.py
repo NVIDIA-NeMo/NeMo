@@ -29,6 +29,43 @@ class _Tokenizer:
 
 
 @pytest.mark.unit
+def test_salm_dataset_can_return_packed_audio_samples(monkeypatch):
+    cut = dummy_cut(0, duration=0.03, recording=dummy_recording(0, duration=0.03, with_data=True))
+    conversation = NeMoMultimodalConversation(
+        id="example-0",
+        turns=[
+            AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>"),
+            TextTurn(role="assistant", value="hello"),
+        ],
+        token_equivalent_duration=0.01,
+    )
+    conversation.input_ids = torch.tensor([7, 8], dtype=torch.long)
+    conversation.mask = torch.tensor([False, True])
+    conversations = CutSet([conversation])
+    expected_samples = torch.tensor([1.0, 2.0, 3.0])
+    expected_cu_seqlens = torch.tensor([0, 3], dtype=torch.long)
+    expected_lens = torch.tensor([3], dtype=torch.long)
+
+    def fake_packed_audio_collate(conversations_arg, *args, **kwargs):
+        assert conversations_arg is conversations
+        return expected_samples, expected_cu_seqlens, expected_lens, conversations_arg
+
+    monkeypatch.setattr(
+        salm_dataset_module,
+        "collate_conversation_audio_packed_fault_tolerant",
+        fake_packed_audio_collate,
+    )
+    dataset = salm_dataset_module.SALMDataset(tokenizer=_Tokenizer(), pack_audio=True)
+
+    batch = dataset[conversations]
+
+    assert "audios" not in batch
+    assert batch["packed_audio_samples"] is expected_samples
+    assert batch["audio_cu_seqlens"] is expected_cu_seqlens
+    assert batch["audio_lens"] is expected_lens
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("rttm_filepath", "expected_targets"),
     [

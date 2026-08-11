@@ -507,6 +507,37 @@ def test_salm_automodel_limits_packed_encoder_opt_in_to_training(device):
     assert answer.shape == (1, 2)
 
 
+@pytest.mark.parametrize("device", chunking_test_devices())
+def test_salm_automodel_packed_audio_samples_match_padded_batch(device):
+    padded_model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
+    packed_model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
+    padded_model.cfg["packed_encoder_sequences"] = True
+    packed_model.cfg["packed_encoder_sequences"] = True
+    audios = torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0], [10.0, 11.0, 12.0, 13.0, 14.0]], device=device)
+    audio_lens = torch.tensor([3, 5], dtype=torch.long, device=device)
+    common = {
+        "audio_lens": audio_lens,
+        "input_ids": torch.tensor(
+            [[padded_model.audio_locator_tag_id, padded_model.audio_locator_tag_id, 10]],
+            dtype=torch.long,
+            device=device,
+        ),
+        "loss_mask": torch.tensor([[False, False, True]], dtype=torch.bool, device=device),
+    }
+    padded_batch = {**common, "audios": audios}
+    packed_batch = {
+        **common,
+        "packed_audio_samples": torch.cat([audios[0, :3], audios[1, :5]]),
+        "audio_cu_seqlens": torch.tensor([0, 3, 8], dtype=torch.long, device=device),
+    }
+
+    expected = padded_model.prepare_inputs(padded_batch)
+    actual = packed_model.prepare_inputs(packed_batch)
+
+    torch.testing.assert_close(actual["input_embeds"], expected["input_embeds"], rtol=0.0, atol=0.0)
+    assert torch.equal(actual["target_ids"], expected["target_ids"])
+
+
 def _make_chunking_test_model(encoder_chunk_size_seconds, sampling_rate, device, hop_length=1):
     model = SALMAutomodel.__new__(SALMAutomodel)
     torch.nn.Module.__init__(model)

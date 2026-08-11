@@ -47,13 +47,23 @@ def _process_group_timeout(cfg):
     return None
 
 
-def _create_salm_dataset(tokenizer, data_cfg: DictConfig | dict) -> SALMDataset:
+def _create_salm_dataset(
+    tokenizer,
+    data_cfg: DictConfig | dict,
+    *,
+    pack_audio: bool = False,
+) -> SALMDataset:
     """Build SALMDataset without forwarding unset options to legacy NeMo packages."""
     multispeaker_cfg = data_cfg.get("multispeaker_cfg", None)
     # TODO(Dongji): Remove after all release images ship SALMDataset with multispeaker_cfg support.
-    if multispeaker_cfg is None:
+    if multispeaker_cfg is None and not pack_audio:
         return SALMDataset(tokenizer=tokenizer)
-    return SALMDataset(tokenizer=tokenizer, multispeaker_cfg=multispeaker_cfg)
+    kwargs = {"tokenizer": tokenizer}
+    if multispeaker_cfg is not None:
+        kwargs["multispeaker_cfg"] = multispeaker_cfg
+    if pack_audio:
+        kwargs["pack_audio"] = True
+    return SALMDataset(**kwargs)
 
 
 @hydra_runner(config_path="conf", config_name="salm")
@@ -84,7 +94,13 @@ def train(cfg):
     with trainer.init_module():
         model = model_cls(OmegaConf.to_container(cfg.model, resolve=True))
 
-    dataset = _create_salm_dataset(model.tokenizer, cfg.data)
+    dataset = _create_salm_dataset(
+        model.tokenizer,
+        cfg.data,
+        pack_audio=bool(
+            cfg.model.get("use_nemo_automodel", False) and cfg.model.get("packed_encoder_sequences", False)
+        ),
+    )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 
     trainer.fit(model, datamodule)

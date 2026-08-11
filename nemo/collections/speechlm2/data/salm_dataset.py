@@ -37,6 +37,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
     TextTurn,
     collate_conversation_audio_fault_tolerant,
+    collate_conversation_audio_packed_fault_tolerant,
 )
 from nemo.collections.common.data.prompt_fn import registered_prompt_format_fn
 from nemo.collections.common.prompts import Llama2PromptFormatter
@@ -64,6 +65,10 @@ class SALMDataset(torch.utils.data.Dataset):
             ``spk_targets`` / ``spk_target_length``. Rows without an explicit
             RTTM path contain the reserved value ``-1`` so the perception encoder
             can replace them with inferred speaker activity.
+        pack_audio (bool):
+            Return valid waveform samples contiguously as `packed_audio_samples`
+            plus `audio_cu_seqlens`, instead of materializing `audios[B, T_max]`.
+            Defaults to `False` for complete batch-API compatibility.
 
             [ SOT Example for overlapping speakers ]
             Speaker-parallel transcription as a timeline:
@@ -76,7 +81,9 @@ class SALMDataset(torch.utils.data.Dataset):
 
     Returns:
         A dictionary with the following keys:
-            - audios: Tensor of audio waveform samples [B_audio, T_samples]
+            - audios: Tensor of audio waveform samples [B_audio, T_samples] (default mode)
+            - packed_audio_samples: Tensor of contiguous waveform samples [T_total] (packed mode)
+            - audio_cu_seqlens: Tensor of cumulative waveform offsets [B_audio + 1] (packed mode)
             - audio_lens: Tensor of audio lengths [B_audio]
             - input_ids: Tensor of text token IDs [B, T_tokens], including audio_locator_tag tokens
             - loss_mask: Boolean tensor [B, T_tokens] indicating which tokens are part of the
@@ -94,9 +101,15 @@ class SALMDataset(torch.utils.data.Dataset):
           ``multispeaker_cfg`` and does not affect the default single-speaker behavior.
     """
 
-    def __init__(self, tokenizer: AutoTokenizer, multispeaker_cfg: dict | None = None) -> None:
+    def __init__(
+        self,
+        tokenizer: AutoTokenizer,
+        multispeaker_cfg: dict | None = None,
+        pack_audio: bool = False,
+    ) -> None:
         self.tokenizer = tokenizer
         self.pad_id = get_pad_id(tokenizer)
+        self.pack_audio = bool(pack_audio)
         # Setting USE_AIS_GET_BATCH=true makes the loader issue a single AIStore GetBatch
         # call per minibatch, paired with URL-backed cuts produced by the multimodal
         # conversation adapters (NeMoMultimodalConversation{Jsonl,ShareGPTJsonl}Adapter).
@@ -120,16 +133,20 @@ class SALMDataset(torch.utils.data.Dataset):
         # If all conversations are filtered out, we'll return None, and expect users to wrap this dataset
         # in ``nemo.collections.common.data.fallback.FallbackDataset`` to use the previous mini-batch instead.
         try:
-            audios, audio_lens, conversations = collate_conversation_audio_fault_tolerant(
-                conversations, self.load_audio
-            )
+            if self.pack_audio:
+                packed_audio_samples, audio_cu_seqlens, audio_lens, conversations = (
+                    collate_conversation_audio_packed_fault_tolerant(conversations, self.load_audio)
+                )
+            else:
+                audios, audio_lens, conversations = collate_conversation_audio_fault_tolerant(
+                    conversations, self.load_audio
+                )
         except Exception as e:
             logging.warning(f"Error collating conversations: {e}")
             return None
         if not conversations:
             return None
         batch = {
-            "audios": audios,
             "audio_lens": audio_lens,
             "input_ids": left_collate_vectors([c.input_ids for c in conversations], padding_value=self.pad_id),
             "loss_mask": left_collate_vectors(
@@ -137,6 +154,11 @@ class SALMDataset(torch.utils.data.Dataset):
             ).to(torch.bool),
             "conversations": drop_in_memory_data(conversations),
         }
+        if self.pack_audio:
+            batch["packed_audio_samples"] = packed_audio_samples
+            batch["audio_cu_seqlens"] = audio_cu_seqlens
+        else:
+            batch["audios"] = audios
         if self.multispeaker_processor is not None:
             self.multispeaker_processor(batch)
         return batch
@@ -228,7 +250,7 @@ class SALMMultiSpeakerProcessor:
             num_speakers=cfg.num_speakers,
             num_sample_per_mel_frame=cfg.num_sample_per_mel_frame,
             num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
-            dtype=batch["audios"].dtype,
+            dtype=(batch["audios"] if "audios" in batch else batch["packed_audio_samples"]).dtype,
         )
         batch["spk_targets"] = targets
         batch["spk_target_length"] = target_length

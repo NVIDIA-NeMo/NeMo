@@ -32,6 +32,7 @@ from nemo.collections.asr.parts.packed_sequence import (
     pack_encoder_output,
     packed_encoder_position_ids,
     split_encoder_output,
+    split_packed_data,
     unpack_encoder_output,
 )
 
@@ -75,6 +76,18 @@ def test_packed_encoder_output_all_empty_is_differentiable():
     assert packed.max_seqlen == 0
     packed.data.sum().backward()
     assert padded.grad is not None
+
+
+def test_split_packed_data_preserves_empty_rows_and_validates_integer_metadata():
+    data = torch.arange(6)
+    lengths = torch.tensor([2, 0, 4])
+    rows = split_packed_data(data, lengths, torch.tensor([0, 2, 2, 6]))
+
+    assert [row.tolist() for row in rows] == [[0, 1], [], [2, 3, 4, 5]]
+    with pytest.raises(TypeError, match="integer dtype"):
+        split_packed_data(data, lengths.float(), torch.tensor([0, 2, 2, 6]))
+    with pytest.raises(TypeError, match="integer dtype"):
+        split_packed_data(data, lengths, torch.tensor([0.0, 2.0, 2.0, 6.0]))
 
 
 @pytest.mark.parametrize(

@@ -394,6 +394,49 @@ def test_sequence_packed_chunking_matches_legacy(chunk_size_seconds, chunk_batch
         torch.testing.assert_close(actual, expected)
 
 
+@pytest.mark.parametrize("sequence_packed", [False, True])
+@pytest.mark.parametrize(
+    ("chunk_size_seconds", "chunk_batch_size"),
+    [(None, None), (2.0, None), (2.0, 2)],
+)
+def test_packed_audio_samples_match_padded_frontend(sequence_packed, chunk_size_seconds, chunk_batch_size):
+    audios = torch.tensor(
+        [
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0, 10.0, 0.0, 0.0],
+        ]
+    )
+    audio_lens = torch.tensor([6, 4], dtype=torch.long)
+    packed_audio_samples = torch.cat([audios[0, :6], audios[1, :4]])
+    audio_cu_seqlens = torch.tensor([0, 6, 10], dtype=torch.long)
+    padded_perception = ChunkingTestPerception(sampling_rate=1, hop_length=1)
+    packed_perception = ChunkingTestPerception(sampling_rate=1, hop_length=1)
+
+    expected = encode_audio_with_optional_chunking(
+        padded_perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=chunk_size_seconds,
+        chunk_batch_size=chunk_batch_size,
+        sampling_rate=1,
+        sequence_packed=sequence_packed,
+    )
+    actual = encode_audio_with_optional_chunking(
+        packed_perception,
+        packed_audio_samples,
+        audio_lens,
+        input_signal_cu_seqlens=audio_cu_seqlens,
+        chunk_size_seconds=chunk_size_seconds,
+        chunk_batch_size=chunk_batch_size,
+        sampling_rate=1,
+        sequence_packed=sequence_packed,
+    )
+
+    assert len(actual) == len(expected) == 2
+    for actual_row, expected_row in zip(actual, expected):
+        torch.testing.assert_close(actual_row, expected_row, rtol=0.0, atol=0.0)
+
+
 def test_sequence_packed_chunking_rejects_unsupported_perception():
     class UnsupportedPerception:
         def __call__(self, **kwargs):

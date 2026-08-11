@@ -112,6 +112,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         processed_signal_length=None,
         time_offset=None,
         spk_targets=None,
+        input_signal_cu_seqlens=None,
     ) -> PackedEncoderOutput:
         """Encode audio natively as token-major variable-length sequences.
 
@@ -125,7 +126,11 @@ class AudioPerceptionModule(NeuralModule, Exportable):
                 "IdentityConnector, no multi-layer feature extraction, and rote=null."
             )
         processed_signal, processed_signal_length = self.maybe_preprocess_audio(
-            input_signal, input_signal_length, processed_signal, processed_signal_length
+            input_signal,
+            input_signal_length,
+            processed_signal,
+            processed_signal_length,
+            input_signal_cu_seqlens=input_signal_cu_seqlens,
         )
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_length)
@@ -152,9 +157,14 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         return_encoder_emb=False,
         time_offset=None,
         spk_targets=None,
+        input_signal_cu_seqlens=None,
     ):
         processed_signal, processed_signal_length = self.maybe_preprocess_audio(
-            input_signal, input_signal_length, processed_signal, processed_signal_length
+            input_signal,
+            input_signal_length,
+            processed_signal,
+            processed_signal_length,
+            input_signal_cu_seqlens=input_signal_cu_seqlens,
         )
 
         # Spec augment is not applied during evaluation/testing
@@ -202,6 +212,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         input_signal_length=None,
         processed_signal=None,
         processed_signal_length=None,
+        input_signal_cu_seqlens=None,
     ):
         has_input_signal = input_signal is not None and input_signal_length is not None
         has_processed_signal = processed_signal is not None and processed_signal_length is not None
@@ -212,10 +223,17 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             )
 
         if not has_processed_signal:
-            processed_signal, processed_signal_length = self.preprocessor(
-                input_signal=input_signal,
-                length=input_signal_length,
-            )
+            if input_signal_cu_seqlens is None:
+                processed_signal, processed_signal_length = self.preprocessor(
+                    input_signal=input_signal,
+                    length=input_signal_length,
+                )
+            else:
+                processed_signal, processed_signal_length = self.preprocessor.forward_packed(
+                    input_signal=input_signal,
+                    length=input_signal_length,
+                    input_signal_cu_seqlens=input_signal_cu_seqlens,
+                )
         return processed_signal, processed_signal_length
 
     def _apply_rote(self, encoder_emb, time_offset=None):

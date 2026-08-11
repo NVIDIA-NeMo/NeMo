@@ -15,9 +15,12 @@
 import pytest
 import torch
 
+from nemo.collections.asr.modules.audio_preprocessing import AudioToMelSpectrogramPreprocessor
+from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerEncoder
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import unpack_encoder_output
 from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule, IdentityConnector
+from tests.collections.asr.test_parallel_expert_encoder import build_toy_pe_encoder
 
 
 class _FeaturePassthrough(torch.nn.Module):
@@ -77,3 +80,87 @@ def test_perception_sequence_packed_rejects_adapter_that_cannot_preserve_thd():
             input_signal=torch.randn(1, 8, 8),
             input_signal_length=torch.tensor([8]),
         )
+
+
+@pytest.mark.parametrize(
+    "device",
+    ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable"))],
+)
+@pytest.mark.parametrize("encoder_kind", ["transformer", "moe", "pee"])
+def test_perception_packed_waveform_matches_padded_waveform_for_all_new_encoders(encoder_kind, device):
+    torch.manual_seed(17)
+    perception = _make_waveform_perception(encoder_kind).to(device)
+    lengths = torch.tensor([4096, 2600, 1200], dtype=torch.long, device=device)
+    audios = torch.randn(3, int(lengths.max()), device=device)
+    for row, length in zip(audios, lengths):
+        row[int(length) :] = 0.0
+    packed_audio_samples = torch.cat([row[: int(length)] for row, length in zip(audios, lengths)])
+    audio_cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)])
+    state_keys = set(perception.state_dict())
+
+    with torch.no_grad():
+        expected = perception.forward_sequence_packed(input_signal=audios, input_signal_length=lengths)
+        actual = perception.forward_sequence_packed(
+            input_signal=packed_audio_samples,
+            input_signal_length=lengths,
+            input_signal_cu_seqlens=audio_cu_seqlens,
+        )
+
+    assert torch.equal(actual.lengths, expected.lengths)
+    assert torch.equal(actual.cu_seqlens, expected.cu_seqlens)
+    if device == "cuda":
+        torch.testing.assert_close(actual.data, expected.data, rtol=2e-3, atol=1e-3)
+    else:
+        torch.testing.assert_close(actual.data, expected.data, rtol=2e-4, atol=2e-5)
+    assert set(perception.state_dict()) == state_keys
+
+
+def _make_waveform_perception(encoder_kind: str) -> AudioPerceptionModule:
+    if encoder_kind == "transformer":
+        encoder = TransformerEncoder(
+            feat_in=8,
+            d_model=32,
+            n_heads=2,
+            n_layers=2,
+            subsampling_factor=2,
+            drop_rate=0.0,
+            dropout_pre_encoder=0.0,
+            dropout_emb=0.0,
+            self_attention_model="rope",
+            sync_max_audio_length=False,
+        )
+        features = 8
+    elif encoder_kind == "moe":
+        encoder = MoETransformerEncoder(
+            feat_in=8,
+            d_model=32,
+            n_heads=2,
+            n_layers=2,
+            subsampling_factor=2,
+            drop_rate=0.0,
+            dropout_pre_encoder=0.0,
+            dropout_emb=0.0,
+            self_attention_model="rope",
+            moe_num_experts=4,
+            moe_top_k=2,
+            sync_max_audio_length=False,
+        )
+        features = 8
+    else:
+        encoder = build_toy_pe_encoder(always_run_diarization=True)
+        features = 128
+
+    perception = AudioPerceptionModule.__new__(AudioPerceptionModule)
+    torch.nn.Module.__init__(perception)
+    perception.preprocessor = AudioToMelSpectrogramPreprocessor(
+        features=features,
+        normalize="per_feature",
+        dither=0,
+        pad_to=0,
+    )
+    perception._modules["encoder"] = encoder
+    perception.modality_adapter = IdentityConnector()
+    perception.proj = torch.nn.Linear(encoder.d_model, 24)
+    perception.spec_augmentation = None
+    perception.rote = None
+    return perception.eval()

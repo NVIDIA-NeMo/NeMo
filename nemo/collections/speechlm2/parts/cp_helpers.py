@@ -34,6 +34,7 @@ import torch.distributed as dist
 from torch import Tensor
 from torch.distributed.nn.functional import all_gather as differentiable_all_gather
 
+from nemo.collections.asr.parts.packed_sequence import split_packed_data
 from nemo.collections.speechlm2.parts.encoder_chunking import (
     _get_min_chunk_size_samples,
     encode_audio_with_optional_chunking,
@@ -73,6 +74,7 @@ def encode_audio_with_cp_distribution(
     audios: Tensor,
     audio_lens: Tensor,
     *,
+    audio_cu_seqlens: Tensor | None = None,
     chunk_size_seconds: Optional[float],
     chunk_batch_size: Optional[int] = None,
     sampling_rate: int,
@@ -115,7 +117,11 @@ def encode_audio_with_cp_distribution(
     pads only each rank's flattened token buffer, never ``B*max_L``. Keeping it
     separate leaves the historical CP collective unchanged by default.
     """
-    B_aud = int(audios.shape[0])
+    if audio_cu_seqlens is not None:
+        if audios.ndim != 1:
+            raise ValueError(f"Packed audios must be 1D, got shape {tuple(audios.shape)}.")
+        split_packed_data(audios, audio_lens, audio_cu_seqlens)
+    B_aud = int(audio_lens.numel())
     fsdp_group_has_audio = _fsdp_group_has_audio(B_aud, audios.device, fsdp_sync_group)
     if B_aud == 0:
         dummy_loss = (
@@ -140,6 +146,7 @@ def encode_audio_with_cp_distribution(
             perception,
             audios,
             audio_lens,
+            input_signal_cu_seqlens=audio_cu_seqlens,
             chunk_size_seconds=chunk_size_seconds,
             chunk_batch_size=chunk_batch_size,
             sampling_rate=sampling_rate,
@@ -162,10 +169,11 @@ def encode_audio_with_cp_distribution(
 
     if pad_n > 0:
         dummy_len = int(audio_lens.min().item())
-        T_samp = audios.shape[1]
-        dummy_audios = torch.zeros(pad_n, T_samp, dtype=audios.dtype, device=device)
         dummy_lens = torch.full((pad_n,), dummy_len, dtype=audio_lens.dtype, device=device)
-        audios = torch.cat([audios, dummy_audios], dim=0)
+        if audio_cu_seqlens is None:
+            T_samp = audios.shape[1]
+            dummy_audios = torch.zeros(pad_n, T_samp, dtype=audios.dtype, device=device)
+            audios = torch.cat([audios, dummy_audios], dim=0)
         audio_lens = torch.cat([audio_lens, dummy_lens], dim=0)
         if spk_targets is not None:
             dummy_targets = torch.zeros(
@@ -183,8 +191,19 @@ def encode_audio_with_cp_distribution(
 
     start = cp_rank * per_rank
     end = start + per_rank
-    local_audios = audios[start:end]
     local_audio_lens = audio_lens[start:end]
+    if audio_cu_seqlens is None:
+        local_audios = audios[start:end]
+        local_audio_cu_seqlens = None
+    else:
+        local_audios, local_audio_cu_seqlens = _slice_packed_audio_for_cp(
+            audios,
+            audio_cu_seqlens,
+            local_audio_lens,
+            start=start,
+            end=end,
+            real_batch_size=B_aud,
+        )
     local_spk_targets = spk_targets[start:end] if spk_targets is not None else None
     local_spk_target_lengths = spk_target_lengths[start:end] if spk_target_lengths is not None else None
 
@@ -192,6 +211,7 @@ def encode_audio_with_cp_distribution(
         perception,
         local_audios,
         local_audio_lens,
+        input_signal_cu_seqlens=local_audio_cu_seqlens,
         chunk_size_seconds=chunk_size_seconds,
         chunk_batch_size=chunk_batch_size,
         sampling_rate=sampling_rate,
@@ -308,3 +328,30 @@ def _dummy_audio_loss_for_fsdp_sync(
     )
     dummy_loss = sum(emb.float().sum() for emb in dummy_embs)
     return dummy_loss * 0.0
+
+
+def _slice_packed_audio_for_cp(
+    audios: Tensor,
+    audio_cu_seqlens: Tensor,
+    local_audio_lens: Tensor,
+    *,
+    start: int,
+    end: int,
+    real_batch_size: int,
+) -> tuple[Tensor, Tensor]:
+    real_start = min(start, real_batch_size)
+    real_end = min(end, real_batch_size)
+    sample_start = int(audio_cu_seqlens[real_start].item())
+    sample_end = int(audio_cu_seqlens[real_end].item())
+    local_audios = audios[sample_start:sample_end]
+    real_rows = max(0, real_end - real_start)
+    dummy_samples = int(local_audio_lens[real_rows:].sum().item())
+    if dummy_samples:
+        local_audios = torch.cat([local_audios, audios.new_zeros(dummy_samples)])
+    local_cu_seqlens = torch.cat(
+        [
+            torch.zeros(1, dtype=torch.long, device=audios.device),
+            local_audio_lens.cumsum(dim=0, dtype=torch.long),
+        ]
+    )
+    return local_audios, local_cu_seqlens

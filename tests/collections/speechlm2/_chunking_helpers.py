@@ -15,6 +15,7 @@
 from types import SimpleNamespace
 
 import torch
+from torch.nn.utils.rnn import pad_sequence
 
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
 
@@ -63,8 +64,15 @@ class ChunkingTestPerception(torch.nn.Module):
         input_signal_length=None,
         time_offset=None,
         spk_targets=None,
+        input_signal_cu_seqlens=None,
     ):
         self.sequence_packed_calls += 1
+        if input_signal_cu_seqlens is not None:
+            offsets = input_signal_cu_seqlens.tolist()
+            input_signal = pad_sequence(
+                [input_signal[offsets[row] : offsets[row + 1]] for row in range(input_signal_length.numel())],
+                batch_first=True,
+            )
         padded, lengths = self.forward(
             input_signal, input_signal_length, time_offset=time_offset, spk_targets=spk_targets
         )

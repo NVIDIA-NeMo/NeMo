@@ -19,7 +19,7 @@ import torch.distributed as dist
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 
-from nemo.collections.asr.parts.packed_sequence import split_encoder_output
+from nemo.collections.asr.parts.packed_sequence import split_encoder_output, split_packed_data
 
 
 def encode_audio_with_optional_chunking(
@@ -27,6 +27,7 @@ def encode_audio_with_optional_chunking(
     input_signal: Tensor,
     input_signal_length: Tensor,
     *,
+    input_signal_cu_seqlens: Tensor | None = None,
     chunk_size_seconds: float | None,
     sampling_rate: int,
     spk_targets: Tensor | None = None,
@@ -47,8 +48,12 @@ def encode_audio_with_optional_chunking(
     Args:
         perception: Callable returning ``(audio_embs, audio_emb_lens)`` for a batched
             input, accepting ``input_signal=Tensor`` and ``input_signal_length=Tensor``.
-        input_signal: Audio batch with shape ``(B, T)`` (fp32), padded to the longest row.
+        input_signal: Padded audio batch with shape ``(B, T)``, or contiguous
+            waveform samples ``(sum(input_signal_length),)`` when
+            ``input_signal_cu_seqlens`` is provided.
         input_signal_length: Per-row valid sample counts with shape ``(B,)`` (int64).
+        input_signal_cu_seqlens: Optional cumulative sample offsets for packed
+            one-dimensional ``input_signal``.
         chunk_size_seconds: Target chunk length in seconds; ``None`` disables chunking.
         sampling_rate: Audio sampling rate, used to convert ``chunk_size_seconds`` to samples.
         spk_targets: Optional speaker-activity targets with shape ``(B, T_spk, N)``.
@@ -75,6 +80,15 @@ def encode_audio_with_optional_chunking(
         original audio row.
     """
     _validate_chunk_config(chunk_size_seconds, chunk_batch_size)
+    packed_audio_rows = None
+    if input_signal_cu_seqlens is not None:
+        if input_signal.ndim != 1:
+            raise ValueError(f"Packed input_signal must be 1D, got shape {tuple(input_signal.shape)}.")
+        packed_audio_rows = list(split_packed_data(input_signal, input_signal_length, input_signal_cu_seqlens))
+    if packed_audio_rows is not None and not sequence_packed:
+        input_signal = pad_sequence(packed_audio_rows, batch_first=True)
+        input_signal_cu_seqlens = None
+        packed_audio_rows = None
 
     if input_signal_length.numel() == 0:
         dummy_loss = _run_dummy_chunk_forwards(
@@ -91,6 +105,8 @@ def encode_audio_with_optional_chunking(
 
     chunk_size_samples = _get_chunk_size_samples(chunk_size_seconds, sampling_rate)
     perception_kwargs = {"input_signal": input_signal, "input_signal_length": input_signal_length}
+    if input_signal_cu_seqlens is not None:
+        perception_kwargs["input_signal_cu_seqlens"] = input_signal_cu_seqlens
     if spk_targets is not None:
         perception_kwargs["spk_targets"] = spk_targets
     if chunk_size_samples is None or input_signal_length.numel() == 0:
@@ -105,12 +121,16 @@ def encode_audio_with_optional_chunking(
         return _maybe_return_dummy_loss(ans, None, return_dummy_loss)
 
     chunks, chunk_lens, chunks_per_audio, chunk_spans = _split_audio_into_chunks(
-        input_signal=input_signal,
+        input_signal=packed_audio_rows if packed_audio_rows is not None else input_signal,
         input_signal_lengths=input_signal_lengths,
         chunk_size_samples=chunk_size_samples,
         min_chunk_size_samples=min_chunk_size_samples,
     )
-    chunked_signal = pad_sequence(chunks, batch_first=True)
+    if input_signal_cu_seqlens is None:
+        chunked_signal = pad_sequence(chunks, batch_first=True)
+        chunked_cu_seqlens = None
+    else:
+        chunked_signal, chunked_cu_seqlens = _pack_audio_rows(chunks)
     chunked_lens = torch.as_tensor(chunk_lens, device=input_signal_length.device, dtype=input_signal_length.dtype)
     # Absolute start time (seconds) of each chunk within its source audio.
     # RoTE (when enabled) uses this so a chunked long audio keeps a continuous time index across chunk boundaries.
@@ -132,6 +152,8 @@ def encode_audio_with_optional_chunking(
         "input_signal_length": chunked_lens,
         "time_offset": time_offset,
     }
+    if chunked_cu_seqlens is not None:
+        chunked_perception_kwargs["input_signal_cu_seqlens"] = chunked_cu_seqlens
     if chunked_spk_targets is not None:
         chunked_perception_kwargs["spk_targets"] = chunked_spk_targets
     if chunk_batch_size is None:
@@ -194,7 +216,7 @@ def _encode_chunk_microbatches(
 ) -> tuple[list[Tensor], Tensor | None]:
     """Encode chunks in smaller forwards while keeping FSDP ranks synchronized."""
     input_signal = chunked_perception_kwargs["input_signal"]
-    num_chunks = int(input_signal.shape[0])
+    num_chunks = int(chunked_perception_kwargs["input_signal_length"].numel())
     local_microbatches = (num_chunks + chunk_batch_size - 1) // chunk_batch_size
     total_microbatches = _sync_max_count(local_microbatches, input_signal.device, sync_group)
 
@@ -218,7 +240,21 @@ def _encode_chunk_microbatches(
 
 
 def _slice_perception_kwargs(perception_kwargs: dict[str, Tensor], start: int, end: int) -> dict[str, Tensor]:
-    return {name: value[start:end] for name, value in perception_kwargs.items()}
+    cu_seqlens = perception_kwargs.get("input_signal_cu_seqlens")
+    if cu_seqlens is None:
+        return {name: value[start:end] for name, value in perception_kwargs.items()}
+
+    sample_start = int(cu_seqlens[start].item())
+    sample_end = int(cu_seqlens[end].item())
+    sliced = {}
+    for name, value in perception_kwargs.items():
+        if name == "input_signal":
+            sliced[name] = value[sample_start:sample_end]
+        elif name == "input_signal_cu_seqlens":
+            sliced[name] = value[start : end + 1] - sample_start
+        else:
+            sliced[name] = value[start:end]
+    return sliced
 
 
 def _sync_max_count(local_count: int, device: torch.device, sync_group=None) -> int:
@@ -336,7 +372,7 @@ def _get_spk_target_stride(perception: Callable) -> int:
 
 
 def _split_audio_into_chunks(
-    input_signal: Tensor,
+    input_signal: Tensor | list[Tensor],
     input_signal_lengths: list[int],
     chunk_size_samples: int,
     min_chunk_size_samples: int,
@@ -350,7 +386,7 @@ def _split_audio_into_chunks(
     that ``chunks_per_audio`` stays aligned with the input batch.
 
     Args:
-        input_signal: ``(B, T)`` audio batch.
+        input_signal: ``(B, T)`` audio batch or a list of exact waveform views.
         input_signal_lengths: Per-row valid sample counts (length ``B``).
         chunk_size_samples: Target chunk length in samples.
         min_chunk_size_samples: Minimum chunk length below which a tail chunk is folded
@@ -534,3 +570,9 @@ def _recombine_chunked_audio_embedding_list(
         audio_embs.append(parts[0] if len(parts) == 1 else torch.cat(parts, dim=0))
         chunk_idx += num_chunks
     return audio_embs
+
+
+def _pack_audio_rows(rows: list[Tensor]) -> tuple[Tensor, Tensor]:
+    lengths = torch.tensor([row.numel() for row in rows], dtype=torch.long, device=rows[0].device)
+    cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(dim=0)])
+    return torch.cat(rows), cu_seqlens

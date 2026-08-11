@@ -30,7 +30,9 @@ from lhotse.audio import AudioLoadingError
 from lhotse.custom import CustomFieldMixin
 from lhotse.cut import Cut
 from lhotse.dataset import AudioSamples
+from lhotse.dataset.collation import read_audio_from_cuts
 from lhotse.dataset.dataloading import resolve_seed
+from lhotse.dataset.input_strategies import _get_executor
 from lhotse.serialization import load_jsonl, open_best
 from lhotse.shar import AudioTarWriter, JsonlShardWriter
 from lhotse.utils import Pathlike, compute_num_samples, is_valid_url
@@ -950,6 +952,57 @@ def collate_conversation_audio_fault_tolerant(
 
     # Phase 4: return — re-order audio rows to match ``ok`` conversation/turn order.
     return audios[keep_rows], audio_lens[keep_rows], CutSet(ok)
+
+
+def collate_conversation_audio_packed_fault_tolerant(
+    conversations: Sequence[NeMoMultimodalConversation],
+    load_audio: AudioSamples,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, CutSet]:
+    """Load conversation audio into one contiguous, unpadded waveform buffer.
+
+    This preserves the conversation-atomic fault tolerance and conversation/turn
+    ordering of :func:`collate_conversation_audio_fault_tolerant`, but bypasses
+    :class:`AudioSamples`' padded collation. AIStore GetBatch is still invoked once
+    when configured.
+
+    Returns:
+        A tuple of packed fp32 samples `(sum(audio_lens),)`, int64 cumulative sample
+        offsets `(B_audio + 1,)`, int64 audio lengths `(B_audio,)`, and the
+        successfully loaded conversations.
+    """
+    flat_cuts, conversation_cut_ids = _flatten_conversation_audio_cuts(conversations)
+    if not flat_cuts:
+        return (
+            torch.empty(0, dtype=torch.float32),
+            torch.zeros(1, dtype=torch.long),
+            torch.empty(0, dtype=torch.long),
+            CutSet(list(conversations)),
+        )
+
+    audio_rows, surviving = _read_unpadded_audio_rows(CutSet(flat_cuts), load_audio)
+    survivor_rows = {cut.id: row for row, cut in enumerate(surviving)}
+    keep_rows, ok = _conversation_audio_survivor_rows(conversations, conversation_cut_ids, survivor_rows)
+    if not ok:
+        ids = [conversation.id for conversation in conversations]
+        logging.warning(f"An entire batch of conversations failed to load audios. Conversations ids: {ids}")
+        return (
+            torch.empty(0, dtype=torch.float32),
+            torch.zeros(1, dtype=torch.long),
+            torch.empty(0, dtype=torch.long),
+            CutSet(),
+        )
+
+    ordered_rows = [audio_rows[row] for row in keep_rows]
+    if not ordered_rows:
+        return (
+            torch.empty(0, dtype=torch.float32),
+            torch.zeros(1, dtype=torch.long),
+            torch.empty(0, dtype=torch.long),
+            CutSet(ok),
+        )
+    audio_lens = torch.tensor([row.numel() for row in ordered_rows], dtype=torch.long)
+    audio_cu_seqlens = torch.cat([torch.zeros(1, dtype=torch.long), audio_lens.cumsum(dim=0, dtype=torch.long)])
+    return torch.cat(ordered_rows), audio_cu_seqlens, audio_lens, CutSet(ok)
 
 
 def _compute_num_audio_tokens(example: NeMoMultimodalConversation, mode: Literal["context", "answer", "all"]) -> int:
@@ -2349,3 +2402,49 @@ class _ShareGPTConversationParser:
                 f"but audio path index {audio_idx} was requested."
             )
         return value
+
+
+def _flatten_conversation_audio_cuts(conversations):
+    flat_cuts = []
+    conversation_cut_ids = []
+    for conversation in conversations:
+        if not isinstance(conversation, NeMoMultimodalConversation):
+            raise TypeError(f"Expected NeMoMultimodalConversation, got {type(conversation).__name__}.")
+        cuts = conversation.list_cuts()
+        flat_cuts.extend(cuts)
+        conversation_cut_ids.append([cut.id for cut in cuts])
+    return flat_cuts, conversation_cut_ids
+
+
+def _conversation_audio_survivor_rows(conversations, conversation_cut_ids, survivor_rows):
+    keep_rows = []
+    ok = []
+    for conversation, cut_ids in zip(conversations, conversation_cut_ids):
+        if all(cut_id in survivor_rows for cut_id in cut_ids):
+            keep_rows.extend(survivor_rows[cut_id] for cut_id in cut_ids)
+            ok.append(conversation)
+        else:
+            logging.warning(f"Skipping conversation because it failed to load audio: {conversation.id=}")
+    return keep_rows, ok
+
+
+def _read_unpadded_audio_rows(cuts: CutSet, load_audio: AudioSamples):
+    if load_audio.use_batch_loader and load_audio.ais_batch_loader is not None:
+        cuts = load_audio.ais_batch_loader(cuts)
+    executor = _get_executor(load_audio.num_workers, executor_type=load_audio._executor_type)
+    audios, surviving = read_audio_from_cuts(
+        cuts,
+        executor=executor,
+        suppress_errors=load_audio.fault_tolerant,
+    )
+    rows = [torch.as_tensor(audio) for audio in audios]
+    mono_downmix = load_audio.mono_downmix
+    if mono_downmix is None:
+        mono_downmix = not rows or not all(row.ndim == 2 for row in rows)
+    if not mono_downmix:
+        raise ValueError("Packed conversation audio requires mono_downmix=True.")
+    rows = [row.mean(dim=0) if row.ndim == 2 else row for row in rows]
+    if any(row.ndim != 1 for row in rows):
+        shapes = [tuple(row.shape) for row in rows]
+        raise ValueError(f"Packed conversation audio requires one-dimensional waveforms, got {shapes}.")
+    return [row.to(torch.float32) for row in rows], surviving

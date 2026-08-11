@@ -23,6 +23,7 @@ __all__ = [
     "PackedEncoderOutput",
     "pack_encoder_output",
     "packed_encoder_position_ids",
+    "split_packed_data",
     "split_encoder_output",
     "unpack_encoder_output",
 ]
@@ -130,6 +131,40 @@ def packed_encoder_position_ids(packed: PackedEncoderOutput) -> Tensor:
         return packed.lengths.new_empty((0,))
     positions = torch.arange(packed.max_seqlen, device=packed.data.device, dtype=torch.int64)
     return positions.unsqueeze(0).expand(packed.batch_size, -1)[_length_mask(packed.lengths, packed.max_seqlen)]
+
+
+def split_packed_data(data: Tensor, lengths: Tensor, cu_seqlens: Tensor) -> tuple[Tensor, ...]:
+    """Validate packed leading-dimension metadata and return one view per sequence.
+
+    This lower-level representation is useful before encoder features exist, such as
+    for concatenated waveform samples. Unlike :class:`PackedEncoderOutput`, it allows
+    any data rank and integer offset dtype.
+    """
+
+    if data.ndim == 0:
+        raise ValueError("packed data must have at least one dimension.")
+    if lengths.ndim != 1:
+        raise ValueError(f"lengths must be 1D, got shape {tuple(lengths.shape)}.")
+    if lengths.dtype == torch.bool or lengths.is_floating_point() or lengths.is_complex():
+        raise TypeError(f"lengths must have an integer dtype, got {lengths.dtype}.")
+    if cu_seqlens.ndim != 1 or cu_seqlens.numel() != lengths.numel() + 1:
+        raise ValueError(f"cu_seqlens must have shape ({lengths.numel() + 1},), got {tuple(cu_seqlens.shape)}.")
+    if cu_seqlens.dtype == torch.bool or cu_seqlens.is_floating_point() or cu_seqlens.is_complex():
+        raise TypeError(f"cu_seqlens must have an integer dtype, got {cu_seqlens.dtype}.")
+    if data.device != lengths.device or data.device != cu_seqlens.device:
+        raise ValueError("data, lengths, and cu_seqlens must be on the same device.")
+
+    offsets = cu_seqlens.to(torch.int64)
+    if not torch.equal(offsets[1:] - offsets[:-1], lengths.to(torch.int64)):
+        raise ValueError("Differences in cu_seqlens must equal lengths.")
+    host_offsets = offsets.detach().cpu().tolist()
+    if host_offsets[0] != 0:
+        raise ValueError("cu_seqlens must start at zero.")
+    if any(end < begin for begin, end in zip(host_offsets, host_offsets[1:])):
+        raise ValueError("cu_seqlens must be non-decreasing.")
+    if host_offsets[-1] != data.shape[0]:
+        raise ValueError(f"data has {data.shape[0]} entries, but cu_seqlens ends at {host_offsets[-1]}.")
+    return tuple(data[begin:end] for begin, end in zip(host_offsets, host_offsets[1:]))
 
 
 def _length_mask(lengths: Tensor, total_length: int) -> Tensor:

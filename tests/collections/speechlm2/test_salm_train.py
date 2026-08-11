@@ -60,7 +60,30 @@ def test_create_salm_dataset_forwards_configured_multispeaker_config(monkeypatch
 
 
 @pytest.mark.unit
-def test_train_uses_compatible_dataset_factory(monkeypatch, tmp_path):
+def test_create_salm_dataset_enables_packed_audio_without_a_second_config(monkeypatch):
+    class PackedSALMDataset:
+        def __init__(self, tokenizer, pack_audio=False):
+            self.tokenizer = tokenizer
+            self.pack_audio = pack_audio
+
+    tokenizer = object()
+    monkeypatch.setattr(_SALM_TRAIN, "SALMDataset", PackedSALMDataset)
+
+    dataset = _SALM_TRAIN._create_salm_dataset(tokenizer, {}, pack_audio=True)
+
+    assert dataset.tokenizer is tokenizer
+    assert dataset.pack_audio is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model_cfg", "expected_pack_audio"),
+    [
+        ({}, False),
+        ({"use_nemo_automodel": True, "packed_encoder_sequences": True}, True),
+    ],
+)
+def test_train_uses_compatible_dataset_factory(monkeypatch, tmp_path, model_cfg, expected_pack_audio):
     tokenizer = object()
     dataset = object()
     calls = []
@@ -83,11 +106,15 @@ def test_train_uses_compatible_dataset_factory(monkeypatch, tmp_path):
         def __init__(self, data_cfg, tokenizer, dataset):
             pass
 
-    def create_salm_dataset(tokenizer_arg, data_cfg):
-        calls.append((tokenizer_arg, data_cfg))
+    def create_salm_dataset(tokenizer_arg, data_cfg, *, pack_audio=False):
+        calls.append((tokenizer_arg, data_cfg, pack_audio))
         return dataset
 
     monkeypatch.setattr(_SALM_TRAIN, "SALM", FakeSALM)
+    if model_cfg.get("use_nemo_automodel", False):
+        import nemo.collections.speechlm2
+
+        monkeypatch.setattr(nemo.collections.speechlm2, "SALMAutomodel", FakeSALM)
     monkeypatch.setattr(_SALM_TRAIN, "Trainer", FakeTrainer)
     monkeypatch.setattr(_SALM_TRAIN, "DataModule", FakeDataModule)
     monkeypatch.setattr(_SALM_TRAIN, "_create_salm_dataset", create_salm_dataset)
@@ -100,10 +127,10 @@ def test_train_uses_compatible_dataset_factory(monkeypatch, tmp_path):
     cfg = _SALM_TRAIN.OmegaConf.create(
         {
             "data": {"train_ds": {"seed": 0}},
-            "model": {},
+            "model": model_cfg,
             "trainer": {},
         }
     )
     _SALM_TRAIN.train.__wrapped__(cfg)
 
-    assert calls == [(tokenizer, cfg.data)]
+    assert calls == [(tokenizer, cfg.data, expected_pack_audio)]

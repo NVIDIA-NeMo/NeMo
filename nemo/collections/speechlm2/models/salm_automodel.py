@@ -275,6 +275,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         fsdp_sync_group = get_perception_fsdp_group(device_mesh)
         packed_encoder_sequences = bool(self.cfg.get("packed_encoder_sequences", False))
         packed_encoder_cp = bool(self.cfg.get("packed_encoder_cp", False))
+        audio_lens = batch["audio_lens"]
+        audio_cu_seqlens = batch.get("audio_cu_seqlens")
+        audios = batch.get("audios")
+        if audios is None:
+            audios = batch["packed_audio_samples"]
 
         # Source audio encoding. Input audio: (B, T_samples), audio embeddings: (B, T, H).
         # Routing uses valid targets for RTTM rows, a -1 sentinel for non-RTTM
@@ -288,19 +293,21 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if (
             self._uses_ext_spk_tgts()
             and spk_targets is None
-            and batch["audios"].shape[0] > 0
+            and audio_lens.numel() > 0
             and not packed_encoder_sequences
         ):
             self._warn_parallel_expert_encoder_inference_compatibility(cp_size)
-            audio_embs, audio_emb_lens = self.perception(
-                input_signal=batch["audios"], input_signal_length=batch["audio_lens"]
-            )
+            perception_kwargs = {"input_signal": audios, "input_signal_length": audio_lens}
+            if audio_cu_seqlens is not None:
+                perception_kwargs["input_signal_cu_seqlens"] = audio_cu_seqlens
+            audio_embs, audio_emb_lens = self.perception(**perception_kwargs)
             audio_embs = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
         else:
             audio_embs, dummy_audio_loss = encode_audio_with_cp_distribution(
                 self.perception,
-                batch["audios"],
-                batch["audio_lens"],
+                audios,
+                audio_lens,
+                audio_cu_seqlens=audio_cu_seqlens,
                 chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
                 chunk_batch_size=self.cfg.get("encoder_chunk_batch_size", None),
                 sampling_rate=self.sampling_rate,
@@ -551,6 +558,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             "training_batch_debug "
             f"rank={rank} batch_idx={batch_idx} "
             f"input_ids_shape={shape_of('input_ids')} audios_shape={shape_of('audios')} "
+            f"packed_audio_samples_shape={shape_of('packed_audio_samples')} "
             f"audio_lens_min={audio_lens_min} audio_lens_max={audio_lens_max} "
             f"audio_sec_max={audio_sec_max:.2f} nonpad_tokens={nonpad_tokens} loss_tokens={loss_tokens} "
             f"spk_targets_shape={shape_of('spk_targets')} "

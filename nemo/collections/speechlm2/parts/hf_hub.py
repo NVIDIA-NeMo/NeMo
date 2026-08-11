@@ -247,7 +247,13 @@ def _load_state_dict_with_dtensors(model, weight_dir):
     # checkpoint (e.g. positional-encoding buffers computed at init).
     # Read the checkpoint metadata first and keep only matching keys.
     reader = _HuggingFaceStorageReader(path=weight_dir)
-    checkpoint_keys = reader.read_metadata().state_dict_metadata.keys()
+    checkpoint_keys = set(reader.read_metadata().state_dict_metadata)
+    missing_parameters = sorted(set(dict(model.named_parameters())) - checkpoint_keys)
+    if missing_parameters:
+        raise RuntimeError(
+            "Safetensors checkpoint is missing model parameters: "
+            f"{missing_parameters[:8]}"
+        )
     state_dict = {k: v for k, v in all_params.items() if k in checkpoint_keys}
 
     # DCP + HF storage reader: parses safetensors header for byte offsets,
@@ -325,4 +331,15 @@ def _resolve_safetensors_weight_dir(model_id: str, cached_file_kwargs: dict) -> 
         raise RuntimeError(
             f"Unindexed safetensors files would be scanned by the distributed reader: {unexpected}"
         )
+    from safetensors import safe_open
+
+    header_map = {}
+    for shard_name in shard_names:
+        with safe_open(Path(index_file).parent / shard_name, framework="pt", device="cpu") as shard:
+            for tensor_name in shard.keys():
+                if tensor_name in header_map:
+                    raise RuntimeError(f"Duplicate tensor in indexed safetensors shards: {tensor_name!r}")
+                header_map[tensor_name] = shard_name
+    if header_map != weight_map:
+        raise RuntimeError(f"Safetensors index/header mapping mismatch for {model_id=}")
     return Path(index_file).parent

@@ -104,8 +104,8 @@ def test_resolve_safetensors_weight_dir_accepts_sharded_checkpoint(tmp_path):
             }
         )
     )
-    for shard in shards:
-        shard.write_bytes(b"")
+    save_file({"first": torch.tensor([1.0])}, shards[0])
+    save_file({"second": torch.tensor([2.0])}, shards[1])
 
     resolved = {
         SAFETENSORS_SINGLE_FILE: None,
@@ -142,6 +142,20 @@ def test_resolve_safetensors_weight_dir_rejects_malformed_index(tmp_path):
     ):
         with pytest.raises(RuntimeError, match="Invalid model.safetensors.index.json"):
             _resolve_safetensors_weight_dir("malformed-model", {})
+
+
+@pytest.mark.parametrize("weight_map", [{}, [], {"": "model.safetensors"}])
+def test_resolve_safetensors_weight_dir_rejects_invalid_weight_map(tmp_path, weight_map):
+    index = tmp_path / SAFETENSORS_INDEX_FILE
+    index.write_text(json.dumps({"weight_map": weight_map}))
+    with patch(
+        "nemo.collections.speechlm2.parts.hf_hub.cached_file",
+        side_effect=lambda _model_id, filename, **_kwargs: str(index)
+        if filename == SAFETENSORS_INDEX_FILE
+        else None,
+    ):
+        with pytest.raises(RuntimeError, match="Invalid model.safetensors.index.json"):
+            _resolve_safetensors_weight_dir("invalid-map-model", {})
 
 
 def test_resolve_safetensors_weight_dir_rejects_missing_indexed_shard(tmp_path):
@@ -198,6 +212,24 @@ def test_resolve_safetensors_weight_dir_rejects_unindexed_safetensors(tmp_path):
             _resolve_safetensors_weight_dir("extra-file-model", {})
 
 
+def test_resolve_safetensors_weight_dir_rejects_index_header_drift(tmp_path):
+    index = tmp_path / SAFETENSORS_INDEX_FILE
+    shard = tmp_path / "model-00001-of-00001.safetensors"
+    index.write_text(json.dumps({"weight_map": {"declared": shard.name}}))
+    save_file({"actual": torch.tensor([1.0])}, shard)
+    resolved = {
+        SAFETENSORS_SINGLE_FILE: None,
+        SAFETENSORS_INDEX_FILE: str(index),
+        shard.name: str(shard),
+    }
+    with patch(
+        "nemo.collections.speechlm2.parts.hf_hub.cached_file",
+        side_effect=lambda _model_id, name, **_kwargs: resolved.get(name),
+    ):
+        with pytest.raises(RuntimeError, match="index/header mapping mismatch"):
+            _resolve_safetensors_weight_dir("header-drift-model", {})
+
+
 def test_distributed_reader_loads_valid_two_shard_safetensors(tmp_path):
     first = tmp_path / "model-00001-of-00002.safetensors"
     second = tmp_path / "model-00002-of-00002.safetensors"
@@ -217,3 +249,29 @@ def test_distributed_reader_loads_valid_two_shard_safetensors(tmp_path):
     _load_state_dict_with_dtensors(model, str(tmp_path))
     torch.testing.assert_close(model.first, torch.tensor([1.0, 2.0]))
     torch.testing.assert_close(model.second, torch.tensor([3.0, 4.0]))
+
+
+def test_distributed_reader_rejects_partial_parameter_coverage(tmp_path):
+    save_file({"first": torch.tensor([1.0, 2.0])}, tmp_path / SAFETENSORS_SINGLE_FILE)
+
+    class TwoParameterModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.first = torch.nn.Parameter(torch.zeros(2))
+            self.second = torch.nn.Parameter(torch.zeros(2))
+
+    with pytest.raises(RuntimeError, match="missing model parameters.*second"):
+        _load_state_dict_with_dtensors(TwoParameterModel(), str(tmp_path))
+
+
+def test_distributed_reader_loads_single_file_safetensors(tmp_path):
+    save_file({"weight": torch.tensor([5.0, 6.0])}, tmp_path / SAFETENSORS_SINGLE_FILE)
+
+    class OneParameterModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(2))
+
+    model = OneParameterModel()
+    _load_state_dict_with_dtensors(model, str(tmp_path))
+    torch.testing.assert_close(model.weight, torch.tensor([5.0, 6.0]))

@@ -19,6 +19,8 @@ import torch.distributed as dist
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 
+from nemo.collections.asr.parts.packed_sequence import split_encoder_output
+
 
 def encode_audio_with_optional_chunking(
     perception: Callable,
@@ -32,6 +34,7 @@ def encode_audio_with_optional_chunking(
     chunk_batch_size: int | None = None,
     sync_group=None,
     return_dummy_loss: bool = False,
+    sequence_packed: bool = False,
 ) -> list[Tensor] | tuple[list[Tensor], Tensor | None]:
     """Encode audio rows, splitting long rows into time chunks before the perception forward.
 
@@ -61,6 +64,9 @@ def encode_audio_with_optional_chunking(
             FSDP-sharded perception modules.
         return_dummy_loss: When ``True``, also return a zero-valued tensor that
             keeps dummy perception forwards attached to autograd.
+        sequence_packed: Call ``perception.forward_sequence_packed`` and preserve
+            compact token-major activations through the encoder. Defaults to ``False``
+            for checkpoint and behavior compatibility.
 
     Returns:
         List of length ``B`` of fp32 embedding tensors with shape ``(T_emb_i, D)`` and
@@ -79,6 +85,7 @@ def encode_audio_with_optional_chunking(
             sampling_rate=sampling_rate,
             chunk_batch_size=chunk_batch_size,
             sync_group=sync_group,
+            sequence_packed=sequence_packed,
         )
         return _maybe_return_dummy_loss([], dummy_loss, return_dummy_loss)
 
@@ -87,16 +94,14 @@ def encode_audio_with_optional_chunking(
     if spk_targets is not None:
         perception_kwargs["spk_targets"] = spk_targets
     if chunk_size_samples is None or input_signal_length.numel() == 0:
-        audio_embs, audio_emb_lens = perception(**perception_kwargs)
-        ans = _unpad_audio_embeddings(audio_embs, audio_emb_lens)
+        ans = _encode_perception_unpadded(perception, perception_kwargs, sequence_packed=sequence_packed)
         return _maybe_return_dummy_loss(ans, None, return_dummy_loss)
 
     min_chunk_size_samples = _get_min_chunk_size_samples(perception)
     chunk_size_samples = max(chunk_size_samples, min_chunk_size_samples)
     input_signal_lengths = input_signal_length.tolist()
     if max(input_signal_lengths) <= chunk_size_samples and chunk_batch_size is None:
-        audio_embs, audio_emb_lens = perception(**perception_kwargs)
-        ans = _unpad_audio_embeddings(audio_embs, audio_emb_lens)
+        ans = _encode_perception_unpadded(perception, perception_kwargs, sequence_packed=sequence_packed)
         return _maybe_return_dummy_loss(ans, None, return_dummy_loss)
 
     chunks, chunk_lens, chunks_per_audio, chunk_spans = _split_audio_into_chunks(
@@ -130,8 +135,10 @@ def encode_audio_with_optional_chunking(
     if chunked_spk_targets is not None:
         chunked_perception_kwargs["spk_targets"] = chunked_spk_targets
     if chunk_batch_size is None:
-        chunked_embs, chunked_emb_lens = perception(**chunked_perception_kwargs)
-        ans = _recombine_chunked_audio_embeddings(chunked_embs, chunked_emb_lens, chunks_per_audio)
+        chunked_embs = _encode_perception_unpadded(
+            perception, chunked_perception_kwargs, sequence_packed=sequence_packed
+        )
+        ans = _recombine_chunked_audio_embedding_list(chunked_embs, chunks_per_audio)
         return _maybe_return_dummy_loss(ans, None, return_dummy_loss)
 
     chunked_embs, dummy_loss = _encode_chunk_microbatches(
@@ -139,6 +146,7 @@ def encode_audio_with_optional_chunking(
         chunked_perception_kwargs,
         chunk_batch_size=chunk_batch_size,
         sync_group=sync_group,
+        sequence_packed=sequence_packed,
     )
     ans = _recombine_chunked_audio_embedding_list(chunked_embs, chunks_per_audio)
     return _maybe_return_dummy_loss(ans, dummy_loss, return_dummy_loss)
@@ -182,6 +190,7 @@ def _encode_chunk_microbatches(
     *,
     chunk_batch_size: int,
     sync_group=None,
+    sequence_packed: bool = False,
 ) -> tuple[list[Tensor], Tensor | None]:
     """Encode chunks in smaller forwards while keeping FSDP ranks synchronized."""
     input_signal = chunked_perception_kwargs["input_signal"]
@@ -196,14 +205,13 @@ def _encode_chunk_microbatches(
         end = min(start + chunk_batch_size, num_chunks)
         if start < end:
             mb_kwargs = _slice_perception_kwargs(chunked_perception_kwargs, start, end)
-            mb_embs, mb_lens = perception(**mb_kwargs)
-            chunked_embs.extend(_unpad_audio_embeddings(mb_embs, mb_lens))
+            chunked_embs.extend(_encode_perception_unpadded(perception, mb_kwargs, sequence_packed=sequence_packed))
             continue
 
         dummy_kwargs = _slice_perception_kwargs(chunked_perception_kwargs, 0, 1)
         with _preserve_module_buffers(perception):
-            mb_embs, _ = perception(**dummy_kwargs)
-        zero = mb_embs.float().sum() * 0.0
+            mb_embs = _encode_perception_unpadded(perception, dummy_kwargs, sequence_packed=sequence_packed)
+        zero = sum(emb.float().sum() for emb in mb_embs) * 0.0
         dummy_loss = zero if dummy_loss is None else dummy_loss + zero
 
     return chunked_embs, dummy_loss
@@ -230,6 +238,7 @@ def _run_dummy_chunk_forwards(
     sampling_rate: int,
     chunk_batch_size: int | None,
     sync_group=None,
+    sequence_packed: bool = False,
 ) -> Tensor | None:
     """Run synced zero-valued perception forwards for audio-free ranks."""
     if chunk_batch_size is None or sync_group is None or not (dist.is_available() and dist.is_initialized()):
@@ -249,8 +258,12 @@ def _run_dummy_chunk_forwards(
     dummy_loss = None
     for _ in range(total_microbatches):
         with _preserve_module_buffers(perception):
-            dummy_embs, _ = perception(input_signal=dummy_audio, input_signal_length=dummy_lens)
-        zero = dummy_embs.float().sum() * 0.0
+            dummy_embs = _encode_perception_unpadded(
+                perception,
+                {"input_signal": dummy_audio, "input_signal_length": dummy_lens},
+                sequence_packed=sequence_packed,
+            )
+        zero = sum(emb.float().sum() for emb in dummy_embs) * 0.0
         dummy_loss = zero if dummy_loss is None else dummy_loss + zero
     return dummy_loss
 
@@ -469,6 +482,24 @@ def _split_spk_targets_into_chunks(
 def _unpad_audio_embeddings(audio_embs: Tensor, audio_emb_lens: Tensor) -> list[Tensor]:
     """Slice a padded ``(B, T_max, D)`` embedding tensor into a list of per-row ``(T_i, D)`` tensors."""
     return [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
+
+
+def _encode_perception_unpadded(
+    perception: Callable,
+    perception_kwargs: dict[str, Tensor],
+    *,
+    sequence_packed: bool,
+) -> list[Tensor]:
+    if not sequence_packed:
+        audio_embs, audio_emb_lens = perception(**perception_kwargs)
+        return _unpad_audio_embeddings(audio_embs, audio_emb_lens)
+    if not bool(getattr(perception, 'supports_sequence_packed_output', False)):
+        raise ValueError(
+            "packed_encoder_sequences=true, but the mounted perception stack does not support native packed output. "
+            "Use TransformerEncoder/MoETransformerEncoder/ParallelExpertEncoder with IdentityConnector and rote=null."
+        )
+    packed = perception.forward_sequence_packed(**perception_kwargs)
+    return split_encoder_output(packed)
 
 
 def _recombine_chunked_audio_embeddings(

@@ -32,6 +32,12 @@ model:
   # Set to null to disable encoder chunking and encode each audio row directly.
   encoder_chunk_size_seconds: 30.0
 
+  # Opt in to native token-major (THD) Transformer/MoE activations during training/validation.
+  # Existing checkpoints and generation behavior stay unchanged; unsupported adapters fail early.
+  packed_encoder_sequences: false
+  # Separately opt in to the flattened differentiable CP gather.
+  packed_encoder_cp: false
+
   # Uncomment the block below to enable LoRA on the LLM via Automodel.
   # LoRA parameters are kept trainable even when the LLM is frozen.
   # lora:

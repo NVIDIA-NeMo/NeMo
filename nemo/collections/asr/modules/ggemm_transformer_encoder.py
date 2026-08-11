@@ -27,9 +27,10 @@ multiplications across named Transformer encoders and MoE feed-forward experts:
   execution paths for a mapping of Transformer encoders. Compatible FFN units
   are combined without changing routing decisions or encoder outputs.
 
-``baddbmm`` is the portable grouped-GEMM implementation used here. The public
-layout and backend seam allow a fused CUTLASS or Triton implementation to be
-added without coupling this module to a particular model architecture or task.
+``baddbmm`` is the portable equal-shape grouped-GEMM implementation. On supported
+CUDA/BF16 shapes, ``grouped_mm`` uses PyTorch's ragged grouped kernel for sparse
+MoE dispatch and otherwise falls back to capacity-padded ``baddbmm``. The public
+backend seam remains independent of a particular model architecture or task.
 """
 
 import contextlib
@@ -51,7 +52,17 @@ _SDPA_BACKENDS = [
 ]
 
 from nemo.collections.asr.modules.moe_transformer_encoder import MoEFeedForward
-from nemo.collections.asr.modules.transformer_encoder import FeedForward, TransformerEncoderConfig
+from nemo.collections.asr.modules.transformer_encoder import (
+    FeedForward,
+    TransformerEncoderConfig,
+    _can_use_flash_attention_varlen_layout,
+)
+from nemo.collections.asr.parts.packed_sequence import (
+    PackedEncoderOutput,
+    _new_packed_encoder_output,
+    pack_encoder_output,
+    packed_encoder_position_ids,
+)
 from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking
 
 __all__ = [
@@ -64,28 +75,13 @@ __all__ = [
 ]
 
 # Available grouped-GEMM backends for the position-wise FFN of a shape bucket.
-#   'baddbmm' : one batched GEMM over the stacked experts (default; the portable
-#               stand-in for a fused CUTLASS/Triton grouped-GEMM).
-#   'loop'    : per-expert ``addmm`` reference; same math, slower, used to validate
-#               the batched path and as a fallback where bmm is unavailable.
-# A future 'triton'/'cutlass' backend (ragged per-group offsets) plugs in here
-# without changing the parameter layout or any call site.
-GROUPED_GEMM_BACKENDS = ('baddbmm', 'loop')
-
-
-def _autocast_compute_dtype(x: torch.Tensor) -> torch.dtype:
-    """Return the dtype GEMMs will use for ``x`` under the active autocast policy.
-
-    Args:
-        x (torch.Tensor): Reference tensor whose device determines the autocast policy.
-            Shape: arbitrary
-
-    Returns:
-        dtype (torch.dtype): Active autocast dtype when autocast is enabled, else ``x.dtype``.
-    """
-    if torch.is_autocast_enabled(x.device.type):
-        return torch.get_autocast_dtype(x.device.type)
-    return x.dtype
+#   'baddbmm'  : one batched GEMM over equal/capacity-padded expert shapes.
+#   'grouped_mm': PyTorch ragged grouped GEMM for supported sparse CUDA/BF16 MoE
+#                 shapes; equal-shape dense groups and unsupported shapes use
+#                 portable baddbmm.
+#   'loop'     : per-expert ``addmm`` reference; same math, slower, and useful
+#                for numerical validation.
+GROUPED_GEMM_BACKENDS = ('baddbmm', 'grouped_mm', 'loop')
 
 
 def grouped_ffn_compute(
@@ -134,7 +130,7 @@ def grouped_ffn_compute(
     w1, b1 = w1.to(compute_dtype), b1.to(compute_dtype)
     w2, b2 = w2.to(compute_dtype), b2.to(compute_dtype)
 
-    if backend == 'baddbmm':
+    if backend in ('baddbmm', 'grouped_mm'):
         hidden = torch.baddbmm(b1, x, w1)  # (E, T, d_hidden)
         hidden = F.gelu(hidden)
         hidden = F.dropout(hidden, p=drop_rate, training=training)
@@ -367,60 +363,10 @@ def bucket_ffns_by_shape(
     return buckets
 
 
-def _padding_mask_mod(lengths):
-    """Build a FlexAttention mask mod that masks padded key positions.
-
-    Args:
-        lengths (torch.Tensor): Valid frame counts per batch sample.
-            Shape: (B,)
-
-    Returns:
-        pad_mask (Callable): FlexAttention mask mod; ``True`` when ``kv_idx`` is
-            within the valid prefix for batch index ``b``.
-    """
-
-    def pad_mask(b, h, q_idx, kv_idx):
-        """Return whether key position ``kv_idx`` is valid for batch ``b``.
-
-        Args:
-            b (int): Batch index.
-            h (int): Head index (unused).
-            q_idx (int): Query position index (unused).
-            kv_idx (int): Key position index.
-
-        Returns:
-            mask_value (torch.Tensor): Whether the key position is valid.
-                Shape: scalar
-        """
-        return kv_idx < lengths[b]
-
-    return pad_mask
-
-
-def _causal_mask_mod():
-    """Build a FlexAttention mask mod for causal (lower-triangular) attention.
-
-    Returns:
-        causal (Callable): FlexAttention mask mod; ``True`` when
-            ``q_idx >= kv_idx``.
-    """
-
-    def causal(b, h, q_idx, kv_idx):
-        """Return whether query position ``q_idx`` may attend to key ``kv_idx``.
-
-        Args:
-            b (int): Batch index (unused).
-            h (int): Head index (unused).
-            q_idx (int): Query position index.
-            kv_idx (int): Key position index.
-
-        Returns:
-            mask_value (torch.Tensor): Whether the query may attend to the key.
-                Shape: scalar
-        """
-        return q_idx >= kv_idx
-
-    return causal
+# FlexAttention mask closures. These intentionally mirror the (private) helpers in
+# ``transformer_encoder.py`` so the lockstep path builds an identical block mask to
+# each expert's own ``forward_internal``. They are trivial and stable; the
+# ``verify_grouped_equivalence`` self-check guards against any drift.
 
 
 class GGEMMTransformerEncoder(nn.Module):
@@ -472,22 +418,6 @@ class GGEMMTransformerEncoder(nn.Module):
         self._packed_cache.clear()
         self._rope_cache.clear()
         return super().train(mode)
-
-    def _apply(self, fn, recurse: bool = True):
-        """Apply ``fn`` to parameters/buffers and clear non-registered caches.
-
-        Args:
-            fn (Callable): Callable applied to each parameter and buffer (e.g. ``.to``).
-            recurse (bool): Whether to recurse into child modules.
-
-        Returns:
-            GGEMMTransformerEncoder: This module.
-        """
-        # These caches are plain tensors rather than registered buffers, so Module.to()
-        # cannot migrate them safely. Rebuild lazily after any device/dtype transform.
-        self._packed_cache.clear()
-        self._rope_cache.clear()
-        return super()._apply(fn, recurse=recurse)
 
     def clear_packed_weights(self) -> None:
         """Drop eval-time grouped-FFN and RoPE caches.
@@ -556,6 +486,147 @@ class GGEMMTransformerEncoder(nn.Module):
             name: self.experts[name](audio_signal, length, bypass_pre_encode=bypass_pre_encode)
             for name in self.expert_names
         }
+
+    def forward_all_sequence_packed(
+        self,
+        audio_signal,
+        length,
+        bypass_pre_encode: bool = False,
+        *,
+        fused_qkv: bool = False,
+    ) -> Dict[str, PackedEncoderOutput]:
+        """Run every encoder serially with token-flat sequence-packed activations.
+
+        This is the compatibility and numerical-reference path. The optional
+        fused projection is passed only to experts that advertise support for it,
+        preserving the original packed-output capability protocol by default.
+        """
+        outputs = {}
+        for name in self.expert_names:
+            expert = self.experts[name]
+            if not getattr(expert, "supports_sequence_packed_output", False) or not hasattr(
+                expert, "forward_sequence_packed"
+            ):
+                raise TypeError(f"Expert '{name}' ({type(expert).__name__}) does not support sequence-packed output.")
+            kwargs = {'bypass_pre_encode': bypass_pre_encode}
+            if fused_qkv:
+                if not getattr(expert, "supports_sequence_packed_fused_qkv", False):
+                    raise TypeError(f"Expert '{name}' does not advertise fused sequence-packed QKV support.")
+                kwargs['fused_qkv'] = True
+            outputs[name] = expert.forward_sequence_packed(audio_signal, length, **kwargs)
+        return outputs
+
+    def forward_grouped_sequence_packed(
+        self,
+        audio_signal,
+        length,
+        bypass_pre_encode: bool = False,
+        *,
+        backend: str = 'baddbmm',
+        moe_mode: str = 'dense',
+        fused_qkv: bool = False,
+        strict: bool = False,
+    ) -> Dict[str, PackedEncoderOutput]:
+        """Run all experts in layer lockstep using native THD grouped kernels.
+
+        Compatible experts share QKV/output projection GEMMs, concatenate their
+        token-flat attention heads into one variable-length attention call, and
+        use the existing grouped FFN/MoE kernels. No Transformer layer state is
+        restored to a padded ``(B, H, S, D)`` layout.
+        """
+        return self._forward_grouped_sequence_packed(
+            audio_signal,
+            length,
+            bypass_pre_encode=bypass_pre_encode,
+            backend=backend,
+            moe_mode=moe_mode,
+            fused_qkv=fused_qkv,
+            strict=strict,
+        )
+
+    def forward_grouped(
+        self,
+        audio_signal,
+        length,
+        bypass_pre_encode: bool = False,
+        backend: str = 'baddbmm',
+        moe_mode: str = 'dense',
+    ) -> Dict[str, object]:
+        """Run encoders in lockstep while grouping compatible FFN units."""
+        return self._forward_grouped(
+            audio_signal,
+            length,
+            bypass_pre_encode=bypass_pre_encode,
+            backend=backend,
+            moe_mode=moe_mode,
+        )
+
+    def forward_packed(
+        self,
+        audio_signal,
+        length,
+        bypass_pre_encode: bool = False,
+        backend: str = 'baddbmm',
+        moe_mode: str = 'dense',
+        prefix: Optional[Dict[str, torch.Tensor]] = None,
+        return_pre_encode: bool = False,
+        prefix_mode: str = 'extend',
+    ) -> Dict[str, object]:
+        """Run the established padded head-packed SDPA and grouped-FFN path."""
+        return self._forward_packed(
+            audio_signal,
+            length,
+            bypass_pre_encode=bypass_pre_encode,
+            backend=backend,
+            moe_mode=moe_mode,
+            prefix=prefix,
+            return_pre_encode=return_pre_encode,
+            prefix_mode=prefix_mode,
+        )
+
+    def forward_serial_sdpa(self, audio_signal, length, bypass_pre_encode: bool = False) -> Dict[str, object]:
+        """Run every encoder serially with SDPA attention and native FFNs."""
+        return self._forward_serial_sdpa(audio_signal, length, bypass_pre_encode=bypass_pre_encode)
+
+    @torch.no_grad()
+    def verify_grouped_equivalence(
+        self, audio_signal, length, bypass_pre_encode: bool = False, backend: str = 'baddbmm'
+    ) -> Dict[str, float]:
+        """Measure grouped-FFN error against the serial reference by encoder name."""
+        return self._verify_grouped_equivalence(
+            audio_signal,
+            length,
+            bypass_pre_encode=bypass_pre_encode,
+            backend=backend,
+        )
+
+    def _apply(self, fn, recurse: bool = True):
+        # These caches are plain tensors rather than registered buffers, so Module.to()
+        # cannot migrate them safely. Rebuild lazily after any device/dtype transform.
+        self._packed_cache.clear()
+        self._rope_cache.clear()
+        return super()._apply(fn, recurse=recurse)
+
+    # -----------------------------------------------------------------------
+    # Lockstep fused forward (grouped-GEMM FFN across experts)
+    # -----------------------------------------------------------------------
+    #
+    # Heterogeneous-encoder reconciliation:
+    #   * Attention, norms, and positional encoding stay **per-expert** -- each
+    #     expert runs its own attention sub-block with its own d_model and
+    #     positional scheme (``rel_pos`` vs ``rope``), so nothing is shared or
+    #     approximated there.
+    #   * Position-wise FFNs are fused when they can be expressed as dense
+    #     :class:`FeedForward` units. ``MoEFeedForward`` contributes its routed
+    #     expert FFNs; unsupported FFN implementations retain their native path.
+    #
+    # The pre-/post-layer and per-sub-block logic below mirrors
+    # ``TransformerEncoder.forward`` / ``forward_internal`` / ``TransformerBlock``
+    # by calling the experts' own public submodules (``pre_encode``, ``pos_enc``,
+    # ``embed_norm``, ``layers[i].{norm1,attn,drop,norm2,ffn}``, ``final_norm``,
+    # ``out_proj``). It does not modify the base encoder. ``allclose`` (not
+    # bitwise) equivalence vs :meth:`forward_all` is asserted by
+    # :meth:`verify_grouped_equivalence`; run it in eval mode (dropout off).
 
     @staticmethod
     def _prepend_prefix(
@@ -817,8 +888,7 @@ class GGEMMTransformerEncoder(nn.Module):
             )
         feature_stackers = [encs[name].pre_encode for name in names]
         can_batch = (
-            not self.training
-            and not bypass_pre_encode
+            not bypass_pre_encode
             and feature_stackers
             and all(isinstance(pre, FeatureStacking) for pre in feature_stackers)
             and len({pre.subsampling_factor for pre in feature_stackers}) == 1
@@ -877,17 +947,24 @@ class GGEMMTransformerEncoder(nn.Module):
 
         target_d = max(pre.proj.out_features for pre in feature_stackers)
         compute_dtype = _autocast_compute_dtype(stacked)
-        key = ('pre_encode', tuple(names), target_d, compute_dtype)
-        packed = self._packed_cache.get(key)
-        if packed is None:
-            with torch.no_grad():
-                weights = []
-                for pre in feature_stackers:
-                    weight = pre.proj.weight.t()
-                    weights.append(F.pad(weight, (0, target_d - weight.shape[1])))
-                packed = (torch.stack(weights).to(compute_dtype).contiguous(),)
-            self._packed_cache[key] = packed
-        weights = packed[0]
+
+        def stack_weights():
+            weights = []
+            for pre in feature_stackers:
+                weight = pre.proj.weight.t()
+                weights.append(F.pad(weight, (0, target_d - weight.shape[1])))
+            return torch.stack(weights).to(compute_dtype).contiguous()
+
+        if self.training or torch.is_grad_enabled():
+            weights = stack_weights()
+        else:
+            key = ('pre_encode', tuple(names), target_d, compute_dtype)
+            packed = self._packed_cache.get(key)
+            if packed is None:
+                with torch.no_grad():
+                    packed = (stack_weights(),)
+                self._packed_cache[key] = packed
+            weights = packed[0]
         shared_input = stacked.to(compute_dtype).unsqueeze(0).expand(len(names), -1, -1)
         projected = torch.bmm(shared_input, weights)
 
@@ -1014,7 +1091,7 @@ class GGEMMTransformerEncoder(nn.Module):
                 b2s.append(b2)
             return (torch.stack(w1s, 0), torch.stack(b1s, 0), torch.stack(w2s, 0), torch.stack(b2s, 0))
 
-        if self.training or not self._use_packed_grouped:
+        if self.training or torch.is_grad_enabled() or not self._use_packed_grouped:
             return _stack()
         key = (layer_idx, 'unified', d_hidden, target_d, tuple(p['name'] for p in group), dtype)
         cached = self._packed_cache.get(key)
@@ -1040,10 +1117,10 @@ class GGEMMTransformerEncoder(nn.Module):
           bucket and run on *all* tokens, then are recombined with the router's
           renormalized top-k weights. Exact, one big batched GEMM, but ~``num_experts
           / top_k`` redundant FFN FLOPs.
-        - ``'topk'``: only the routed top-k expert/token pairs are computed, in a
-          separate capacity-padded batched GEMM (:meth:`_moe_topk_ffn_step`).
-          Exact (capacity = max expert load, no drops); far less compute/memory
-          when compute-bound, at the cost of gather/scatter + a second launch.
+        - ``'topk'``: only routed top-k expert/token pairs are computed. Supported
+          CUDA/BF16 shapes use two ragged ``grouped_mm`` projections; other
+          environments use an exact capacity-padded ``baddbmm`` fallback. Both
+          avoid drops and trade gather/scatter overhead for much less FFN work.
 
         Residual updates are applied in place.
 
@@ -1054,15 +1131,41 @@ class GGEMMTransformerEncoder(nn.Module):
             backend (str): Grouped-GEMM backend (:data:`GROUPED_GEMM_BACKENDS`).
             moe_mode (str): MoE strategy, either ``'dense'`` or ``'topk'``.
         """
-        if moe_mode not in ('dense', 'topk'):
-            raise ValueError(f"moe_mode must be 'dense' or 'topk', got {moe_mode!r}.")
+        if moe_mode not in ('dense', 'topk', 'native'):
+            raise ValueError(f"moe_mode must be 'dense', 'topk', or 'native', got {moe_mode!r}.")
         plans = []
         for n in self.expert_names:
-            ffn = encs[n].layers[layer_idx].ffn
-            if isinstance(ffn, MoEFeedForward):
-                plans.append({'name': n, 'kind': 'moe', 'units': list(ffn.experts), 'moe': ffn})
-            elif isinstance(ffn, FeedForward):
-                plans.append({'name': n, 'kind': 'dense', 'units': [ffn], 'moe': None})
+            layer = encs[n].layers[layer_idx]
+            ffn = layer.ffn
+            if isinstance(ffn, MoEFeedForward) and state[n]['x'].shape[0] == 0:
+                # Reuse the native empty-token anchor so every router/expert
+                # parameter remains reachable and routing diagnostics stay finite.
+                state[n]['x'] = state[n]['x'] + layer.drop(ffn(layer.norm2(state[n]['x'])))
+                ffn._last_grouped_backend = 'native_empty'
+            elif isinstance(ffn, (MoEFeedForward, FeedForward)):
+                units = list(ffn.experts) if isinstance(ffn, MoEFeedForward) else [ffn]
+                dropout_modes = {
+                    (unit.net[2].p, unit.net[2].training, unit.net[4].p, unit.net[4].training) for unit in units
+                }
+                dropout_mode = next(iter(dropout_modes)) if len(dropout_modes) == 1 else None
+                if dropout_mode is None or dropout_mode[:2] != dropout_mode[2:]:
+                    # Individually toggled experts or independently configured first/
+                    # second dropout sites require native per-unit masks.
+                    state[n]['x'] = state[n]['x'] + layer.drop(ffn(layer.norm2(state[n]['x'])))
+                    if isinstance(ffn, MoEFeedForward):
+                        ffn._last_grouped_backend = 'native_mixed_dropout'
+                    continue
+                drop_rate, training = dropout_mode[:2]
+                plans.append(
+                    {
+                        'name': n,
+                        'kind': 'moe' if isinstance(ffn, MoEFeedForward) else 'dense',
+                        'units': units,
+                        'moe': ffn if isinstance(ffn, MoEFeedForward) else None,
+                        'drop_rate': drop_rate,
+                        'training': training,
+                    }
+                )
             else:
                 # Anything we cannot express as FeedForward units runs its own path.
                 layer = encs[n].layers[layer_idx]
@@ -1075,24 +1178,45 @@ class GGEMMTransformerEncoder(nn.Module):
                 if p['kind'] == 'moe':
                     self._moe_topk_ffn_step(encs, state, layer_idx, p, backend)
             grouped = [p for p in plans if p['kind'] == 'dense']
+        elif moe_mode == 'native':
+            # Memory-first mode: retain the MoE module's native sparse routing,
+            # while still grouping compatible dense PEE branch FFNs.
+            for p in plans:
+                if p['kind'] == 'moe':
+                    name = p['name']
+                    layer = encs[name].layers[layer_idx]
+                    state[name]['x'] = state[name]['x'] + layer.drop(p['moe'](layer.norm2(state[name]['x'])))
+                    p['moe']._last_grouped_backend = 'native'
+            grouped = [p for p in plans if p['kind'] == 'dense']
         else:
             grouped = [p for p in plans if p['kind'] in ('dense', 'moe')]
         if not grouped:
             return
 
-        by_hidden: Dict[int, List[dict]] = {}
+        by_hidden: Dict[Tuple[int, int, float, bool], List[dict]] = {}
         for p in grouped:
-            by_hidden.setdefault(p['units'][0].net[0].out_features, []).append(p)
+            unit = p['units'][0]
+            d_hidden = unit.net[0].out_features
+            d_model = unit.net[0].in_features
+            num_tokens = state[p['name']]['x'].numel() // d_model
+            by_hidden.setdefault((d_hidden, num_tokens, p['drop_rate'], p['training']), []).append(p)
 
-        for d_hidden, group in by_hidden.items():
+        for (d_hidden, _num_tokens, drop_rate, training), group in by_hidden.items():
+            if len(group) == 1 and group[0]['kind'] == 'dense':
+                name = group[0]['name']
+                layer = encs[name].layers[layer_idx]
+                state[name]['x'] = state[name]['x'] + layer.drop(layer.ffn(layer.norm2(state[name]['x'])))
+                continue
             target_d = max(p['units'][0].net[0].in_features for p in group)
             rows, layout, slot = [], [], 0
             for p in group:
                 n = p['name']
                 layer = encs[n].layers[layer_idx]
-                h = layer.norm2(state[n]['x'])  # (B, T, src_d)
-                B, T, src_d = h.shape
-                hf = h.reshape(B * T, src_d)
+                h = layer.norm2(state[n]['x'])
+                src_d = h.shape[-1]
+                token_shape = h.shape[:-1]
+                num_tokens = h.numel() // src_d
+                hf = h.reshape(num_tokens, src_d)
                 hf_p = hf if src_d == target_d else F.pad(hf, (0, target_d - src_d))
                 n_units = len(p['units'])
                 entry = {
@@ -1101,8 +1225,7 @@ class GGEMMTransformerEncoder(nn.Module):
                     'src_d': src_d,
                     'slot': slot,
                     'n_units': n_units,
-                    'B': B,
-                    'T': T,
+                    'token_shape': token_shape,
                     'W': None,
                 }
                 if p['kind'] == 'moe':
@@ -1111,7 +1234,8 @@ class GGEMMTransformerEncoder(nn.Module):
                     topv, topi = torch.topk(gate, moe.top_k, dim=-1)
                     if moe.top_k > 1:
                         topv = topv / (topv.sum(dim=-1, keepdim=True) + 1e-9)
-                    Wmat = torch.zeros(B * T, moe.num_experts, dtype=gate.dtype, device=gate.device)
+                    self._record_moe_routing(moe, gate, topi, num_tokens)
+                    Wmat = torch.zeros(num_tokens, moe.num_experts, dtype=gate.dtype, device=gate.device)
                     entry['W'] = Wmat.scatter_(1, topi, topv)
                     rows.extend([hf_p] * n_units)  # dense MoE: every expert sees all tokens
                 else:
@@ -1121,23 +1245,50 @@ class GGEMMTransformerEncoder(nn.Module):
 
             H = torch.stack(rows, dim=0)  # (E_total, N, target_d)
             compute_dtype = _autocast_compute_dtype(H)
-            w1, b1, w2, b2 = self._unified_weights(group, target_d, d_hidden, layer_idx, compute_dtype)
-            drop_rate = group[0]['units'][0].net[2].p
-            out = grouped_ffn_compute(H, w1, b1, w2, b2, drop_rate=drop_rate, training=self.training, backend=backend)
+            units = [unit for plan in group for unit in plan['units']]
+            if backend != 'loop' and all(unit.net[0].in_features == target_d for unit in units):
+                hidden = _grouped_linear(H.to(compute_dtype), [unit.net[0] for unit in units])
+                hidden = F.gelu(hidden)
+                hidden = F.dropout(hidden, p=drop_rate, training=training)
+                out = _grouped_linear(hidden, [unit.net[3] for unit in units])
+                out = F.dropout(out, p=drop_rate, training=training)
+            else:
+                w1, b1, w2, b2 = self._unified_weights(group, target_d, d_hidden, layer_idx, compute_dtype)
+                out = grouped_ffn_compute(
+                    H,
+                    w1,
+                    b1,
+                    w2,
+                    b2,
+                    drop_rate=drop_rate,
+                    training=training,
+                    backend=backend,
+                )
 
             for entry in layout:
                 n, slot, src_d = entry['name'], entry['slot'], entry['src_d']
-                B, T = entry['B'], entry['T']
+                token_shape = entry['token_shape']
                 layer = encs[n].layers[layer_idx]
                 if entry['kind'] == 'dense':
-                    o = out[slot][:, :src_d].reshape(B, T, src_d)
+                    o = out[slot][:, :src_d].reshape(*token_shape, src_d)
                 else:
                     ne = entry['n_units']
                     o_slots = out[slot : slot + ne][:, :, :src_d]  # (ne, N, src_d)
                     # fp32 recombine to mirror the MoE's fp32 index_add accumulation.
                     Wt = entry['W'].t().unsqueeze(-1).float()  # (ne, N, 1)
-                    o = (o_slots.float() * Wt).sum(0).to(state[n]['x'].dtype).reshape(B, T, src_d)
+                    o = (o_slots.float() * Wt).sum(0).to(state[n]['x'].dtype).reshape(*token_shape, src_d)
+                    encs[n].layers[layer_idx].ffn._last_grouped_backend = (
+                        'dense_loop' if backend == 'loop' else 'dense_baddbmm'
+                    )
                 state[n]['x'] = state[n]['x'] + layer.drop(o)
+
+    @staticmethod
+    def _record_moe_routing(moe, gate_probs, top_k_indices, num_tokens):
+        expert_counts = torch.bincount(top_k_indices.reshape(-1), minlength=moe.num_experts)
+        moe._aux_loss = moe._compute_load_balancing_loss(gate_probs, expert_counts, num_tokens)
+        moe._expert_counts = expert_counts.detach()
+        moe._gate_prob_sum = gate_probs.detach().sum(dim=0).float()
+        moe._num_tokens = int(num_tokens)
 
     def _moe_weights(self, name: str, moe, layer_idx: int, dtype: torch.dtype):
         """Stack the MoE's ``num_experts`` expert FFNs into grouped-bmm layout; cached in eval.
@@ -1169,7 +1320,7 @@ class GGEMMTransformerEncoder(nn.Module):
                 torch.stack([f.net[3].bias.unsqueeze(0) for f in ffns], 0),
             )
 
-        if self.training or not self._use_packed_grouped:
+        if self.training or torch.is_grad_enabled() or not self._use_packed_grouped:
             return _stack()
         key = (layer_idx, 'moe', name, dtype)
         cached = self._packed_cache.get(key)
@@ -1188,23 +1339,24 @@ class GGEMMTransformerEncoder(nn.Module):
     def _moe_topk_ffn_step(self, encs, state, layer_idx: int, p: dict, backend: str) -> None:
         """Sparse MoE FFN: compute ONLY the routed top-k expert/token pairs.
 
-        Mirrors :meth:`MoEFeedForward.forward` but batches the per-expert matmuls
-        into a single grouped GEMM.
-
-        Args:
-            encs (dict): Mapping of expert name to encoder module.
-            state (dict): Per-expert mutable state dicts updated in place.
-            layer_idx (int): Transformer layer index to execute.
-            p (dict): MoE FFN plan dict with ``'name'``, ``'moe'``, and related fields.
-            backend (str): Grouped-GEMM backend (:data:`GROUPED_GEMM_BACKENDS`).
+        Mirrors :meth:`MoEFeedForward.forward` while dispatching each expert's
+        contiguous token segment through two ragged ``grouped_mm`` projections.
+        Unsupported devices, dtypes, or alignments use a capacity-padded
+        ``baddbmm`` buffer with ``C`` equal to the maximum expert load. Neither
+        path drops tokens; both scatter router-weighted outputs back with fp32
+        accumulation and compute ``~N*top_k`` rather than ``N*num_experts`` rows.
         """
         n = p['name']
         moe = p['moe']
         layer = encs[n].layers[layer_idx]
         x = state[n]['x']
         h = layer.norm2(x)
-        B, T, d = h.shape
-        N = B * T
+        input_shape = h.shape
+        d = h.shape[-1]
+        N = h.numel() // d
+        if N == 0:
+            state[n]['x'] = x + layer.drop(moe(h))
+            return
         x_flat = h.reshape(N, d)
         ne, top_k = moe.num_experts, moe.top_k
 
@@ -1212,51 +1364,339 @@ class GGEMMTransformerEncoder(nn.Module):
         topv, topi = torch.topk(gate, top_k, dim=-1)
         if top_k > 1:
             topv = topv / (topv.sum(dim=-1, keepdim=True) + 1e-9)
+        self._record_moe_routing(moe, gate, topi, N)
 
         M = N * top_k
         flat_expert = topi.reshape(-1)  # (M,)
         flat_weight = topv.reshape(-1)  # (M,)
         flat_token = torch.arange(N, device=x.device).unsqueeze(1).expand(N, top_k).reshape(-1)  # (M,)
         counts = torch.bincount(flat_expert, minlength=ne)  # (ne,)
-        capacity = int(counts.max().item()) if M > 0 else 0
-        if capacity == 0:
-            return  # no tokens routed (degenerate); nothing to add
-
-        # Sort dispatch rows by expert so each expert's tokens are contiguous, then
-        # compute each row's slot within its expert segment (0..count_e-1).
+        # Sort dispatch rows by expert so each expert's tokens are contiguous.
         order = torch.sort(flat_expert, stable=True).indices
         s_expert = flat_expert[order]
         s_token = flat_token[order]
         s_weight = flat_weight[order]
-        seg_start = torch.zeros(ne, dtype=torch.long, device=x.device)
-        if ne > 1:
-            seg_start[1:] = torch.cumsum(counts, 0)[:-1]
-        within = torch.arange(M, device=x.device) - seg_start[s_expert]  # (M,)
-
-        # Capacity-padded per-expert token buffer (unused slots stay zero).
-        buf = x_flat.new_zeros(ne, capacity, d)
-        buf[s_expert, within] = x_flat.index_select(0, s_token)
-
-        compute_dtype = _autocast_compute_dtype(buf)
-        w1, b1, w2, b2 = self._moe_weights(n, moe, layer_idx, compute_dtype)
-        out = grouped_ffn_compute(
-            buf,
-            w1,
-            b1,
-            w2,
-            b2,
-            drop_rate=moe.experts[0].net[2].p,
-            training=self.training,
-            backend=backend,
-        )  # (ne, capacity, d)
-
-        disp_out = out[s_expert, within]  # (M, d) -- one row per (token, expert) pair
+        sorted_input = x_flat.index_select(0, s_token)
+        compute_dtype = _autocast_compute_dtype(sorted_input)
+        d_hidden = moe.experts[0].net[0].out_features
+        use_ragged_grouped_mm = backend == 'grouped_mm' and _can_use_ragged_grouped_mm(
+            sorted_input, compute_dtype, d, d_hidden
+        )
+        if use_ragged_grouped_mm:
+            offsets = counts.cumsum(dim=0, dtype=torch.int32)
+            first_weights = [expert.net[0].weight.t() for expert in moe.experts]
+            first_biases = torch.stack([expert.net[0].bias for expert in moe.experts]).to(compute_dtype)
+            hidden = _ragged_grouped_mm(sorted_input.to(compute_dtype), offsets, first_weights)
+            hidden = hidden + first_biases.index_select(0, s_expert)
+            hidden = F.gelu(hidden)
+            drop_rate = p['drop_rate']
+            hidden = F.dropout(hidden, p=drop_rate, training=p['training'])
+            second_weights = [expert.net[3].weight.t() for expert in moe.experts]
+            second_biases = torch.stack([expert.net[3].bias for expert in moe.experts]).to(compute_dtype)
+            disp_out = _ragged_grouped_mm(hidden, offsets, second_weights)
+            disp_out = disp_out + second_biases.index_select(0, s_expert)
+            disp_out = F.dropout(disp_out, p=drop_rate, training=p['training'])
+            moe._last_grouped_backend = 'grouped_mm'
+        else:
+            # Portable fallback: pad routed rows only to the largest expert load.
+            capacity = int(counts.max().item())
+            seg_start = torch.zeros(ne, dtype=torch.long, device=x.device)
+            if ne > 1:
+                seg_start[1:] = torch.cumsum(counts, 0)[:-1]
+            within = torch.arange(M, device=x.device) - seg_start[s_expert]
+            buf = x_flat.new_zeros(ne, capacity, d)
+            buf[s_expert, within] = sorted_input
+            w1, b1, w2, b2 = self._moe_weights(n, moe, layer_idx, compute_dtype)
+            out = grouped_ffn_compute(
+                buf,
+                w1,
+                b1,
+                w2,
+                b2,
+                drop_rate=p['drop_rate'],
+                training=p['training'],
+                backend='baddbmm' if backend == 'grouped_mm' else backend,
+            )  # (ne, capacity, d)
+            disp_out = out[s_expert, within]  # (M, d) -- one row per (token, expert) pair
+            moe._last_grouped_backend = 'capacity_baddbmm' if backend == 'grouped_mm' else backend
         acc = torch.zeros(N, d, dtype=torch.float32, device=x.device)
         acc.index_add_(0, s_token, disp_out.float() * s_weight.float().unsqueeze(-1))
-        o = acc.to(x.dtype).reshape(B, T, d)
+        o = acc.to(x.dtype).reshape(input_shape)
         state[n]['x'] = x + layer.drop(o)
 
-    def forward_grouped(
+    def _forward_grouped_sequence_packed(
+        self,
+        audio_signal,
+        length,
+        *,
+        bypass_pre_encode: bool,
+        backend: str,
+        moe_mode: str,
+        fused_qkv: bool,
+        strict: bool,
+    ) -> Dict[str, PackedEncoderOutput]:
+        if backend not in GROUPED_GEMM_BACKENDS:
+            raise ValueError(f"Unknown grouped-GEMM backend '{backend}'; expected one of {GROUPED_GEMM_BACKENDS}.")
+        encs = {name: self.experts[name] for name in self.expert_names}
+        for name, expert in encs.items():
+            if not hasattr(expert, 'layers') or not hasattr(expert, 'n_layers'):
+                raise TypeError(f"Expert '{name}' is not a TransformerEncoder-family module with per-layer access.")
+            wrapped = [getattr(layer, '_checkpoint_wrapped_module', None) for layer in expert.layers]
+            if any(layer is not None for layer in wrapped):
+                raise TypeError(
+                    "Grouped sequence-packed execution checkpoints the PEE boundary; "
+                    f"expert '{name}' also has checkpoint-wrapped layers. Disable one checkpointing level."
+                )
+        n_layers_set = {expert.n_layers for expert in encs.values()}
+        if len(n_layers_set) != 1:
+            raise ValueError(f"forward_grouped_sequence_packed requires equal layer counts, got {n_layers_set}.")
+        n_layers = n_layers_set.pop()
+        for expert in encs.values():
+            for layer in expert.layers:
+                if isinstance(layer.ffn, MoEFeedForward):
+                    layer.ffn._last_grouped_backend = None
+
+        prepared = self._experts_pre(
+            encs,
+            audio_signal,
+            length,
+            bypass_pre_encode,
+            build_block_mask=False,
+        )
+        share_metadata = _can_share_packed_metadata(encs, prepared, bypass_pre_encode)
+        shared_metadata = None
+        shared_mask = None
+        shared_sequence_offsets = None
+        state = {}
+        for name, expert in encs.items():
+            padded, pos_emb, _block_mask, output_lengths = prepared[name]
+            if shared_metadata is None or not share_metadata:
+                packed = pack_encoder_output(padded, output_lengths)
+                if share_metadata:
+                    shared_metadata = (packed.lengths, packed.cu_seqlens, packed.max_seqlen)
+                    positions = torch.arange(padded.shape[1], device=padded.device)
+                    shared_mask = positions.unsqueeze(0) < packed.lengths.unsqueeze(1)
+            else:
+                data = padded[shared_mask]
+                packed = _new_packed_encoder_output(data, *shared_metadata)
+
+            position_ids = packed_encoder_position_ids(packed) if expert.self_attention_model == 'rope' else None
+            use_fast_layout = expert.self_attention_model != 'rel_pos' and _can_use_flash_attention_varlen_layout(
+                packed.data, expert.d_model // expert.n_heads
+            )
+            if use_fast_layout:
+                sequence_offsets = None
+            elif share_metadata:
+                if shared_sequence_offsets is None:
+                    shared_sequence_offsets = tuple(packed.cu_seqlens.tolist())
+                sequence_offsets = shared_sequence_offsets
+            else:
+                sequence_offsets = tuple(packed.cu_seqlens.tolist())
+            state[name] = {
+                'x': packed.data,
+                'metadata': (packed.lengths, packed.cu_seqlens, packed.max_seqlen),
+                'position_ids': position_ids,
+                'pos_emb': pos_emb if expert.self_attention_model == 'rel_pos' else None,
+                'padded_length': padded.shape[1],
+                'sequence_offsets': sequence_offsets,
+                'metadata_key': ('shared',) if share_metadata else tuple(packed.lengths.detach().cpu().tolist()),
+            }
+        del prepared, padded, packed, output_lengths, shared_mask
+
+        if strict:
+            incompatibilities = []
+            if any(expert.self_attention_model == 'rel_pos' for expert in encs.values()):
+                incompatibilities.append('relative-position attention')
+            if len({expert.d_model // expert.n_heads for expert in encs.values()}) != 1:
+                incompatibilities.append('head dimensions')
+            if len({expert.attn_mode for expert in encs.values()}) != 1:
+                incompatibilities.append('attention modes')
+            if len({state[name]['metadata_key'] for name in self.expert_names}) != 1:
+                incompatibilities.append('packed sequence boundaries')
+            if len({(state[name]['x'].device, state[name]['x'].dtype) for name in self.expert_names}) != 1:
+                incompatibilities.append('devices/dtypes')
+            if incompatibilities:
+                raise ValueError(
+                    "Strict grouped sequence-packed execution requires one compatible attention bucket; "
+                    f"incompatible {', '.join(incompatibilities)}."
+                )
+
+        trace = {
+            'mode': 'grouped_thd',
+            'layers': n_layers,
+            'qkv_projection_groups': 0,
+            'qkv_grouped_experts': 0,
+            'qkv_grouped_projection_calls': 0,
+            'attention_groups': 0,
+            'attention_grouped_experts': 0,
+            'out_projection_groups': 0,
+            'out_grouped_experts': 0,
+            'ffn_backend': backend,
+            'dense_ffn_backend': 'loop' if backend == 'loop' else 'baddbmm',
+            'moe_mode': moe_mode,
+        }
+        for layer_idx in range(n_layers):
+            self._sequence_packed_grouped_attention_step(encs, state, layer_idx, fused_qkv, trace)
+            self._unified_ffn_step(encs, state, layer_idx, backend, moe_mode=moe_mode)
+
+        trace['moe_grouped_backends'] = sorted(
+            {
+                value
+                for expert in encs.values()
+                for layer in expert.layers
+                if isinstance(layer.ffn, MoEFeedForward)
+                if (value := getattr(layer.ffn, '_last_grouped_backend', None)) is not None
+            }
+        )
+        outputs = {}
+        for name, expert in encs.items():
+            x = expert.final_norm(state[name]['x'])
+            if expert.out_proj is not None:
+                x = expert.out_proj(x)
+            outputs[name] = _new_packed_encoder_output(x, *state[name]['metadata'])
+            if (
+                expert.training
+                and hasattr(expert, 'accumulate_moe_stats')
+                and not getattr(expert, '_suppress_moe_stat_accumulation', False)
+            ):
+                expert.accumulate_moe_stats()
+        self._last_sequence_packed_execution = trace
+        return outputs
+
+    def _sequence_packed_grouped_attention_step(self, encs, state, layer_idx, fused_qkv, trace):
+        projected = {}
+        projection_buckets = {}
+        for name in self.expert_names:
+            layer = encs[name].layers[layer_idx]
+            attn = layer.attn
+            hidden = layer.norm1(state[name]['x'])
+            key = (hidden.shape[0], attn.d_model, hidden.dtype, hidden.device)
+            projection_buckets.setdefault(key, []).append((name, hidden, attn))
+
+        for group in projection_buckets.values():
+            if len(group) == 1:
+                name, hidden, attn = group[0]
+                projected[name] = attn._project_sequence_packed_qkv(
+                    hidden,
+                    position_ids=state[name]['position_ids'],
+                    fused_qkv=fused_qkv,
+                )
+                continue
+            names = [item[0] for item in group]
+            hidden = torch.stack([item[1] for item in group], dim=0)
+            compute_dtype = _autocast_compute_dtype(hidden)
+            hidden = hidden.to(compute_dtype)
+            if fused_qkv:
+                qkv = _grouped_linear(hidden, [item[2].w_qkv for item in group])
+                raw_projections = [
+                    tuple(qkv[slot].view(qkv.shape[1], 3, attn.n_heads, attn.head_dim).unbind(dim=1))
+                    for slot, (_name, _hidden, attn) in enumerate(group)
+                ]
+                grouped_calls = 1
+            else:
+                projections = []
+                for projection_index in range(3):
+                    weights = [
+                        attn.w_qkv.weight.view(3, attn.d_model, attn.d_model)[projection_index]
+                        for _name, _hidden, attn in group
+                    ]
+                    biases = [
+                        None if attn.w_qkv.bias is None else attn.w_qkv.bias.view(3, attn.d_model)[projection_index]
+                        for _name, _hidden, attn in group
+                    ]
+                    projections.append(_grouped_affine(hidden, weights, biases))
+                raw_projections = [
+                    tuple(
+                        projection[slot].view(projection.shape[1], attn.n_heads, attn.head_dim)
+                        for projection in projections
+                    )
+                    for slot, (_name, _hidden, attn) in enumerate(group)
+                ]
+                grouped_calls = 3
+            for (name, _hidden, attn), raw in zip(group, raw_projections):
+                projected[name] = attn._prepare_sequence_packed_qkv(
+                    *raw,
+                    position_ids=state[name]['position_ids'],
+                )
+            trace['qkv_projection_groups'] += 1
+            trace['qkv_grouped_experts'] += len(group)
+            trace['qkv_grouped_projection_calls'] += grouped_calls
+
+        attention_buckets = {}
+        for name in self.expert_names:
+            expert = encs[name]
+            attn = expert.layers[layer_idx].attn
+            q, _k, _v = projected[name]
+            if attn._uses_rel_pos:
+                key = ('relative', name)
+            else:
+                key = (
+                    'content',
+                    attn.head_dim,
+                    expert.attn_mode,
+                    q.dtype,
+                    q.device,
+                    state[name]['metadata_key'],
+                )
+            attention_buckets.setdefault(key, []).append(name)
+
+        attention_outputs = {}
+        for names in attention_buckets.values():
+            q = torch.cat([projected[name][0] for name in names], dim=1)
+            k = torch.cat([projected[name][1] for name in names], dim=1)
+            v = torch.cat([projected[name][2] for name in names], dim=1)
+            first = names[0]
+            first_attn = encs[first].layers[layer_idx].attn
+            lengths, cu_seqlens, max_seqlen = state[first]['metadata']
+            out = first_attn._compute_sequence_packed_attention(
+                q,
+                k,
+                v,
+                lengths=lengths,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
+                pos_emb=state[first]['pos_emb'],
+                padded_length=state[first]['padded_length'],
+                causal=encs[first].attn_mode == 'causal',
+                sequence_offsets=state[first]['sequence_offsets'],
+            )
+            provider = getattr(first_attn, '_last_sequence_packed_provider', None)
+            backend = getattr(first_attn, '_last_sequence_packed_backend', None)
+            head_offset = 0
+            for name in names:
+                attn = encs[name].layers[layer_idx].attn
+                head_end = head_offset + attn.n_heads
+                attention_outputs[name] = out[:, head_offset:head_end]
+                head_offset = head_end
+                attn._last_sequence_packed_backend = f'grouped_{backend}'
+                attn._last_sequence_packed_provider = provider
+            trace['attention_groups'] += 1
+            trace['attention_grouped_experts'] += len(names)
+
+        output_buckets = {}
+        for name in self.expert_names:
+            attn = encs[name].layers[layer_idx].attn
+            flat = attention_outputs[name].reshape(state[name]['x'].shape[0], attn.d_model)
+            key = (flat.shape[0], attn.d_model, flat.dtype, flat.device)
+            output_buckets.setdefault(key, []).append((name, flat, attn.out_proj))
+        for group in output_buckets.values():
+            if len(group) == 1:
+                name, flat, projection = group[0]
+                output = projection(flat)
+                layer = encs[name].layers[layer_idx]
+                state[name]['x'] = state[name]['x'] + layer.drop(output)
+                continue
+            names = [item[0] for item in group]
+            hidden = torch.stack([item[1] for item in group], dim=0)
+            compute_dtype = _autocast_compute_dtype(hidden)
+            outputs = _grouped_linear(hidden.to(compute_dtype), [item[2] for item in group])
+            for slot, (name, _flat, _projection) in enumerate(group):
+                layer = encs[name].layers[layer_idx]
+                state[name]['x'] = state[name]['x'] + layer.drop(outputs[slot])
+            trace['out_projection_groups'] += 1
+            trace['out_grouped_experts'] += len(group)
+
+    def _forward_grouped(
         self,
         audio_signal,
         length,
@@ -1620,7 +2060,7 @@ class GGEMMTransformerEncoder(nn.Module):
                 o = layer.attn.out_proj(o)
                 state[n]['x'] = state[n]['x'] + layer.drop(o)
 
-    def forward_packed(
+    def _forward_packed(
         self,
         audio_signal,
         length,
@@ -1746,7 +2186,7 @@ class GGEMMTransformerEncoder(nn.Module):
         o = attn.out_proj(o)
         s['x'] = s['x'] + layer.drop(o)
 
-    def forward_serial_sdpa(self, audio_signal, length, bypass_pre_encode: bool = False) -> Dict[str, object]:
+    def _forward_serial_sdpa(self, audio_signal, length, bypass_pre_encode: bool = False) -> Dict[str, object]:
         """Run every encoder serially with SDPA attention and native FFNs.
 
         Each complete encoder stack runs before the next starts.
@@ -1798,7 +2238,7 @@ class GGEMMTransformerEncoder(nn.Module):
         return out
 
     @torch.no_grad()
-    def verify_grouped_equivalence(
+    def _verify_grouped_equivalence(
         self, audio_signal, length, bypass_pre_encode: bool = False, backend: str = 'baddbmm'
     ) -> Dict[str, float]:
         """Measure grouped-FFN error against the serial reference by encoder name.
@@ -1879,3 +2319,144 @@ class GGEMMTransformerEncoder(nn.Module):
         return super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
         )
+
+
+def _can_share_packed_metadata(encs, prepared, bypass_pre_encode: bool) -> bool:
+    items = [prepared[name] for name in encs]
+    if not items:
+        return False
+    first_padded, _, _, first_lengths = items[0]
+    if any(
+        padded.shape[:2] != first_padded.shape[:2]
+        or padded.device != first_padded.device
+        or lengths.shape != first_lengths.shape
+        or lengths.device != first_lengths.device
+        for padded, _, _, lengths in items[1:]
+    ):
+        return False
+    if all(lengths is first_lengths for _, _, _, lengths in items[1:]) or bypass_pre_encode:
+        return True
+    pre_encoders = [
+        getattr(expert.pre_encode, '_checkpoint_wrapped_module', expert.pre_encode) for expert in encs.values()
+    ]
+    return (
+        all(isinstance(pre_encode, FeatureStacking) for pre_encode in pre_encoders)
+        and len({pre_encode.subsampling_factor for pre_encode in pre_encoders}) == 1
+    )
+
+
+def _can_use_ragged_grouped_mm(x: torch.Tensor, compute_dtype: torch.dtype, *feature_dims: int) -> bool:
+    # grouped_mm requires every non-unit BF16 matrix stride to be aligned to
+    # 16 bytes. Both MoE projections are eligible only when their input/output
+    # feature dimensions are therefore multiples of eight elements.
+    return (
+        hasattr(F, 'grouped_mm')
+        and x.is_cuda
+        and x.is_contiguous()
+        and compute_dtype == torch.bfloat16
+        and all(dimension > 0 and dimension % 8 == 0 for dimension in feature_dims)
+        and torch.cuda.get_device_capability(x.device)[0] >= 8
+    )
+
+
+class _GroupedLinear(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, num_groups, *parameters):
+        weights = parameters[:num_groups]
+        biases = parameters[num_groups:]
+        ctx.num_groups = num_groups
+        ctx.save_for_backward(x, *weights)
+        packed_weights = torch.stack([weight.to(x.dtype).t() for weight in weights])
+        packed_biases = torch.stack([bias.to(x.dtype).unsqueeze(0) for bias in biases])
+        return torch.baddbmm(packed_biases, x, packed_weights)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_output = grad_output.contiguous()
+        x, *weights = ctx.saved_tensors
+        packed_weights = torch.stack([weight.to(grad_output.dtype) for weight in weights])
+        grad_x = torch.bmm(grad_output, packed_weights).to(x.dtype)
+        grad_weights = torch.bmm(grad_output.transpose(1, 2), x)
+        grad_biases = grad_output.sum(dim=1)
+        parameter_grads = [grad_weights[i].to(weights[i].dtype) for i in range(ctx.num_groups)]
+        parameter_grads.extend(grad_biases.unbind(0))
+        return grad_x, None, *parameter_grads
+
+
+class _GroupedLinearNoBias(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, *weights):
+        ctx.save_for_backward(x, *weights)
+        packed_weights = torch.stack([weight.to(x.dtype).t() for weight in weights])
+        return torch.bmm(x, packed_weights)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_output = grad_output.contiguous()
+        x, *weights = ctx.saved_tensors
+        packed_weights = torch.stack([weight.to(grad_output.dtype) for weight in weights])
+        grad_x = torch.bmm(grad_output, packed_weights).to(x.dtype)
+        grad_weights = torch.bmm(grad_output.transpose(1, 2), x)
+        return (grad_x, *(grad_weights[i].to(weight.dtype) for i, weight in enumerate(weights)))
+
+
+class _RaggedGroupedMM(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, offsets, *weights):
+        ctx.save_for_backward(x, offsets, *weights)
+        packed_weights = torch.stack([weight.to(x.dtype) for weight in weights])
+        return F.grouped_mm(x, packed_weights, offs=offsets)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_output = grad_output.contiguous()
+        x, offsets, *weights = ctx.saved_tensors
+        packed_transposed = torch.stack([weight.to(grad_output.dtype).t() for weight in weights])
+        grad_x = F.grouped_mm(grad_output, packed_transposed, offs=offsets).to(x.dtype)
+
+        grad_weights = F.grouped_mm(x.T, grad_output, offs=offsets)
+        return (grad_x, None, *(grad_weights[i].to(weights[i].dtype) for i in range(len(weights))))
+
+
+def _grouped_linear(x: torch.Tensor, linears: Sequence[nn.Linear]) -> torch.Tensor:
+    return _grouped_affine(
+        x,
+        [linear.weight for linear in linears],
+        [linear.bias for linear in linears],
+    )
+
+
+def _grouped_affine(
+    x: torch.Tensor, weights: Sequence[torch.Tensor], biases: Sequence[Optional[torch.Tensor]]
+) -> torch.Tensor:
+    if all(bias is None for bias in biases):
+        return _GroupedLinearNoBias.apply(x, *weights)
+    effective_biases = [
+        bias if bias is not None else weight.new_zeros(weight.shape[0]) for weight, bias in zip(weights, biases)
+    ]
+    return _GroupedLinear.apply(x, len(weights), *weights, *effective_biases)
+
+
+def _ragged_grouped_mm(x: torch.Tensor, offsets: torch.Tensor, weights: Sequence[torch.Tensor]) -> torch.Tensor:
+    return _RaggedGroupedMM.apply(x, offsets, *weights)
+
+
+def _autocast_compute_dtype(x: torch.Tensor) -> torch.dtype:
+    """Return the dtype GEMMs will use for ``x`` under the active autocast policy."""
+    if torch.is_autocast_enabled(x.device.type):
+        return torch.get_autocast_dtype(x.device.type)
+    return x.dtype
+
+
+def _padding_mask_mod(lengths):
+    def pad_mask(b, h, q_idx, kv_idx):
+        return kv_idx < lengths[b]
+
+    return pad_mask
+
+
+def _causal_mask_mod():
+    def causal(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    return causal

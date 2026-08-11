@@ -353,3 +353,58 @@ def test_encode_audio_with_optional_chunking_forwards_chunked_spk_targets(
     assert torch.equal(chunked_lens, torch.tensor(expected_chunk_lens, dtype=torch.long))
     assert torch.equal(perception.spk_targets_calls[0], torch.tensor(expected_spk_targets))
     assert torch.equal(embs[0].squeeze(-1), audios[0])
+
+
+@pytest.mark.parametrize(
+    ("chunk_size_seconds", "chunk_batch_size", "expected_calls"),
+    [(None, None, 1), (2.0, None, 1), (2.0, 2, 3)],
+)
+def test_sequence_packed_chunking_matches_legacy(chunk_size_seconds, chunk_batch_size, expected_calls):
+    audios = torch.tensor(
+        [
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0, 10.0, 0.0, 0.0],
+        ]
+    )
+    audio_lens = torch.tensor([6, 4], dtype=torch.long)
+    legacy_perception = ChunkingTestPerception(sampling_rate=1, hop_length=1)
+    packed_perception = ChunkingTestPerception(sampling_rate=1, hop_length=1)
+
+    legacy = encode_audio_with_optional_chunking(
+        legacy_perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=chunk_size_seconds,
+        chunk_batch_size=chunk_batch_size,
+        sampling_rate=1,
+    )
+    packed = encode_audio_with_optional_chunking(
+        packed_perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=chunk_size_seconds,
+        chunk_batch_size=chunk_batch_size,
+        sampling_rate=1,
+        sequence_packed=True,
+    )
+
+    assert packed_perception.sequence_packed_calls == expected_calls
+    assert len(packed) == len(legacy) == 2
+    for actual, expected in zip(packed, legacy):
+        torch.testing.assert_close(actual, expected)
+
+
+def test_sequence_packed_chunking_rejects_unsupported_perception():
+    class UnsupportedPerception:
+        def __call__(self, **kwargs):
+            raise AssertionError("legacy path must not be called")
+
+    with pytest.raises(ValueError, match="does not support native packed output"):
+        encode_audio_with_optional_chunking(
+            UnsupportedPerception(),
+            torch.zeros(1, 4),
+            torch.tensor([4]),
+            chunk_size_seconds=None,
+            sampling_rate=1,
+            sequence_packed=True,
+        )

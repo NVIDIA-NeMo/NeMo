@@ -21,7 +21,7 @@ import torch.distributed as dist
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 from torch import Tensor
-from torch.distributed.fsdp import fully_shard
+from torch.distributed.fsdp import fully_shard, register_fsdp_forward_method
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor.parallel import loss_parallel
 from transformers import GenerationConfig
@@ -273,6 +273,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         spk_target_lengths = batch.get("spk_target_length", None)
         cp_mesh, cp_size, _ = get_cp_mesh(device_mesh)
         fsdp_sync_group = get_perception_fsdp_group(device_mesh)
+        packed_encoder_sequences = bool(self.cfg.get("packed_encoder_sequences", False))
+        packed_encoder_cp = bool(self.cfg.get("packed_encoder_cp", False))
 
         # Source audio encoding. Input audio: (B, T_samples), audio embeddings: (B, T, H).
         # Routing uses valid targets for RTTM rows, a -1 sentinel for non-RTTM
@@ -283,7 +285,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # PEE=false, RTTM exists: RTTM is ignored and the regular encoder runs through optional chunking/CP.
         # Audio-free batches must take the branch below, whose audio-presence all-reduce keeps FSDP ranks in step.
         dummy_audio_loss = None
-        if self._uses_ext_spk_tgts() and spk_targets is None and batch["audios"].shape[0] > 0:
+        if (
+            self._uses_ext_spk_tgts()
+            and spk_targets is None
+            and batch["audios"].shape[0] > 0
+            and not packed_encoder_sequences
+        ):
             self._warn_parallel_expert_encoder_inference_compatibility(cp_size)
             audio_embs, audio_emb_lens = self.perception(
                 input_signal=batch["audios"], input_signal_length=batch["audio_lens"]
@@ -302,6 +309,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 spk_target_lengths=spk_target_lengths if self._uses_ext_spk_tgts() else None,
                 fsdp_sync_group=fsdp_sync_group,
                 return_dummy_loss=True,
+                sequence_packed=packed_encoder_sequences,
+                packed_cp_gather=packed_encoder_cp,
             )
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self._embed_tokens(input_ids_to_embed)
@@ -1130,7 +1139,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         if fsdp_mesh.size() > 1:
             self._use_fsdp = True
-            self.perception = fully_shard(self.perception, mesh=fsdp_mesh)
+            self.perception = _fully_shard_perception(self.perception, fsdp_mesh)
 
         # Enable MoE FSDP gradient accumulation optimization.
         # The MoEFSDPSyncMixin on the LLM defers gradient sync/resharding on
@@ -1170,3 +1179,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 {"name": "loss_mask", "type": NeuralType(("B", "T"), MaskType()), "seq_length": "output"},
             ],
         }
+
+
+def _fully_shard_perception(perception, mesh):
+    """FSDP2-shard perception and register its packed custom root forward."""
+    perception = fully_shard(perception, mesh=mesh)
+    register_fsdp_forward_method(perception, "forward_sequence_packed")
+    return perception

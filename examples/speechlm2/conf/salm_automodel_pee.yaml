@@ -35,6 +35,12 @@ model:
   # Set to null to disable encoder chunking and encode each audio row directly.
   encoder_chunk_size_seconds: 60.0
 
+  # Opt in to native token-major (THD) Transformer/MoE/PEE activations during training/validation.
+  # Default false preserves historical behavior; generation always keeps its streaming-safe path.
+  packed_encoder_sequences: false
+  # Separately opt in to the flattened differentiable CP gather.
+  packed_encoder_cp: false
+
   # ─── Parallel Expert Encoder (PEE) options ──────────────────────────────────
   # PEE swaps the perception encoder for a ParallelExpertEncoder bundle (streaming
   # Sortformer diarizer + Canary ASR encoder), letting SALM emit <spk:N>-tagged

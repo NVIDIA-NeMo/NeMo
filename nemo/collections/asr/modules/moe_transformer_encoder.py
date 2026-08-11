@@ -146,26 +146,6 @@ class MoEFeedForward(nn.Module):
         self._gate_prob_sum: Optional[torch.Tensor] = None
         self._num_tokens: int = 0
 
-    def _compute_load_balancing_loss(
-        self,
-        gate_probs: torch.Tensor,
-        expert_counts: torch.Tensor,
-        num_tokens: int,
-    ) -> torch.Tensor:
-        """GShard / Switch Transformer load-balancing auxiliary loss.
-
-        ``L_load = N * sum_j(f_j * rho_j)`` where:
-
-        - ``f_j``  = fraction of (token, top-k) dispatches that landed on expert j
-        - ``rho_j`` = mean router probability allocated to expert j
-
-        Computed from a length-``num_experts`` count vector instead of an
-        ``[num_tokens, num_experts]`` one-hot tensor, saving memory.
-        """
-        f = expert_counts.to(gate_probs.dtype) / num_tokens
-        rho = gate_probs.mean(dim=0)
-        return self.num_experts * (f * rho).sum()
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass -- same signature as ``FeedForward.forward(x)``.
 
@@ -183,14 +163,26 @@ class MoEFeedForward(nn.Module):
           ``[num_tokens, num_experts]`` one-hot tensor.
 
         Args:
-            x: Input tensor of shape ``(B, T, D)``.
+            x: Input tensor of shape ``(..., D)``; leading dimensions are preserved.
 
         Returns:
-            Output tensor of shape ``(B, T, D)``.
+            Output tensor with the same shape as ``x``.
         """
-        batch_size, seq_len, d_model = x.shape
+        if x.ndim < 2 or x.shape[-1] != self.d_model:
+            raise ValueError(f"x must have shape (..., {self.d_model}), got {tuple(x.shape)}.")
+        input_shape = x.shape
+        d_model = input_shape[-1]
         x_flat = x.reshape(-1, d_model)
         num_tokens = x_flat.shape[0]
+        if num_tokens == 0:
+            anchor = self.router.w_gate.weight.sum() * 0.0
+            for expert in self.experts:
+                anchor = anchor + sum(parameter.sum() for parameter in expert.parameters()) * 0.0
+            self._aux_loss = anchor
+            self._expert_counts = torch.zeros(self.num_experts, dtype=torch.long, device=x.device)
+            self._gate_prob_sum = torch.zeros(self.num_experts, dtype=torch.float32, device=x.device)
+            self._num_tokens = 0
+            return (x_flat + anchor).reshape(input_shape)
 
         gate_probs = self.router(x_flat)
 
@@ -234,7 +226,22 @@ class MoEFeedForward(nn.Module):
             expert_out = self.experts[i](expert_in) * flat_weight[mask].unsqueeze(-1)
             output.index_add_(0, tok_idx, expert_out)
 
-        return output.reshape(batch_size, seq_len, d_model)
+        return output.reshape(input_shape)
+
+    def _compute_load_balancing_loss(
+        self,
+        gate_probs: torch.Tensor,
+        expert_counts: torch.Tensor,
+        num_tokens: int,
+    ) -> torch.Tensor:
+        """GShard / Switch Transformer load-balancing auxiliary loss.
+
+        ``L_load = N * sum_j(f_j * rho_j)`` where ``f_j`` is the fraction of
+        top-k dispatches for expert j and ``rho_j`` is its mean router probability.
+        """
+        f = expert_counts.to(gate_probs.dtype) / num_tokens
+        rho = gate_probs.mean(dim=0)
+        return self.num_experts * (f * rho).sum()
 
 
 class MoETransformerEncoder(TransformerEncoder):
@@ -416,30 +423,21 @@ class MoETransformerEncoder(TransformerEncoder):
         diagnostic window only reflects training-time routing.
         """
         out = super().forward(audio_signal, length, bypass_pre_encode=bypass_pre_encode)
-        if self.training:
+        if self.training and not getattr(self, "_suppress_moe_stat_accumulation", False):
             self.accumulate_moe_stats()
         return out
 
-    def _ensure_cum_buffers(self, device: torch.device) -> None:
-        """Lazily allocate the cumulative MoE diagnostic tensors on ``device``.
-
-        If they already exist on a different device (e.g. the model was moved
-        to a new device between calls), they are reallocated and any existing
-        accumulation is dropped. In normal training the device is fixed, so
-        this allocation happens exactly once per process.
-        """
-        n = len(self.moe_layer_indices)
-        E = self.moe_num_experts
-        need_new = (
-            self._cum_counts is None
-            or self._cum_counts.device != device
-            or self._cum_counts.shape[0] != n
-            or self._cum_counts.shape[1] != E
+    def forward_sequence_packed(self, audio_signal, length, bypass_pre_encode=False, *, fused_qkv: bool = False):
+        """Run the token-flat encoder path and accumulate routing statistics once."""
+        out = super().forward_sequence_packed(
+            audio_signal,
+            length,
+            bypass_pre_encode=bypass_pre_encode,
+            fused_qkv=fused_qkv,
         )
-        if need_new:
-            self._cum_counts = torch.zeros(n, E, dtype=torch.long, device=device)
-            self._cum_prob_sum = torch.zeros(n, E, dtype=torch.float32, device=device)
-            self._cum_tokens = torch.zeros(n, dtype=torch.long, device=device)
+        if self.training and not getattr(self, "_suppress_moe_stat_accumulation", False):
+            self.accumulate_moe_stats()
+        return out
 
     def accumulate_moe_stats(self) -> None:
         """Sum per-layer routing diagnostics from the most recent forward into
@@ -627,6 +625,27 @@ class MoETransformerEncoder(TransformerEncoder):
             total_loss = self.moe_load_balance_loss_weight * (total_loss / n_losses)
 
         return total_loss
+
+    def _ensure_cum_buffers(self, device: torch.device) -> None:
+        """Lazily allocate the cumulative MoE diagnostic tensors on ``device``.
+
+        If they already exist on a different device (e.g. the model was moved
+        to a new device between calls), they are reallocated and any existing
+        accumulation is dropped. In normal training the device is fixed, so
+        this allocation happens exactly once per process.
+        """
+        n = len(self.moe_layer_indices)
+        E = self.moe_num_experts
+        need_new = (
+            self._cum_counts is None
+            or self._cum_counts.device != device
+            or self._cum_counts.shape[0] != n
+            or self._cum_counts.shape[1] != E
+        )
+        if need_new:
+            self._cum_counts = torch.zeros(n, E, dtype=torch.long, device=device)
+            self._cum_prob_sum = torch.zeros(n, E, dtype=torch.float32, device=device)
+            self._cum_tokens = torch.zeros(n, dtype=torch.long, device=device)
 
     def _load_from_state_dict(
         self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs

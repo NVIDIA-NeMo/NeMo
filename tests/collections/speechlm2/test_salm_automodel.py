@@ -473,6 +473,40 @@ def test_salm_automodel_generate_chunks_audio_before_llm(device):
     assert answer.shape == (1, 3)
 
 
+@pytest.mark.parametrize("device", chunking_test_devices())
+def test_salm_automodel_limits_packed_encoder_opt_in_to_training(device):
+    model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
+    model.cfg["packed_encoder_sequences"] = True
+    batch = {
+        "audios": torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]], device=device),
+        "audio_lens": torch.tensor([5], dtype=torch.long, device=device),
+        "input_ids": torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long, device=device),
+        "loss_mask": torch.tensor([[False, True]], dtype=torch.bool, device=device),
+    }
+
+    inputs = model.prepare_inputs(batch)
+
+    assert model.perception.sequence_packed_calls == 1
+    assert torch.equal(
+        inputs["input_embeds"][0, :, 0],
+        torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device=device),
+    )
+
+    answer = model.generate(
+        prompts=torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long, device=device),
+        audios=torch.tensor([[6.0, 7.0, 8.0, 9.0, 10.0]], device=device),
+        audio_lens=torch.tensor([5], dtype=torch.long, device=device),
+        max_new_tokens=2,
+    )
+
+    assert model.perception.sequence_packed_calls == 1
+    assert torch.equal(
+        model.llm.generate_kwargs["inputs_embeds"][0, :5, 0],
+        torch.tensor([6.0, 7.0, 8.0, 9.0, 10.0], device=device),
+    )
+    assert answer.shape == (1, 2)
+
+
 def _make_chunking_test_model(encoder_chunk_size_seconds, sampling_rate, device, hop_length=1):
     model = SALMAutomodel.__new__(SALMAutomodel)
     torch.nn.Module.__init__(model)

@@ -95,6 +95,11 @@ from torch.utils.checkpoint import checkpoint
 from tqdm import tqdm
 
 from nemo.collections.asr.modules.ggemm_transformer_encoder import GGEMMTransformerEncoder
+from nemo.collections.asr.parts.packed_sequence import (
+    PackedEncoderOutput,
+    _new_packed_encoder_output,
+    unpack_encoder_output,
+)
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
@@ -111,177 +116,6 @@ __all__ = [
 EXPERT_ROLES = ('speech', 'speaker', 'sound')
 # Encoder/head role represented by each branch.
 EXPERT_TASKS = {'speech': 'asr_encoder', 'speaker': 'diarization', 'sound': 'sound_ctc'}
-
-
-@contextlib.contextmanager
-def _default_dtype(dtype: torch.dtype):
-    """Temporarily set the global default float dtype.
-
-    Makes ``SortformerModules.init_streaming_state`` allocate its dtype-less
-    speaker-cache / FIFO buffers in the speaker expert's dtype, avoiding fp32/bf16
-    mismatch.
-
-    Args:
-        dtype (torch.dtype): Floating-point dtype to set as the global default.
-    """
-    prev = torch.get_default_dtype()
-    if dtype == prev or not dtype.is_floating_point:
-        yield
-        return
-    torch.set_default_dtype(dtype)
-    try:
-        yield
-    finally:
-        torch.set_default_dtype(prev)
-
-
-@contextlib.contextmanager
-def _disable_dist_feature_sync():
-    """Temporarily make ``torch.distributed`` look uninitialized.
-
-    Skips cross-rank ``all_reduce``s in the Sortformer streaming helpers, which are
-    unnecessary and unsafe for single-recording inference (e.g. a vLLM worker).
-    The original ``dist.is_initialized`` is always restored.
-    """
-    if not (hasattr(dist, "is_initialized") and dist.is_initialized()):
-        yield
-        return
-    orig_is_initialized = dist.is_initialized
-    dist.is_initialized = lambda: False
-    try:
-        yield
-    finally:
-        dist.is_initialized = orig_is_initialized
-
-
-def _disable_max_seq_length_sync(module: nn.Module) -> None:
-    """Turn off ``sync_max_audio_length`` on every encoder under ``module``.
-
-    That flag makes ``update_max_seq_length`` issue an ``all_reduce`` on the
-    **default** process group. Any such collective inside a data-dependent branch lets
-    ranks emit different numbers of default-PG collectives on the same step, which
-    NCCL cannot match positionally -- the run then deadlocks until the watchdog
-    aborts it.
-
-    Args:
-        module (nn.Module): Root module whose encoder descendants are scanned.
-    """
-    for submodule in module.modules():
-        if getattr(submodule, "sync_max_audio_length", False):
-            submodule.sync_max_audio_length = False
-
-
-def _clone_config(config: Optional[DictConfig]) -> Optional[DictConfig]:
-    """Deep-copy a ``DictConfig`` without resolving interpolations.
-
-    ``from_config_dict`` mutates its input in place, so sub-target builders get a copy.
-
-    Args:
-        config (DictConfig, optional): Config to deep-copy, or ``None``.
-
-    Returns:
-        A deep copy of ``config``, or ``None`` if the input was ``None``.
-    """
-    if config is None:
-        return None
-    return OmegaConf.create(OmegaConf.to_container(config, resolve=False))
-
-
-def _unwrap_cls(cls):
-    """Step through a ``wrapt`` proxy chain to the underlying class.
-
-    ``inspect.unwrap`` is not enough: NeMo's ``@experimental`` wraps the *class* in a
-    ``wrapt`` proxy that forwards ``__repr__``/``__class__``, so the object
-    ``inspect.unwrap`` returns still resolves ``__init__`` to the proxy's
-    ``(*args, **kwargs)``.
-
-    Args:
-        cls (type): Class object that may be wrapped by ``@experimental``/``wrapt``.
-
-    Returns:
-        The underlying class after stepping through proxy wrappers.
-    """
-    seen = {id(cls)}
-    cur = cls
-    for _ in range(8):
-        nxt = getattr(cur, "__wrapped__", None)
-        if nxt is None or id(nxt) in seen:
-            return cur
-        seen.add(id(nxt))
-        cur = nxt
-    return cur
-
-
-def _resolve_target(target: str) -> type:
-    """Resolve a Hydra ``_target_`` string to a class.
-
-    Args:
-        target (str): Hydra ``_target_`` string (``module.path.ClassName``).
-
-    Returns:
-        The resolved class object.
-    """
-    module_path, _, cls_name = target.rpartition(".")
-    try:
-        return getattr(importlib.import_module(module_path), cls_name)
-    except (ImportError, AttributeError) as exc:
-        raise ValueError(f"Cannot import _target_ '{target}'.") from exc
-
-
-def _init_param_names(cls) -> set:
-    """Names ``cls.__init__`` accepts.
-
-    Refuses to fall back to a ``**kwargs`` signature: filtering config keys against
-    one would drop *every* key and silently build a default-shaped encoder.
-
-    Args:
-        cls (type): Class whose ``__init__`` signature is introspected.
-
-    Returns:
-        Set of parameter names accepted by ``cls.__init__`` (excluding ``self``).
-    """
-    for cand in (cls, _unwrap_cls(cls)):
-        try:
-            params = inspect.signature(cand.__init__).parameters
-        except (TypeError, ValueError):
-            continue
-        if not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
-            return set(params) - {"self"}
-    raise TypeError(
-        f"Could not introspect a concrete __init__ signature for {cls!r}; refusing to "
-        "filter config keys against a **kwargs signature (would build a default module)."
-    )
-
-
-def _build_from_cfg(cfg: DictConfig, what: str) -> nn.Module:
-    """Instantiate a module from a config section carrying ``_target_``.
-
-    Keys the installed class does not accept are reported rather than silently
-    ignored -- tuning-only extras (e.g. ``flex_kernel_options``) are harmless, but
-    anything architectural showing up here means a branch mismatch.
-
-    Args:
-        cfg (DictConfig): Config mapping carrying a ``_target_`` key.
-        what (str): Label used in error messages (e.g. ``"speech_expert_cfg"``).
-
-    Returns:
-        Instantiated ``nn.Module``.
-    """
-    if cfg is None or '_target_' not in cfg:
-        raise ValueError(f"{what} config must be a mapping carrying a `_target_` key.")
-    cls = _resolve_target(str(cfg['_target_']))
-    raw = {k: v for k, v in OmegaConf.to_container(cfg, resolve=True).items() if k != '_target_'}
-    accepted = _init_param_names(cls)
-    kwargs = {k: v for k, v in raw.items() if k in accepted}
-    dropped = sorted(set(raw) - accepted)
-    if dropped:
-        logging.warning(
-            "[ParallelExpertEncoder] %s: ignoring config keys not accepted by %s: %s",
-            what,
-            getattr(_unwrap_cls(cls), '__name__', cls),
-            dropped,
-        )
-    return cls(**kwargs)
 
 
 @experimental
@@ -335,6 +169,8 @@ class ParallelExpertEncoderPT(ModelPT):
             moe_mode=self._cfg.get('moe_mode', 'dense'),
             fused_forward_in_training=self._cfg.get('fused_forward_in_training', False),
             ggemm_backend=self._cfg.get('ggemm_backend', 'baddbmm'),
+            sequence_packed_moe_mode=self._cfg.get('sequence_packed_moe_mode', 'auto'),
+            sequence_packed_ggemm_backend=self._cfg.get('sequence_packed_ggemm_backend', 'grouped_mm'),
             online_prefix_mode=self._cfg.get('online_prefix_mode', 'replace'),
             merge_sound_expert_to_asr=self._cfg.get('merge_sound_expert_to_asr', False),
             sound_merge_scale=self._cfg.get('sound_merge_scale', 0.3),
@@ -465,6 +301,21 @@ class ParallelExpertEncoderPT(ModelPT):
         return bundle.encoder
 
     @classmethod
+    def save_to_nemo(
+        cls,
+        encoder: ParallelExpertEncoder,
+        output_nemo_path: str,
+        *,
+        template_bundle_path: str,
+    ) -> None:
+        """Save a self-contained PE bundle using an existing bundle's inline config."""
+        return cls._save_to_nemo(
+            encoder,
+            output_nemo_path,
+            template_bundle_path=template_bundle_path,
+        )
+
+    @classmethod
     def _load_encoder_from_archive(
         cls,
         nemo_path: str,
@@ -538,7 +389,7 @@ class ParallelExpertEncoderPT(ModelPT):
         return shell.encoder.to(map_location)
 
     @classmethod
-    def save_to_nemo(
+    def _save_to_nemo(
         cls,
         encoder: ParallelExpertEncoder,
         output_nemo_path: str,
@@ -688,7 +539,13 @@ class ParallelExpertEncoder(nn.Module):
         fused_forward_in_training (bool): Use the fused packed path while training too.
             The per-expert path generally uses less activation memory, while
             inference always uses grouped execution.
-        ggemm_backend (str): Grouped-GEMM backend.
+        ggemm_backend (str): Grouped-GEMM backend for the historical padded grouped path.
+        sequence_packed_moe_mode (str): Packed-only MoE compute strategy. ``'auto'``
+            uses dense grouped experts in eval and ragged grouped top-k in training;
+            ``'dense'``, ``'topk'``, and memory-first ``'native'`` are explicit overrides.
+        sequence_packed_ggemm_backend (str): Packed-only grouped-GEMM backend.
+            ``'grouped_mm'`` uses PyTorch's ragged CUDA kernel when supported and
+            falls back to capacity-padded batched GEMM elsewhere.
         online_prefix_mode (str): How the speaker's streaming cache is spliced in the
             windowed path. ``'replace'`` lets the cache stand in for the speaker's
             leading frames; ``'extend'`` lengthens the speaker sequence and pads the
@@ -734,6 +591,8 @@ class ParallelExpertEncoder(nn.Module):
         calibrated_spk_kernel_scale (float): Default speaker gain for calibrated kernels.
     """
 
+    supports_sequence_packed_output = True
+
     def __init__(
         self,
         speech_expert_cfg: DictConfig,
@@ -761,6 +620,8 @@ class ParallelExpertEncoder(nn.Module):
         moe_mode: str = 'dense',
         fused_forward_in_training: bool = False,
         ggemm_backend: str = 'baddbmm',
+        sequence_packed_moe_mode: str = 'auto',
+        sequence_packed_ggemm_backend: str = 'grouped_mm',
         online_prefix_mode: str = 'replace',
         merge_sound_expert_to_asr: bool = False,
         sound_merge_scale: float = 0.3,
@@ -839,6 +700,18 @@ class ParallelExpertEncoder(nn.Module):
         # recomputed during backward at the expert boundary.
         self.activation_checkpointing = False
         self.ggemm_backend = ggemm_backend
+        if sequence_packed_moe_mode not in ('auto', 'dense', 'topk', 'native'):
+            raise ValueError(
+                "sequence_packed_moe_mode must be 'auto', 'dense', 'topk', or 'native', "
+                f"got {sequence_packed_moe_mode!r}."
+            )
+        if sequence_packed_ggemm_backend not in ('baddbmm', 'grouped_mm', 'loop'):
+            raise ValueError(
+                "sequence_packed_ggemm_backend must be 'baddbmm', 'grouped_mm', or 'loop', "
+                f"got {sequence_packed_ggemm_backend!r}."
+            )
+        self.sequence_packed_moe_mode = sequence_packed_moe_mode
+        self.sequence_packed_ggemm_backend = sequence_packed_ggemm_backend
         if online_prefix_mode not in ('replace', 'extend'):
             raise ValueError(f"online_prefix_mode must be 'replace' or 'extend', got {online_prefix_mode!r}.")
         self.online_prefix_mode = online_prefix_mode
@@ -1052,31 +925,31 @@ class ParallelExpertEncoder(nn.Module):
 
         self._apply_freezing()
 
-    def _apply_freezing(self) -> None:
-        """Put each frozen branch in eval and drop its grads."""
-        frozen = {
-            'speech': self.freeze_speech,
-            'speaker': self.freeze_speaker,
-            'sound': self.freeze_sound,
-        }
-        for role, is_frozen in frozen.items():
-            if not is_frozen:
-                continue
-            expert = self.pee.experts[role]
-            expert.eval()
-            for p in expert.parameters():
-                p.requires_grad = False
-        if self.freeze_speaker:
-            # The head travels with the speaker expert.
-            self.sortformer_modules.eval()
-            for p in self.sortformer_modules.parameters():
-                p.requires_grad = False
-        if self.sound_ctc_head is not None:
-            # Unconditionally frozen, unlike the speaker head: the event tags are
-            # binarized before the kernel, so nothing could train it through the fusion.
-            self.sound_ctc_head.eval()
-            for p in self.sound_ctc_head.parameters():
-                p.requires_grad = False
+    def forward_sequence_packed(
+        self,
+        audio_signal,
+        length,
+        spk_targets=None,
+        return_experts: bool = False,
+        *,
+        grouped: bool = True,
+    ) -> PackedEncoderOutput | tuple[PackedEncoderOutput, dict[str, object]]:
+        """Encode offline while keeping expert Transformer activations token-flat.
+
+        Online/windowed inference retains its established prefix/cache path. Existing
+        :meth:`forward` remains the Conformer-compatible padded API.
+
+        Set ``return_experts=True`` to also return packed speech/sound states and
+        the padded Sortformer speaker predictions. ``grouped=False`` retains a
+        serial THD numerical/benchmark oracle; production execution is grouped.
+        """
+        if self.online_inference_enabled:
+            raise RuntimeError(
+                "forward_sequence_packed is an offline API and cannot run while online_inference() is enabled."
+            )
+        return self._forward_sequence_packed(
+            audio_signal, length, spk_targets, return_experts=return_experts, grouped=grouped
+        )
 
     def train(self, mode: bool = True) -> "ParallelExpertEncoder":
         """Set training mode, but keep frozen experts in eval.
@@ -1142,20 +1015,86 @@ class ParallelExpertEncoder(nn.Module):
         one level down in ``pee.experts[role]``. PEE therefore owns an explicit,
         default-off policy and checkpoints each trainable expert's native forward as a
         unit. This keeps ``TransformerEncoder`` behavior and state-dict structure
-        untouched. The fused inference path
-        (:meth:`GGEMMTransformerEncoder.forward_packed`) is deliberately left alone.
-
-        Args:
-            enabled (bool): Turn activation checkpointing on (``True``) or off (``False``).
+        untouched. The fused padded inference path remains outside this policy; native
+        sequence-packed training checkpoints the grouped PEE boundary.
         """
         self.activation_checkpointing = bool(enabled)
-        if enabled and self.fused_forward_in_training:
-            logging.warning(
-                "set_activation_checkpointing(True) with fused_forward_in_training=True has "
-                "no effect: the fused path runs the layers itself instead of calling the "
-                "experts' native forwards, so there is nothing to recompute. Leave "
-                "fused_forward_in_training at its default False to get the memory back."
-            )
+
+    # freeze/unfreeze parity (plain nn.Module re-exposing the standalone helpers).
+    def freeze(self) -> None:
+        freeze(self)
+
+    def unfreeze(self, partial: bool = False) -> None:
+        unfreeze(self, partial=partial)
+
+    @contextlib.contextmanager
+    def online_inference(self, enabled: bool = True):
+        """Route :meth:`forward` through the windowed long-form path inside this block.
+
+        Generation always opens this; training and validation never do. Off by default, and
+        deliberately not inferred from ``self.training``, because validation also runs in
+        eval mode and must stay on the single-pass path. The windowed loop calls the packed
+        encoder once per window, so the number of collectives it emits tracks each rank's
+        own audio length -- fine in one process, a deadlock in a distributed step.
+        """
+        previous = self.online_inference_enabled
+        self.online_inference_enabled = bool(enabled)
+        try:
+            yield
+        finally:
+            self.online_inference_enabled = previous
+
+    # Forward — identical signature to ConformerEncoder.forward
+    def forward(
+        self,
+        audio_signal,
+        length,
+        spk_targets=None,
+        return_experts: bool = False,
+    ):
+        """Encode ``audio_signal``, fusing speaker activity into the speech states.
+
+        Fusion is per row and consistent across modes. Rows with RTTM use their
+        ``spk_targets``; rows marked by ``missing_rttm_target`` use the Sortformer
+        prediction. Training and validation run one offline pass; generation can
+        explicitly enable the established windowed path with :meth:`online_inference`.
+
+        Returns:
+            ``(outputs, encoded_lengths)`` with ``outputs`` of shape ``(B, D, T_asr)``,
+            or ``(outputs, encoded_lengths, experts)`` when ``return_experts``.
+        """
+        use_online = self.online_inference_enabled and self.online_inference_length > 0
+        runner = self._forward_online if use_online else self._forward
+        outputs, lengths, experts = runner(audio_signal=audio_signal, length=length, spk_targets=spk_targets)
+        if return_experts:
+            return outputs, lengths, experts
+        return outputs, lengths
+
+    def _apply_freezing(self) -> None:
+        """Put each frozen branch in eval and drop its grads."""
+        frozen = {
+            'speech': self.freeze_speech,
+            'speaker': self.freeze_speaker,
+            'sound': self.freeze_sound,
+        }
+        for role, is_frozen in frozen.items():
+            if not is_frozen:
+                continue
+            expert = self.pee.experts[role]
+            expert.eval()
+            for p in expert.parameters():
+                p.requires_grad = False
+        if self.freeze_speaker:
+            # The head travels with the speaker expert.
+            self.sortformer_modules.eval()
+            for p in self.sortformer_modules.parameters():
+                p.requires_grad = False
+        if self.sound_ctc_head is not None:
+            # Unconditionally frozen, unlike the speaker head: the event tags are
+            # binarized before the kernel, so nothing could train it through the fusion.
+            self.sound_ctc_head.eval()
+            for p in self.sound_ctc_head.parameters():
+                p.requires_grad = False
 
     def _forward_all_training(self, audio_signal, length):
         """Run native expert forwards, optionally checkpointed at the PEE boundary.
@@ -1188,18 +1127,59 @@ class ParallelExpertEncoder(nn.Module):
                 outputs[name] = expert(audio_signal, length, bypass_pre_encode=False)
         return outputs
 
-    # freeze/unfreeze parity (plain nn.Module re-exposing the standalone helpers).
-    def freeze(self) -> None:
-        """Freeze module parameters."""
-        freeze(self)
+    def _sequence_packed_moe_execution_mode(self):
+        if self.sequence_packed_moe_mode == 'auto':
+            return 'topk' if self.training else 'dense'
+        return self.sequence_packed_moe_mode
 
-    def unfreeze(self, partial: bool = False) -> None:
-        """Unfreeze module parameters (re-exposes :func:`nemo.core.classes.module.unfreeze`).
+    def _forward_all_sequence_packed_training(self, audio_signal, length):
+        """Run grouped packed experts, optionally recomputing the grouped PEE boundary."""
+        grouped_forward = self.pee.forward_grouped_sequence_packed
+        grouped_kwargs = {
+            'backend': self.sequence_packed_ggemm_backend,
+            'moe_mode': self._sequence_packed_moe_execution_mode(),
+            'fused_qkv': True,
+            'strict': False,
+        }
+        if not self.activation_checkpointing or not torch.is_grad_enabled():
+            return grouped_forward(audio_signal, length, **grouped_kwargs)
 
-        Args:
-            partial (bool): If ``True``, unfreeze only parameters that were partially frozen.
-        """
-        unfreeze(self, partial=partial)
+        names = tuple(self.pee.expert_names)
+
+        def run(signal, signal_length):
+            packed_outputs = grouped_forward(signal, signal_length, **grouped_kwargs)
+            _validate_packed_expert_lengths(packed_outputs)
+            reference = packed_outputs[names[0]]
+            max_seqlen = torch.tensor(reference.max_seqlen, dtype=torch.int64)
+            return tuple(packed_outputs[name].data for name in names) + (
+                reference.lengths,
+                reference.cu_seqlens,
+                max_seqlen,
+            )
+
+        @contextlib.contextmanager
+        def suppress_recompute_stats():
+            with contextlib.ExitStack() as stack:
+                for expert in self.pee.experts.values():
+                    stack.enter_context(_suppress_moe_stat_accumulation(expert))
+                yield
+
+        def context_fn():
+            return contextlib.nullcontext(), suppress_recompute_stats()
+
+        flat_outputs = checkpoint(
+            run,
+            audio_signal,
+            length,
+            use_reentrant=False,
+            context_fn=context_fn,
+        )
+        *data_outputs, output_lengths, cu_seqlens, max_seqlen = flat_outputs
+        max_seqlen = int(max_seqlen)
+        return {
+            name: _new_packed_encoder_output(data, output_lengths, cu_seqlens, max_seqlen)
+            for name, data in zip(names, data_outputs)
+        }
 
     # Fusion helpers
     @staticmethod
@@ -1515,26 +1495,6 @@ class ParallelExpertEncoder(nn.Module):
 
         return fused.transpose(1, 2)  # (B, D, T)
 
-    @contextlib.contextmanager
-    def online_inference(self, enabled: bool = True):
-        """Route :meth:`forward` through the windowed long-form path inside this block.
-
-        Generation always opens this; training and validation never do. Off by default, and
-        deliberately not inferred from ``self.training``, because validation also runs in
-        eval mode and must stay on the single-pass path. The windowed loop calls the packed
-        encoder once per window, so the number of collectives it emits tracks each rank's
-        own audio length -- fine in one process, a deadlock in a distributed step.
-
-        Args:
-            enabled (bool): When ``True``, route :meth:`forward` through the windowed path.
-        """
-        previous = self.online_inference_enabled
-        self.online_inference_enabled = bool(enabled)
-        try:
-            yield
-        finally:
-            self.online_inference_enabled = previous
-
     def _prepare_input(self, audio_signal, length):
         """Normalize and cast the shared mel input every expert consumes.
 
@@ -1554,57 +1514,6 @@ class ParallelExpertEncoder(nn.Module):
             audio_signal, _, _ = normalize_batch(audio_signal, length, normalize_type=self.asr_normalize_type)
         audio_signal = self._match_module_io(audio_signal)
         return audio_signal, length.to(device=audio_signal.device)
-
-    # Forward — identical signature to ConformerEncoder.forward
-    def forward(
-        self,
-        audio_signal,
-        length,
-        spk_targets=None,
-        return_experts: bool = False,
-    ):
-        """Encode ``audio_signal``, add sound information, and fuse speaker activity.
-
-        Speaker fusion is per row and consistent across modes. Rows with RTTM use their
-        ``spk_targets``; rows marked by ``missing_rttm_target`` use the Sortformer
-        prediction.
-
-        Encoding mode depends on the caller:
-
-        * Training and validation take :meth:`_forward`, a single pass over the
-          utterance, so every rank issues the same collectives.
-        * Generation may open :meth:`online_inference` and take
-          :meth:`_forward_online`, which walks long-form audio with a live speaker cache.
-
-        Args:
-            audio_signal (torch.Tensor): Un-normalised mel features; `per_feature` normalization
-                is re-applied internally.
-                Shape: (B, feat_in, n_frames)
-            length (torch.Tensor): Per-sample feature lengths.
-                Shape: (B,)
-            spk_targets (torch.Tensor, optional): RTTM/oracle speaker activity.
-                Shape: (B, T, n_spk)
-                ``None`` predicts for the whole batch; rows marked by
-                ``missing_rttm_target`` use predictions, allowing mixed target
-                availability within a batch.
-            return_experts (bool): Also return the per-expert outputs (including the
-                unfused sound expert and the speaker activity predictions). Off by
-                default so the standard return stays compatible with
-                :class:`ConformerEncoder`.
-
-        Returns:
-            tuple: ``(outputs, encoded_lengths)`` with ``outputs`` of shape ``(B, D, T)``,
-            or ``(outputs, encoded_lengths, experts)`` when ``return_experts`` is ``True``.
-        """
-        # Off unless a generation call opened `online_inference()`, so training and
-        # validation both take the single-pass path no matter what the batch holds.
-        use_online = self.online_inference_enabled and self.online_inference_length > 0
-
-        runner = self._forward_online if use_online else self._forward
-        outputs, lengths, experts = runner(audio_signal=audio_signal, length=length, spk_targets=spk_targets)
-        if return_experts:
-            return outputs, lengths, experts
-        return outputs, lengths
 
     def _forward(self, audio_signal, length, spk_targets=None):
         """Offline (non-chunked) forward pass. See :meth:`forward` for argument semantics.
@@ -1695,6 +1604,71 @@ class ParallelExpertEncoder(nn.Module):
             'speaker_preds': diarization_preds,
         }
         return outputs, asr_encoded_len, experts
+
+    def _forward_sequence_packed(self, audio_signal, length, spk_targets=None, *, return_experts=False, grouped=True):
+        self._check_spk_target_width(spk_targets)
+        use_diarization = (
+            None if spk_targets is None else (spk_targets <= self.missing_rttm_target).flatten(start_dim=1).any(dim=1)
+        )
+        if spk_targets is None or self.always_run_diarization:
+            run_diarization = True
+        else:
+            run_diarization = bool(use_diarization.any())
+
+        signal, signal_length = self._prepare_input(audio_signal, length)
+        track_gradients = torch.is_grad_enabled() and not (
+            self.freeze_speech and self.freeze_speaker and self.freeze_sound
+        )
+        with torch.set_grad_enabled(track_gradients):
+            if not grouped:
+                if self.activation_checkpointing and self.training and torch.is_grad_enabled():
+                    raise RuntimeError("The serial THD reference does not support PEE boundary checkpointing.")
+                packed = self.pee.forward_all_sequence_packed(signal, signal_length, fused_qkv=True)
+            elif self.training:
+                packed = self._forward_all_sequence_packed_training(signal, signal_length)
+            else:
+                packed = self.pee.forward_grouped_sequence_packed(
+                    signal,
+                    signal_length,
+                    backend=self.sequence_packed_ggemm_backend,
+                    moe_mode=self._sequence_packed_moe_execution_mode(),
+                    fused_qkv=True,
+                    strict=False,
+                )
+
+        _validate_packed_expert_lengths(packed)
+        asr = packed["speech"]
+        sound = packed["sound"]
+
+        diarization_preds = None
+        if run_diarization:
+            speaker = packed["speaker"]
+            speaker_padded = unpack_encoder_output(speaker).transpose(1, 2)
+            with torch.set_grad_enabled(track_gradients and not self.freeze_speaker):
+                diarization_preds = self._speaker_head(speaker_padded, speaker.lengths)
+            if spk_targets is None:
+                spk_targets = diarization_preds
+
+        if self.merge_sound_expert_to_asr:
+            states = self._merge_sound_and_asr_sequence_packed(asr, sound)
+        else:
+            states = self._inject_sound_tokens_sequence_packed(asr, sound)
+
+        if spk_targets is not None:
+            states = self._fuse_diar_and_asr_sequence_packed(
+                states,
+                spk_targets,
+                diarization_preds=diarization_preds,
+                use_diarization=use_diarization,
+            )
+        if return_experts:
+            experts = {
+                "speech": asr,
+                "sound": sound,
+                "speaker_preds": diarization_preds,
+            }
+            return states, experts
+        return states
 
     def _forward_online(self, audio_signal, length, spk_targets=None):
         """Long-form generation path: dispatches to the offline pass or the windowed loop.
@@ -1916,3 +1890,232 @@ class ParallelExpertEncoder(nn.Module):
             # so the prefix (and therefore T) is shorter on the first few windows.
             streaming_state = sm.init_streaming_state(batch_size=batch_size, async_streaming=False, device=device)
         return streaming_state, stream_dtype
+
+    def _inject_sound_tokens_sequence_packed(self, asr, sound):
+        sound_padded = unpack_encoder_output(sound).transpose(1, 2)
+        with torch.no_grad():
+            events, styles = self._sound_tag_posteriors(sound_padded)
+            events = (events > self.sound_event_threshold).to(asr.data.dtype)
+            if styles is not None:
+                styles = (styles > self.sound_event_threshold).to(asr.data.dtype)
+        event_data = _pack_aligned_data(events, sound.lengths)
+        event_data = self.sound_token_norm(event_data)
+        infusion = self.sound_kernel_scale * torch.matmul(event_data, self.sound_token_kernel.to(event_data.dtype))
+        if styles is not None:
+            style_data = _pack_aligned_data(styles, sound.lengths)
+            style_data = self.sound_style_norm(style_data)
+            infusion = infusion + self.sound_style_scale * torch.matmul(
+                style_data, self.sound_style_kernel.to(style_data.dtype)
+            )
+        data = asr.data + infusion.to(asr.data.dtype)
+        return asr.with_data(data)
+
+    def _merge_sound_and_asr_sequence_packed(self, asr, sound):
+        if not self.merge_sound_expert_to_asr:
+            raise RuntimeError("Packed encoder-state sound merge requested while merge_sound_expert_to_asr is False.")
+        if sound.data.shape != asr.data.shape:
+            raise ValueError(
+                f"sound packed data shape {tuple(sound.data.shape)} must match speech {tuple(asr.data.shape)}."
+            )
+        speech_states = self.merge_speech_norm(asr.data)
+        sound_states = self.sound_norm(sound.data)
+        data = speech_states + self.sound_merge_scale * sound_states.to(speech_states.dtype)
+        return asr.with_data(data.to(asr.data.dtype))
+
+    def _fuse_diar_and_asr_sequence_packed(
+        self,
+        asr,
+        spk_targets,
+        *,
+        diarization_preds=None,
+        use_diarization=None,
+    ):
+        spk_targets = self._align_diar_frames(spk_targets, asr.max_seqlen).to(asr.data.dtype)
+        if use_diarization is not None and diarization_preds is not None:
+            if use_diarization.numel() != spk_targets.shape[0]:
+                raise ValueError(
+                    f"use_diarization size ({use_diarization.numel()}) must match "
+                    f"the speaker-target batch size ({spk_targets.shape[0]})."
+                )
+            diarization_preds = self._align_diar_frames(diarization_preds, asr.max_seqlen).to(asr.data.dtype)
+            spk_targets = torch.where(
+                use_diarization.to(device=spk_targets.device, dtype=torch.bool).view(-1, 1, 1),
+                diarization_preds,
+                spk_targets,
+            )
+        spk_targets = (spk_targets > self.speaker_activity_threshold).to(asr.data.dtype)
+        speaker_data = _pack_aligned_data(spk_targets, asr.lengths)
+        states = self.asr_norm(asr.data)
+        speaker_data = self.diar_norm(speaker_data)
+        infusion = torch.matmul(speaker_data, self.diar_kernel.to(speaker_data.dtype))
+        data = states + self.spk_kernel_scale * infusion.to(states.dtype)
+        return asr.with_data(data)
+
+
+@contextlib.contextmanager
+def _suppress_moe_stat_accumulation(expert):
+    previous = getattr(expert, "_suppress_moe_stat_accumulation", False)
+    expert._suppress_moe_stat_accumulation = True
+    try:
+        yield
+    finally:
+        expert._suppress_moe_stat_accumulation = previous
+
+
+def _validate_packed_expert_lengths(outputs):
+    reference_name = next(iter(outputs))
+    reference = outputs[reference_name]
+    for name, output in outputs.items():
+        if output.lengths is reference.lengths:
+            continue
+        if not torch.equal(output.lengths, reference.lengths):
+            raise ValueError(
+                f"Packed PEE expert '{name}' lengths {output.lengths.tolist()} do not match "
+                f"'{reference_name}' lengths {reference.lengths.tolist()}."
+            )
+
+
+def _pack_aligned_data(padded, lengths):
+    """Pack an already length-aligned tensor without revalidating metadata."""
+    positions = torch.arange(padded.shape[1], device=padded.device)
+    return padded[positions.unsqueeze(0) < lengths.unsqueeze(1)]
+
+
+@contextlib.contextmanager
+def _default_dtype(dtype: torch.dtype):
+    """Temporarily set the global default float dtype.
+
+    Makes ``SortformerModules.init_streaming_state`` allocate its dtype-less
+    speaker-cache / FIFO buffers in the speaker expert's dtype, avoiding fp32/bf16
+    mismatch.
+    """
+    prev = torch.get_default_dtype()
+    if dtype == prev or not dtype.is_floating_point:
+        yield
+        return
+    torch.set_default_dtype(dtype)
+    try:
+        yield
+    finally:
+        torch.set_default_dtype(prev)
+
+
+@contextlib.contextmanager
+def _disable_dist_feature_sync():
+    """Temporarily make ``torch.distributed`` look uninitialized.
+
+    Skips cross-rank ``all_reduce``s in the Sortformer streaming helpers, which are
+    unnecessary and unsafe for single-recording inference (e.g. a vLLM worker).
+    The original ``dist.is_initialized`` is always restored.
+    """
+    if not (hasattr(dist, "is_initialized") and dist.is_initialized()):
+        yield
+        return
+    orig_is_initialized = dist.is_initialized
+    dist.is_initialized = lambda: False
+    try:
+        yield
+    finally:
+        dist.is_initialized = orig_is_initialized
+
+
+def _disable_max_seq_length_sync(module: nn.Module) -> None:
+    """Turn off ``sync_max_audio_length`` on every encoder under ``module``.
+
+    That flag makes ``update_max_seq_length`` issue an ``all_reduce`` on the
+    **default** process group. Any such collective inside a data-dependent branch lets
+    ranks emit different numbers of default-PG collectives on the same step, which
+    NCCL cannot match positionally -- the run then deadlocks until the watchdog
+    aborts it.
+
+    Dropping it is numerically neutral: the reduced value only sizes the
+    positional-encoding buffer (grown on demand per rank, and sliced
+    length-relative), while attention masks are always built from the local
+    sequence length. Applies to the flex ``TransformerEncoder`` family the same way
+    it did to the Conformer branches -- both expose ``sync_max_audio_length`` and
+    both all-reduce inside ``update_max_seq_length``.
+    """
+    for submodule in module.modules():
+        if getattr(submodule, "sync_max_audio_length", False):
+            submodule.sync_max_audio_length = False
+
+
+def _clone_config(config: Optional[DictConfig]) -> Optional[DictConfig]:
+    """Deep-copy a ``DictConfig`` without resolving interpolations.
+
+    ``from_config_dict`` mutates its input in place, so sub-target builders get a copy.
+    """
+    if config is None:
+        return None
+    return OmegaConf.create(OmegaConf.to_container(config, resolve=False))
+
+
+def _unwrap_cls(cls):
+    """Step through a ``wrapt`` proxy chain to the underlying class.
+
+    ``inspect.unwrap`` is not enough: NeMo's ``@experimental`` wraps the *class* in a
+    ``wrapt`` proxy that forwards ``__repr__``/``__class__``, so the object
+    ``inspect.unwrap`` returns still resolves ``__init__`` to the proxy's
+    ``(*args, **kwargs)``.
+    """
+    seen = {id(cls)}
+    cur = cls
+    for _ in range(8):
+        nxt = getattr(cur, "__wrapped__", None)
+        if nxt is None or id(nxt) in seen:
+            return cur
+        seen.add(id(nxt))
+        cur = nxt
+    return cur
+
+
+def _resolve_target(target: str) -> type:
+    """Resolve a Hydra ``_target_`` string to a class."""
+    module_path, _, cls_name = target.rpartition(".")
+    try:
+        return getattr(importlib.import_module(module_path), cls_name)
+    except (ImportError, AttributeError) as exc:
+        raise ValueError(f"Cannot import _target_ '{target}'.") from exc
+
+
+def _init_param_names(cls) -> set:
+    """Names ``cls.__init__`` accepts.
+
+    Refuses to fall back to a ``**kwargs`` signature: filtering config keys against
+    one would drop *every* key and silently build a default-shaped encoder.
+    """
+    for cand in (cls, _unwrap_cls(cls)):
+        try:
+            params = inspect.signature(cand.__init__).parameters
+        except (TypeError, ValueError):
+            continue
+        if not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            return set(params) - {"self"}
+    raise TypeError(
+        f"Could not introspect a concrete __init__ signature for {cls!r}; refusing to "
+        "filter config keys against a **kwargs signature (would build a default module)."
+    )
+
+
+def _build_from_cfg(cfg: DictConfig, what: str) -> nn.Module:
+    """Instantiate a module from a config section carrying ``_target_``.
+
+    Keys the installed class does not accept are reported rather than silently
+    ignored -- tuning-only extras (e.g. ``flex_kernel_options``) are harmless, but
+    anything architectural showing up here means a branch mismatch.
+    """
+    if cfg is None or '_target_' not in cfg:
+        raise ValueError(f"{what} config must be a mapping carrying a `_target_` key.")
+    cls = _resolve_target(str(cfg['_target_']))
+    raw = {k: v for k, v in OmegaConf.to_container(cfg, resolve=True).items() if k != '_target_'}
+    accepted = _init_param_names(cls)
+    kwargs = {k: v for k, v in raw.items() if k in accepted}
+    dropped = sorted(set(raw) - accepted)
+    if dropped:
+        logging.warning(
+            "[ParallelExpertEncoder] %s: ignoring config keys not accepted by %s: %s",
+            what,
+            getattr(_unwrap_cls(cls), '__name__', cls),
+            dropped,
+        )
+    return cls(**kwargs)

@@ -201,9 +201,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             ans = {"logits": out['logits']}  # (B, T, text_vocab_size)
             if cache is not None:
                 ans["cache"] = out["past_key_values"]
-            # MTP per-depth hidden states (present only when the LLM has an MTP head and
-            # is in training mode). Use getattr rather than out['mtp_per_depth_h'] to avoid
-            # a KeyError when the field is absent.
+            # MTP per-depth hidden states are returned when an MTP head is attached and
+            # MTP computation is enabled for this forward (during training or explicitly
+            # during validation).
             mtp_h = getattr(out, "mtp_per_depth_h", None)
             if mtp_h is not None:
                 ans["mtp_per_depth_h"] = mtp_h
@@ -606,7 +606,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 valid = torch.stack(self._partial_val_mtp_valid[name]).sum(dim=0)
                 D = correct.numel()
                 reduced = self._reduce_validation_metric_sums(torch.cat([correct, valid]), reduction_group)
-                per_head = reduced[:D] / reduced[D:].clamp(min=1)
+                per_head = reduced[:D].float() / reduced[D:].clamp(min=1).float()
                 for head_idx, p in enumerate(per_head, start=1):
                     self.log(
                         f"val_mtp_teacher_forced_agreement_{name}/head_{head_idx}",
@@ -692,8 +692,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     verifier_predictions=verifier_predictions,
                     cu_seqlens=mtp_cu_seqlens,
                 )
-                self._partial_val_mtp_correct[name].append(torch.stack(correct_by_head).detach().to(loss_sum.dtype))
-                self._partial_val_mtp_valid[name].append(torch.stack(valid_by_head).detach().to(loss_sum.dtype))
+                self._partial_val_mtp_correct[name].append(torch.stack(correct_by_head).detach().to(torch.int64))
+                self._partial_val_mtp_valid[name].append(torch.stack(valid_by_head).detach().to(torch.int64))
 
     def on_test_epoch_start(self) -> None:
         return self.on_validation_epoch_start()

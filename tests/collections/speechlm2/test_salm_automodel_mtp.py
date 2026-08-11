@@ -345,6 +345,43 @@ def test_validation_epoch_end_logs_mtp_teacher_forced_agreement():
     assert logged['val_mtp_teacher_forced_prefix_length'] == pytest.approx(2.3)
 
 
+def test_validation_step_preserves_mtp_counter_precision_with_bf16_logits(monkeypatch):
+    """MTP metric counters stay exact even when the validation loss is BF16."""
+    model = _bare_model()
+    model.llm = torch.nn.Module()
+    model.llm.mtp = torch.nn.Identity()
+    model.llm.compute_mtp_in_eval = False
+    model.lss_loss = None
+    SALMAutomodel.on_validation_epoch_start(model)
+
+    inputs = {
+        "input_embeds": torch.zeros(1, 2, 4, dtype=torch.bfloat16),
+        "attention_mask": torch.ones(1, 2, dtype=torch.bool),
+        "target_ids": torch.tensor([[0, 1]]),
+        "llm_kwargs": {},
+    }
+    logits = torch.zeros(1, 2, 4, dtype=torch.bfloat16)
+    model.prepare_inputs = lambda _batch: inputs
+    model.forward = lambda *_args, **_kwargs: {
+        "logits": logits,
+        "mtp_per_depth_h": [torch.zeros(1, 2, 4)],
+    }
+    monkeypatch.setattr(
+        salm_module,
+        "_calculate_mtp_teacher_forced_agreement_with_heads",
+        lambda **_kwargs: ([torch.tensor(10_001)], [torch.tensor(10_003)]),
+    )
+
+    SALMAutomodel.validation_step(model, {"ds": {}}, batch_idx=0)
+
+    correct = model._partial_val_mtp_correct["ds"][0]
+    valid = model._partial_val_mtp_valid["ds"][0]
+    assert correct.dtype == torch.int64
+    assert valid.dtype == torch.int64
+    assert correct.item() == 10_001
+    assert valid.item() == 10_003
+
+
 def test_calculate_mtp_teacher_forced_agreement_with_heads_counts(monkeypatch):
     '''Agreement compares drafts with teacher-forced verifier predictions and requires a matched prefix.'''
     # The helper imports these specific Automodel submodules; importorskip each so the test

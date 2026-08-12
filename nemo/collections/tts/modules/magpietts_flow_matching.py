@@ -262,15 +262,38 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
             "predicted_velocity_abs_max": _masked_abs_max(predicted_velocity)[worst_sample_index],
         }
 
+    def _guided_velocity(
+        self,
+        state: torch.Tensor,
+        condition: torch.Tensor,
+        time: torch.Tensor,
+        mask: torch.Tensor,
+        unconditional_condition: torch.Tensor | None,
+        cfg_scale: float,
+    ) -> torch.Tensor:
+        conditional_velocity = self.estimator(state, condition, time, mask)
+        if unconditional_condition is None or cfg_scale == 1.0:
+            return conditional_velocity
+
+        unconditional_velocity = self.estimator(state, unconditional_condition, time, mask)
+        return cfg_scale * conditional_velocity + (1.0 - cfg_scale) * unconditional_velocity
+
     @torch.no_grad()
     def predict(
         self,
         condition: torch.Tensor,
         lengths: torch.Tensor,
         noise_scale: float = 1.0,
+        unconditional_condition: torch.Tensor | None = None,
+        cfg_scale: float = 1.0,
     ) -> torch.Tensor:
         if noise_scale < 0.0:
             raise ValueError(f"noise_scale must be non-negative, got {noise_scale}")
+        if unconditional_condition is not None and unconditional_condition.shape != condition.shape:
+            raise ValueError(
+                "Conditional and unconditional flow inputs must have the same shape, got "
+                f"{condition.shape} and {unconditional_condition.shape}."
+            )
         mask = self.length_mask(lengths, condition.size(2), condition.dtype)
         state = torch.randn(
             condition.size(0),
@@ -281,18 +304,27 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
         )
         state = state * noise_scale * mask
         condition = condition * mask
+        if unconditional_condition is not None:
+            unconditional_condition = unconditional_condition * mask
         step_size = 1.0 / self.inference_steps
 
         for step in range(self.inference_steps):
             start_time = step * step_size
             time = torch.full((state.size(0),), start_time, device=state.device)
-            velocity = self.estimator(state, condition, time, mask)
+            velocity = self._guided_velocity(state, condition, time, mask, unconditional_condition, cfg_scale)
             if self.solver == EULER_SOLVER:
                 state = state + step_size * velocity
             else:
                 midpoint_state = state + 0.5 * step_size * velocity
                 midpoint_time = time + 0.5 * step_size
-                midpoint_velocity = self.estimator(midpoint_state, condition, midpoint_time, mask)
+                midpoint_velocity = self._guided_velocity(
+                    midpoint_state,
+                    condition,
+                    midpoint_time,
+                    mask,
+                    unconditional_condition,
+                    cfg_scale,
+                )
                 state = state + step_size * midpoint_velocity
             state = state * mask
 

@@ -673,6 +673,21 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             stacked_semantic_dim = self.semantic_codec_embedding_dim * self.frame_stacking_factor
             stacked_acoustic_dim = self.acoustic_codec_embedding_dim * self.frame_stacking_factor
             self.flow_acoustic_in_projection = nn.Linear(stacked_acoustic_dim, cfg.embedding_dim)
+            acoustic_min, acoustic_max = self._codec_helper.continuous_fsq_embedding_bounds(
+                num_semantic_codebooks=self.num_semantic_codebooks
+            )
+            self.register_buffer("_codec_acoustic_embedding_min_buffer", acoustic_min, persistent=False)
+            self.register_buffer("_codec_acoustic_embedding_max_buffer", acoustic_max, persistent=False)
+            self.register_buffer(
+                "_codec_stacked_acoustic_embedding_min_buffer",
+                acoustic_min.repeat_interleave(self.frame_stacking_factor, dim=1),
+                persistent=False,
+            )
+            self.register_buffer(
+                "_codec_stacked_acoustic_embedding_max_buffer",
+                acoustic_max.repeat_interleave(self.frame_stacking_factor, dim=1),
+                persistent=False,
+            )
             # This path has no counterpart in the pretrained discrete model. Start it as an
             # exact no-op so loading the pretrained backbone does not inject a random residual.
             nn.init.zeros_(self.flow_acoustic_in_projection.weight)
@@ -700,6 +715,16 @@ class EasyMagpieTTSInferenceModel(ModelPT):
     def codec_sil_acoustic_embedding(self):
         """Return one continuous acoustic codec frame representing silence."""
         return self._codec_sil_acoustic_embedding_buffer
+
+    @property
+    def codec_acoustic_embedding_min(self):
+        """Return per-channel lower limits of the continuous acoustic FSQ representation."""
+        return self._codec_acoustic_embedding_min_buffer
+
+    @property
+    def codec_acoustic_embedding_max(self):
+        """Return per-channel upper limits of the continuous acoustic FSQ representation."""
+        return self._codec_acoustic_embedding_max_buffer
 
     @property
     def local_predictor(self) -> OneShotLocalPredictor:
@@ -1744,17 +1769,40 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         stacked_semantic_embedding = self.stack_codec_embeddings(semantic_embedding, self.frame_stacking_factor)
 
         hidden = last_hidden[:, -1, :]
+        unconditional_condition = None
         if use_cfg:
-            conditional, unconditional = hidden.chunk(2, dim=0)
-            hidden = cfg_scale * conditional + (1.0 - cfg_scale) * unconditional
+            conditional_hidden, unconditional_hidden = hidden.chunk(2, dim=0)
+            if self.local_transformer_type == LocalTransformerType.FLOW_MATCHING:
+                hidden = conditional_hidden
+                unconditional_condition = torch.cat(
+                    [
+                        unconditional_hidden.unsqueeze(-1),
+                        stacked_semantic_embedding.to(unconditional_hidden.dtype),
+                    ],
+                    dim=1,
+                )
+            else:
+                hidden = cfg_scale * conditional_hidden + (1.0 - cfg_scale) * unconditional_hidden
         condition = torch.cat(
             [hidden.unsqueeze(-1), stacked_semantic_embedding.to(hidden.dtype)],
             dim=1,
         )
-        stacked_acoustic_embedding = self.local_predictor.predict(
+        predict_kwargs = dict(
             condition=condition,
             lengths=torch.ones(batch_size, dtype=torch.long, device=condition.device),
             noise_scale=float(self.cfg.get("local_flow_noise_scale", 1.0)),
+        )
+        if self.local_transformer_type == LocalTransformerType.FLOW_MATCHING:
+            predict_kwargs.update(
+                unconditional_condition=unconditional_condition,
+                cfg_scale=cfg_scale,
+            )
+        stacked_acoustic_embedding = self.local_predictor.predict(**predict_kwargs)
+        lower = self._codec_stacked_acoustic_embedding_min_buffer.to(stacked_acoustic_embedding)
+        upper = self._codec_stacked_acoustic_embedding_max_buffer.to(stacked_acoustic_embedding)
+        stacked_acoustic_embedding = torch.maximum(
+            torch.minimum(stacked_acoustic_embedding, upper),
+            lower,
         )
         acoustic_embedding = self.unstack_codec_embeddings(
             stacked_acoustic_embedding,

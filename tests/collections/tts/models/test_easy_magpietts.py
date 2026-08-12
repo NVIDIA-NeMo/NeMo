@@ -816,6 +816,58 @@ def test_one_shot_flow_sampling_returns_semantic_codes_and_continuous_acoustics(
     assert acoustic_embedding.is_floating_point()
 
 
+def test_flow_matching_sampling_uses_separate_cfg_conditions_and_clamps_codec_support():
+    _seed_everything()
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "frame_stacking_factor": 2,
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "local_flow_matching_inference_steps": 2,
+            }
+        )
+    )
+    batch_size = 1
+    semantic_channels = model.num_semantic_codebooks * model.frame_stacking_factor
+    last_hidden = torch.cat(
+        [
+            torch.full((batch_size, 1, model.cfg.hidden_dim), 2.0),
+            torch.ones(batch_size, 1, model.cfg.hidden_dim),
+        ],
+        dim=0,
+    )
+    logits = torch.zeros(batch_size, semantic_channels * model.num_all_tokens_per_codebook)
+    sampled_semantic = torch.zeros(batch_size, semantic_channels, dtype=torch.long)
+    predicted_acoustic = torch.full(
+        (batch_size, model.acoustic_codec_embedding_dim * model.frame_stacking_factor, 1),
+        100.0,
+    )
+
+    with (
+        patch.object(model, "sample_codes_from_logits", return_value=sampled_semantic),
+        patch.object(model.local_predictor, "predict", return_value=predicted_acoustic) as predict_mock,
+    ):
+        _, _, acoustic_embedding = model._sample_audio_codes_with_flow(
+            last_hidden=last_hidden,
+            all_code_logits_t=logits,
+            temperature=0.7,
+            topk=20,
+            use_cfg=True,
+            cfg_scale=2.5,
+        )
+
+    predict_kwargs = predict_mock.call_args.kwargs
+    assert predict_kwargs["cfg_scale"] == 2.5
+    conditional = predict_kwargs["condition"]
+    unconditional = predict_kwargs["unconditional_condition"]
+    torch.testing.assert_close(conditional[:, model.cfg.hidden_dim :], unconditional[:, model.cfg.hidden_dim :])
+    assert torch.all(acoustic_embedding <= model.codec_acoustic_embedding_max)
+    assert torch.all(acoustic_embedding >= model.codec_acoustic_embedding_min)
+
+
 def test_one_shot_flow_teacher_forced_inference_decodes_continuous_acoustics_directly():
     _seed_everything()
     model = _make_easy_magpie_model(
@@ -920,11 +972,22 @@ def test_one_shot_flow_free_running_inference_feeds_generated_acoustics_back():
     feedback_inputs = [
         call.args[1] for call in embed_mock.call_args_list if call.args[1].shape == (1, expected_channels, 1)
     ]
-    assert any(torch.equal(value, torch.ones_like(value)) for value in feedback_inputs)
-    assert torch.equal(
-        output.predicted_acoustic_embeddings,
-        torch.ones_like(output.predicted_acoustic_embeddings),
+    expected_feedback = torch.maximum(
+        torch.minimum(
+            torch.ones_like(feedback_inputs[0]),
+            model._codec_stacked_acoustic_embedding_max_buffer,
+        ),
+        model._codec_stacked_acoustic_embedding_min_buffer,
     )
+    assert any(torch.equal(value, expected_feedback) for value in feedback_inputs)
+    expected_output = torch.maximum(
+        torch.minimum(
+            torch.ones_like(output.predicted_acoustic_embeddings),
+            model.codec_acoustic_embedding_max,
+        ),
+        model.codec_acoustic_embedding_min,
+    )
+    assert torch.equal(output.predicted_acoustic_embeddings, expected_output)
 
 
 def test_one_shot_flow_logs_explicit_wandb_loss_aliases():

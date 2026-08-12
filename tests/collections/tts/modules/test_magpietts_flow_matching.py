@@ -90,6 +90,17 @@ class _ConditionVelocity(nn.Module):
         return condition[:, : state.size(1)] * mask
 
 
+class _SquaredConditionVelocity(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def forward(self, state, condition, time, mask):
+        del state, time
+        self.calls += 1
+        return condition[:, :12].square() * mask
+
+
 @pytest.mark.parametrize("solver, expected_calls", [("euler", 4), ("midpoint", 8)])
 def test_flow_matching_predict_integrates_inside_one_call(solver, expected_calls):
     predictor = _make_predictor(solver=solver)
@@ -108,6 +119,33 @@ def test_flow_matching_predict_integrates_inside_one_call(solver, expected_calls
     assert torch.allclose(prediction, expected, atol=1e-6, rtol=1e-6)
     assert estimator.calls == expected_calls
     assert torch.count_nonzero(prediction[1, :, 3:]) == 0
+
+
+def test_flow_matching_predict_applies_cfg_to_nonlinear_velocity_fields():
+    predictor = _make_predictor(solver="euler")
+    predictor.inference_steps = 1
+    estimator = _SquaredConditionVelocity()
+    predictor.estimator = estimator
+    condition = torch.full((1, 20, 2), 2.0)
+    unconditional_condition = torch.ones_like(condition)
+    lengths = torch.tensor([2])
+    cfg_scale = 2.5
+
+    torch.manual_seed(42)
+    initial_state = torch.randn(1, 12, 2)
+    torch.manual_seed(42)
+    prediction = predictor.predict(
+        condition,
+        lengths,
+        unconditional_condition=unconditional_condition,
+        cfg_scale=cfg_scale,
+    )
+
+    conditional_velocity = condition[:, :12].square()
+    unconditional_velocity = unconditional_condition[:, :12].square()
+    expected_velocity = cfg_scale * conditional_velocity + (1.0 - cfg_scale) * unconditional_velocity
+    torch.testing.assert_close(prediction, initial_state + expected_velocity)
+    assert estimator.calls == 2
 
 
 def test_flow_matching_diagnostics_are_finite_and_select_worst_sample():

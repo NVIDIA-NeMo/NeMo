@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -109,3 +110,22 @@ def test_codec_helper_returns_and_splits_continuous_fsq_embedding():
     assert not torch.allclose(raw_embedding, embedding)
     assert not torch.allclose(embedding, dequantized)
     assert not hasattr(helper, "acoustic_embedding_to_codes")
+
+
+def test_codec_helper_derives_continuous_fsq_support_for_acoustic_groups():
+    semantic_quantizer = SimpleNamespace(num_levels=torch.tensor([[[5]], [[5]]]), eps=1e-3)
+    acoustic_quantizer = SimpleNamespace(num_levels=torch.tensor([[[4]], [[5]]]), eps=1e-3)
+    vector_quantizer = SimpleNamespace(
+        fsqs=[semantic_quantizer, acoustic_quantizer],
+        num_groups=2,
+        codebook_dim=4,
+    )
+    codec = SimpleNamespace(num_codebooks=2, vector_quantizer=vector_quantizer)
+    helper = CodecHelper(codec)
+
+    lower, upper = helper.continuous_fsq_embedding_bounds(num_semantic_codebooks=1)
+
+    assert lower.shape == (1, 2, 1)
+    assert upper.shape == (1, 2, 1)
+    torch.testing.assert_close(lower.flatten(), torch.tensor([-0.99925, -0.99900]))
+    torch.testing.assert_close(upper.flatten(), torch.tensor([0.49925, 0.99900]))

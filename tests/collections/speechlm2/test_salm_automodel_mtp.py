@@ -225,7 +225,10 @@ def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
     class _LLM(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.config = type("Config", (), {"hidden_size": 4, "num_nextn_predict_layers": 1})()
+            # Automodel consumes the logical constructor override into the HF
+            # config before constructing the repeated physical head.
+            self.config = type("Config", (), {"hidden_size": 4, "num_nextn_predict_layers": 3})()
+            self.mtp_config = type("MTPConfig", (), {"num_layers": 3, "use_repeated_layer": True})()
             self.mtp = torch.nn.Linear(4, 4)
 
     def _load_llm(*_args, **kwargs):
@@ -271,6 +274,8 @@ def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
     assert captured_kwargs["replace_mtp_config"] is False
     assert captured_kwargs["num_nextn_predict_layers"] == 3
     assert captured_kwargs["mtp_use_repeated_layer"] is True
+    assert model.llm.config.num_nextn_predict_layers == 1
+    assert model.llm.mtp_config.num_layers == 3
 
 
 # ---------------------------------------------------------------------------

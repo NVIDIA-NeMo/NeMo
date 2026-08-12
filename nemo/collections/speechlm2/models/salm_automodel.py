@@ -1206,6 +1206,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             trust_remote_code=self.cfg.get("trust_remote_code", False),
             **automodel_kwargs,
         )
+        if mtp_requested and use_repeated_layer:
+            # Automodel consumes constructor kwargs that match HF config fields,
+            # so the logical iteration count above temporarily overwrites the
+            # serialized depth. The built MTPConfig retains that logical count;
+            # restore the HF config to the one physical layer saved in the state dict.
+            self.llm.config.num_nextn_predict_layers = physical_depth
         if not mtp_requested:
             # The constructor override suppresses a checkpoint-native MTP module but does
             # not mutate the HF config. Keep the serialized config consistent with the

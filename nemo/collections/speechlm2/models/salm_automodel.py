@@ -1080,56 +1080,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         trainable = sum(param.numel() for param in self.llm.mtp.parameters() if param.requires_grad)
         logging.info(f"MTP training mode=head_only: trainable MTP parameters={trainable}; all others frozen")
 
-    def _build_and_attach_mtp_head(self, mtp_cfg, dtype) -> None:
-        """Construct the NemotronV3 MTP head and attach it as ``self.llm.mtp``.
-
-        This fallback is used only when the selected checkpoint has no native MTP
-        module. Neither the config override nor the ``config=`` from_pretrained
-        path can inject a pattern for that case, so we set it on the live HF
-        config, build the head with Automodel's factory, and attach freshly
-        initialized weights.
-
-        NOTE: the head is built unsharded here; ``configure_model`` then ``fully_shard``s it
-        over the DP mesh (right after the perception module) so its gradients reduce-scatter
-        across the data-parallel group like every other parameter.
-        """
-        from nemo_automodel.components.models.nemotron_v3.mtp import build_mtp_config_from_hf, build_nemotron_v3_mtp
-
-        llm = self.llm
-        cfg_obj = llm.config
-        cfg_obj.mtp_hybrid_override_pattern = str(mtp_cfg.get("hybrid_override_pattern", "*"))
-        requested_depth = int(mtp_cfg.get("num_nextn_predict_layers", 1))
-        cfg_obj.num_nextn_predict_layers = requested_depth
-        mtp_config = build_mtp_config_from_hf(
-            cfg_obj,
-            loss_scaling_factor=self._mtp_loss_scaling_factor,
-            use_repeated_layer=bool(mtp_cfg.get("use_repeated_layer", False)),
-        )
-        # HF/vLLM config has no weight-tying flag for repeated MTP layers. Export
-        # the physical depth so reload constructs exactly the layers present in
-        # the state dict instead of D independent layers for one tied layer.
-        cfg_obj.num_nextn_predict_layers = mtp_config.num_physical_depths
-
-        llm.mtp_config = mtp_config
-        mtp = build_nemotron_v3_mtp(
-            cfg_obj,
-            mtp_config=mtp_config,
-            backend=llm.backend,
-            moe_config=llm.model.moe_config,
-            dtype=dtype,
-        )
-        device = (
-            torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
-        )
-        mtp = mtp.to(device=device, dtype=dtype)
-        for sublayer in mtp.layers:
-            sublayer.init_weights(buffer_device=device)
-        llm.mtp = mtp
-        warnings.warn(
-            f"MTP head attached (unsharded): num_layers={mtp_config.num_layers} "
-            f"pattern={cfg_obj.mtp_hybrid_override_pattern!r}"
-        )
-
     def configure_model(
         self,
         distributed_setup=None,
@@ -1206,14 +1156,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if sdpa_method is not None:
             automodel_kwargs["sdpa_method"] = list(OmegaConf.to_container(sdpa_method, resolve=True))
 
-        # Multi-Token Prediction (MTP): native checkpoint heads load normally. For a
-        # checkpoint without one, we add an auxiliary head after loading because we
-        # cannot inject the head's settings through from_pretrained:
-        #   * mtp_hybrid_override_pattern is read ONLY from the HF config, but the base
-        #     config class doesn't declare it, so HF drops it as an unknown kwarg;
-        #   * passing config= collides — NemotronHForCausalLM.__init__ has **kwargs, so
-        #     Automodel's _filter_kwargs_for_init can't strip the positional ``config``.
-        # So we load the LLM normally and then construct + attach the head ourselves.
+        # Multi-Token Prediction (MTP): load the checkpoint config first and add a
+        # missing/replacement head definition before model construction. Automodel can
+        # then initialize, EP/FSDP-shard, activation-checkpoint, and compile the MTP
+        # sublayers together with the backbone. Native checkpoint MTP config is kept by
+        # default; set replace_existing_head=true to use the recipe's head definition.
         mtp_cfg = self.cfg.get("mtp", None)
         mtp_requested = mtp_cfg is not None and mtp_cfg.get("enabled", False)
         mtp_training_mode = str(mtp_cfg.get("training_mode", "joint")) if mtp_requested else "disabled"
@@ -1229,11 +1176,23 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # THD context (qkv_format/cu_seqlens/seq_idx) from the model forward.
             self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1))
             self._mtp_loss_fn = _build_mtp_loss_fn()
-            if mtp_cfg.get("use_repeated_layer", False):
+            requested_depth = int(mtp_cfg.get("num_nextn_predict_layers", 1))
+            use_repeated_layer = bool(mtp_cfg.get("use_repeated_layer", False))
+            # HF/vLLM exports describe physical layers. A repeated MTP head has one
+            # physical layer even when it performs multiple logical prediction steps.
+            physical_depth = 1 if use_repeated_layer else requested_depth
+            automodel_kwargs["mtp_config_overrides"] = {
+                "num_nextn_predict_layers": physical_depth,
+                "mtp_hybrid_override_pattern": str(mtp_cfg.get("hybrid_override_pattern", "*")),
+                "mtp_layers_block_type": None,
+            }
+            automodel_kwargs["replace_mtp_config"] = bool(mtp_cfg.get("replace_existing_head", False))
+            automodel_kwargs["mtp_loss_scaling_factor"] = self._mtp_loss_scaling_factor
+            if use_repeated_layer:
                 # HF exports contain the physical depth so their state dict has the
                 # same number of layers on reload. Restore the logical iteration count
                 # from the SpeechLM config when constructing that physical head.
-                automodel_kwargs["num_nextn_predict_layers"] = int(mtp_cfg.get("num_nextn_predict_layers", 1))
+                automodel_kwargs["num_nextn_predict_layers"] = requested_depth
                 automodel_kwargs["mtp_use_repeated_layer"] = True
         else:
             # Some checkpoints (including Nemotron-3.5 Lightning) ship a native
@@ -1255,15 +1214,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # actual state dict so conversion/reload does not recreate a missing head.
             self.llm.config.num_nextn_predict_layers = 0
 
-        # Build + attach the MTP head ourselves only when the checkpoint did not
-        # provide one. Native checkpoint MTP modules were already sharded by
-        # Automodel as part of the LLM load and must not be wrapped a second time.
-        mtp_attached_after_load = False
         if mtp_requested and not self._mtp_enabled:
-            self._build_and_attach_mtp_head(mtp_cfg, dtype)
-            mtp_attached_after_load = True
-        if mtp_requested and not self._mtp_enabled:
-            raise RuntimeError("MTP enabled but self.llm.mtp is still None after _build_and_attach_mtp_head.")
+            raise RuntimeError("MTP is enabled but Automodel did not construct an MTP head from the configured model.")
         if not mtp_requested and self._mtp_enabled:
             raise RuntimeError("MTP is disabled but the loaded LLM still has an MTP head attached.")
 
@@ -1318,14 +1270,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if fsdp_mesh.size() > 1:
             self._use_fsdp = True
             self.perception = fully_shard(self.perception, mesh=fsdp_mesh)
-            # A fallback MTP head is attached AFTER the LLM's own FSDP/EP wrapping,
-            # so it is still unsharded. Shard it over the same DP
-            # mesh — otherwise its parameters are replicated and its gradients never
-            # reduce-scatter across the DP group, so each rank would diverge on real
-            # (per-rank-different) data. The default fallback pattern is
-            # attention-only, for which plain FSDP2 over the DP mesh is appropriate.
-            if mtp_attached_after_load:
-                self.llm.mtp = fully_shard(self.llm.mtp, mesh=fsdp_mesh)
 
         # Enable MoE FSDP gradient accumulation optimization.
         # The MoEFSDPSyncMixin on the LLM defers gradient sync/resharding on

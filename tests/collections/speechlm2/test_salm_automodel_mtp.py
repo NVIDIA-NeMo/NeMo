@@ -100,14 +100,20 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
     SALMAutomodel.configure_model(model)
 
     assert captured_kwargs["num_nextn_predict_layers"] == 0
+    assert "mtp_config_overrides" not in captured_kwargs
     assert model.llm.config.num_nextn_predict_layers == 0
     assert not model._mtp_enabled
 
 
-@pytest.mark.parametrize("training_mode", ["joint", "head_only"])
-def test_base_checkpoint_attaches_fresh_mtp_for_both_training_modes(monkeypatch, training_mode):
-    """A checkpoint with no native head gets a fresh head in either enabled mode."""
+@pytest.mark.parametrize(
+    ("training_mode", "replace_existing_head"),
+    [("joint", False), ("head_only", False), ("joint", True)],
+)
+def test_base_checkpoint_attaches_fresh_mtp_for_both_training_modes(monkeypatch, training_mode, replace_existing_head):
+    """A checkpoint with no native head constructs MTP before Automodel loading."""
     from omegaconf import DictConfig
+
+    captured_kwargs = {}
 
     class _Perception(torch.nn.Module):
         def __init__(self):
@@ -132,7 +138,11 @@ def test_base_checkpoint_attaches_fresh_mtp_for_both_training_modes(monkeypatch,
             "pretrained_weights": True,
             "freeze_params": ["^.+$"] if training_mode == "head_only" else [],
             "prevent_freeze_params": [],
-            "mtp": {"enabled": True, "training_mode": training_mode},
+            "mtp": {
+                "enabled": True,
+                "training_mode": training_mode,
+                "replace_existing_head": replace_existing_head,
+            },
         }
     )
     model._trainer = None
@@ -140,20 +150,27 @@ def test_base_checkpoint_attaches_fresh_mtp_for_both_training_modes(monkeypatch,
     model._use_tp = False
     model.setup_moe_options = lambda: None
 
-    monkeypatch.setattr(salm_module, "load_pretrained_automodel_llm", lambda *_args, **_kwargs: _LLM())
+    def _load_llm(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        llm = _LLM()
+        llm.mtp = torch.nn.Linear(4, 4)
+        return llm
+
+    monkeypatch.setattr(salm_module, "load_pretrained_automodel_llm", _load_llm)
     monkeypatch.setattr(
         salm_module, "setup_speech_encoder", lambda model, **_kwargs: setattr(model, "perception", _Perception())
     )
     monkeypatch.setattr(salm_module, "update_perception_output_dim", lambda _model: None)
     monkeypatch.setattr(salm_module, "maybe_load_pretrained_models", lambda _model: None)
 
-    def _attach_fresh_head(self, _mtp_cfg, _dtype):
-        self.llm.mtp = torch.nn.Linear(4, 4)
-
-    monkeypatch.setattr(SALMAutomodel, "_build_and_attach_mtp_head", _attach_fresh_head)
-
     SALMAutomodel.configure_model(model)
 
+    assert captured_kwargs["mtp_config_overrides"] == {
+        "num_nextn_predict_layers": 1,
+        "mtp_hybrid_override_pattern": "*",
+        "mtp_layers_block_type": None,
+    }
+    assert captured_kwargs["replace_mtp_config"] is replace_existing_head
     assert model._mtp_enabled
     assert all(param.requires_grad for param in model.llm.mtp.parameters())
     if training_mode == "head_only":
@@ -246,6 +263,12 @@ def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
 
     SALMAutomodel.configure_model(model)
 
+    assert captured_kwargs["mtp_config_overrides"] == {
+        "num_nextn_predict_layers": 1,
+        "mtp_hybrid_override_pattern": "*",
+        "mtp_layers_block_type": None,
+    }
+    assert captured_kwargs["replace_mtp_config"] is False
     assert captured_kwargs["num_nextn_predict_layers"] == 3
     assert captured_kwargs["mtp_use_repeated_layer"] is True
 
@@ -679,67 +702,3 @@ def test_joint_keep_pattern_follows_wrapped_mtp_namespace():
     assert {id(param) for param in model.llm.mtp.parameters()} <= optimizer_param_ids
     assert all(param.requires_grad for param in model.llm.mtp.parameters())
     assert all(not param.requires_grad for param in model.llm._orig_mod.backbone.parameters())
-
-
-def test_fresh_mtp_head_is_initialized_and_exports_physical_depth(monkeypatch):
-    from types import SimpleNamespace
-
-    from omegaconf import DictConfig
-
-    mtp_module = pytest.importorskip(
-        "nemo_automodel.components.models.nemotron_v3.mtp", reason="needs Automodel NemotronV3 MTP"
-    )
-    initialized_on = []
-
-    class _Layer(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.weight = torch.nn.Parameter(torch.zeros(2, 2))
-
-        def init_weights(self, buffer_device=None):
-            initialized_on.append(buffer_device)
-            with torch.no_grad():
-                self.weight.fill_(0.25)
-
-    class _MTP(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.layers = torch.nn.ModuleList([_Layer()])
-
-    class _LLM(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.config = SimpleNamespace()
-            self.backend = object()
-            self.model = SimpleNamespace(moe_config=None)
-            self.mtp = None
-
-    runtime_mtp_config = SimpleNamespace(num_layers=3, num_physical_depths=1)
-    fresh_mtp = _MTP()
-
-    def _build_config(config, **kwargs):
-        assert config.num_nextn_predict_layers == 3
-        assert kwargs["use_repeated_layer"]
-        return runtime_mtp_config
-
-    monkeypatch.setattr(mtp_module, "build_mtp_config_from_hf", _build_config)
-    monkeypatch.setattr(mtp_module, "build_nemotron_v3_mtp", lambda *_args, **_kwargs: fresh_mtp)
-
-    model = _bare_model()
-    model.llm = _LLM()
-    model._mtp_loss_scaling_factor = 0.1
-    cfg = DictConfig(
-        {
-            "num_nextn_predict_layers": 3,
-            "hybrid_override_pattern": "*",
-            "use_repeated_layer": True,
-        }
-    )
-
-    with pytest.warns(UserWarning, match="MTP head attached"):
-        model._build_and_attach_mtp_head(cfg, torch.float32)
-
-    assert model.llm.mtp is fresh_mtp
-    assert model.llm.config.num_nextn_predict_layers == 1
-    assert initialized_on == [next(fresh_mtp.parameters()).device]
-    assert torch.all(fresh_mtp.layers[0].weight == 0.25)

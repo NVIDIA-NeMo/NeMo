@@ -93,6 +93,8 @@ def load_pretrained_automodel_llm(
     pretrained_weights: bool = True,
     dtype=torch.float32,
     trust_remote_code: bool = False,
+    mtp_config_overrides: dict | None = None,
+    replace_mtp_config: bool = False,
     **kwargs,
 ):
     """
@@ -104,9 +106,15 @@ def load_pretrained_automodel_llm(
     Setting ``pretrained_weights=False`` returns a model that has identical architecture
     with the checkpoint, but is randomly initialized.
 
-    Extra ``kwargs`` (including ``distributed_setup``) are forwarded to the
-    underlying ``from_pretrained`` / ``from_config`` call so that parallelization
-    happens during loading.
+    When ``mtp_config_overrides`` is provided, the checkpoint config is loaded
+    first and the overrides are applied only when it has no enabled MTP head, or
+    unconditionally when ``replace_mtp_config=True``. When overrides apply, the
+    resulting model is constructed through ``from_config`` before its base checkpoint is loaded, so
+    Automodel applies its normal initialization and parallelization to a new MTP
+    head. When the architecture is added or replaced, all checkpoint ``mtp.*``
+    tensors are excluded from the base load so the configured head keeps its
+    fresh initialization. Extra ``kwargs`` (including ``distributed_setup``)
+    are forwarded so parallelization happens during construction.
     """
     from nemo_automodel import NeMoAutoModelForCausalLM
 
@@ -118,6 +126,42 @@ def load_pretrained_automodel_llm(
         trust_remote_code=trust_remote_code,
     )
 
+    if mtp_config_overrides is not None:
+        config_kwargs, automodel_kwargs = _split_automodel_hf_resolution_kwargs(kwargs)
+        if pretrained_weights:
+            checkpoint_path = _resolve_automodel_checkpoint_path(model_path_or_name, config_kwargs)
+        else:
+            checkpoint_path = _resolve_automodel_checkpoint_path(
+                model_path_or_name, config_kwargs, include_weights=False
+            )
+        config = AutoConfig.from_pretrained(
+            checkpoint_path,
+            trust_remote_code=trust_remote_code,
+            local_files_only=True,
+        )
+        checkpoint_has_mtp = _automodel_config_has_mtp(config)
+        config_overridden = replace_mtp_config or not checkpoint_has_mtp
+        if not config_overridden and pretrained_weights:
+            return NeMoAutoModelForCausalLM.from_pretrained(
+                checkpoint_path,
+                torch_dtype=dtype,
+                trust_remote_code=trust_remote_code,
+                **automodel_kwargs,
+            )
+        if config_overridden:
+            for name, value in mtp_config_overrides.items():
+                setattr(config, name, value)
+        model = NeMoAutoModelForCausalLM.from_config(
+            config,
+            torch_dtype=dtype,
+            load_base_model=False,
+            trust_remote_code=trust_remote_code,
+            **automodel_kwargs,
+        )
+        if pretrained_weights and config_overridden:
+            _load_automodel_base_checkpoint_without_mtp(model, checkpoint_path, automodel_kwargs)
+        return model
+
     if pretrained_weights:
         return NeMoAutoModelForCausalLM.from_pretrained(
             model_path_or_name,
@@ -128,6 +172,36 @@ def load_pretrained_automodel_llm(
     else:
         config = AutoConfig.from_pretrained(model_path_or_name, trust_remote_code=trust_remote_code)
         return NeMoAutoModelForCausalLM.from_config(config, torch_dtype=dtype, **kwargs)
+
+
+def _load_automodel_base_checkpoint_without_mtp(model, model_path_or_name: str, automodel_kwargs: dict) -> None:
+    """Load an Automodel base checkpoint without overwriting a freshly configured MTP head."""
+    from nemo_automodel.components.checkpoint.checkpointing import Checkpointer, CheckpointingConfig
+
+    distributed_setup = automodel_kwargs.get("distributed_setup")
+    mesh_context = getattr(distributed_setup, "mesh_context", None)
+    cache_dir = automodel_kwargs.get("cache_dir")
+    checkpointer = Checkpointer(
+        CheckpointingConfig(
+            enabled=True,
+            checkpoint_dir="",
+            model_save_format="safetensors",
+            model_cache_dir=cache_dir,
+            model_repo_id=model_path_or_name,
+            save_consolidated=False,
+            is_peft=automodel_kwargs.get("peft_config") is not None,
+            skip_task_head_prefixes_for_base_model=["mtp."],
+        ),
+        0,
+        0,
+        0,
+        getattr(mesh_context, "moe_mesh", None),
+        process_group=getattr(mesh_context, "process_group", None),
+    )
+
+    device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
+    with _exclude_mtp_checkpoint_state(model):
+        checkpointer.load_base_model(model, device, cache_dir, model_path_or_name, load_base_model=True)
 
 
 def update_perception_output_dim(model):
@@ -659,3 +733,124 @@ def maybe_load_pretrained_models(model: torch.nn.Module):
 
     if model.cfg.get("init_from_checkpoint", None):
         init_from_training_checkpoint(model, model.cfg.init_from_checkpoint)
+
+
+def _automodel_config_has_mtp(config) -> bool:
+    """Whether an HF config describes an enabled MTP head."""
+    depth = getattr(config, "num_nextn_predict_layers", None)
+    if depth is None:
+        depth = getattr(config, "mtp_num_hidden_layers", 0)
+    return int(depth or 0) > 0
+
+
+_AUTOMODEL_HF_RESOLUTION_KWARGS = {
+    "cache_dir",
+    "force_download",
+    "local_files_only",
+    "proxies",
+    "resume_download",
+    "revision",
+    "subfolder",
+    "token",
+    "use_auth_token",
+}
+
+
+def _split_automodel_hf_resolution_kwargs(kwargs: dict) -> tuple[dict, dict]:
+    """Separate Hugging Face repository resolution options from model-construction options."""
+    config_kwargs = {name: value for name, value in kwargs.items() if name in _AUTOMODEL_HF_RESOLUTION_KWARGS}
+    automodel_kwargs = {name: value for name, value in kwargs.items() if name not in _AUTOMODEL_HF_RESOLUTION_KWARGS}
+    if "cache_dir" in kwargs:
+        automodel_kwargs["cache_dir"] = kwargs["cache_dir"]
+    return config_kwargs, automodel_kwargs
+
+
+def _resolve_automodel_checkpoint_path(
+    model_path_or_name: str, hf_kwargs: dict, *, include_weights: bool = True
+) -> str:
+    """Resolve one exact local checkpoint snapshot for config-first Automodel loading."""
+    model_path = Path(model_path_or_name)
+    subfolder = hf_kwargs.get("subfolder")
+    if model_path.exists():
+        resolved_path = model_path
+    else:
+        from huggingface_hub import snapshot_download
+
+        snapshot_kwargs = {
+            name: value
+            for name, value in hf_kwargs.items()
+            if name
+            in {
+                "cache_dir",
+                "force_download",
+                "local_files_only",
+                "proxies",
+                "resume_download",
+                "revision",
+                "token",
+            }
+        }
+        if "token" not in snapshot_kwargs and "use_auth_token" in hf_kwargs:
+            snapshot_kwargs["token"] = hf_kwargs["use_auth_token"]
+        if not include_weights:
+            snapshot_kwargs["allow_patterns"] = ["*.json", "*.py"]
+        resolved_path = Path(snapshot_download(repo_id=model_path_or_name, **snapshot_kwargs))
+
+    if subfolder:
+        resolved_path = resolved_path / subfolder
+    if not resolved_path.exists():
+        raise FileNotFoundError(f"Resolved Automodel checkpoint path does not exist: {resolved_path}")
+    return str(resolved_path)
+
+
+def _is_mtp_state_key(key: str) -> bool:
+    return "mtp" in key.split(".")
+
+
+@contextmanager
+def _exclude_mtp_checkpoint_state(model):
+    """Exclude MTP tensors even in Automodel's direct HF checkpoint fast paths."""
+    load_hook = None
+    if hasattr(model, "register_load_state_dict_pre_hook"):
+
+        def remove_mtp_from_load(_module, state_dict, *_args):
+            for key in list(state_dict):
+                if _is_mtp_state_key(key):
+                    state_dict.pop(key)
+
+        load_hook = model.register_load_state_dict_pre_hook(remove_mtp_from_load)
+
+    adapter = _find_automodel_state_dict_adapter(model)
+    original_from_hf = getattr(adapter, "from_hf", None)
+    adapter_attributes = getattr(adapter, "__dict__", {})
+    had_instance_from_hf = "from_hf" in adapter_attributes
+    instance_from_hf = adapter_attributes.get("from_hf")
+    if original_from_hf is not None:
+
+        def from_hf_without_mtp(state_dict, *args, **kwargs):
+            filtered_state = {key: value for key, value in state_dict.items() if not _is_mtp_state_key(key)}
+            return original_from_hf(filtered_state, *args, **kwargs)
+
+        adapter.from_hf = from_hf_without_mtp
+    try:
+        yield
+    finally:
+        if load_hook is not None:
+            load_hook.remove()
+        if original_from_hf is not None:
+            if had_instance_from_hf:
+                adapter.from_hf = instance_from_hf
+            else:
+                del adapter.from_hf
+
+
+def _find_automodel_state_dict_adapter(model):
+    visited = set()
+    current = model
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        adapter = getattr(current, "state_dict_adapter", None)
+        if adapter is not None:
+            return adapter
+        current = getattr(current, "module", None) or getattr(current, "_orig_mod", None)
+    return None

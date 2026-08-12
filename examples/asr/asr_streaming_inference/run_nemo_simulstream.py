@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Wrapper to run simulstream (https://github.com/NVIDIA/simulstream) inference with NeMo's streaming
+Wrapper to run simulstream (https://github.com/hlt-mt/simulstream) inference with NeMo's streaming
 ASR/AST configs (see nemo/collections/asr/inference/utils/simulstream_pipeline_adapter.py).
 
 NeMo config files don't have the 'type' field simulstream requires to locate the speech processor

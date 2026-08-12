@@ -14,13 +14,12 @@
 import re
 import warnings
 from collections import defaultdict
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Any
 
 import torch
 import torch.distributed as dist
 from lightning import LightningModule
+from nemo_automodel.components.loss.mtp import MTPLossOutput, calculate_mtp_loss
 from omegaconf import DictConfig, OmegaConf
 from torch import Tensor
 from torch.distributed.fsdp import fully_shard
@@ -35,6 +34,13 @@ from nemo.collections.speechlm2.models.salm import _resolve_audios_in_prompt, re
 from nemo.collections.speechlm2.parts.automodel_lora import ensure_lora_trainable, make_peft_config, maybe_install_lora
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
+from nemo.collections.speechlm2.parts.mtp import (
+    build_mtp_loss_fn,
+    calculate_mtp_teacher_forced_agreement,
+    compute_mtp_agreement_lengths,
+    mtp_validation_forward,
+    vocab_parallel_argmax,
+)
 from nemo.collections.speechlm2.parts.multispeaker import build_speaker_tokens, maybe_init_lss_loss
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
 from nemo.collections.speechlm2.parts.pretrained import (
@@ -489,7 +495,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # seq_idx and masks cross-sequence targets.
             mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
             with loss_parallel():
-                mtp_loss, mtp_raw_loss_by_head = _calculate_mtp_loss_with_heads(
+                mtp_loss_output = calculate_mtp_loss(
                     self._mtp_loss_fn,
                     mtp_per_depth_h=mtp_h,
                     labels=inputs["target_ids"],
@@ -498,7 +504,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     num_label_tokens=num_frames_global,
                     grad_reduce_group=dp_group,
                     cu_seqlens=mtp_cu_seqlens,
+                    return_per_depth=True,
                 )
+                if not isinstance(mtp_loss_output, MTPLossOutput):
+                    raise TypeError("Automodel did not return the requested per-depth MTP loss output")
+                mtp_loss = mtp_loss_output.loss
+                mtp_raw_loss_by_head = mtp_loss_output.per_depth_losses
             mtp_loss = dp_size * mtp_loss
             mtp_raw_loss_by_head = [dp_size * head_loss for head_loss in mtp_raw_loss_by_head]
             loss = loss + mtp_loss
@@ -600,11 +611,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if self._partial_val_mtp_correct:
             agreement_lengths = []
             for name in self._partial_val_mtp_correct:
-                correct = torch.stack(self._partial_val_mtp_correct[name]).sum(dim=0)
-                valid = torch.stack(self._partial_val_mtp_valid[name]).sum(dim=0)
-                D = correct.numel()
-                reduced = self._reduce_validation_metric_sums(torch.cat([correct, valid]), reduction_group)
-                per_head = reduced[:D].float() / reduced[D:].clamp(min=1).float()
+                per_head, agreement_length = compute_mtp_agreement_lengths(
+                    self._partial_val_mtp_correct[name],
+                    self._partial_val_mtp_valid[name],
+                    reduce_sums=lambda values: self._reduce_validation_metric_sums(values, reduction_group),
+                )
                 for head_idx, p in enumerate(per_head, start=1):
                     self.log(
                         f"val_mtp_teacher_forced_agreement_{name}/head_{head_idx}",
@@ -612,7 +623,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                         on_epoch=True,
                         sync_dist=True,
                     )
-                agreement_length = 1.0 + per_head.sum()
                 self.log(
                     f"val_mtp_teacher_forced_prefix_length_{name}", agreement_length, on_epoch=True, sync_dist=True
                 )
@@ -643,10 +653,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             if dataset_batch is None:
                 continue  # some dataset is exhausted
             inputs = self.prepare_inputs(dataset_batch)
-            # Enable MTP only around the validation forward. New Automodel revisions expose
-            # ``compute_mtp_in_eval``; the compatibility path for the currently pinned revision
-            # flips only the root module's gate while leaving every child in eval mode.
-            with _mtp_validation_forward(self.llm, enabled=self._mtp_enabled):
+            # Enable MTP only around the validation forward while keeping the model in eval mode.
+            with mtp_validation_forward(self.llm, enabled=self._mtp_enabled):
                 forward_outputs = self(
                     inputs["input_embeds"],
                     attention_mask=inputs["attention_mask"],
@@ -668,7 +676,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 lss_val = self.lss_loss(log_probs=log_probs, labels=inputs["target_ids"])
                 self._partial_val_lss[name].append(lss_val.detach())
 
-            verifier_predictions = _vocab_parallel_argmax(logits)
+            verifier_predictions = vocab_parallel_argmax(logits)
             preds = verifier_predictions.view(-1)
             refs = inputs["target_ids"].reshape(-1)
             preds = preds[refs != -100]
@@ -683,7 +691,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             mtp_h = forward_outputs.get("mtp_per_depth_h", None)
             if mtp_h is not None:
                 mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
-                correct_by_head, valid_by_head = _calculate_mtp_teacher_forced_agreement_with_heads(
+                correct_by_head, valid_by_head = calculate_mtp_teacher_forced_agreement(
                     mtp_per_depth_h=mtp_h,
                     labels=inputs["target_ids"],
                     model=self.llm,
@@ -1173,7 +1181,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # boundaries (see training_step); the MTP sublayers already get the
             # THD context (qkv_format/cu_seqlens/seq_idx) from the model forward.
             self._mtp_loss_scaling_factor = float(mtp_cfg.get("loss_scaling_factor", 0.1))
-            self._mtp_loss_fn = _build_mtp_loss_fn()
+            self._mtp_loss_fn = build_mtp_loss_fn()
             requested_depth = int(mtp_cfg.get("num_nextn_predict_layers", 1))
             use_repeated_layer = bool(mtp_cfg.get("use_repeated_layer", False))
             # HF/vLLM exports describe physical layers. A repeated MTP head has one
@@ -1315,271 +1323,3 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 {"name": "loss_mask", "type": NeuralType(("B", "T"), MaskType()), "seq_length": "output"},
             ],
         }
-
-
-def _build_mtp_loss_fn() -> torch.nn.Module:
-    """Select the memory-efficient MTP loss with an optional-dependency fallback."""
-    from nemo_automodel.components.loss import linear_ce
-
-    gradient_safe_fused_api = callable(getattr(linear_ce.FusedLinearCrossEntropy, "materialize_lm_weight", None))
-    if linear_ce.HAVE_CUT_CROSS_ENTROPY and gradient_safe_fused_api:
-        # Fuse the shared LM projection with CE so each MTP depth does not materialize
-        # a full [tokens, vocab] logits tensor. reduction="sum" lets the helper
-        # normalize by the global labeled-token count.
-        return linear_ce.FusedLinearCrossEntropy(reduction="sum")
-
-    # cut-cross-entropy is optional in Automodel and is absent from existing NeMo
-    # Speech containers. Retain the pre-fused compatibility path so enabling MTP
-    # does not introduce a new undeclared runtime requirement.
-    from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
-
-    if linear_ce.HAVE_CUT_CROSS_ENTROPY:
-        logging.warning(
-            "The installed Automodel lacks gradient-safe sharded LM-head materialization; "
-            "falling back to the unfused MTP loss. Upgrade Automodel to enable fused MTP loss."
-        )
-    else:
-        logging.warning(
-            "cut_cross_entropy is unavailable; falling back to the unfused MTP loss. "
-            "Install cut-cross-entropy to reduce peak MTP loss memory."
-        )
-    return MaskedCrossEntropy(reduction="sum", fp32_upcast=False)
-
-
-def _resolve_mtp_seq_idx(
-    labels: torch.Tensor,
-    *,
-    cu_seqlens: torch.Tensor | None = None,
-    seq_idx: torch.Tensor | None = None,
-) -> torch.Tensor | None:
-    """Resolve packed-sequence IDs and align them with the label layout."""
-    if seq_idx is None and cu_seqlens is not None:
-        cs = cu_seqlens
-        if cs.dim() == 2:
-            if cs.shape[0] != 1:
-                raise ValueError(f"MTP cu_seqlens must have shape [N+1] or [1, N+1], got {tuple(cs.shape)}")
-            cs = cs.squeeze(0)
-        if cs.dim() != 1:
-            raise ValueError(f"MTP cu_seqlens must have shape [N+1] or [1, N+1], got {tuple(cs.shape)}")
-        positions = torch.arange(labels.shape[-1], device=labels.device)
-        seq_idx = torch.searchsorted(cs[1:].contiguous(), positions, right=True)
-
-    if seq_idx is None:
-        return None
-    if seq_idx.dim() == 1 and labels.dim() == 2:
-        seq_idx = seq_idx.unsqueeze(0).expand(labels.shape[0], -1)
-    elif seq_idx.dim() == 2 and labels.dim() == 1 and seq_idx.shape[0] == 1:
-        seq_idx = seq_idx.squeeze(0)
-    if seq_idx.shape != labels.shape:
-        raise ValueError(f"MTP seq_idx shape {tuple(seq_idx.shape)} does not match labels shape {tuple(labels.shape)}")
-    return seq_idx
-
-
-def _iter_mtp_depth_targets(
-    labels: torch.Tensor,
-    num_depths: int,
-    *,
-    ignore_index: int = -100,
-    cu_seqlens: torch.Tensor | None = None,
-    seq_idx: torch.Tensor | None = None,
-) -> Iterator[torch.Tensor]:
-    """Yield shifted labels with trailing and packed-boundary positions masked."""
-    from nemo_automodel.components.models.common.mtp import roll_tensor
-
-    seq_idx = _resolve_mtp_seq_idx(labels, cu_seqlens=cu_seqlens, seq_idx=seq_idx)
-    cur_labels = labels
-    for depth in range(1, num_depths + 1):
-        cur_labels = roll_tensor(cur_labels, shifts=-1, dim=-1)
-        masked = cur_labels.clone()
-        n_invalid = min(depth, masked.shape[-1])
-        masked[..., -n_invalid:] = ignore_index
-
-        if seq_idx is not None:
-            rolled_seq_idx = roll_tensor(seq_idx, shifts=-depth, dim=-1)
-            masked = torch.where(rolled_seq_idx != seq_idx, torch.full_like(masked, ignore_index), masked)
-
-        yield masked
-
-
-def _calculate_mtp_loss_with_heads(
-    loss_fn,
-    *,
-    mtp_per_depth_h: list[torch.Tensor],
-    labels: torch.Tensor,
-    model: torch.nn.Module,
-    scaling_factor: float = 0.1,
-    num_label_tokens: torch.Tensor | None = None,
-    grad_reduce_group: dist.ProcessGroup | None = None,
-    ignore_index: int = -100,
-    cu_seqlens: torch.Tensor | None = None,
-    seq_idx: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, list[torch.Tensor]]:
-    """Compute aggregate MTP loss and per-head losses for logging.
-
-    This mirrors Automodel's ``calculate_mtp_loss`` but keeps the intermediate
-    depth losses so Lightning/WandB can display each MTP head. Returned
-    ``raw_head_losses`` are normalized CE values before applying
-    ``scaling_factor / D``. The caller applies the same DP correction used by
-    the main training loss.
-    """
-    from nemo_automodel.components.loss.linear_ce import FusedLinearCrossEntropy
-    from nemo_automodel.components.loss.utils import _get_lm_head_module, calculate_loss
-
-    if labels.dim() == 1:
-        mtp_per_depth_h = [h.squeeze(0) if (h.dim() == 3 and h.shape[0] == 1) else h for h in mtp_per_depth_h]
-
-    D = len(mtp_per_depth_h)
-    head_scale = scaling_factor / D
-    total = mtp_per_depth_h[0].new_zeros(())
-    raw_head_losses = []
-
-    lm_head = _get_lm_head_module(model)
-    if lm_head is None:
-        raise ValueError("lm_head module not found in model")
-
-    # FusedLinearCrossEntropy consumes the shared LM-head weight directly. Materialize
-    # a possibly sharded weight once and reuse it for every depth; gathering separately
-    # inside calculate_loss retains one full vocabulary matrix per head for backward.
-    lm_weight = None
-    if isinstance(loss_fn, FusedLinearCrossEntropy):
-        lm_weight = lm_head.weight
-        if isinstance(lm_weight, DTensor):
-            materialize = getattr(loss_fn, "materialize_lm_weight", None)
-            if not callable(materialize):
-                raise RuntimeError(
-                    "Fused MTP loss requires Automodel's gradient-safe materialize_lm_weight API for DTensor weights"
-                )
-            lm_weight = materialize(lm_weight, grad_reduce_group=grad_reduce_group)
-
-    depth_targets = _iter_mtp_depth_targets(
-        labels,
-        D,
-        ignore_index=ignore_index,
-        cu_seqlens=cu_seqlens,
-        seq_idx=seq_idx,
-    )
-    for mtp_output, masked in zip(mtp_per_depth_h, depth_targets):
-        if isinstance(loss_fn, FusedLinearCrossEntropy):
-            depth_loss = calculate_loss(
-                loss_fn,
-                hidden_states=mtp_output,
-                labels=masked,
-                model=model,
-                lm_weight=lm_weight,
-                num_label_tokens=num_label_tokens,
-                grad_reduce_group=grad_reduce_group,
-            )
-        else:
-            depth_loss = calculate_loss(
-                loss_fn,
-                logits=lm_head(mtp_output),
-                labels=masked,
-                num_label_tokens=num_label_tokens,
-            )
-
-        raw_head_losses.append(depth_loss)
-        total = total + depth_loss * head_scale
-
-    return total, raw_head_losses
-
-
-def _vocab_parallel_argmax(logits: torch.Tensor) -> torch.Tensor:
-    """Return global vocabulary argmax IDs without gathering full logits.
-
-    PyTorch's DTensor argmax handler reduces sharded maxima and their global
-    indices across the vocabulary mesh. Materialize only the resulting token-ID
-    tensor, whose vocabulary dimension has already been removed.
-    """
-    predictions = logits.argmax(dim=-1)
-    if isinstance(predictions, DTensor):
-        predictions = predictions.full_tensor()
-    return predictions
-
-
-def _calculate_mtp_teacher_forced_agreement_with_heads(
-    *,
-    mtp_per_depth_h: list[torch.Tensor],
-    labels: torch.Tensor,
-    model: torch.nn.Module,
-    verifier_predictions: torch.Tensor,
-    ignore_index: int = -100,
-    cu_seqlens: torch.Tensor | None = None,
-    seq_idx: torch.Tensor | None = None,
-) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """Per-head teacher-forced MTP/verifier agreement counts for validation.
-
-    For each MTP depth ``k`` the head's argmax prediction is compared with the
-    verifier's prediction for the same future position from the validation
-    forward conditioned on ground-truth tokens. Counts are prefix-based: depth
-    ``k`` agrees only when every draft through ``k`` matches. This must not be
-    reported as speculative-decoding acceptance, which requires verifier logits
-    conditioned on the proposed draft prefix. The same rolled/masked labels as
-    the MTP loss define eligible positions, including packed-THD boundaries.
-    """
-    from nemo_automodel.components.loss.utils import _get_lm_head_module
-    from nemo_automodel.components.models.common.mtp import roll_tensor
-
-    mtp_outputs = mtp_per_depth_h
-    if labels.dim() == 1:
-        mtp_outputs = [h.squeeze(0) if (h.dim() == 3 and h.shape[0] == 1) else h for h in mtp_outputs]
-        if verifier_predictions.dim() == 2 and verifier_predictions.shape[0] == 1:
-            verifier_predictions = verifier_predictions.squeeze(0)
-    if verifier_predictions.shape != labels.shape:
-        raise ValueError(
-            f"verifier_predictions.shape={tuple(verifier_predictions.shape)} does not "
-            f"match labels.shape={tuple(labels.shape)}"
-        )
-
-    lm_head = _get_lm_head_module(model)
-    if lm_head is None:
-        raise ValueError("lm_head module not found in model")
-
-    prefix_matches = torch.ones_like(labels, dtype=torch.bool)
-    prefix_valid = torch.ones_like(labels, dtype=torch.bool)
-    correct_by_head = []
-    valid_by_head = []
-    depth_targets = _iter_mtp_depth_targets(
-        labels,
-        len(mtp_outputs),
-        ignore_index=ignore_index,
-        cu_seqlens=cu_seqlens,
-        seq_idx=seq_idx,
-    )
-    for k, (mtp_output, masked) in enumerate(zip(mtp_outputs, depth_targets)):
-        logits = lm_head(mtp_output)
-        preds = _vocab_parallel_argmax(logits)
-        valid = masked != ignore_index
-        verifier_for_depth = roll_tensor(verifier_predictions, shifts=-(k + 1), dim=-1)
-        prefix_valid = prefix_valid & valid
-        prefix_matches = prefix_matches & preds.eq(verifier_for_depth)
-        correct_by_head.append((prefix_matches & prefix_valid).sum())
-        valid_by_head.append(prefix_valid.sum())
-
-    return correct_by_head, valid_by_head
-
-
-@contextmanager
-def _mtp_validation_forward(llm: torch.nn.Module, *, enabled: bool):
-    """Run MTP during one eval forward without changing child-module eval state."""
-    if not enabled:
-        yield
-        return
-
-    if hasattr(llm, "compute_mtp_in_eval"):
-        previous = llm.compute_mtp_in_eval
-        llm.compute_mtp_in_eval = True
-        try:
-            yield
-        finally:
-            llm.compute_mtp_in_eval = previous
-        return
-
-    # Older Automodel revisions gate MTP only on the root module's ``training``
-    # flag. Assign it directly rather than calling train(), which would recursively
-    # enable dropout and other training-only behavior in the frozen verifier.
-    previous = llm.training
-    llm.training = True
-    try:
-        yield
-    finally:
-        llm.training = previous

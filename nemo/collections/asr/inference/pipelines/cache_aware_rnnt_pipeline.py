@@ -116,9 +116,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         if cfg.streaming.att_context_size is not None:
             self.asr_model.set_default_att_context_size(att_context_size=cfg.streaming.att_context_size)
 
-        # Language prompting for multilingual (prompt-conditioned) models. Reuses the top-level
-        # `lang` config field, which is also consumed by ITN; it is only applied to the ASR model
-        # when the model actually supports language prompts.
+        # Language prompt for multilingual models, taken from the top-level `lang` field.
         self.strip_lang_tags = cfg.asr.get("strip_lang_tags", True)
         if self.prompt_enabled:
             self.default_language_code = cfg.get("lang", None) or self._resolve_default_language_code()
@@ -366,8 +364,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
         state.update_(eou_detected)
 
         if self._lang_tag_filtering_enabled() and state.tokens:
-            # ``update_`` rebuilds the publish tokens from the raw beam stream, so language tags
-            # already filtered during decoding reappear here and must be dropped again.
+            # ``update_`` rebuilds the tokens from the raw beam stream, so language tags reappear here.
             state.tokens, state.timesteps, state.confidences = filter_token_triples(
                 state.tokens, state.timesteps, state.confidences, self.language_token_ids
             )
@@ -397,8 +394,8 @@ class CacheAwareRNNTPipeline(BasePipeline):
         state.set_offset(new_offset)
 
         if self._lang_tag_filtering_enabled():
-            # Multilingual models in "auto" mode emit language tags (e.g. <en-US>) as regular tokens;
-            # drop them so they neither appear in the transcript nor count as speech for EOU detection.
+            # Drop language tags (e.g. <en-US>) so they are excluded from the transcript
+            # and are not counted as speech for EOU detection.
             cur_output, cur_labels = filter_tokens_from_greedy_output(
                 cur_output, cur_labels, self.language_token_ids, self.blank_id
             )
@@ -621,7 +618,6 @@ class CacheAwareRNNTPipeline(BasePipeline):
         """
         Whether language tags should be stripped from the decoded output.
         Returns:
-            (bool) True when the model is prompt-conditioned, stripping is enabled and the
-                vocabulary actually contains language tokens.
+            (bool) True if the model is prompt-conditioned, stripping is on and the vocabulary has language tokens.
         """
         return bool(self.prompt_enabled and self.strip_lang_tags and self.language_token_ids)

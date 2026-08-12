@@ -493,35 +493,6 @@ class CodecHelper:
             )
         return groups
 
-    def continuous_fsq_embedding_bounds(
-        self,
-        num_semantic_codebooks: int = 0,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return normalized continuous FSQ limits for the selected acoustic groups."""
-        if not 0 <= num_semantic_codebooks < self.codec_model.num_codebooks:
-            raise ValueError(
-                f"num_semantic_codebooks must be in [0, {self.codec_model.num_codebooks - 1}], "
-                f"got {num_semantic_codebooks}."
-            )
-
-        lower_bounds = []
-        upper_bounds = []
-        quantizer_groups = self._independent_quantizer_groups()[num_semantic_codebooks:]
-        for quantizer_group in quantizer_groups:
-            num_levels = getattr(quantizer_group, "num_levels", None)
-            if num_levels is None:
-                raise ValueError("Continuous acoustic embeddings require grouped finite scalar quantizers (FSQ).")
-            num_levels_float = num_levels.float()
-            scale = (num_levels // 2).to(num_levels_float)
-            output_scale = (num_levels_float - 1.0) * 0.5 * (1.0 - float(quantizer_group.eps))
-            output_offset = torch.where(num_levels % 2 == 0, 0.5, 0.0).to(num_levels_float)
-            lower_bounds.append(((-output_scale - output_offset) / scale).reshape(-1))
-            upper_bounds.append(((output_scale - output_offset) / scale).reshape(-1))
-
-        lower = torch.cat(lower_bounds).reshape(1, -1, 1)
-        upper = torch.cat(upper_bounds).reshape(1, -1, 1)
-        return lower, upper
-
     def audio_to_semantic_codes_and_embedding(
         self,
         audio: torch.Tensor,

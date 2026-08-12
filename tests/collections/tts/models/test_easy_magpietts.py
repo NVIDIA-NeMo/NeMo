@@ -816,7 +816,7 @@ def test_one_shot_flow_sampling_returns_semantic_codes_and_continuous_acoustics(
     assert acoustic_embedding.is_floating_point()
 
 
-def test_flow_matching_sampling_uses_separate_cfg_conditions_and_clamps_codec_support():
+def test_flow_matching_sampling_uses_separate_cfg_conditions():
     _seed_everything()
     model = _make_easy_magpie_model(
         tiny_easy_magpie_cfg(
@@ -841,9 +841,8 @@ def test_flow_matching_sampling_uses_separate_cfg_conditions_and_clamps_codec_su
     )
     logits = torch.zeros(batch_size, semantic_channels * model.num_all_tokens_per_codebook)
     sampled_semantic = torch.zeros(batch_size, semantic_channels, dtype=torch.long)
-    predicted_acoustic = torch.full(
+    predicted_acoustic = torch.zeros(
         (batch_size, model.acoustic_codec_embedding_dim * model.frame_stacking_factor, 1),
-        100.0,
     )
 
     with (
@@ -864,8 +863,12 @@ def test_flow_matching_sampling_uses_separate_cfg_conditions_and_clamps_codec_su
     conditional = predict_kwargs["condition"]
     unconditional = predict_kwargs["unconditional_condition"]
     torch.testing.assert_close(conditional[:, model.cfg.hidden_dim :], unconditional[:, model.cfg.hidden_dim :])
-    assert torch.all(acoustic_embedding <= model.codec_acoustic_embedding_max)
-    assert torch.all(acoustic_embedding >= model.codec_acoustic_embedding_min)
+    expected_acoustic = model.unstack_codec_embeddings(
+        predicted_acoustic,
+        model.frame_stacking_factor,
+        model.acoustic_codec_embedding_dim,
+    )
+    torch.testing.assert_close(acoustic_embedding, expected_acoustic)
 
 
 def test_one_shot_flow_teacher_forced_inference_decodes_continuous_acoustics_directly():
@@ -972,22 +975,11 @@ def test_one_shot_flow_free_running_inference_feeds_generated_acoustics_back():
     feedback_inputs = [
         call.args[1] for call in embed_mock.call_args_list if call.args[1].shape == (1, expected_channels, 1)
     ]
-    expected_feedback = torch.maximum(
-        torch.minimum(
-            torch.ones_like(feedback_inputs[0]),
-            model._codec_stacked_acoustic_embedding_max_buffer,
-        ),
-        model._codec_stacked_acoustic_embedding_min_buffer,
+    assert any(torch.equal(value, torch.ones_like(value)) for value in feedback_inputs)
+    assert torch.equal(
+        output.predicted_acoustic_embeddings,
+        torch.ones_like(output.predicted_acoustic_embeddings),
     )
-    assert any(torch.equal(value, expected_feedback) for value in feedback_inputs)
-    expected_output = torch.maximum(
-        torch.minimum(
-            torch.ones_like(output.predicted_acoustic_embeddings),
-            model.codec_acoustic_embedding_max,
-        ),
-        model.codec_acoustic_embedding_min,
-    )
-    assert torch.equal(output.predicted_acoustic_embeddings, expected_output)
 
 
 def test_one_shot_flow_logs_explicit_wandb_loss_aliases():

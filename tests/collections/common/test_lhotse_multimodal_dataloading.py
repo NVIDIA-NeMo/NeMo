@@ -643,6 +643,40 @@ def test_text_only_conversation_length_measurement(tokenizer):
     assert constr.select_bucket(constr.max_seq_len_buckets, convo) == 3
 
 
+def test_packed_multimodal_constraint_budgets_sum_not_padded_length(monkeypatch):
+    class Example:
+        def __init__(self, length):
+            self.length = length
+
+    packed = MultimodalSamplingConstraint(batch_tokens=10, use_packed_sequence_sampling=True)
+    padded = MultimodalSamplingConstraint(batch_tokens=10)
+    monkeypatch.setattr(packed, "measure_length", lambda example: example.length)
+    monkeypatch.setattr(padded, "measure_length", lambda example: example.length)
+
+    packed.add(Example(4))
+    packed.add(Example(1))
+    padded.add(Example(4))
+    padded.add(Example(1))
+
+    # Padded accounting predicts a third 4-token row would exceed 10
+    # (3 * 4 = 12), while packed accounting estimates from the current mean
+    # (4 + 1 + 2.5 = 7.5).
+    assert padded.close_to_exceeding()
+    assert not packed.close_to_exceeding()
+    assert padded._internal.current == packed._internal.current == 5
+
+    for _ in range(4):
+        packed.add(Example(1))
+    assert packed.close_to_exceeding()
+    assert not packed.exceeded()
+    assert packed._internal.current == 9
+
+
+def test_packed_multimodal_constraint_uses_full_token_budget():
+    constraint = MultimodalSamplingConstraint(batch_tokens=16384, use_packed_sequence_sampling=True)
+    assert constraint._internal.max_tokens == 16384
+
+
 def test_audio_only_conversation_length_measurement(tokenizer, tmp_path_factory):
     audio_dir = tmp_path_factory.mktemp("audio")
     c1 = dummy_recording(0, duration=7.16, with_data=True).to_cut().save_audio(audio_dir / "1.wav")

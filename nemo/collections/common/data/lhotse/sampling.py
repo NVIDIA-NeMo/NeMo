@@ -52,6 +52,11 @@ class MultimodalSamplingConstraint(SamplingConstraint):
     # Tweaking this helps equalize the GPU memory usage for dynamic batch sizes when using bucketing.
     quadratic_factor: float | None = None
 
+    # Packed encoder batches allocate and compute by the sum of example lengths
+    # rather than batch_size * longest_length. Opt in to padding-free accounting
+    # so heterogeneous non-bucketing batches can fill batch_tokens.
+    use_packed_sequence_sampling: bool = False
+
     # When False (default), we only consider the input part of the example to determine its length,
     # e.g. for a Cut that means its audio duration converted to tokens, for text that means len(context_ids), etc.
     # When True, we consider the sum of input and output lengths together (useful mostly for decoder-only models).
@@ -60,7 +65,8 @@ class MultimodalSamplingConstraint(SamplingConstraint):
     _internal = None
 
     def __post_init__(self):
-        self._internal = TokenConstraint(
+        constraint_cls = PackedTokenConstraint if self.use_packed_sequence_sampling else TokenConstraint
+        self._internal = constraint_cls(
             max_tokens=self.batch_tokens,
             max_examples=self.batch_size,
             quadratic_length=self.quadratic_factor,
@@ -103,6 +109,33 @@ class MultimodalSamplingConstraint(SamplingConstraint):
                     "have you provided both prompt_format and tokenizer when instantiating the dataloader?"
                 ) from e
         raise RuntimeError(f"Unsupported example type: {type(example)}")
+
+
+@dataclass
+class PackedTokenConstraint(TokenConstraint):
+    """Token constraint for batches that remain packed through the model.
+
+    Generic TokenConstraint budgets padded work as num_examples times the
+    longest example. For THD/packed execution, useful work and activation
+    storage instead scale with the sum of per-example lengths, already tracked
+    in current. As in historical Lhotse strict=False mode, the current mean
+    estimates whether one more example would exceed the budget.
+    """
+
+    def exceeded(self) -> bool:
+        if self.max_examples is not None and self.num_examples > self.max_examples:
+            return True
+        return self.max_tokens is not None and self.current > self.max_tokens
+
+    def close_to_exceeding(self) -> bool:
+        if self.max_examples is not None and self.num_examples >= self.max_examples:
+            return True
+        if self.max_tokens is None:
+            return False
+        if self.num_examples == 0:
+            return False
+        mean_length = self.current / self.num_examples
+        return self.current + mean_length > self.max_tokens
 
 
 @dataclass

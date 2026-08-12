@@ -127,6 +127,9 @@ class LhotseDataLoadingConfig:
     audio_locator_tag: str | None = None  # global audio placeholder token, propagates to datasets in input_cfg
     token_equivalent_duration: float | None = None
     batch_tokens: int | None = None
+    # Use sum-of-lengths rather than padded batch-size-times-maximum accounting.
+    # Enable this when the encoder consumes packed sequences.
+    use_packed_sequence_sampling: bool = False
     quadratic_factor: float | None = None
     # Text pretraining data is usually very long, so we split it into smaller chunks.
     # When provided, the text tokens will be cut into windows of this size.
@@ -1069,6 +1072,7 @@ def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) ->
                 batch_tokens=config.batch_tokens,
                 quadratic_factor=config.quadratic_factor,
                 measure_total_length=config.measure_total_length,
+                use_packed_sequence_sampling=config.use_packed_sequence_sampling,
             )
     else:
         if config.bucket_batch_size is not None:

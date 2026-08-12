@@ -27,6 +27,7 @@ from nemo.collections.speechlm2.modules import AudioPerceptionModule
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
 from nemo.utils import logging
+from nemo.utils.compat import python313_pathlib_pickle_compat
 
 
 def load_pretrained_nemo(cls, model_path_or_name: str):
@@ -37,9 +38,30 @@ def load_pretrained_nemo(cls, model_path_or_name: str):
     but is randomly initialized.
     """
     if Path(model_path_or_name).exists() and model_path_or_name.endswith(".nemo"):
+        # Local .nemo restore_from() doesn't resolve the config's `target` (instantiates
+        # the abstract base). Resolve the concrete class first, like from_pretrained().
+        cfg = cls.restore_from(model_path_or_name, return_config=True)
+        target = cfg.get("target", None) if hasattr(cfg, "get") else None
+        if target is not None:
+            from nemo.core.classes.common import _get_allowed_target_class
+
+            resolved_cls = _get_allowed_target_class(target)
+            concrete_cls = resolved_cls
+            while hasattr(concrete_cls, "__wrapped__"):
+                concrete_cls = concrete_cls.__wrapped__
+            if not isinstance(concrete_cls, type) or not issubclass(concrete_cls, cls):
+                raise TypeError(f"Checkpoint target {target!r} is not a subclass of {cls.__name__}.")
+            cls = resolved_cls
         return cls.restore_from(model_path_or_name)
     else:
         return cls.from_pretrained(model_path_or_name)
+
+
+def load_pretrained_nemo_config(cls, model_path_or_name: str):
+    """Load a NeMo model config without loading model weights."""
+    if Path(model_path_or_name).exists() and model_path_or_name.endswith(".nemo"):
+        return cls.restore_from(model_path_or_name, return_config=True)
+    return cls.from_pretrained(model_path_or_name, return_config=True)
 
 
 def load_pretrained_hf(
@@ -82,11 +104,19 @@ def load_pretrained_automodel_llm(
     Setting ``pretrained_weights=False`` returns a model that has identical architecture
     with the checkpoint, but is randomly initialized.
 
-    Extra ``kwargs`` (e.g. ``device_mesh``, ``distributed_config``, ``moe_mesh``,
-    ``moe_config``) are forwarded to the underlying ``from_pretrained`` /
-    ``from_config`` call so that parallelization happens during loading.
+    Extra ``kwargs`` (including ``distributed_setup``) are forwarded to the
+    underlying ``from_pretrained`` / ``from_config`` call so that parallelization
+    happens during loading.
     """
     from nemo_automodel import NeMoAutoModelForCausalLM
+
+    from nemo.collections.speechlm2.parts.automodel_compat import remove_automodel_backend_for_hf_fallback
+
+    remove_automodel_backend_for_hf_fallback(
+        model_path_or_name,
+        kwargs,
+        trust_remote_code=trust_remote_code,
+    )
 
     if pretrained_weights:
         return NeMoAutoModelForCausalLM.from_pretrained(
@@ -156,41 +186,50 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
     """
     from nemo.collections.speechlm2.modules.perception import MultiLayerProjectionConnector, QformerConnector
 
-    if pretrained_weights:
-        # Save user-specified encoder config before loading pretrained model
-        user_encoder_config = {}
+    # Save user-specified encoder config before filling missing architecture fields.
+    user_encoder_config = {}
+    if "encoder" in model.cfg.perception:
+        user_encoder_config = OmegaConf.to_container(model.cfg.perception.encoder, resolve=True)
 
-        if 'encoder' in model.cfg.perception:
-            user_encoder_config = OmegaConf.to_container(model.cfg.perception.encoder, resolve=True)
+    # Training configs normally omit these fields and get them from the ASR model.
+    # Do the same for architecture-only initialization, without loading ASR weights.
+    needs_asr_config = pretrained_weights or any(
+        key not in model.cfg.perception for key in ("preprocessor", "encoder")
+    )
+    asr = None
+    if needs_asr_config:
+        asr = load_pretrained_nemo(ASRModel, model.cfg.pretrained_asr).eval() if pretrained_weights else None
+        asr_cfg = asr.cfg if asr is not None else load_pretrained_nemo_config(ASRModel, model.cfg.pretrained_asr)
 
-        asr = load_pretrained_nemo(ASRModel, model.cfg.pretrained_asr).eval()
         with open_dict(model.cfg):
-            model.cfg.perception.preprocessor = asr.cfg.preprocessor
-            model.cfg.perception.encoder = asr.cfg.encoder
+            if pretrained_weights or "preprocessor" not in model.cfg.perception:
+                model.cfg.perception.preprocessor = asr_cfg.preprocessor
+            if pretrained_weights or "encoder" not in model.cfg.perception:
+                model.cfg.perception.encoder = asr_cfg.encoder
             if model.llm is not None:
                 hidden_size = model.llm.config.hidden_size
                 model.cfg.perception.output_dim = hidden_size
                 # Connectors like MultiLayerProjectionConnector carry their own
                 # output projection via ``modality_adapter.output_dim``; keep it
                 # in sync with the LLM so the inner Linear matches.
-                adapter_cfg = model.cfg.perception.get('modality_adapter', None)
-                if adapter_cfg is not None and 'output_dim' in adapter_cfg:
+                adapter_cfg = model.cfg.perception.get("modality_adapter", None)
+                if adapter_cfg is not None and "output_dim" in adapter_cfg:
                     adapter_cfg.output_dim = hidden_size
-            # Override with user-specified encoder parameters, e.g. initializiing a non-causal encoder for causal setup.
+            # Override user-specified encoder parameters, e.g. for causal setup.
             if user_encoder_config:
                 for key, value in user_encoder_config.items():
-                    if value is not None:  # Only override if user explicitly set a value
+                    if value is not None:  # Only override explicitly set values.
                         model.cfg.perception.encoder[key] = value
-        model.perception = AudioPerceptionModule(model.cfg.perception).train()
+
+    model.perception = AudioPerceptionModule(model.cfg.perception).train()
+    if asr is not None:
         asr_sd = asr.state_dict()
         # When a multilayer/Qformer connector is used, the encoder lives at
         # ``encoder_multilayer.encoder.*`` rather than ``encoder.*``; remap ASR
         # state-dict keys so pretrained encoder weights actually load.
         if isinstance(model.perception.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
-            asr_sd = {('encoder_multilayer.' + k if k.startswith('encoder.') else k): v for k, v in asr_sd.items()}
+            asr_sd = {("encoder_multilayer." + k if k.startswith("encoder.") else k): v for k, v in asr_sd.items()}
         model.perception.load_state_dict(asr_sd, strict=False)
-    else:
-        model.perception = AudioPerceptionModule(model.cfg.perception).train()
 
     if model.cfg.get("pe_encoder_path", None) not in (None, "", False):
         setup_parallel_expert_encoder(model)
@@ -302,46 +341,111 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
 
 
 def set_model_dict_for_partial_init(
-    pretrained_dict: Dict[str, torch.Tensor], model_dict: Dict[str, torch.Tensor]
+    pretrained_dict: Dict[str, torch.Tensor],
+    model_dict: Dict[str, torch.Tensor],
+    allow_partial_copy: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """
     Partially initialize a model's state dictionary with a pretrained state dictionary.
-    This function safely copies compatible layers from a pretrained model into a new model,
-    ignoring layers with mismatched shapes or missing keys.
 
-    Steps:
-        1. Remove layers from the pretrained dictionary if their shape does not match the target model.
-        2. Keep only keys that exist in the target model.
-        3. Update the model dictionary with the filtered pretrained weights.
+    This function safely copies compatible layers from a pretrained model into a new model,
+    ignoring layers with missing keys or incompatible shapes.
+
+    By default, only tensors with exactly matching shapes are restored.
+
+    If ``allow_partial_copy=True``, tensors whose shapes differ only in the first
+    dimension are partially restored by copying the overlapping rows from the
+    pretrained tensor into the target tensor. The remaining rows keep their
+    model-initialized values. This is useful when adding new vocabulary rows or
+    special tokens, e.g. adding an interruption token to an embedding table.
 
     Args:
-        pretrained_dict (Dict[str, torch.Tensor]):
-            The state dictionary of the pretrained model.
-        model_dict (Dict[str, torch.Tensor]):
-            The state dictionary of the target model to be partially initialized.
+        pretrained_dict:
+            State dictionary from the pretrained checkpoint.
+
+        model_dict:
+            State dictionary of the target model.
+
+        allow_partial_copy:
+            If True, allow partial row-wise restore for tensors where only
+            dimension 0 differs and all trailing dimensions match. Defaults to False.
 
     Returns:
         Dict[str, torch.Tensor]:
-            The updated model state dictionary with compatible layers loaded from the pretrained dictionary.
+            The updated model state dictionary with compatible pretrained weights loaded.
 
     Example:
         >>> model_dict = model.state_dict()
         >>> pretrained_dict = load_checkpoint("pretrained_model.ckpt")
-        >>> model_dict = set_model_dict_for_partial_init(pretrained_dict, model_dict)
+        >>> model_dict = set_model_dict_for_partial_init(
+        ...     pretrained_dict,
+        ...     model_dict,
+        ...     allow_partial_copy=True,
+        ... )
         >>> model.load_state_dict(model_dict)
     """
-    # 1. Remove layers where pretrained shape differs from model shape
-    for k, v in list(pretrained_dict.items()):
-        if k in model_dict and hasattr(model_dict[k], "numel") and v.numel() != model_dict[k].numel():
-            del pretrained_dict[k]
-            logging.info(f" | > Layer with shape mismatch in the model definition: {k}")
+    restored_dict = {}
+    exact_restored = 0
+    partial_restored = 0
+    skipped_mismatch = 0
 
-    # 2. Keep only keys that exist in the target model
-    pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+    for key, pretrained_value in pretrained_dict.items():
+        if key not in model_dict:
+            continue
 
-    # 3. Update model dictionary with filtered pretrained layers
-    model_dict.update(pretrained_dict)
-    logging.info(f" | > {len(pretrained_dict)} / {len(model_dict)} layers are restored.")
+        model_value = model_dict[key]
+
+        if not hasattr(pretrained_value, "shape") or not hasattr(model_value, "shape"):
+            continue
+
+        if pretrained_value.shape == model_value.shape:
+            restored_dict[key] = pretrained_value
+            exact_restored += 1
+            continue
+
+        can_partial_copy = (
+            allow_partial_copy
+            and pretrained_value.ndim == model_value.ndim
+            and pretrained_value.ndim > 0
+            and pretrained_value.shape[1:] == model_value.shape[1:]
+        )
+
+        if can_partial_copy:
+            merged_value = model_value.clone()
+            rows_to_copy = min(pretrained_value.shape[0], model_value.shape[0])
+
+            merged_value[:rows_to_copy].copy_(
+                pretrained_value[:rows_to_copy].to(
+                    device=merged_value.device,
+                    dtype=merged_value.dtype,
+                )
+            )
+
+            restored_dict[key] = merged_value
+            partial_restored += 1
+
+            logging.info(
+                f" | > Partially restored resized tensor: {key} "
+                f"pretrained={tuple(pretrained_value.shape)} "
+                f"model={tuple(model_value.shape)} "
+                f"copied_rows={rows_to_copy}"
+            )
+            continue
+
+        skipped_mismatch += 1
+        logging.info(
+            f" | > Layer with shape mismatch in the model definition: {key} "
+            f"pretrained={tuple(pretrained_value.shape)} "
+            f"model={tuple(model_value.shape)}"
+        )
+
+    model_dict.update(restored_dict)
+
+    logging.info(
+        f" | > {len(restored_dict)} / {len(model_dict)} layers are restored "
+        f"({exact_restored} exact, {partial_restored} partial, "
+        f"{skipped_mismatch} skipped due to incompatible shape)."
+    )
 
     return model_dict
 
@@ -528,7 +632,8 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
         # Optimizer states and other trainer state are ignored automatically
         # because we only provide the model's state_dict.
         state_dict = {"state_dict": model.state_dict()}
-        dcp.load(state_dict, checkpoint_id=str(checkpoint_path))
+        with python313_pathlib_pickle_compat():
+            dcp.load(state_dict, checkpoint_id=str(checkpoint_path))
         model.load_state_dict(state_dict["state_dict"])
         logging.info(f"Loaded distributed checkpoint from {checkpoint_path}")
     else:

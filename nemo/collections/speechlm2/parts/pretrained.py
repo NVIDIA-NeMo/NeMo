@@ -106,16 +106,21 @@ def load_pretrained_automodel_llm(
     Setting ``pretrained_weights=False`` returns a model that has identical architecture
     with the checkpoint, but is randomly initialized.
 
-    When ``mtp_config_overrides`` is provided, the checkpoint config is loaded
-    first and the overrides are applied only when it has no enabled MTP head, or
-    unconditionally when ``replace_mtp_config=True``. When overrides apply, the
-    resulting model is constructed through ``from_config`` before its base checkpoint is loaded, so
-    Automodel applies its normal initialization and parallelization to a new MTP
-    head. When the architecture is added or replaced, all checkpoint ``mtp.*``
-    tensors are excluded from the base load so the configured head keeps its
-    fresh initialization. Extra ``kwargs`` (including ``distributed_setup``)
-    are forwarded so parallelization happens during construction.
+    The checkpoint config is inspected when ``mtp_config_overrides`` is provided
+    or repeated-layer MTP is requested. Overrides are applied only when the
+    checkpoint has no enabled MTP head, or unconditionally when
+    ``replace_mtp_config=True``. A preserved native head must have physical depth
+    one when repeated-layer MTP is requested. When overrides apply, the resulting
+    model is constructed through ``from_config`` before its base checkpoint is
+    loaded, so Automodel applies its normal initialization and parallelization to
+    a new MTP head. All checkpoint ``mtp.*`` tensors are excluded from that base
+    load so the configured head keeps its fresh initialization. Extra ``kwargs``
+    (including ``distributed_setup``) are forwarded so parallelization happens
+    during construction.
     """
+    if replace_mtp_config and mtp_config_overrides is None:
+        raise ValueError("replace_mtp_config=True requires mtp_config_overrides to define the replacement head.")
+
     from nemo_automodel import NeMoAutoModelForCausalLM
 
     from nemo.collections.speechlm2.parts.automodel_compat import remove_automodel_backend_for_hf_fallback
@@ -126,7 +131,8 @@ def load_pretrained_automodel_llm(
         trust_remote_code=trust_remote_code,
     )
 
-    if mtp_config_overrides is not None:
+    use_repeated_mtp = bool(kwargs.get("mtp_use_repeated_layer", False))
+    if mtp_config_overrides is not None or use_repeated_mtp:
         config_kwargs, automodel_kwargs = _split_automodel_hf_resolution_kwargs(kwargs)
         if pretrained_weights:
             checkpoint_path = _resolve_automodel_checkpoint_path(model_path_or_name, config_kwargs)
@@ -139,16 +145,30 @@ def load_pretrained_automodel_llm(
             trust_remote_code=trust_remote_code,
             local_files_only=True,
         )
-        checkpoint_has_mtp = _automodel_config_has_mtp(config)
-        config_overridden = replace_mtp_config or not checkpoint_has_mtp
-        if not config_overridden and pretrained_weights:
+        checkpoint_physical_depth = _automodel_config_mtp_depth(config)
+        checkpoint_has_mtp = checkpoint_physical_depth > 0
+        if use_repeated_mtp and not replace_mtp_config:
+            if not checkpoint_has_mtp and mtp_config_overrides is None:
+                raise ValueError(
+                    "MTP use_repeated_layer=True requires either a checkpoint with a native MTP head or "
+                    "mtp_config_overrides that define a new head."
+                )
+            if checkpoint_has_mtp and checkpoint_physical_depth != 1:
+                raise ValueError(
+                    "MTP use_repeated_layer=True can preserve only a checkpoint with one physical MTP depth; "
+                    f"checkpoint declares {checkpoint_physical_depth}. Set use_repeated_layer=false to preserve "
+                    "the native independent heads, or set replace_existing_head=true to initialize a fresh "
+                    "repeated head."
+                )
+        initialize_fresh_mtp = replace_mtp_config or not checkpoint_has_mtp
+        if not initialize_fresh_mtp and pretrained_weights:
             return NeMoAutoModelForCausalLM.from_pretrained(
                 checkpoint_path,
                 torch_dtype=dtype,
                 trust_remote_code=trust_remote_code,
                 **automodel_kwargs,
             )
-        if config_overridden:
+        if initialize_fresh_mtp:
             for name, value in mtp_config_overrides.items():
                 setattr(config, name, value)
         model = NeMoAutoModelForCausalLM.from_config(
@@ -158,7 +178,7 @@ def load_pretrained_automodel_llm(
             trust_remote_code=trust_remote_code,
             **automodel_kwargs,
         )
-        if pretrained_weights and config_overridden:
+        if pretrained_weights and initialize_fresh_mtp:
             _load_automodel_base_checkpoint_without_mtp(model, checkpoint_path, automodel_kwargs)
         return model
 
@@ -735,12 +755,12 @@ def maybe_load_pretrained_models(model: torch.nn.Module):
         init_from_training_checkpoint(model, model.cfg.init_from_checkpoint)
 
 
-def _automodel_config_has_mtp(config) -> bool:
-    """Whether an HF config describes an enabled MTP head."""
+def _automodel_config_mtp_depth(config) -> int:
+    """Return the physical MTP depth declared by an HF config."""
     depth = getattr(config, "num_nextn_predict_layers", None)
     if depth is None:
         depth = getattr(config, "mtp_num_hidden_layers", 0)
-    return int(depth or 0) > 0
+    return int(depth or 0)
 
 
 _AUTOMODEL_HF_RESOLUTION_KWARGS = {

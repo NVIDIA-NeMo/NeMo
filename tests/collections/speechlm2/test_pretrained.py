@@ -174,6 +174,214 @@ def test_load_pretrained_automodel_llm_can_replace_native_mtp_config():
     base_load.assert_called_once_with(result, "native-mtp-checkpoint", {})
 
 
+_REPEATED_MTP_OVERRIDES = {
+    "num_nextn_predict_layers": 1,
+    "mtp_hybrid_override_pattern": "*",
+}
+
+
+@pytest.mark.parametrize(
+    "mtp_config_overrides",
+    [
+        pytest.param(None, id="native-config-only"),
+        pytest.param(_REPEATED_MTP_OVERRIDES, id="fallback-config-present"),
+    ],
+)
+def test_load_pretrained_automodel_llm_accepts_one_depth_native_head_as_repeated(mtp_config_overrides):
+    config = SimpleNamespace(
+        num_nextn_predict_layers=1,
+        mtp_hybrid_override_pattern="*E",
+        name_or_path="one-depth-mtp-checkpoint",
+    )
+    automodel, config_patch, module_patch, compat_patch = _mock_automodel_loader(config)
+    loader_kwargs = {
+        "num_nextn_predict_layers": 4,
+        "mtp_use_repeated_layer": True,
+    }
+    if mtp_config_overrides is not None:
+        loader_kwargs["mtp_config_overrides"] = mtp_config_overrides
+
+    with (
+        config_patch as config_loader,
+        module_patch,
+        compat_patch,
+        patch.object(
+            pretrained,
+            "_resolve_automodel_checkpoint_path",
+            return_value="one-depth-mtp-checkpoint",
+        ) as resolve_checkpoint,
+    ):
+        pretrained.load_pretrained_automodel_llm("one-depth-mtp-checkpoint", **loader_kwargs)
+
+    resolve_checkpoint.assert_called_once_with("one-depth-mtp-checkpoint", {})
+    config_loader.assert_called_once_with(
+        "one-depth-mtp-checkpoint",
+        trust_remote_code=False,
+        local_files_only=True,
+    )
+    automodel.from_pretrained.assert_called_once_with(
+        "one-depth-mtp-checkpoint",
+        torch_dtype=torch.float32,
+        trust_remote_code=False,
+        num_nextn_predict_layers=4,
+        mtp_use_repeated_layer=True,
+    )
+    automodel.from_config.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "mtp_config_overrides",
+    [
+        pytest.param(None, id="native-config-only"),
+        pytest.param(_REPEATED_MTP_OVERRIDES, id="fallback-config-present"),
+    ],
+)
+def test_load_pretrained_automodel_llm_rejects_multi_depth_native_head_as_repeated(mtp_config_overrides):
+    config = SimpleNamespace(
+        num_nextn_predict_layers=4,
+        mtp_hybrid_override_pattern="*E",
+        name_or_path="independent-mtp-checkpoint",
+    )
+    automodel, config_patch, module_patch, compat_patch = _mock_automodel_loader(config)
+    loader_kwargs = {
+        "num_nextn_predict_layers": 4,
+        "mtp_use_repeated_layer": True,
+    }
+    if mtp_config_overrides is not None:
+        loader_kwargs["mtp_config_overrides"] = mtp_config_overrides
+
+    with (
+        config_patch,
+        module_patch,
+        compat_patch,
+        patch.object(
+            pretrained,
+            "_resolve_automodel_checkpoint_path",
+            return_value="independent-mtp-checkpoint",
+        ),
+        pytest.raises(ValueError, match="one physical MTP depth"),
+    ):
+        pretrained.load_pretrained_automodel_llm("independent-mtp-checkpoint", **loader_kwargs)
+
+    automodel.from_pretrained.assert_not_called()
+    automodel.from_config.assert_not_called()
+
+
+def test_load_pretrained_automodel_llm_builds_repeated_head_for_checkpoint_without_mtp():
+    config = SimpleNamespace(num_nextn_predict_layers=0, name_or_path="base-checkpoint")
+    automodel, config_patch, module_patch, compat_patch = _mock_automodel_loader(config)
+
+    with (
+        config_patch,
+        module_patch,
+        compat_patch,
+        patch.object(pretrained, "_resolve_automodel_checkpoint_path", return_value="base-checkpoint"),
+        patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
+    ):
+        result = pretrained.load_pretrained_automodel_llm(
+            "base-checkpoint",
+            mtp_config_overrides=_REPEATED_MTP_OVERRIDES,
+            num_nextn_predict_layers=4,
+            mtp_use_repeated_layer=True,
+        )
+
+    assert config.num_nextn_predict_layers == 1
+    automodel.from_config.assert_called_once_with(
+        config,
+        torch_dtype=torch.float32,
+        load_base_model=False,
+        trust_remote_code=False,
+        num_nextn_predict_layers=4,
+        mtp_use_repeated_layer=True,
+    )
+    base_load.assert_called_once_with(
+        result,
+        "base-checkpoint",
+        {"num_nextn_predict_layers": 4, "mtp_use_repeated_layer": True},
+    )
+    automodel.from_pretrained.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_depth", "mtp_config_overrides"),
+    [
+        pytest.param(0, _REPEATED_MTP_OVERRIDES, id="fresh-head"),
+        pytest.param(1, None, id="native-head"),
+    ],
+)
+def test_load_pretrained_automodel_llm_builds_repeated_model_without_checkpoint_weights(
+    checkpoint_depth, mtp_config_overrides
+):
+    config = SimpleNamespace(num_nextn_predict_layers=checkpoint_depth, name_or_path="config-only-checkpoint")
+    automodel, config_patch, module_patch, compat_patch = _mock_automodel_loader(config)
+    loader_kwargs = {
+        "num_nextn_predict_layers": 4,
+        "mtp_use_repeated_layer": True,
+    }
+    if mtp_config_overrides is not None:
+        loader_kwargs["mtp_config_overrides"] = mtp_config_overrides
+
+    with (
+        config_patch,
+        module_patch,
+        compat_patch,
+        patch.object(
+            pretrained,
+            "_resolve_automodel_checkpoint_path",
+            return_value="config-only-checkpoint",
+        ) as resolve_checkpoint,
+        patch.object(pretrained, "_load_automodel_base_checkpoint_without_mtp", create=True) as base_load,
+    ):
+        result = pretrained.load_pretrained_automodel_llm(
+            "config-only-checkpoint",
+            pretrained_weights=False,
+            **loader_kwargs,
+        )
+
+    assert result is automodel.from_config.return_value
+    assert config.num_nextn_predict_layers == 1
+    resolve_checkpoint.assert_called_once_with("config-only-checkpoint", {}, include_weights=False)
+    automodel.from_config.assert_called_once_with(
+        config,
+        torch_dtype=torch.float32,
+        load_base_model=False,
+        trust_remote_code=False,
+        num_nextn_predict_layers=4,
+        mtp_use_repeated_layer=True,
+    )
+    automodel.from_pretrained.assert_not_called()
+    base_load.assert_not_called()
+
+
+def test_load_pretrained_automodel_llm_rejects_repeated_mode_without_head_definition():
+    config = SimpleNamespace(num_nextn_predict_layers=0, name_or_path="base-checkpoint")
+    automodel, config_patch, module_patch, compat_patch = _mock_automodel_loader(config)
+
+    with (
+        config_patch,
+        module_patch,
+        compat_patch,
+        patch.object(pretrained, "_resolve_automodel_checkpoint_path", return_value="base-checkpoint"),
+        pytest.raises(ValueError, match="requires either a checkpoint with a native MTP head"),
+    ):
+        pretrained.load_pretrained_automodel_llm(
+            "base-checkpoint",
+            num_nextn_predict_layers=4,
+            mtp_use_repeated_layer=True,
+        )
+
+    automodel.from_pretrained.assert_not_called()
+    automodel.from_config.assert_not_called()
+
+
+def test_load_pretrained_automodel_llm_rejects_replace_without_config_overrides():
+    with pytest.raises(ValueError, match="requires mtp_config_overrides"):
+        pretrained.load_pretrained_automodel_llm(
+            "native-mtp-checkpoint",
+            replace_mtp_config=True,
+        )
+
+
 def test_load_pretrained_automodel_llm_forwards_hf_resolution_kwargs():
     config = SimpleNamespace(num_nextn_predict_layers=0, name_or_path="private-checkpoint")
     automodel, config_patch, module_patch, compat_patch = _mock_automodel_loader(config)
@@ -259,12 +467,16 @@ def test_resolve_automodel_checkpoint_path_uses_exact_snapshot(tmp_path, include
     )
 
 
-def test_automodel_native_mtp_detection_supports_non_nemotron_config_fields():
-    assert pretrained._automodel_config_has_mtp(
-        SimpleNamespace(num_nextn_predict_layers=2, mtp_hybrid_override_pattern=None, mtp_layers_block_type=None)
+def test_automodel_mtp_depth_supports_non_nemotron_config_fields():
+    assert (
+        pretrained._automodel_config_mtp_depth(
+            SimpleNamespace(num_nextn_predict_layers=2, mtp_hybrid_override_pattern=None, mtp_layers_block_type=None)
+        )
+        == 2
     )
-    assert pretrained._automodel_config_has_mtp(
-        SimpleNamespace(num_nextn_predict_layers=None, mtp_num_hidden_layers=2)
+    assert (
+        pretrained._automodel_config_mtp_depth(SimpleNamespace(num_nextn_predict_layers=None, mtp_num_hidden_layers=2))
+        == 2
     )
 
 
@@ -329,3 +541,22 @@ def test_automodel_base_load_keeps_fresh_mtp_on_direct_fast_paths(tmp_path, chec
     torch.testing.assert_close(model.base.weight, torch.full_like(model.base.weight, 3.0))
     torch.testing.assert_close(model.mtp.weight, fresh_mtp)
     assert model.state_dict_adapter.loaded_keys == {"base.weight"}
+
+
+def test_exclude_mtp_checkpoint_state_restores_hook_and_adapter_after_error():
+    class IdentityStateDictAdapter:
+        def from_hf(self, state_dict, **_kwargs):
+            return state_dict
+
+    model = torch.nn.Linear(2, 2)
+    model.state_dict_adapter = IdentityStateDictAdapter()
+
+    with pytest.raises(RuntimeError, match="checkpoint load failed"):
+        with pretrained._exclude_mtp_checkpoint_state(model):
+            assert model._load_state_dict_pre_hooks
+            assert "from_hf" in model.state_dict_adapter.__dict__
+            raise RuntimeError("checkpoint load failed")
+
+    assert not model._load_state_dict_pre_hooks
+    assert "from_hf" not in model.state_dict_adapter.__dict__
+    assert model.state_dict_adapter.from_hf.__func__ is IdentityStateDictAdapter.from_hf

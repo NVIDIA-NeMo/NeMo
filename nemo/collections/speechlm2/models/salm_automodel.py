@@ -14,6 +14,7 @@
 import re
 import warnings
 from collections import defaultdict
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -488,7 +489,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # seq_idx and masks cross-sequence targets.
             mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
             with loss_parallel():
-                mtp_loss, mtp_loss_by_head, mtp_raw_loss_by_head = _calculate_mtp_loss_with_heads(
+                mtp_loss, mtp_raw_loss_by_head = _calculate_mtp_loss_with_heads(
                     self._mtp_loss_fn,
                     mtp_per_depth_h=mtp_h,
                     labels=inputs["target_ids"],
@@ -499,12 +500,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     cu_seqlens=mtp_cu_seqlens,
                 )
             mtp_loss = dp_size * mtp_loss
-            mtp_loss_by_head = [dp_size * head_loss for head_loss in mtp_loss_by_head]
             mtp_raw_loss_by_head = [dp_size * head_loss for head_loss in mtp_raw_loss_by_head]
             loss = loss + mtp_loss
             mtp_metrics["mtp_loss"] = mtp_loss.detach()
-            for head_idx, head_loss in enumerate(mtp_loss_by_head, start=1):
-                mtp_metrics[f"mtp_loss/head_{head_idx}"] = head_loss.detach()
             for head_idx, head_loss in enumerate(mtp_raw_loss_by_head, start=1):
                 mtp_metrics[f"mtp_loss_unscaled/head_{head_idx}"] = head_loss.detach()
 
@@ -1342,11 +1340,65 @@ def _build_mtp_loss_fn() -> torch.nn.Module:
     return MaskedCrossEntropy(reduction="sum", fp32_upcast=False)
 
 
+def _resolve_mtp_seq_idx(
+    labels: torch.Tensor,
+    *,
+    cu_seqlens: torch.Tensor | None = None,
+    seq_idx: torch.Tensor | None = None,
+) -> torch.Tensor | None:
+    """Resolve packed-sequence IDs and align them with the label layout."""
+    if seq_idx is None and cu_seqlens is not None:
+        cs = cu_seqlens
+        if cs.dim() == 2:
+            if cs.shape[0] != 1:
+                raise ValueError(f"MTP cu_seqlens must have shape [N+1] or [1, N+1], got {tuple(cs.shape)}")
+            cs = cs.squeeze(0)
+        if cs.dim() != 1:
+            raise ValueError(f"MTP cu_seqlens must have shape [N+1] or [1, N+1], got {tuple(cs.shape)}")
+        positions = torch.arange(labels.shape[-1], device=labels.device)
+        seq_idx = torch.searchsorted(cs[1:].contiguous(), positions, right=True)
+
+    if seq_idx is None:
+        return None
+    if seq_idx.dim() == 1 and labels.dim() == 2:
+        seq_idx = seq_idx.unsqueeze(0).expand(labels.shape[0], -1)
+    elif seq_idx.dim() == 2 and labels.dim() == 1 and seq_idx.shape[0] == 1:
+        seq_idx = seq_idx.squeeze(0)
+    if seq_idx.shape != labels.shape:
+        raise ValueError(f"MTP seq_idx shape {tuple(seq_idx.shape)} does not match labels shape {tuple(labels.shape)}")
+    return seq_idx
+
+
+def _iter_mtp_depth_targets(
+    labels: torch.Tensor,
+    num_depths: int,
+    *,
+    ignore_index: int = -100,
+    cu_seqlens: torch.Tensor | None = None,
+    seq_idx: torch.Tensor | None = None,
+) -> Iterator[torch.Tensor]:
+    """Yield shifted labels with trailing and packed-boundary positions masked."""
+    from nemo_automodel.components.models.common.mtp import roll_tensor
+
+    seq_idx = _resolve_mtp_seq_idx(labels, cu_seqlens=cu_seqlens, seq_idx=seq_idx)
+    cur_labels = labels
+    for depth in range(1, num_depths + 1):
+        cur_labels = roll_tensor(cur_labels, shifts=-1, dim=-1)
+        masked = cur_labels.clone()
+        n_invalid = min(depth, masked.shape[-1])
+        masked[..., -n_invalid:] = ignore_index
+
+        if seq_idx is not None:
+            rolled_seq_idx = roll_tensor(seq_idx, shifts=-depth, dim=-1)
+            masked = torch.where(rolled_seq_idx != seq_idx, torch.full_like(masked, ignore_index), masked)
+
+        yield masked
+
+
 def _calculate_mtp_loss_with_heads(
     loss_fn,
     *,
-    mtp_per_depth_h: list[torch.Tensor] | None = None,
-    mtp_per_depth_logits: list[torch.Tensor] | None = None,
+    mtp_per_depth_h: list[torch.Tensor],
     labels: torch.Tensor,
     model: torch.nn.Module,
     scaling_factor: float = 0.1,
@@ -1355,42 +1407,35 @@ def _calculate_mtp_loss_with_heads(
     ignore_index: int = -100,
     cu_seqlens: torch.Tensor | None = None,
     seq_idx: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor]]:
+) -> tuple[torch.Tensor, list[torch.Tensor]]:
     """Compute aggregate MTP loss and per-head losses for logging.
 
     This mirrors Automodel's ``calculate_mtp_loss`` but keeps the intermediate
     depth losses so Lightning/WandB can display each MTP head. Returned
-    ``head_losses`` are the weighted contributions that sum to ``total``;
-    returned ``raw_head_losses`` are normalized CE values before applying
+    ``raw_head_losses`` are normalized CE values before applying
     ``scaling_factor / D``. The caller applies the same DP correction used by
     the main training loss.
     """
     from nemo_automodel.components.loss.linear_ce import FusedLinearCrossEntropy
     from nemo_automodel.components.loss.utils import _get_lm_head_module, calculate_loss
-    from nemo_automodel.components.models.common.mtp import roll_tensor
-
-    if (mtp_per_depth_h is None) == (mtp_per_depth_logits is None):
-        raise ValueError("Provide exactly one of mtp_per_depth_h or mtp_per_depth_logits")
-
-    mtp_outputs = mtp_per_depth_logits if mtp_per_depth_logits is not None else mtp_per_depth_h
 
     if labels.dim() == 1:
-        mtp_outputs = [h.squeeze(0) if (h.dim() == 3 and h.shape[0] == 1) else h for h in mtp_outputs]
+        mtp_per_depth_h = [h.squeeze(0) if (h.dim() == 3 and h.shape[0] == 1) else h for h in mtp_per_depth_h]
 
-    D = len(mtp_outputs)
-    cur_labels = labels
-    total = mtp_outputs[0].new_zeros(())
-    head_losses = []
+    D = len(mtp_per_depth_h)
+    head_scale = scaling_factor / D
+    total = mtp_per_depth_h[0].new_zeros(())
     raw_head_losses = []
+
+    lm_head = _get_lm_head_module(model)
+    if lm_head is None:
+        raise ValueError("lm_head module not found in model")
 
     # FusedLinearCrossEntropy consumes the shared LM-head weight directly. Materialize
     # a possibly sharded weight once and reuse it for every depth; gathering separately
     # inside calculate_loss retains one full vocabulary matrix per head for backward.
     lm_weight = None
-    if mtp_per_depth_h is not None and isinstance(loss_fn, FusedLinearCrossEntropy):
-        lm_head = _get_lm_head_module(model)
-        if lm_head is None:
-            raise ValueError("lm_head module not found in model")
+    if isinstance(loss_fn, FusedLinearCrossEntropy):
         lm_weight = lm_head.weight
         if isinstance(lm_weight, DTensor):
             materialize = getattr(loss_fn, "materialize_lm_weight", None)
@@ -1400,49 +1445,15 @@ def _calculate_mtp_loss_with_heads(
                 )
             lm_weight = materialize(lm_weight, grad_reduce_group=grad_reduce_group)
 
-    if seq_idx is None and cu_seqlens is not None:
-        cs = cu_seqlens
-        if cs.dim() == 2 and cs.shape[0] == 1:
-            cs = cs.squeeze(0)
-        if cs.dim() == 1:
-            total_len = labels.shape[-1]
-            positions = torch.arange(total_len, device=labels.device)
-            seq_idx = torch.searchsorted(cs[1:].contiguous(), positions, right=True)
-            if labels.dim() == 2:
-                seq_idx = seq_idx.unsqueeze(0).expand(labels.shape[0], -1)
-    elif seq_idx is not None:
-        if seq_idx.dim() == 1 and labels.dim() == 2:
-            seq_idx = seq_idx.unsqueeze(0).expand(labels.shape[0], -1)
-        elif seq_idx.dim() == 2 and labels.dim() == 1 and seq_idx.shape[0] == 1:
-            seq_idx = seq_idx.squeeze(0)
-        if seq_idx.shape != labels.shape:
-            raise ValueError(
-                f"_calculate_mtp_loss_with_heads: seq_idx.shape={tuple(seq_idx.shape)} does not "
-                f"match labels.shape={tuple(labels.shape)}"
-            )
-
-    for k, mtp_output in enumerate(mtp_outputs):
-        cur_labels = roll_tensor(cur_labels, shifts=-1, dim=-1)
-        masked = cur_labels.clone()
-        n_invalid = min(k + 1, masked.shape[-1])
-        masked[..., -n_invalid:] = ignore_index
-
-        if seq_idx is not None:
-            rolled_seq_idx = roll_tensor(seq_idx, shifts=-(k + 1), dim=-1)
-            cross_seq = rolled_seq_idx != seq_idx
-            masked = torch.where(cross_seq, torch.full_like(masked, ignore_index), masked)
-
-        if mtp_per_depth_logits is not None:
-            if isinstance(loss_fn, FusedLinearCrossEntropy):
-                raise ValueError("MTP logits are incompatible with FusedLinearCrossEntropy")
-            depth_loss = calculate_loss(
-                loss_fn,
-                logits=mtp_output,
-                labels=masked,
-                model=model,
-                num_label_tokens=num_label_tokens,
-            )
-        elif isinstance(loss_fn, FusedLinearCrossEntropy):
+    depth_targets = _iter_mtp_depth_targets(
+        labels,
+        D,
+        ignore_index=ignore_index,
+        cu_seqlens=cu_seqlens,
+        seq_idx=seq_idx,
+    )
+    for mtp_output, masked in zip(mtp_per_depth_h, depth_targets):
+        if isinstance(loss_fn, FusedLinearCrossEntropy):
             depth_loss = calculate_loss(
                 loss_fn,
                 hidden_states=mtp_output,
@@ -1453,23 +1464,17 @@ def _calculate_mtp_loss_with_heads(
                 grad_reduce_group=grad_reduce_group,
             )
         else:
-            lm_head = _get_lm_head_module(model)
-            if lm_head is None:
-                raise ValueError("lm_head module not found in model")
             depth_loss = calculate_loss(
                 loss_fn,
                 logits=lm_head(mtp_output),
                 labels=masked,
-                model=model,
                 num_label_tokens=num_label_tokens,
             )
 
         raw_head_losses.append(depth_loss)
-        head_loss = depth_loss * (scaling_factor / D)
-        head_losses.append(head_loss)
-        total = total + head_loss
+        total = total + depth_loss * head_scale
 
-    return total, head_losses, raw_head_losses
+    return total, raw_head_losses
 
 
 def _vocab_parallel_argmax(logits: torch.Tensor) -> torch.Tensor:
@@ -1523,31 +1528,18 @@ def _calculate_mtp_teacher_forced_agreement_with_heads(
     if lm_head is None:
         raise ValueError("lm_head module not found in model")
 
-    if seq_idx is None and cu_seqlens is not None:
-        cs = cu_seqlens
-        if cs.dim() == 2 and cs.shape[0] == 1:
-            cs = cs.squeeze(0)
-        if cs.dim() == 1:
-            positions = torch.arange(labels.shape[-1], device=labels.device)
-            seq_idx = torch.searchsorted(cs[1:].contiguous(), positions, right=True)
-            if labels.dim() == 2:
-                seq_idx = seq_idx.unsqueeze(0).expand(labels.shape[0], -1)
-
-    cur_labels = labels
     prefix_matches = torch.ones_like(labels, dtype=torch.bool)
     prefix_valid = torch.ones_like(labels, dtype=torch.bool)
     correct_by_head = []
     valid_by_head = []
-    for k, mtp_output in enumerate(mtp_outputs):
-        cur_labels = roll_tensor(cur_labels, shifts=-1, dim=-1)
-        masked = cur_labels.clone()
-        n_invalid = min(k + 1, masked.shape[-1])
-        masked[..., -n_invalid:] = ignore_index
-
-        if seq_idx is not None:
-            rolled_seq_idx = roll_tensor(seq_idx, shifts=-(k + 1), dim=-1)
-            masked = torch.where(rolled_seq_idx != seq_idx, torch.full_like(masked, ignore_index), masked)
-
+    depth_targets = _iter_mtp_depth_targets(
+        labels,
+        len(mtp_outputs),
+        ignore_index=ignore_index,
+        cu_seqlens=cu_seqlens,
+        seq_idx=seq_idx,
+    )
+    for k, (mtp_output, masked) in enumerate(zip(mtp_outputs, depth_targets)):
         logits = lm_head(mtp_output)
         preds = _vocab_parallel_argmax(logits)
         valid = masked != ignore_index

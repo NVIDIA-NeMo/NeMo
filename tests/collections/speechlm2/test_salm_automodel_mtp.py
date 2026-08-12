@@ -109,8 +109,8 @@ def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
     ("training_mode", "replace_existing_head"),
     [("joint", False), ("head_only", False), ("joint", True)],
 )
-def test_base_checkpoint_attaches_fresh_mtp_for_both_training_modes(monkeypatch, training_mode, replace_existing_head):
-    """A checkpoint with no native head constructs MTP before Automodel loading."""
+def test_configure_model_requests_mtp_and_applies_training_mode(monkeypatch, training_mode, replace_existing_head):
+    """MTP loader options and parameter freezing follow the recipe configuration."""
     from omegaconf import DictConfig
 
     captured_kwargs = {}
@@ -442,6 +442,112 @@ def test_calculate_mtp_teacher_forced_agreement_with_heads_counts(monkeypatch):
     assert [int(value) for value in valid] == [4, 3]
 
 
+@pytest.mark.parametrize(
+    ("labels", "expected"),
+    [
+        (torch.zeros(5, dtype=torch.long), torch.tensor([0, 0, 0, 1, 1])),
+        (torch.zeros(2, 5, dtype=torch.long), torch.tensor([[0, 0, 0, 1, 1], [0, 0, 0, 1, 1]])),
+    ],
+)
+def test_resolve_mtp_seq_idx_from_cu_seqlens(labels, expected):
+    actual = salm_module._resolve_mtp_seq_idx(
+        labels,
+        cu_seqlens=torch.tensor([[0, 3, 5]], dtype=torch.int32),
+    )
+
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize(
+    ("labels", "seq_idx", "expected"),
+    [
+        (
+            torch.zeros(2, 4, dtype=torch.long),
+            torch.tensor([0, 0, 1, 1]),
+            torch.tensor([[0, 0, 1, 1], [0, 0, 1, 1]]),
+        ),
+        (
+            torch.zeros(4, dtype=torch.long),
+            torch.tensor([[0, 0, 1, 1]]),
+            torch.tensor([0, 0, 1, 1]),
+        ),
+    ],
+)
+def test_resolve_mtp_seq_idx_normalizes_explicit_shape(labels, seq_idx, expected):
+    actual = salm_module._resolve_mtp_seq_idx(labels, seq_idx=seq_idx)
+
+    torch.testing.assert_close(actual, expected)
+
+
+def test_resolve_mtp_seq_idx_rejects_shape_mismatch():
+    with pytest.raises(ValueError, match="does not match labels shape"):
+        salm_module._resolve_mtp_seq_idx(
+            torch.zeros(2, 4, dtype=torch.long),
+            seq_idx=torch.zeros(3, dtype=torch.long),
+        )
+
+
+def test_iter_mtp_depth_targets_masks_trailing_and_packed_boundaries():
+    targets = list(
+        salm_module._iter_mtp_depth_targets(
+            torch.tensor([10, 11, 12, 20, 21]),
+            2,
+            cu_seqlens=torch.tensor([0, 3, 5], dtype=torch.int32),
+        )
+    )
+
+    torch.testing.assert_close(targets[0], torch.tensor([11, 12, -100, 21, -100]))
+    torch.testing.assert_close(targets[1], torch.tensor([12, -100, -100, -100, -100]))
+
+
+def test_training_step_forwards_packed_cu_seqlens_to_mtp_loss(monkeypatch):
+    class _Perception(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.preprocessor = torch.nn.Identity()
+            self.encoder = torch.nn.Identity()
+
+    model = _bare_model()
+    model.perception = _Perception()
+    model.llm = torch.nn.Identity()
+    model.lss_loss = None
+    model._mtp_loss_fn = object()
+    model._mtp_loss_scaling_factor = 0.1
+    model._trainer = None
+    model.tokenizer = type("Tokenizer", (), {"pad": -1, "unk_id": None})()
+    model._get_moe_dp_group = lambda: None
+    model.log = lambda *_args, **_kwargs: None
+    model.log_dict = lambda *_args, **_kwargs: None
+    model.maybe_log_moe_metrics = lambda _batch_idx: None
+
+    cu_seqlens = torch.tensor([0, 3, 5], dtype=torch.int32)
+    inputs = {
+        "input_embeds": torch.zeros(5, 4),
+        "attention_mask": None,
+        "target_ids": torch.tensor([0, 1, 2, 3, 4]),
+        "llm_kwargs": {"cu_seqlens": cu_seqlens},
+        "num_tokens": 5,
+        "num_examples": 2,
+    }
+    model.prepare_inputs = lambda _batch: inputs
+    model.forward = lambda *_args, **_kwargs: {
+        "logits": torch.zeros(1, 5, 8),
+        "mtp_per_depth_h": [torch.zeros(1, 5, 4)],
+    }
+    captured_kwargs = {}
+
+    def _calculate_mtp_loss(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return torch.tensor(0.25), [torch.tensor(2.5)]
+
+    monkeypatch.setattr(salm_module, "_calculate_mtp_loss_with_heads", _calculate_mtp_loss)
+
+    model._training_step_batch({"input_ids": torch.tensor([[1, 2, 3, 4, 5]])}, batch_idx=0)
+
+    assert captured_kwargs["cu_seqlens"] is cu_seqlens
+    assert captured_kwargs["labels"] is inputs["target_ids"]
+
+
 def test_mtp_validation_forward_legacy_gate_keeps_children_in_eval():
     llm = torch.nn.Module()
     llm.child = torch.nn.Dropout()
@@ -466,6 +572,27 @@ def test_mtp_validation_forward_uses_and_restores_native_gate():
 
     assert not llm.compute_mtp_in_eval
     assert not llm.training
+
+
+@pytest.mark.parametrize("native_gate", [False, True], ids=["legacy-training-flag", "compute-mtp-in-eval"])
+def test_mtp_validation_forward_restores_gate_after_error(native_gate):
+    llm = torch.nn.Module()
+    llm.eval()
+    if native_gate:
+        llm.compute_mtp_in_eval = False
+
+    with pytest.raises(RuntimeError, match="forward failed"):
+        with salm_module._mtp_validation_forward(llm, enabled=True):
+            if native_gate:
+                assert llm.compute_mtp_in_eval
+                assert not llm.training
+            else:
+                assert llm.training
+            raise RuntimeError("forward failed")
+
+    assert not llm.training
+    if native_gate:
+        assert not llm.compute_mtp_in_eval
 
 
 @pytest.mark.parametrize("hook_name", ["on_validation_start", "on_test_start"])
@@ -563,7 +690,7 @@ def test_fused_mtp_loss_reuses_lm_weight_without_projecting_logits(monkeypatch):
         return kwargs["hidden_states"].sum() * 0 + 2.0
 
     monkeypatch.setattr(loss_utils, "calculate_loss", _calculate_loss)
-    mtp_h = [torch.randn(1, 4, 4, requires_grad=True) for _ in range(2)]
+    mtp_h = [torch.randn(1, 5, 4, requires_grad=True) for _ in range(2)]
     grad_reduce_group = object()
     materialize_calls = []
 
@@ -579,53 +706,84 @@ def test_fused_mtp_loss_reuses_lm_weight_without_projecting_logits(monkeypatch):
         raising=False,
     )
 
-    total, head_losses, raw_head_losses = salm_module._calculate_mtp_loss_with_heads(
+    total, raw_head_losses = salm_module._calculate_mtp_loss_with_heads(
         loss_fn=loss_module.FusedLinearCrossEntropy(reduction="sum"),
         mtp_per_depth_h=mtp_h,
-        labels=torch.tensor([[0, 1, 2, 3]]),
+        labels=torch.tensor([[0, 1, 2, 3, 0]]),
         model=model,
         scaling_factor=0.1,
         grad_reduce_group=grad_reduce_group,
+        cu_seqlens=torch.tensor([0, 3, 5], dtype=torch.int32),
     )
 
     assert len(calls) == 2
+    torch.testing.assert_close(calls[0]["labels"], torch.tensor([[1, 2, -100, 0, -100]]))
+    torch.testing.assert_close(calls[1]["labels"], torch.tensor([[2, -100, -100, -100, -100]]))
     assert calls[0]["lm_weight"] is model.lm_head.weight
     assert calls[1]["lm_weight"] is calls[0]["lm_weight"]
     assert materialize_calls == [(model.lm_head.weight, grad_reduce_group)]
     assert all(call["grad_reduce_group"] is grad_reduce_group for call in calls)
     assert float(total.detach()) == pytest.approx(0.2)
-    assert [float(value.detach()) for value in head_losses] == pytest.approx([0.1, 0.1])
     assert [float(value.detach()) for value in raw_head_losses] == pytest.approx([2.0, 2.0])
     total.backward()
     assert all(hidden.grad is not None for hidden in mtp_h)
 
 
-@pytest.mark.parametrize("cut_ce_available", [True, False])
-def test_mtp_loss_selection_handles_optional_cut_cross_entropy(monkeypatch, cut_ce_available):
+def test_unfused_mtp_loss_resolves_lm_head_once(monkeypatch):
+    pytest.importorskip('nemo_automodel.components.models.common.mtp', reason='needs Automodel roll_tensor')
+    loss_utils = pytest.importorskip('nemo_automodel.components.loss.utils', reason='needs Automodel loss utilities')
+    from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
+
+    model = torch.nn.Module()
+    model.lm_head = torch.nn.Linear(4, 4, bias=False)
+    lookup_calls = []
+
+    def _get_lm_head(_model):
+        lookup_calls.append(_model)
+        return model.lm_head
+
+    monkeypatch.setattr(loss_utils, "_get_lm_head_module", _get_lm_head)
+
+    salm_module._calculate_mtp_loss_with_heads(
+        loss_fn=MaskedCrossEntropy(reduction="sum", fp32_upcast=False),
+        mtp_per_depth_h=[torch.randn(1, 4, 4) for _ in range(3)],
+        labels=torch.tensor([[0, 1, 2, 3]]),
+        model=model,
+    )
+
+    assert lookup_calls == [model]
+
+
+@pytest.mark.parametrize(
+    ("cut_ce_available", "gradient_safe_api", "expect_fused"),
+    [
+        pytest.param(False, False, False, id="cut-ce-unavailable"),
+        pytest.param(False, True, False, id="cut-ce-unavailable-with-api"),
+        pytest.param(True, False, False, id="legacy-automodel-api"),
+        pytest.param(True, True, True, id="fused-supported"),
+    ],
+)
+def test_mtp_loss_selection_handles_optional_cut_cross_entropy(
+    monkeypatch, cut_ce_available, gradient_safe_api, expect_fused
+):
     from nemo_automodel.components.loss import linear_ce
     from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
 
     monkeypatch.setattr(linear_ce, "HAVE_CUT_CROSS_ENTROPY", cut_ce_available)
+    if gradient_safe_api:
+        monkeypatch.setattr(
+            linear_ce.FusedLinearCrossEntropy,
+            "materialize_lm_weight",
+            staticmethod(lambda weight, **_kwargs: weight),
+            raising=False,
+        )
+    else:
+        monkeypatch.delattr(linear_ce.FusedLinearCrossEntropy, "materialize_lm_weight", raising=False)
 
     loss_fn = salm_module._build_mtp_loss_fn()
 
-    gradient_safe_fused_api = callable(getattr(linear_ce.FusedLinearCrossEntropy, "materialize_lm_weight", None))
-    expected_type = (
-        linear_ce.FusedLinearCrossEntropy if cut_ce_available and gradient_safe_fused_api else MaskedCrossEntropy
-    )
+    expected_type = linear_ce.FusedLinearCrossEntropy if expect_fused else MaskedCrossEntropy
     assert isinstance(loss_fn, expected_type)
-
-
-def test_mtp_loss_selection_requires_gradient_safe_fused_api(monkeypatch):
-    from nemo_automodel.components.loss import linear_ce
-    from nemo_automodel.components.loss.masked_ce import MaskedCrossEntropy
-
-    monkeypatch.setattr(linear_ce, "HAVE_CUT_CROSS_ENTROPY", True)
-    monkeypatch.delattr(linear_ce.FusedLinearCrossEntropy, "materialize_lm_weight", raising=False)
-
-    loss_fn = salm_module._build_mtp_loss_fn()
-
-    assert isinstance(loss_fn, MaskedCrossEntropy)
 
 
 def test_head_only_keep_pattern_follows_wrapped_mtp_namespace():

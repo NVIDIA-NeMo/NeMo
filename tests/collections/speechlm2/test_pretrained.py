@@ -548,6 +548,9 @@ def test_exclude_mtp_checkpoint_state_restores_hook_and_adapter_after_error():
         def from_hf(self, state_dict, **_kwargs):
             return state_dict
 
+    def fail_checkpoint_load():
+        raise RuntimeError("checkpoint load failed")
+
     model = torch.nn.Linear(2, 2)
     model.state_dict_adapter = IdentityStateDictAdapter()
 
@@ -555,7 +558,7 @@ def test_exclude_mtp_checkpoint_state_restores_hook_and_adapter_after_error():
         with pretrained._exclude_mtp_checkpoint_state(model):
             assert model._load_state_dict_pre_hooks
             assert "from_hf" in model.state_dict_adapter.__dict__
-            raise RuntimeError("checkpoint load failed")
+            fail_checkpoint_load()
 
     assert not model._load_state_dict_pre_hooks
     assert "from_hf" not in model.state_dict_adapter.__dict__

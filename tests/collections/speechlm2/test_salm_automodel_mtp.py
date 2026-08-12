@@ -581,6 +581,9 @@ def test_mtp_validation_forward_uses_and_restores_native_gate():
 
 @pytest.mark.parametrize("native_gate", [False, True], ids=["legacy-training-flag", "compute-mtp-in-eval"])
 def test_mtp_validation_forward_restores_gate_after_error(native_gate):
+    def fail_forward():
+        raise RuntimeError("forward failed")
+
     llm = torch.nn.Module()
     llm.eval()
     if native_gate:
@@ -593,7 +596,7 @@ def test_mtp_validation_forward_restores_gate_after_error(native_gate):
                 assert not llm.training
             else:
                 assert llm.training
-            raise RuntimeError("forward failed")
+            fail_forward()
 
     assert not llm.training
     if native_gate:

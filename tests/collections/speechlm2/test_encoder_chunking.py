@@ -16,6 +16,7 @@ import torch
 
 from nemo.collections.speechlm2.data.salm_dataset import MultiSpeakerConfig
 from nemo.collections.speechlm2.parts.encoder_chunking import (
+    _preserve_module_buffers,
     _recombine_chunked_audio_embeddings,
     _split_audio_into_chunks,
     _split_spk_targets_into_chunks,
@@ -305,6 +306,31 @@ def test_encode_audio_with_optional_chunking_can_microbatch_chunks():
     assert torch.equal(perception.time_offsets[0], torch.tensor([0.0, 1.0]))
     assert torch.equal(perception.time_offsets[1], torch.tensor([2.0]))
     assert torch.equal(embs[0].squeeze(-1), audios[0])
+
+
+def test_preserve_module_buffers_does_not_invalidate_saved_immutable_buffer():
+    class BufferUsingModule(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("kernel", torch.randn(8, 2048))
+            self.register_buffer("forward_count", torch.zeros((), dtype=torch.long))
+
+        def forward(self, inputs):
+            self.forward_count.add_(1)
+            return inputs @ self.kernel.T
+
+    module = BufferUsingModule()
+    inputs = torch.randn(2, 2048, requires_grad=True)
+    real_output = module(inputs)
+    kernel_version = module.kernel._version
+
+    with _preserve_module_buffers(module):
+        dummy_output = module(inputs)
+
+    assert module.forward_count.item() == 1
+    assert module.kernel._version == kernel_version
+    (real_output.sum() + dummy_output.sum() * 0.0).backward()
+    assert inputs.grad is not None
 
 
 @pytest.mark.parametrize(

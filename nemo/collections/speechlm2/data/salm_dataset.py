@@ -69,6 +69,12 @@ class SALMDataset(torch.utils.data.Dataset):
             Return valid waveform samples contiguously as `packed_audio_samples`
             plus `audio_cu_seqlens`, instead of materializing `audios[B, T_max]`.
             Defaults to `False` for complete batch-API compatibility.
+        batch_tokens (int | None):
+            Token budget used by the Lhotse sampler. When provided, and the
+            sampler attached an exact ``num_tokens`` measurement to every
+            retained conversation, the batch contains a scalar
+            ``packing_efficiency`` equal to the measured token sum divided by
+            this budget.
 
             [ SOT Example for overlapping speakers ]
             Speaker-parallel transcription as a timeline:
@@ -88,6 +94,8 @@ class SALMDataset(torch.utils.data.Dataset):
             - input_ids: Tensor of text token IDs [B, T_tokens], including audio_locator_tag tokens
             - loss_mask: Boolean tensor [B, T_tokens] indicating which tokens are part of the
                 assistant's responses (True) and should be used for computing loss
+            - packing_efficiency: Optional scalar measuring sampled tokens divided by
+                ``batch_tokens``
 
     Notes:
         - Each audio_locator_tag token in input_ids corresponds to an audio segment in audios
@@ -106,10 +114,14 @@ class SALMDataset(torch.utils.data.Dataset):
         tokenizer: AutoTokenizer,
         multispeaker_cfg: dict | None = None,
         pack_audio: bool = False,
+        batch_tokens: int | None = None,
     ) -> None:
         self.tokenizer = tokenizer
         self.pad_id = get_pad_id(tokenizer)
         self.pack_audio = bool(pack_audio)
+        self.batch_tokens = int(batch_tokens) if batch_tokens is not None else None
+        if self.batch_tokens is not None and self.batch_tokens <= 0:
+            raise ValueError(f"batch_tokens must be positive, got {self.batch_tokens}")
         # Setting USE_AIS_GET_BATCH=true makes the loader issue a single AIStore GetBatch
         # call per minibatch, paired with URL-backed cuts produced by the multimodal
         # conversation adapters (NeMoMultimodalConversation{Jsonl,ShareGPTJsonl}Adapter).
@@ -160,6 +172,13 @@ class SALMDataset(torch.utils.data.Dataset):
             ).to(torch.bool),
             "conversations": drop_in_memory_data(conversations),
         }
+        if self.batch_tokens is not None:
+            sampled_lengths = [getattr(conversation, "num_tokens", None) for conversation in conversations]
+            if all(length is not None for length in sampled_lengths):
+                batch["packing_efficiency"] = torch.tensor(
+                    sum(sampled_lengths) / self.batch_tokens,
+                    dtype=torch.float32,
+                )
         if self.multispeaker_processor is not None:
             self.multispeaker_processor(batch)
         return batch

@@ -694,7 +694,13 @@ To enable bucketing, set ``batch_size: null`` and use the following options:
 
 * (oomptimizer-only) ``bucket_batch_size`` - the output of OOMptimizer.
 
-* (non-oomptimizer-only) ``batch_tokens`` is the maximum number of tokens we want to find inside a mini-batch. Similarly to ``batch_duration``, this number does consider padding tokens too, therefore enabling bucketing is recommended to maximize the ratio of real vs padding tokens. Note that it's just a heuristic for determining the optimal batch sizes for different buckets, and may be less efficient than using OOMptimizer.
+* (non-oomptimizer-only) ``batch_tokens`` is the maximum number of tokens we want to find inside a mini-batch. By default, similarly to ``batch_duration``, this number considers padding tokens too, therefore enabling bucketing is recommended to maximize the ratio of real vs padding tokens. Note that it's just a heuristic for determining the optimal batch sizes for different buckets, and may be less efficient than using OOMptimizer.
+
+* ``use_packed_sequence_sampling: true`` changes ``batch_tokens`` accounting
+  from ``batch_size * longest_sequence`` to the sum of the measured sequence
+  lengths. Use it only when the dataset and model preserve a padding-free
+  representation through the expensive model path. It is especially useful
+  for heterogeneous, non-bucketed batches.
 
 * (non-oomptimizer-only) ``quadratic_factor`` is a quadratic penalty to equalize the GPU memory usage between buckets of short and long sequence lengths for models with quadratic memory usage. It is only a heuristic and may not be as efficient as using OOMptimizer.
 
@@ -802,6 +808,9 @@ A :class:`~lhotse.dataset.sampling.base.SamplingConstraint` decides what
   and a ``token_equivalent_duration`` so audio cuts are measured in
   equivalent-token units alongside text. Enforces all of the above plus
   ``min_tpt``/``max_tpt`` (token-per-token ratio filtering).
+  With ``use_packed_sequence_sampling: true``, it wraps a packed token
+  constraint that budgets the sum of per-example lengths and uses the current
+  mean length to decide whether another example is likely to fit.
 * ``FixedBucketBatchSizeConstraint2D`` — activated automatically when
   ``bucket_duration_bins`` is given as a list of ``[duration, tokens]``
   pairs **and** ``bucket_batch_size`` is set. Each bucket gets its own
@@ -811,6 +820,53 @@ A :class:`~lhotse.dataset.sampling.base.SamplingConstraint` decides what
 You usually don't pick a constraint by name — it's inferred from the
 combination of YAML options. The names matter when you read NeMo's source,
 extend the system with a custom constraint, or interpret error messages.
+
+Packed sequence sampling contract
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``use_packed_sequence_sampling`` changes sampling accounting only; it does
+not pack tensors or alter a model's attention behavior. The complete contract
+has three parts:
+
+* **Examples visible to the sampler.** Each example must be either a Lhotse
+  ``Cut`` or NeMo ``Formattable``. A ``Cut`` requires
+  ``token_equivalent_duration`` so audio duration can be converted to tokens;
+  with ``measure_total_length: true``, tokenized supervision text is added.
+  A ``Formattable`` must have been prompt-formatted/tokenized so its
+  ``input_length`` and ``total_length`` are available. The multimodal
+  constraint records the resulting scalar as ``example.num_tokens`` for the
+  downstream dataset.
+
+* **Dataset/collator output.** The Dataset class must accept the sampler's
+  ``CutSet`` mini-batch and retain the individual sequence boundaries while
+  constructing a contiguous representation. For SALM encoder packing,
+  ``SALMDataset(pack_audio=True)`` returns ``packed_audio_samples``,
+  ``audio_cu_seqlens``, and ``audio_lens``. When ``batch_tokens`` is also
+  supplied, it emits ``packing_efficiency = sum(example.num_tokens) /
+  batch_tokens`` after fault-tolerant collation; SALMAutomodel logs this scalar
+  on training steps. The metric is omitted if exact sampler measurements are
+  unavailable.
+
+* **Model forward signature.** The forward path must consume both the packed
+  values and explicit boundaries (for example cumulative sequence lengths and
+  the maximum sequence length), and its attention kernels must honor those
+  boundaries so examples cannot attend to one another. A model that only
+  accepts padded ``[B, T, ...]`` tensors, or ignores the boundary metadata,
+  does not satisfy this contract. SALM's packed encoder consumes the waveform
+  keys above, while its packed LLM path uses flattened THD activations plus
+  cumulative sequence-length metadata.
+
+For SALMAutomodel, a typical training configuration ties sampler accounting to
+the actual encoder execution mode::
+
+    use_multimodal_sampling: true
+    measure_total_length: true
+    batch_tokens: 16384
+    max_tokens: 16384
+    use_packed_sequence_sampling: ${model.packed_encoder_sequences}
+
+Do not enable the option merely because the LLM is packed if the dominant
+encoder path still pads to the longest example.
 
 .. _indexed-resumable-dataloading:
 
@@ -1584,7 +1640,8 @@ options by what they control.
 
 **Sampling — multimodal.** ``use_multimodal_sampling``, ``prompt_format``,
 ``pretokenize``, ``audio_locator_tag``, ``token_equivalent_duration``,
-``batch_tokens``, ``quadratic_factor``, ``min_tokens``, ``max_tokens``,
+``batch_tokens``, ``use_packed_sequence_sampling``, ``quadratic_factor``,
+``min_tokens``, ``max_tokens``,
 ``min_tpt``, ``max_tpt``, ``measure_total_length``.
 
 **Sampling — fusion (multi-config).** ``multi_config``, ``sampler_fusion``,

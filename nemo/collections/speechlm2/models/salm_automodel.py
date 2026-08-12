@@ -495,6 +495,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # the ``dataloader_iter`` signature (it can't auto-infer otherwise).
         self.log("loss", loss_display, on_step=True, prog_bar=True, batch_size=B)
         self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True, batch_size=B)
+        if (packing_efficiency := batch.get("packing_efficiency")) is not None:
+            self.log("packing_efficiency", packing_efficiency, on_step=True, batch_size=B)
         self.maybe_log_moe_metrics(batch_idx)
         return ans
 

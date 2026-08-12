@@ -66,6 +66,36 @@ def test_salm_dataset_can_return_packed_audio_samples(monkeypatch):
 
 
 @pytest.mark.unit
+def test_salm_dataset_reports_exact_packing_efficiency(monkeypatch):
+    conversations = []
+    for idx, num_tokens in enumerate((3072, 7168)):
+        cut = dummy_cut(idx, duration=0.03, recording=dummy_recording(idx, duration=0.03, with_data=True))
+        conversation = NeMoMultimodalConversation(
+            id=f"example-{idx}",
+            turns=[
+                AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>"),
+                TextTurn(role="assistant", value="hello"),
+            ],
+            token_equivalent_duration=0.01,
+        )
+        conversation.input_ids = torch.tensor([7, 8], dtype=torch.long)
+        conversation.mask = torch.tensor([False, True])
+        conversation.num_tokens = num_tokens
+        conversations.append(conversation)
+    conversations = CutSet(conversations)
+
+    def fake_audio_collate(conversations_arg, *args, **kwargs):
+        return torch.zeros(2, 480), torch.tensor([480, 480]), conversations_arg
+
+    monkeypatch.setattr(salm_dataset_module, "collate_conversation_audio_fault_tolerant", fake_audio_collate)
+    dataset = salm_dataset_module.SALMDataset(tokenizer=_Tokenizer(), batch_tokens=12288)
+
+    batch = dataset[conversations]
+
+    assert batch["packing_efficiency"].item() == pytest.approx(10240 / 12288)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("rttm_filepath", "expected_targets"),
     [

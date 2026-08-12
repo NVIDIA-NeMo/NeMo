@@ -197,13 +197,20 @@ def _preserve_module_buffers(module: Callable):
         yield
         return
 
-    buffers = [(buffer, buffer.detach().clone()) for buffer in module.buffers()]
+    buffers = [(buffer, buffer.detach().clone(), buffer._version) for buffer in module.buffers()]
     try:
         yield
     finally:
         with torch.no_grad():
-            for buffer, value in buffers:
-                buffer.copy_(value)
+            for buffer, value, version in buffers:
+                # A blind copy bumps the autograd version even for immutable
+                # buffers. PEE's [n_spk, d_model] diarization kernel is saved by
+                # matmul in every real microbatch, so copying it after a synced
+                # dummy forward makes the eventual backward fail with an
+                # in-place-modification error. Restore only buffers the dummy
+                # forward actually mutated.
+                if buffer._version != version:
+                    buffer.copy_(value)
 
 
 def _encode_chunk_microbatches(

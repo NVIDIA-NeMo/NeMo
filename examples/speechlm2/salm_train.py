@@ -55,14 +55,17 @@ def _create_salm_dataset(
 ) -> SALMDataset:
     """Build SALMDataset without forwarding unset options to legacy NeMo packages."""
     multispeaker_cfg = data_cfg.get("multispeaker_cfg", None)
+    batch_tokens = data_cfg.get("train_ds", {}).get("batch_tokens", None)
     # TODO(Dongji): Remove after all release images ship SALMDataset with multispeaker_cfg support.
-    if multispeaker_cfg is None and not pack_audio:
+    if multispeaker_cfg is None and not pack_audio and batch_tokens is None:
         return SALMDataset(tokenizer=tokenizer)
     kwargs = {"tokenizer": tokenizer}
     if multispeaker_cfg is not None:
         kwargs["multispeaker_cfg"] = multispeaker_cfg
     if pack_audio:
         kwargs["pack_audio"] = True
+    if batch_tokens is not None:
+        kwargs["batch_tokens"] = batch_tokens
     return SALMDataset(**kwargs)
 
 

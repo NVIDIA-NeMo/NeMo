@@ -95,6 +95,25 @@ def acoustic_codec_model():
     return acoustic_codec_model
 
 
+@pytest.fixture()
+def hybrid_codec_model():
+    semantic_model_cfg = create_codec_config()
+    semantic_model_cfg.vector_quantizer.params.num_groups = 1
+    semantic_model_cfg.audio_encoder.params.out_dim = 5
+    semantic_model_cfg.audio_decoder.params.input_dim = 5
+
+    hybrid_model_cfg = create_codec_config()
+    hybrid_model_cfg.semantic_codec = semantic_model_cfg
+    hybrid_model_cfg.audio_encoder.params.out_dim = 35
+    hybrid_model_cfg.hybrid_codec = {
+        'continuous_dim': 35,
+        'residual_dropout_rate': 1.0,
+        'kl_loss_scale': 0.1,
+    }
+    hybrid_model_cfg.optim = {"_target_": "torch.optim.Adam", "lr": 1e-3}
+    return AudioCodecModel(cfg=hybrid_model_cfg)
+
+
 class TestAudioCodecModel:
     @pytest.mark.unit
     def test_forward(self, codec_model):
@@ -147,3 +166,92 @@ class TestAudioCodecModel:
         output_audio, output_audio_len = acoustic_codec_model.decode(tokens=tokens, tokens_len=tokens_len)
         assert output_audio.shape[0] == batch_size
         assert output_audio.shape[1] == output_audio_len.max()
+
+    @pytest.mark.unit
+    def test_hybrid_codec_forward(self, hybrid_codec_model):
+        batch_size = 2
+        audio = torch.randn(size=(batch_size, 20000))
+        audio_len = torch.randint(size=[batch_size], low=10000, high=20000)
+
+        output_audio, output_audio_len = hybrid_codec_model.forward(
+            audio=audio, audio_len=audio_len, sample_rate=hybrid_codec_model.sample_rate
+        )
+
+        assert output_audio.shape[0] == batch_size
+        assert output_audio.shape[1] == output_audio_len.max()
+
+    @pytest.mark.unit
+    def test_hybrid_codec_residual_dropout(self, hybrid_codec_model):
+        batch_size = 3
+        audio = torch.randn(size=(batch_size, 20000))
+        audio_len = torch.randint(size=[batch_size], low=10000, high=20000)
+
+        hybrid_codec_model.train()
+        hybrid = hybrid_codec_model._encode_hybrid(
+            audio=audio,
+            audio_len=audio_len,
+            sample_rate=hybrid_codec_model.sample_rate,
+        )
+
+        assert hybrid.decoder_inputs.shape[0] == batch_size
+        assert hybrid.decoder_inputs.shape[1] == 40
+        assert hybrid.residual_mu.shape[1] == 35
+        assert not hybrid.residual_enabled.any()
+        assert torch.allclose(hybrid.decoder_inputs, hybrid.semantic_embedding)
+        assert hybrid.kl_loss.ndim == 0
+        assert torch.isfinite(hybrid.kl_loss)
+        assert hybrid_codec_model.vector_quantizer is None
+        assert hybrid_codec_model.num_codebooks == 1
+        assert not any(parameter.requires_grad for parameter in hybrid_codec_model.semantic_codec.parameters())
+
+        optimizer = hybrid_codec_model.configure_optimizers()
+        optimizer_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+        hybrid_modules = (
+            hybrid_codec_model.semantic_to_decoder,
+            hybrid_codec_model.residual_mu,
+            hybrid_codec_model.residual_logvar,
+            hybrid_codec_model.residual_to_decoder,
+        )
+        assert all(id(parameter) in optimizer_params for module in hybrid_modules for parameter in module.parameters())
+        assert all(
+            id(parameter) not in optimizer_params for parameter in hybrid_codec_model.semantic_codec.parameters()
+        )
+
+    @pytest.mark.unit
+    def test_hybrid_codec_encode_and_decode(self, hybrid_codec_model):
+        batch_size = 2
+        audio = torch.randn(size=(batch_size, 12000))
+        audio_len = torch.randint(size=[batch_size], low=10000, high=12000)
+
+        hybrid_codec_model.eval()
+        tokens, residual_mu, residual_logvar, tokens_len = hybrid_codec_model.encode_hybrid(
+            audio=audio,
+            audio_len=audio_len,
+            sample_rate=hybrid_codec_model.sample_rate,
+        )
+
+        assert tokens.shape[1] == 1
+        assert residual_mu.shape == residual_logvar.shape
+        assert residual_mu.shape[1] == 35
+        assert residual_mu.shape[2] == tokens.shape[2]
+
+        code_only_audio, code_only_len = hybrid_codec_model.decode(tokens=tokens, tokens_len=tokens_len)
+        hybrid_audio, hybrid_len = hybrid_codec_model.decode_hybrid(
+            tokens=tokens,
+            tokens_len=tokens_len,
+            residual=residual_mu,
+        )
+
+        assert code_only_audio.shape[0] == batch_size
+        assert hybrid_audio.shape[0] == batch_size
+        assert torch.equal(code_only_len, hybrid_len)
+
+    @pytest.mark.unit
+    def test_lhotse_validation_dataloader(self, codec_model, monkeypatch):
+        validation_loader = object()
+        cfg = DictConfig({'dataloader_params': {'use_lhotse': True}})
+        monkeypatch.setattr(codec_model, '_get_lhotse_dataloader', lambda _: validation_loader)
+
+        codec_model.setup_validation_data(cfg)
+
+        assert codec_model._validation_dl is validation_loader

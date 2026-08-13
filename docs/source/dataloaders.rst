@@ -687,7 +687,9 @@ intentionally streaming-only. See :ref:`indexed-resumable-dataloading`.
 
 * (multimodal-only) ``audio_token_estimator`` replaces the duration approximation
   with sample-exact integer length arithmetic for the audio preprocessor,
-  convolution/pooling subsampling stages, and optional encoder chunking. Use it
+  encoder subsampling, and optional encoder chunking. Both repeated
+  convolution/pooling stages (``type: conv``) and feature stacking
+  (``type: feature_stacking``) are supported. Use it
   whenever ``batch_tokens`` must be a hard limit on the sequence actually passed
   to the model. ``chunk_size_seconds`` must match the model's encoder chunking
   option; rounding is applied independently to every chunk.
@@ -865,8 +867,11 @@ has three parts:
   ``audio_token_estimator`` is mandatory and supersedes the duration estimate
   in both token filters and sampling constraints. Its ``preprocessor`` mapping
   specifies ``n_fft``, ``hop_length``, and per-side ``stft_pad_amount``;
-  ``subsampling`` is one mapping (or a list of mappings) with ``kernel_size``,
-  ``stride``, per-side ``padding``, ``repeat``, and ``ceil_mode``. This metadata
+  ``subsampling`` is one mapping (or a list of mappings). A ``type: conv`` stage
+  specifies ``kernel_size``, ``stride``, per-side ``padding``, ``repeat``, and
+  ``ceil_mode``. A ``type: feature_stacking`` stage specifies ``factor`` and
+  applies ceiling division, matching PEE's feature-stacking encoder. Omitting
+  ``type`` retains backward compatibility by selecting ``conv``. This metadata
   must describe every temporal reduction before audio embeddings replace the
   locator token. ``chunk_size_seconds`` must equal the model's encoder chunk
   size (or be ``null`` when chunking is disabled). NeMo fails clearly on the
@@ -905,6 +910,7 @@ the actual encoder execution mode::
         hop_length: 160
         stft_pad_amount: 256
       subsampling:
+        type: conv
         kernel_size: 3
         stride: 2
         padding: 1

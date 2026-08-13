@@ -74,11 +74,52 @@ class ConvSubsamplingSpec:
 
 
 @dataclass(frozen=True)
+class FeatureStackingSubsamplingSpec:
+    """Feature-stacking length transform used by PEE encoders."""
+
+    factor: int
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> FeatureStackingSubsamplingSpec:
+        if "factor" not in config:
+            raise ValueError("audio_token_estimator.subsampling is missing: ['factor']")
+        ans = cls(factor=int(config["factor"]))
+        if ans.factor <= 0:
+            raise ValueError(
+                f"Invalid audio_token_estimator.subsampling values: {config}"
+            )
+        return ans
+
+    def __call__(self, length: int) -> int:
+        return (length + self.factor - 1) // self.factor
+
+
+SubsamplingSpec = ConvSubsamplingSpec | FeatureStackingSubsamplingSpec
+
+
+def _subsampling_spec_from_config(config: Mapping[str, Any]) -> SubsamplingSpec:
+    if not isinstance(config, Mapping):
+        raise TypeError(
+            "Each audio_token_estimator.subsampling stage must be a mapping, "
+            f"got {type(config).__name__}"
+        )
+    stage_type = config.get("type", "conv")
+    if stage_type == "conv":
+        return ConvSubsamplingSpec.from_config(config)
+    if stage_type == "feature_stacking":
+        return FeatureStackingSubsamplingSpec.from_config(config)
+    raise ValueError(
+        "audio_token_estimator.subsampling.type must be 'conv' or "
+        f"'feature_stacking', got {stage_type!r}"
+    )
+
+
+@dataclass(frozen=True)
 class AudioTokenEstimator:
     """Sample-exact audio-to-model-token length estimator.
 
     This mirrors the integer length arithmetic of a centered STFT-style
-    preprocessor followed by one or more repeated convolution/pooling stages.
+    preprocessor followed by one or more temporal subsampling stages.
     When ``chunk_size_seconds`` is set, each audio is split exactly like SALM's
     encoder chunking path and the per-chunk output lengths are summed.
     """
@@ -87,7 +128,7 @@ class AudioTokenEstimator:
     n_fft: int
     hop_length: int
     stft_pad_amount: int
-    subsampling: tuple[ConvSubsamplingSpec, ...]
+    subsampling: tuple[SubsamplingSpec, ...]
     chunk_size_seconds: float | None = None
 
     @classmethod
@@ -125,7 +166,7 @@ class AudioTokenEstimator:
                 "audio_token_estimator.subsampling must be a mapping or list of mappings"
             )
         subsampling = tuple(
-            ConvSubsamplingSpec.from_config(stage) for stage in raw_subsampling
+            _subsampling_spec_from_config(stage) for stage in raw_subsampling
         )
 
         chunk_size_seconds = config.get("chunk_size_seconds")

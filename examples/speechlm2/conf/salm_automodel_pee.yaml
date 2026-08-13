@@ -252,19 +252,16 @@ data:
     sample_rate: 16000
     prompt_format: ${model.prompt_format}
     token_equivalent_duration: 0.08
-    # Sample-exact Canary-v2/PEE audio frame count, including per-chunk rounding.
+    # Sample-exact PEE audio frame count, including per-chunk rounding.
     # Required when use_packed_sequence_sampling enforces a hard model-token cap.
-    audio_token_estimator: &canary_v2_audio_token_estimator
+    audio_token_estimator: &pee_audio_token_estimator
       preprocessor:
         n_fft: 512
         hop_length: 160
         stft_pad_amount: 256
       subsampling:
-        kernel_size: 3
-        stride: 2
-        padding: 1
-        repeat: 3
-        ceil_mode: false
+        type: feature_stacking
+        factor: 8
       chunk_size_seconds: ${model.encoder_chunk_size_seconds}
     input_cfg:
       - type: lhotse_as_conversation
@@ -301,7 +298,7 @@ data:
     # They inherit all settings from validation_ds, but can individually override them.
     prompt_format: ${model.prompt_format}
     token_equivalent_duration: 0.08
-    audio_token_estimator: *canary_v2_audio_token_estimator
+    audio_token_estimator: *pee_audio_token_estimator
     datasets:
       val_set_0:  # rename to your dataset name, add more as needed
         input_cfg:

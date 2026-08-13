@@ -19,7 +19,10 @@ import pytest
 import torch
 from lhotse.testing.dummies import dummy_recording
 
-from nemo.collections.asr.parts.submodules.subsampling import calc_length
+from nemo.collections.asr.parts.submodules.subsampling import (
+    FeatureStacking,
+    calc_length,
+)
 from nemo.collections.common.data.lhotse.audio_token_estimator import (
     AudioTokenEstimator,
 )
@@ -42,6 +45,7 @@ def _config(chunk_size_seconds=15.0):
             "stft_pad_amount": 256,
         },
         "subsampling": {
+            "type": "conv",
             "kernel_size": 3,
             "stride": 2,
             "padding": 1,
@@ -50,6 +54,12 @@ def _config(chunk_size_seconds=15.0):
         },
         "chunk_size_seconds": chunk_size_seconds,
     }
+
+
+def _feature_stacking_config(chunk_size_seconds=15.0):
+    config = _config(chunk_size_seconds=chunk_size_seconds)
+    config["subsampling"] = {"type": "feature_stacking", "factor": 8}
+    return config
 
 
 def _reference_single_pass(num_samples: int) -> int:
@@ -75,6 +85,57 @@ def test_audio_token_estimator_matches_fastconformer_integer_lengths(num_samples
     assert estimator.estimate_samples(num_samples) == _reference_single_pass(
         num_samples
     )
+
+
+@pytest.mark.parametrize(
+    "num_samples", [1_600, 12_345, 16_000, 54_321, 100_001, 239_999, 240_000]
+)
+def test_audio_token_estimator_matches_pee_feature_stacking_lengths(num_samples):
+    estimator = AudioTokenEstimator.from_config(
+        _feature_stacking_config(chunk_size_seconds=None), sample_rate=16000
+    )
+    feature_frames = (num_samples + 2 * 256 - 512) // 160
+    subsampling = FeatureStacking(subsampling_factor=8, feat_in=4, feat_out=4)
+    expected = max(1, int(subsampling.compute_num_out_frames(feature_frames)))
+    assert estimator.estimate_samples(num_samples) == expected
+
+
+@pytest.mark.parametrize(
+    "num_samples",
+    [1, 159, 160, 1_119, 1_120, 1_279, 1_280, 1_281, 239_999, 240_000, 240_001],
+)
+def test_current_canary_v2_and_pee_length_estimators_are_numerically_equivalent(
+    num_samples,
+):
+    canary_v2 = AudioTokenEstimator.from_config(
+        _config(chunk_size_seconds=None), sample_rate=16000
+    )
+    pee = AudioTokenEstimator.from_config(
+        _feature_stacking_config(chunk_size_seconds=None), sample_rate=16000
+    )
+    assert canary_v2.estimate_samples(num_samples) == pee.estimate_samples(num_samples)
+
+
+def test_audio_token_estimator_keeps_legacy_convolution_config_compatible():
+    config = _config(chunk_size_seconds=None)
+    config["subsampling"].pop("type")
+    estimator = AudioTokenEstimator.from_config(config, sample_rate=16000)
+    assert estimator.estimate_samples(16_000) == _reference_single_pass(16_000)
+
+
+@pytest.mark.parametrize(
+    ("subsampling", "message"),
+    [
+        ({"type": "feature_stacking"}, "missing: \\['factor'\\]"),
+        ({"type": "feature_stacking", "factor": 0}, "Invalid"),
+        ({"type": "unknown"}, "must be 'conv' or 'feature_stacking'"),
+    ],
+)
+def test_audio_token_estimator_validates_subsampling_type(subsampling, message):
+    config = _config(chunk_size_seconds=None)
+    config["subsampling"] = subsampling
+    with pytest.raises(ValueError, match=message):
+        AudioTokenEstimator.from_config(config, sample_rate=16000)
 
 
 def test_audio_token_estimator_accounts_for_per_chunk_rounding():

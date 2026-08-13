@@ -229,6 +229,7 @@ data:
         hop_length: 160
         stft_pad_amount: 256
       subsampling:
+        type: conv
         kernel_size: 3
         stride: 2
         padding: 1

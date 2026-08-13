@@ -18,6 +18,7 @@ import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
+from lightning import LightningModule
 from transformers import GenerationConfig
 
 from nemo.collections.common.data.lhotse import NeMoMultimodalConversation
@@ -203,6 +204,25 @@ def test_salm_automodel_training_step(model, dataset, prompt_formatter, training
 
 def test_salm_automodel_training_step_uses_dataloader_iter_signature():
     assert list(inspect.signature(SALMAutomodel.training_step).parameters) == ["self", "dataloader_iter"]
+
+
+def test_salm_automodel_notifies_garbage_collection_after_optimizer_step(monkeypatch):
+    calls = []
+
+    class FakeGarbageCollectionManager:
+        def on_optimizer_step(self):
+            calls.append("gc")
+
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    torch.nn.Module.__init__(model)
+    model._garbage_collection = FakeGarbageCollectionManager()
+    monkeypatch.setattr(
+        LightningModule,
+        "optimizer_step",
+        lambda *args, **kwargs: calls.append("optimizer"),
+    )
+    model.optimizer_step(0, 0, object())
+    assert calls == ["optimizer", "gc"]
 
 
 def test_salm_automodel_record_training_stats_uses_thd_metadata():

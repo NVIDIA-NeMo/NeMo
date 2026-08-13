@@ -14,6 +14,11 @@ model:
   # Set to true to use SALMAutomodel (NeMo Automodel backend) instead of SALM (HF Transformers backend).
   use_nemo_automodel: true
 
+  # Optional: disable asynchronous full-heap Python GC and run deterministic
+  # generation-1 collections every N optimizer steps. null preserves Python's
+  # default automatic GC behavior.
+  gc_every_steps: null
+
   # Regexp (re.compile) patterns matching parameters to be frozen.
   freeze_params:
     # Frozen LLM (embed_tokens stays inside llm, so this pattern covers it too)

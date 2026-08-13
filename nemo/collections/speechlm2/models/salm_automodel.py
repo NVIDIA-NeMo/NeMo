@@ -32,6 +32,7 @@ from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.models.salm import _resolve_audios_in_prompt, replace_placeholders_and_build_targets
 from nemo.collections.speechlm2.parts.automodel_lora import ensure_lora_trainable, make_peft_config, maybe_install_lora
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
+from nemo.collections.speechlm2.parts.gc import GarbageCollectionManager
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.multispeaker import build_speaker_tokens, maybe_init_lss_loss
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
@@ -69,6 +70,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         self._use_fsdp = False
         self._use_tp = False
+        self._garbage_collection = GarbageCollectionManager(self.cfg.get("gc_every_steps", None))
 
         if self.cfg.get("init_configure_model", False):
             self.configure_model()
@@ -379,6 +381,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         averaging (see ``_configure_moe_aux_loss_scaler``)."""
         self._validate_parallelism_compatibility()
         self._configure_moe_aux_loss_scaler()
+        self._garbage_collection.on_fit_start()
+
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure=None) -> None:
+        """Run configured manual GC after each completed optimizer step."""
+        super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
+        self._garbage_collection.on_optimizer_step()
 
     def _validate_parallelism_compatibility(self) -> None:
         """Raise on known-incompatible THD/CP/backend configurations.

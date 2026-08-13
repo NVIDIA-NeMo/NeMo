@@ -14,6 +14,11 @@ model:
   # Set to true to use SALMAutomodel (NeMo Automodel backend) instead of SALM (HF Transformers backend).
   use_nemo_automodel: true
 
+  # Optional: disable asynchronous full-heap Python GC and run deterministic
+  # generation-1 collections every N optimizer steps. null preserves Python's
+  # default automatic GC behavior.
+  gc_every_steps: null
+
   # Regexp (re.compile) patterns matching parameters to be frozen.
   # PEE recipe: freeze the LLM and the Sortformer diarizer expert; keep the ASR
   # Conformer encoder (perception.encoder.asr_encoder) and the fusion layers

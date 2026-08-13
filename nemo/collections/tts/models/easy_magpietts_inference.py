@@ -414,6 +414,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self._codec_helper = CodecHelper(self._codec_model, self._codec_converter)
 
         self.local_transformer_type = LocalTransformerType(cfg.get('local_transformer_type', 'none').lower())
+        if (
+            self.local_transformer_type.is_oneshot
+            and cfg.get("require_hybrid_codec", False)
+            and not self._codec_helper.is_hybrid_codec
+        ):
+            raise ValueError("This one-shot recipe requires a hybrid semantic-residual codec checkpoint.")
         logging.info(f"Local transformer type: {self.local_transformer_type}")
         if self.local_transformer_type.is_oneshot:
             self.acoustic_embedding_noise = float(cfg.get('acoustic_embedding_noise', 0.0))
@@ -422,13 +428,35 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     f"acoustic_embedding_noise must be non-negative, got {self.acoustic_embedding_noise}."
                 )
             logging.info("Teacher-forced acoustic embedding noise: %s", self.acoustic_embedding_noise)
+            self.semantic_history_infill_min = float(cfg.get("semantic_history_infill_min", 1.0))
+            self.semantic_history_infill_max = float(cfg.get("semantic_history_infill_max", 1.0))
+            if not 0.0 <= self.semantic_history_infill_min <= self.semantic_history_infill_max <= 1.0:
+                raise ValueError(
+                    "semantic history infill fractions must satisfy "
+                    f"0 <= min <= max <= 1, got {self.semantic_history_infill_min} and "
+                    f"{self.semantic_history_infill_max}."
+                )
+            logging.info(
+                "Teacher-forced semantic history infill range: [%s, %s]",
+                self.semantic_history_infill_min,
+                self.semantic_history_infill_max,
+            )
+            self.acoustic_aux_loss_scale = float(cfg.get("acoustic_aux_loss_scale", 0.0))
+            if self.acoustic_aux_loss_scale < 0.0:
+                raise ValueError(f"acoustic_aux_loss_scale must be non-negative, got {self.acoustic_aux_loss_scale}.")
             if self._codec_converter is not None:
                 raise ValueError("One-shot acoustic prediction does not support model.vector_quantizer conversion.")
             self.num_semantic_codebooks = int(cfg.get("num_semantic_codebooks", 1))
-            if not 0 < self.num_semantic_codebooks < self.num_audio_codebooks:
+            if self._codec_helper.is_hybrid_codec:
+                valid_semantic_count = self.num_semantic_codebooks == self.num_audio_codebooks
+            else:
+                valid_semantic_count = 0 < self.num_semantic_codebooks < self.num_audio_codebooks
+            if not valid_semantic_count:
                 raise ValueError(
-                    f"num_semantic_codebooks must be in [1, {self.num_audio_codebooks - 1}], "
-                    f"got {self.num_semantic_codebooks}."
+                    "Hybrid codecs require all codec codebooks to be semantic; grouped FSQ codecs require a "
+                    "non-empty strict semantic subset. "
+                    f"Got semantic={self.num_semantic_codebooks}, total={self.num_audio_codebooks}, "
+                    f"hybrid={self._codec_helper.is_hybrid_codec}."
                 )
             self.num_predicted_audio_codebooks = self.num_semantic_codebooks
         else:
@@ -667,24 +695,78 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         elif self.local_transformer_type.is_oneshot:
             embedding_dim_per_codebook = self._codec_helper._embedding_dim_per_codebook()
             self.semantic_codec_embedding_dim = self.num_semantic_codebooks * embedding_dim_per_codebook
-            self.acoustic_codec_embedding_dim = (
-                self.num_audio_codebooks - self.num_semantic_codebooks
-            ) * embedding_dim_per_codebook
+            if self._codec_helper.is_hybrid_codec:
+                self.acoustic_codec_embedding_dim = self._codec_model.continuous_dim
+            else:
+                self.acoustic_codec_embedding_dim = (
+                    self.num_audio_codebooks - self.num_semantic_codebooks
+                ) * embedding_dim_per_codebook
             stacked_semantic_dim = self.semantic_codec_embedding_dim * self.frame_stacking_factor
             stacked_acoustic_dim = self.acoustic_codec_embedding_dim * self.frame_stacking_factor
             self.flow_acoustic_in_projection = nn.Linear(stacked_acoustic_dim, cfg.embedding_dim)
+            self.semantic_history_mask_embedding = nn.Parameter(torch.zeros(1, 1, cfg.embedding_dim))
             # This path has no counterpart in the pretrained discrete model. Start it as an
             # exact no-op so loading the pretrained backbone does not inject a random residual.
             nn.init.zeros_(self.flow_acoustic_in_projection.weight)
             nn.init.zeros_(self.flow_acoustic_in_projection.bias)
+            predictor_hidden_dim = {
+                LocalTransformerType.FLOW: int(cfg.get("local_flow_hidden_dim", 1536)),
+                LocalTransformerType.FLOW_MATCHING: int(cfg.get("local_flow_matching_hidden_dim", 1536)),
+                LocalTransformerType.DIFFUSION: int(cfg.get("local_diffusion_hidden_dim", 1536)),
+            }[self.local_transformer_type]
+            # Each branch gets half of the predictor width so their concatenation
+            # naturally matches the head's hidden dimension (768 + 768 -> 1536).
+            self.oneshot_condition_projection_dim = int(
+                cfg.get("oneshot_condition_projection_dim", predictor_hidden_dim // 2)
+            )
+            if self.oneshot_condition_projection_dim < 1:
+                raise ValueError(
+                    "oneshot_condition_projection_dim must be positive, "
+                    f"got {self.oneshot_condition_projection_dim}."
+                )
+            self.flow_hidden_condition_projection = nn.Conv1d(
+                cfg.hidden_dim,
+                self.oneshot_condition_projection_dim,
+                kernel_size=1,
+            )
+            self.flow_semantic_condition_projection = nn.Conv1d(
+                stacked_semantic_dim,
+                self.oneshot_condition_projection_dim,
+                kernel_size=1,
+            )
+            if cfg.hidden_dim == self.oneshot_condition_projection_dim:
+                with torch.no_grad():
+                    self.flow_hidden_condition_projection.weight.zero_()
+                    self.flow_hidden_condition_projection.bias.zero_()
+                    self.flow_hidden_condition_projection.weight[:, :, 0].copy_(
+                        torch.eye(
+                            cfg.hidden_dim,
+                            device=self.flow_hidden_condition_projection.weight.device,
+                            dtype=self.flow_hidden_condition_projection.weight.dtype,
+                        )
+                    )
+            condition_channels = 2 * self.oneshot_condition_projection_dim
+            self.acoustic_aux_projection = (
+                nn.Conv1d(condition_channels, stacked_acoustic_dim, kernel_size=1)
+                if self.acoustic_aux_loss_scale > 0.0
+                else None
+            )
             # Keep the registered name for compatibility with existing normalizing-flow checkpoints.
             self.local_flow = create_oneshot_local_predictor(
                 self.local_transformer_type,
                 acoustic_channels=stacked_acoustic_dim,
-                condition_channels=cfg.hidden_dim + stacked_semantic_dim,
+                condition_channels=condition_channels,
                 cfg=cfg,
             )
-            logging.info("One-shot local predictor: %s", type(self.local_predictor).__name__)
+            logging.info(
+                "One-shot local predictor: %s; semantic=%d -> %d, hidden=%d -> %d, condition=%d",
+                type(self.local_predictor).__name__,
+                stacked_semantic_dim,
+                self.oneshot_condition_projection_dim,
+                cfg.hidden_dim,
+                self.oneshot_condition_projection_dim,
+                condition_channels,
+            )
 
     @property
     def codec_sil_codes(self):
@@ -741,13 +823,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         with torch.no_grad():
             sil_acoustic = None
             if self.local_transformer_type.is_oneshot:
-                sil_codes_raw, sil_codes_lens, sil_embedding = (
-                    self._codec_helper.audio_to_semantic_codes_and_embedding(
+                sil_codes_raw, sil_codes_lens, sil_acoustic = (
+                    self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
                         audio, audio_len, self.num_semantic_codebooks
                     )
-                )
-                _, sil_acoustic = self._codec_helper.split_continuous_embedding(
-                    sil_embedding, num_semantic_codebooks=self.num_semantic_codebooks
                 )
             else:
                 sil_codes_raw, sil_codes_lens = self._codec_helper.audio_to_codes(audio, audio_len)
@@ -999,7 +1078,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     f"got {self.local_transformer_type}."
                 )
 
-            trainable_prefixes = ("local_flow.", "flow_acoustic_in_projection.")
+            trainable_prefixes = (
+                "local_flow.",
+                "flow_acoustic_in_projection.",
+                "semantic_history_mask_embedding",
+                "flow_hidden_condition_projection.",
+                "flow_semantic_condition_projection.",
+                "acoustic_aux_projection.",
+            )
             trainable_params = []
             trainable_numel = 0
             for name, param in self.named_parameters():
@@ -1066,12 +1152,36 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         audio_embedding = self.audio_in_projection(audio_embedding)
         return audio_embedding
 
+    def project_oneshot_condition(
+        self,
+        hidden_state: torch.Tensor,
+        semantic_embedding: torch.Tensor,
+    ) -> torch.Tensor:
+        """Project backbone and semantic features to equal widths before concatenation."""
+        if not self.local_transformer_type.is_oneshot:
+            raise RuntimeError("project_oneshot_condition is only valid for one-shot predictors.")
+        expected_semantic_channels = self.semantic_codec_embedding_dim * self.frame_stacking_factor
+        if hidden_state.ndim != 3 or hidden_state.size(1) != self.cfg.hidden_dim:
+            raise ValueError(f"Expected hidden state [B, {self.cfg.hidden_dim}, T], got {tuple(hidden_state.shape)}.")
+        if semantic_embedding.ndim != 3 or semantic_embedding.size(1) != expected_semantic_channels:
+            raise ValueError(
+                f"Expected semantic embedding [B, {expected_semantic_channels}, T], "
+                f"got {tuple(semantic_embedding.shape)}."
+            )
+        if hidden_state.size(0) != semantic_embedding.size(0) or hidden_state.size(2) != semantic_embedding.size(2):
+            raise ValueError("Hidden and semantic conditions must have matching batch and time dimensions.")
+
+        hidden_condition = self.flow_hidden_condition_projection(hidden_state)
+        semantic_condition = self.flow_semantic_condition_projection(semantic_embedding.to(hidden_condition.dtype))
+        return torch.cat([hidden_condition, semantic_condition], dim=1)
+
     def embed_flow_audio_state(
         self,
         semantic_codes: torch.Tensor,
         acoustic_embedding: torch.Tensor,
+        semantic_history_keep_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Embed one or more flow audio states for the backbone input channel."""
+        """Embed flow states, optionally infilling only their semantic history contribution."""
         if not self.local_transformer_type.is_oneshot:
             raise RuntimeError("embed_flow_audio_state is only valid for normalizing-flow models.")
 
@@ -1092,8 +1202,25 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             raise ValueError("Semantic codes and acoustic embeddings must have matching batch and time dimensions.")
 
         semantic_input = self.embed_audio_tokens(semantic_codes)
+        if semantic_history_keep_mask is not None:
+            expected_mask_shape = (semantic_codes.size(0), semantic_codes.size(2))
+            if semantic_history_keep_mask.shape != expected_mask_shape:
+                raise ValueError(
+                    f"Expected semantic history keep mask {expected_mask_shape}, "
+                    f"got {tuple(semantic_history_keep_mask.shape)}."
+                )
+            real_semantic_frame = (semantic_codes < self.codebook_size).all(dim=1)
+            semantic_history_mask = real_semantic_frame & ~semantic_history_keep_mask.bool()
+            mask_embedding = self.semantic_history_mask_embedding.to(semantic_input.dtype).expand_as(semantic_input)
+            semantic_input = torch.where(
+                semantic_history_mask.unsqueeze(2),
+                mask_embedding,
+                semantic_input,
+            )
+
         acoustic_input = self.flow_acoustic_in_projection(acoustic_embedding.transpose(1, 2))
-        special_frame = (semantic_codes >= self.codebook_size).any(dim=1, keepdim=False).unsqueeze(-1)
+        structural_special = semantic_codes >= self.codebook_size
+        special_frame = structural_special.any(dim=1, keepdim=False).unsqueeze(-1)
         acoustic_input = acoustic_input.masked_fill(special_frame, 0.0)
         return semantic_input + acoustic_input
 
@@ -1477,7 +1604,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 raise ValueError("Either context_audio_codes or context_audio must be provided")
             if self.local_transformer_type.is_oneshot:
                 context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
-                    self._codec_helper.audio_to_semantic_codes_and_embedding(
+                    self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
                         context_audio, context_audio_lens, self.num_semantic_codebooks
                     )
                 )
@@ -1493,10 +1620,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     "or context_audio_embedding."
                 )
             semantic_context = context_audio_codes
-            _, acoustic_context = self._codec_helper.split_continuous_embedding(
-                context_audio_embedding,
-                num_semantic_codebooks=self.num_semantic_codebooks,
-            )
+            acoustic_context = context_audio_embedding
             context_audio_codes, acoustic_context, context_audio_codes_lens = self.prepare_flow_audio_state_sequence(
                 semantic_codes=semantic_context,
                 codes_lens=context_audio_codes_lens,
@@ -1749,18 +1873,15 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             conditional_hidden, unconditional_hidden = hidden.chunk(2, dim=0)
             if self.local_transformer_type == LocalTransformerType.FLOW_MATCHING:
                 hidden = conditional_hidden
-                unconditional_condition = torch.cat(
-                    [
-                        unconditional_hidden.unsqueeze(-1),
-                        stacked_semantic_embedding.to(unconditional_hidden.dtype),
-                    ],
-                    dim=1,
+                unconditional_condition = self.project_oneshot_condition(
+                    unconditional_hidden.unsqueeze(-1),
+                    stacked_semantic_embedding,
                 )
             else:
                 hidden = cfg_scale * conditional_hidden + (1.0 - cfg_scale) * unconditional_hidden
-        condition = torch.cat(
-            [hidden.unsqueeze(-1), stacked_semantic_embedding.to(hidden.dtype)],
-            dim=1,
+        condition = self.project_oneshot_condition(
+            hidden.unsqueeze(-1),
+            stacked_semantic_embedding,
         )
         predict_kwargs = dict(
             condition=condition,
@@ -2840,7 +2961,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             if self.local_transformer_type.is_oneshot:
                 if 'context_audio' in batch:
                     context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
-                        self._codec_helper.audio_to_semantic_codes_and_embedding(
+                        self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
                             batch['context_audio'],
                             batch['context_audio_lens'],
                             self.num_semantic_codebooks,
@@ -2879,7 +3000,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     if 'audio' not in batch:
                         raise ValueError("Flow teacher forcing requires raw target audio.")
                     gt_audio_codes, gt_audio_codes_lens, gt_audio_embedding = (
-                        self._codec_helper.audio_to_semantic_codes_and_embedding(
+                        self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
                             batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
                         )
                     )
@@ -2896,10 +3017,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
 
                 if self.local_transformer_type.is_oneshot:
                     semantic_codes = gt_audio_codes
-                    _, acoustic_embedding = self._codec_helper.split_continuous_embedding(
-                        gt_audio_embedding,
-                        num_semantic_codebooks=self.num_semantic_codebooks,
-                    )
+                    acoustic_embedding = gt_audio_embedding
                     semantic_sequence, acoustic_sequence, gt_audio_codes_lens_processed = (
                         self.prepare_flow_audio_state_sequence(
                             semantic_codes=semantic_codes,
@@ -3174,7 +3292,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         elif self.local_transformer_type.is_oneshot:
             batch['context_audio_embedding'] = torch.zeros(
                 1,
-                self._codec_model.vector_quantizer.codebook_dim,
+                self.acoustic_codec_embedding_dim,
                 0,
                 device=device,
                 dtype=next(self._codec_model.parameters()).dtype,

@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-: "${CODEC_PATH:?Set CODEC_PATH to the 12 fps semantic codec .nemo file}"
+: "${CODEC_PATH:?Set CODEC_PATH to the 12 fps hybrid semantic-residual codec .nemo file}"
 : "${IPA_TOKENIZER:?Set IPA_TOKENIZER to the IPA tokenizer JSON file}"
 : "${TRAIN_INPUT_CFG:?Set TRAIN_INPUT_CFG to the Lhotse training input YAML}"
 : "${VAL_INPUT_CFG:?Set VAL_INPUT_CFG to the Lhotse validation input YAML}"

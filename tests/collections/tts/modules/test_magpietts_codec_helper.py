@@ -36,6 +36,23 @@ def _semantic_acoustic_codec():
     return AudioCodecModel(cfg=codec_cfg).eval()
 
 
+def _hybrid_semantic_acoustic_codec():
+    semantic_cfg = create_codec_config()
+    semantic_cfg.vector_quantizer.params.num_groups = 1
+    semantic_cfg.audio_encoder.params.out_dim = 5
+    semantic_cfg.audio_decoder.params.input_dim = 5
+
+    codec_cfg = create_codec_config()
+    codec_cfg.semantic_codec = semantic_cfg
+    codec_cfg.audio_encoder.params.out_dim = 35
+    codec_cfg.hybrid_codec = {
+        "continuous_dim": 35,
+        "residual_dropout_rate": 0.5,
+        "kl_loss_scale": 0.1,
+    }
+    return AudioCodecModel(cfg=codec_cfg).eval()
+
+
 def test_codec_helper_decodes_semantic_tokens_with_continuous_acoustics():
     torch.manual_seed(42)
     codec = _semantic_acoustic_codec()
@@ -88,7 +105,7 @@ def test_codec_helper_returns_and_splits_continuous_fsq_embedding():
         "encode",
         side_effect=AssertionError("semantic encode must not touch acoustic quantizer groups"),
     ):
-        semantic_codes, semantic_lens, semantic_embedding = helper.audio_to_semantic_codes_and_embedding(
+        semantic_codes, semantic_lens, acoustic_embedding = helper.audio_to_semantic_codes_and_acoustic_embedding(
             audio, audio_lens, num_semantic_codebooks=1
         )
     semantic, acoustic = helper.split_continuous_embedding(embedding)
@@ -104,8 +121,44 @@ def test_codec_helper_returns_and_splits_continuous_fsq_embedding():
     assert acoustic.shape == (2, 35, embedding.size(2))
     torch.testing.assert_close(semantic_codes, codes[:, :1])
     torch.testing.assert_close(semantic_lens, codes_lens)
-    torch.testing.assert_close(semantic_embedding, embedding)
+    torch.testing.assert_close(acoustic_embedding, acoustic)
     torch.testing.assert_close(embedding, expected_embedding)
     assert not torch.allclose(raw_embedding, embedding)
     assert not torch.allclose(embedding, dequantized)
     assert not hasattr(helper, "acoustic_embedding_to_codes")
+
+
+def test_codec_helper_uses_hybrid_posterior_mean_as_acoustic_embedding():
+    torch.manual_seed(42)
+    codec = _hybrid_semantic_acoustic_codec()
+    helper = CodecHelper(codec)
+    audio = torch.randn(2, 2400)
+    audio_lens = torch.tensor([2400, 1920])
+
+    semantic_codes, codes_lens, acoustic_embedding = helper.audio_to_semantic_codes_and_acoustic_embedding(
+        audio,
+        audio_lens,
+        num_semantic_codebooks=1,
+    )
+    expected_codes, residual_mu, _, expected_lens = codec.encode_hybrid(audio, audio_lens)
+    semantic_embedding = helper.semantic_codes_to_embedding(semantic_codes, codes_lens)
+
+    torch.testing.assert_close(semantic_codes, expected_codes)
+    torch.testing.assert_close(codes_lens, expected_lens)
+    torch.testing.assert_close(acoustic_embedding, residual_mu)
+    assert semantic_embedding.size(1) == 5
+    assert acoustic_embedding.size(1) == 35
+
+    with patch.object(codec, "decode_hybrid", wraps=codec.decode_hybrid) as decode_hybrid:
+        decoded_audio, decoded_lens, combined_embedding = helper.semantic_and_acoustic_embedding_to_audio(
+            semantic_codes=semantic_codes,
+            acoustic_embedding=acoustic_embedding,
+            codes_len=codes_lens,
+        )
+
+    assert decoded_audio.shape[0] == audio.shape[0]
+    assert decoded_lens.shape == audio_lens.shape
+    assert combined_embedding.shape[1] == semantic_embedding.size(1) + acoustic_embedding.size(1)
+    torch.testing.assert_close(combined_embedding[:, : semantic_embedding.size(1)], semantic_embedding)
+    torch.testing.assert_close(combined_embedding[:, semantic_embedding.size(1) :], acoustic_embedding)
+    torch.testing.assert_close(decode_hybrid.call_args.kwargs["residual"], residual_mu)

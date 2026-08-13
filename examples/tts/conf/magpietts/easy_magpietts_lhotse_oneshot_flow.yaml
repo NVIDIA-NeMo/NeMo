@@ -28,13 +28,23 @@ model:
   context_duration_min: 3.0
   context_duration_max: 10.0
 
-  # The flow target and autoregressive acoustic input are codec encoder outputs before quantization.
+  # The flow target and autoregressive acoustic input are the hybrid codec residual posterior mean.
   load_cached_codes_if_available: false
+  # Fail fast if model.codecmodel_path points to the legacy grouped-FSQ codec.
+  require_hybrid_codec: true
   local_transformer_type: normalizing_flow
   frame_stacking_factor: 1
   # Standard deviation of Gaussian noise added only to valid teacher-forced acoustic inputs during training.
   # The acoustic prediction target and validation/inference inputs remain clean.
-  acoustic_embedding_noise: 0.0
+  acoustic_embedding_noise: 0.1
+  # Match the acoustic-mask reference: draw a per-sample keep fraction from a
+  # scaled Beta(1, 2), then retain exactly that many randomly ranked semantic
+  # history frames with a learned mask embedding for the rest. Mean keep is 50%.
+  semantic_history_infill_min: 0.25
+  semantic_history_infill_max: 1.0
+  # A single pointwise projection predicts the acoustic embedding from the projected
+  # condition with masked L1 loss. It is never called during generation.
+  acoustic_aux_loss_scale: 0.1
   local_flow_hidden_dim: 1536
   local_flow_n_flows: 4
   local_flow_n_layers: 3

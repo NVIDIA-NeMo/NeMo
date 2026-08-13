@@ -70,6 +70,36 @@ def _restore_codec_as_random_initialized_model(*args, **kwargs):
     return codec_model
 
 
+def _hybrid_codec_config():
+    semantic_cfg = create_codec_config()
+    semantic_cfg.vector_quantizer.params.num_groups = 1
+    semantic_cfg.audio_encoder.params.out_dim = 5
+    semantic_cfg.audio_decoder.params.input_dim = 5
+
+    codec_cfg = create_codec_config()
+    codec_cfg.semantic_codec = semantic_cfg
+    codec_cfg.audio_encoder.params.out_dim = 35
+    codec_cfg.hybrid_codec = {
+        "continuous_dim": 35,
+        "residual_dropout_rate": 0.5,
+        "kl_loss_scale": 0.1,
+    }
+    return codec_cfg
+
+
+def _restore_hybrid_codec_as_random_initialized_model(*args, **kwargs):
+    del args
+    if kwargs.get("return_config", False):
+        return _hybrid_codec_config()
+
+    codec_cfg = kwargs.get("override_config_path", None)
+    if codec_cfg is None:
+        codec_cfg = _hybrid_codec_config()
+    codec_model = AudioCodecModel(cfg=codec_cfg)
+    codec_model.freeze()
+    return codec_model
+
+
 @contextmanager
 def _codec_restore_uses_random_initialized_audio_codec():
     from nemo.collections.tts.models import easy_magpietts_inference
@@ -78,6 +108,18 @@ def _codec_restore_uses_random_initialized_audio_codec():
         easy_magpietts_inference.AudioCodecModel,
         "restore_from",
         staticmethod(_restore_codec_as_random_initialized_model),
+    ):
+        yield
+
+
+@contextmanager
+def _codec_restore_uses_random_initialized_hybrid_codec():
+    from nemo.collections.tts.models import easy_magpietts_inference
+
+    with patch.object(
+        easy_magpietts_inference.AudioCodecModel,
+        "restore_from",
+        staticmethod(_restore_hybrid_codec_as_random_initialized_model),
     ):
         yield
 
@@ -519,6 +561,7 @@ def test_process_batch_with_one_shot_flow_local_predictor():
                 "local_flow_n_layers": 2,
                 "local_flow_n_flows": 2,
                 "local_transformer_loss_scale": 0.5,
+                "acoustic_aux_loss_scale": 0.1,
             }
         )
     )
@@ -526,12 +569,12 @@ def test_process_batch_with_one_shot_flow_local_predictor():
     batch = _toy_batch(model)
     audio_embedding = torch.randn(
         batch["audio_codes"].size(0),
-        model._codec_model.vector_quantizer.codebook_dim,
+        model.acoustic_codec_embedding_dim,
         batch["audio_codes"].size(2),
     )
     context_audio_embedding = torch.randn(
         batch["context_audio_codes"].size(0),
-        model._codec_model.vector_quantizer.codebook_dim,
+        model.acoustic_codec_embedding_dim,
         batch["context_audio_codes"].size(2),
     )
 
@@ -555,6 +598,7 @@ def test_process_batch_with_one_shot_flow_local_predictor():
     assert torch.isfinite(output.loss)
     assert torch.isfinite(output.codebook_loss)
     assert torch.isfinite(output.local_transformer_loss)
+    assert torch.isfinite(output.acoustic_aux_loss)
     assert output.local_transformer_logits is None
     semantic_channels = model.num_semantic_codebooks * model.frame_stacking_factor
     assert output.logits.shape[-1] == semantic_channels * model.num_all_tokens_per_codebook
@@ -607,14 +651,61 @@ def test_flow_matching_model_uses_iterative_oneshot_predictor():
     semantic_channels = model.num_semantic_codebooks * model.frame_stacking_factor
     assert len(model.audio_embeddings) == semantic_channels
     assert model.final_proj.out_features == semantic_channels * model.num_all_tokens_per_codebook
+    assert model.oneshot_condition_projection_dim == 8
+    assert model.flow_hidden_condition_projection.in_channels == model.cfg.hidden_dim
+    assert model.flow_hidden_condition_projection.out_channels == 8
+    assert model.flow_semantic_condition_projection.in_channels == model.semantic_codec_embedding_dim * 2
+    assert model.flow_semantic_condition_projection.out_channels == 8
+    assert model.local_predictor.estimator.condition_projection.in_channels == 16
 
-    condition = torch.randn(2, model.cfg.hidden_dim + model.semantic_codec_embedding_dim * 2, 4)
+    condition = torch.randn(2, 2 * model.oneshot_condition_projection_dim, 4)
     lengths = torch.tensor([4, 2])
     prediction = model.local_predictor.predict(condition, lengths)
 
     expected_channels = model.acoustic_codec_embedding_dim * model.frame_stacking_factor
     assert prediction.shape == (2, expected_channels, 4)
     assert torch.count_nonzero(prediction[1, :, 2:]) == 0
+
+
+def test_flow_matching_model_accepts_hybrid_semantic_and_residual_codec():
+    cfg = tiny_easy_magpie_cfg(
+        {
+            "local_transformer_type": "flow_matching",
+            "require_hybrid_codec": True,
+            "local_flow_matching_hidden_dim": 16,
+            "local_flow_matching_n_layers": 2,
+            "local_flow_matching_time_embedding_dim": 8,
+        }
+    )
+    _seed_everything()
+    with _codec_restore_uses_random_initialized_hybrid_codec():
+        model = EasyMagpieTTSModel(cfg)
+    model.eval()
+
+    assert model._codec_helper.is_hybrid_codec
+    assert model.num_audio_codebooks == 1
+    assert model.num_semantic_codebooks == 1
+    assert model.semantic_codec_embedding_dim == 5
+    assert model.acoustic_codec_embedding_dim == 35
+    assert model.flow_semantic_condition_projection.in_channels == 5
+    assert model.oneshot_condition_projection_dim == 8
+    assert model.local_predictor.estimator.condition_projection.in_channels == 16
+    assert model.local_predictor.acoustic_channels == 35
+
+
+def test_one_shot_recipe_can_require_hybrid_codec():
+    cfg = tiny_easy_magpie_cfg(
+        {
+            "local_transformer_type": "flow_matching",
+            "require_hybrid_codec": True,
+            "local_flow_matching_hidden_dim": 16,
+            "local_flow_matching_n_layers": 2,
+            "local_flow_matching_time_embedding_dim": 8,
+        }
+    )
+
+    with pytest.raises(ValueError, match="requires a hybrid semantic-residual codec"):
+        _make_easy_magpie_model(cfg)
 
 
 def test_diffusion_model_uses_iterative_oneshot_predictor():
@@ -639,7 +730,7 @@ def test_diffusion_model_uses_iterative_oneshot_predictor():
     assert len(model.audio_embeddings) == semantic_channels
     assert model.final_proj.out_features == semantic_channels * model.num_all_tokens_per_codebook
 
-    condition = torch.randn(2, model.cfg.hidden_dim + model.semantic_codec_embedding_dim * 2, 4)
+    condition = torch.randn(2, 2 * model.oneshot_condition_projection_dim, 4)
     lengths = torch.tensor([4, 2])
     prediction = model.local_predictor.predict(condition, lengths)
 
@@ -667,7 +758,21 @@ def test_flow_matching_can_optimize_only_oneshot_predictor():
     assert trainable_names
     assert any(name.startswith("local_flow.") for name in trainable_names)
     assert any(name.startswith("flow_acoustic_in_projection.") for name in trainable_names)
-    assert all(name.startswith(("local_flow.", "flow_acoustic_in_projection.")) for name in trainable_names)
+    assert any(name.startswith("flow_hidden_condition_projection.") for name in trainable_names)
+    assert any(name.startswith("flow_semantic_condition_projection.") for name in trainable_names)
+    assert "semantic_history_mask_embedding" in trainable_names
+    assert all(
+        name.startswith(
+            (
+                "local_flow.",
+                "flow_acoustic_in_projection.",
+                "flow_hidden_condition_projection.",
+                "flow_semantic_condition_projection.",
+                "semantic_history_mask_embedding",
+            )
+        )
+        for name in trainable_names
+    )
     optimizer_param_ids = {id(param) for group in model._optimizer_param_groups for param in group["params"]}
     assert optimizer_param_ids == {id(param) for _, param in model.named_parameters() if param.requires_grad}
 
@@ -687,11 +792,8 @@ def test_one_shot_flow_teacher_forcing_uses_previous_continuous_acoustic_embeddi
     codes = _toy_codes(model, batch_size=1, num_frames=4)[:, : model.num_semantic_codebooks]
     codes_lens = torch.tensor([4], dtype=torch.long)
     delay = torch.tensor([0], dtype=torch.long)
-    full_dim = model._codec_model.vector_quantizer.codebook_dim
-    semantic_dim = model.semantic_codec_embedding_dim
-    first_embedding = torch.zeros(1, full_dim, 4)
-    second_embedding = first_embedding.clone()
-    second_embedding[:, semantic_dim:] = 1.0
+    first_embedding = torch.zeros(1, model.acoustic_codec_embedding_dim, 4)
+    second_embedding = torch.ones_like(first_embedding)
     with torch.no_grad():
         model.flow_acoustic_in_projection.weight.fill_(0.125)
         model.flow_acoustic_in_projection.bias.zero_()
@@ -731,8 +833,7 @@ def test_one_shot_teacher_forced_acoustic_embedding_noise_is_training_only():
     codes = _toy_codes(model, batch_size=1, num_frames=4)[:, : model.num_semantic_codebooks]
     codes_lens = torch.tensor([4], dtype=torch.long)
     delay = torch.tensor([0], dtype=torch.long)
-    full_dim = model._codec_model.vector_quantizer.codebook_dim
-    audio_embedding = torch.randn(1, full_dim, 4)
+    audio_embedding = torch.randn(1, model.acoustic_codec_embedding_dim, 4)
     with torch.no_grad():
         model.flow_acoustic_in_projection.weight.fill_(0.125)
         model.flow_acoustic_in_projection.bias.zero_()
@@ -769,6 +870,122 @@ def test_one_shot_teacher_forced_acoustic_embedding_noise_is_training_only():
             delay=delay,
         )
     torch.testing.assert_close(clean_inputs, eval_inputs)
+
+
+def test_one_shot_semantic_history_mask_matches_reference_exact_keep_count():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "semantic_history_infill_min": 0.5,
+                "semantic_history_infill_max": 0.5,
+            }
+        )
+    )
+    input_lens = torch.tensor([6, 4], dtype=torch.long)
+
+    keep_mask = model.create_semantic_history_keep_mask(input_lens)
+
+    assert keep_mask.shape == (2, 6)
+    assert keep_mask.sum(dim=1).tolist() == [3, 2]
+    assert not keep_mask[1, 4:].any()
+
+
+def test_one_shot_semantic_history_mask_preserves_acoustic_feedback_and_specials():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+            }
+        )
+    )
+    semantic_inputs = _toy_codes(model, batch_size=1, num_frames=4)[:, : model.num_semantic_codebooks].clone()
+    semantic_inputs[:, :, 0] = model.audio_bos_id
+    semantic_inputs[:, :, 3] = model.audio_eos_id
+    acoustic_inputs = torch.randn(1, model.acoustic_codec_embedding_dim, 4)
+    keep_mask = torch.tensor([[False, False, True, False]])
+    with torch.no_grad():
+        model.flow_acoustic_in_projection.weight.fill_(0.125)
+        model.flow_acoustic_in_projection.bias.zero_()
+
+    clean = model.embed_flow_audio_state(semantic_inputs, acoustic_inputs)
+    masked = model.embed_flow_audio_state(
+        semantic_inputs,
+        acoustic_inputs,
+        semantic_history_keep_mask=keep_mask,
+    )
+    acoustic_projected = model.flow_acoustic_in_projection(acoustic_inputs.transpose(1, 2))
+
+    torch.testing.assert_close(
+        model.semantic_history_mask_embedding,
+        torch.zeros_like(model.semantic_history_mask_embedding),
+    )
+    torch.testing.assert_close(masked[:, 0], clean[:, 0])
+    torch.testing.assert_close(masked[:, 2:], clean[:, 2:])
+    torch.testing.assert_close(masked[:, 1], acoustic_projected[:, 1])
+    assert not torch.allclose(masked[:, 1], clean[:, 1])
+
+
+def test_one_shot_semantic_history_masking_is_training_conditional_only():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+            }
+        )
+    )
+    codes = _toy_codes(model, batch_size=1, num_frames=4)[:, : model.num_semantic_codebooks]
+    codes_lens = torch.tensor([4], dtype=torch.long)
+    delay = torch.tensor([0], dtype=torch.long)
+    acoustic_embedding = torch.randn(1, model.acoustic_codec_embedding_dim, 4)
+
+    model.train()
+    keep_mask = torch.ones(1, 5, dtype=torch.bool)
+    with patch.object(model, "create_semantic_history_keep_mask", return_value=keep_mask) as mask_mock:
+        model.prepare_flow_audio_channel_embeddings(
+            audio_codes=codes,
+            audio_codes_lens=codes_lens,
+            audio_embedding=acoustic_embedding,
+            delay=delay,
+            mask_semantic_history=True,
+        )
+    mask_mock.assert_called_once_with(codes_lens + 1)
+
+    with patch.object(
+        model,
+        "create_semantic_history_keep_mask",
+        side_effect=AssertionError("CFG-unconditional batches must not mask semantic history"),
+    ):
+        model.prepare_flow_audio_channel_embeddings(
+            audio_codes=codes,
+            audio_codes_lens=codes_lens,
+            audio_embedding=acoustic_embedding,
+            delay=delay,
+            mask_semantic_history=False,
+        )
+
+    model.eval()
+    with patch.object(
+        model,
+        "create_semantic_history_keep_mask",
+        side_effect=AssertionError("validation and inference must not mask semantic history"),
+    ):
+        model.prepare_flow_audio_channel_embeddings(
+            audio_codes=codes,
+            audio_codes_lens=codes_lens,
+            audio_embedding=acoustic_embedding,
+            delay=delay,
+            mask_semantic_history=True,
+        )
 
 
 def test_one_shot_flow_sampling_returns_semantic_codes_and_continuous_acoustics():
@@ -827,6 +1044,7 @@ def test_flow_matching_sampling_uses_separate_cfg_conditions():
                 "local_flow_matching_n_layers": 2,
                 "local_flow_matching_time_embedding_dim": 8,
                 "local_flow_matching_inference_steps": 2,
+                "acoustic_aux_loss_scale": 0.1,
             }
         )
     )
@@ -848,6 +1066,11 @@ def test_flow_matching_sampling_uses_separate_cfg_conditions():
     with (
         patch.object(model, "sample_codes_from_logits", return_value=sampled_semantic),
         patch.object(model.local_predictor, "predict", return_value=predicted_acoustic) as predict_mock,
+        patch.object(
+            model.acoustic_aux_projection,
+            "forward",
+            side_effect=AssertionError("auxiliary acoustic projection must not run during inference"),
+        ),
     ):
         _, _, acoustic_embedding = model._sample_audio_codes_with_flow(
             last_hidden=last_hidden,
@@ -862,7 +1085,8 @@ def test_flow_matching_sampling_uses_separate_cfg_conditions():
     assert predict_kwargs["cfg_scale"] == 2.5
     conditional = predict_kwargs["condition"]
     unconditional = predict_kwargs["unconditional_condition"]
-    torch.testing.assert_close(conditional[:, model.cfg.hidden_dim :], unconditional[:, model.cfg.hidden_dim :])
+    semantic_start = model.oneshot_condition_projection_dim
+    torch.testing.assert_close(conditional[:, semantic_start:], unconditional[:, semantic_start:])
     expected_acoustic = model.unstack_codec_embeddings(
         predicted_acoustic,
         model.frame_stacking_factor,

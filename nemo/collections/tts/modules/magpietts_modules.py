@@ -423,8 +423,23 @@ class CodecHelper:
         self.codec_model = codec_model
         self.codec_converter = codec_converter
 
+    @property
+    def is_hybrid_codec(self) -> bool:
+        """Whether the codec exposes discrete semantics plus a continuous residual posterior."""
+        return bool(getattr(self.codec_model, "hybrid_codec_enabled", False))
+
     def audio_to_codes(self, audio, audio_len, sample_rate=None):
         """Encode audio waveforms into codec codes."""
+        if self.is_hybrid_codec:
+            with (
+                torch.no_grad(),
+                torch.autocast(device_type=audio.device.type, enabled=False),
+            ):
+                codes, _, _, embedding_len = self.codec_model.encode_hybrid(
+                    audio=audio, audio_len=audio_len, sample_rate=sample_rate
+                )
+            return codes, embedding_len
+
         embedding, embedding_len = self.audio_to_prequantized_embedding(audio, audio_len, sample_rate=sample_rate)
         with (
             torch.no_grad(),
@@ -440,6 +455,12 @@ class CodecHelper:
             torch.no_grad(),
             torch.autocast(device_type=audio.device.type, enabled=False),
         ):
+            if self.is_hybrid_codec:
+                codes, residual_mu, _, embedding_len = self.codec_model.encode_hybrid(
+                    audio=audio, audio_len=audio_len, sample_rate=sample_rate
+                )
+                semantic_embedding = self.semantic_codes_to_embedding(codes, embedding_len)
+                return torch.cat([semantic_embedding, residual_mu.to(semantic_embedding.dtype)], dim=1), embedding_len
             return self.codec_model.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
 
     def _continuous_fsq_embedding(
@@ -464,10 +485,20 @@ class CodecHelper:
     def audio_to_embedding(self, audio, audio_len, sample_rate=None):
         """Return normalized continuous FSQ values after compression but before rounding."""
         embedding, embedding_len = self.audio_to_prequantized_embedding(audio, audio_len, sample_rate=sample_rate)
+        if self.is_hybrid_codec:
+            return embedding, embedding_len
         return self._continuous_fsq_embedding(embedding, embedding_len), embedding_len
 
     def audio_to_codes_and_embedding(self, audio, audio_len, sample_rate=None):
-        """Return all codec tokens and normalized continuous pre-rounding FSQ values."""
+        """Return codec tokens and their continuous acoustic representation."""
+        if self.is_hybrid_codec:
+            return self.audio_to_semantic_codes_and_acoustic_embedding(
+                audio,
+                audio_len,
+                num_semantic_codebooks=self.codec_model.num_codebooks,
+                sample_rate=sample_rate,
+            )
+
         prequantized_embedding, embedding_len = self.audio_to_prequantized_embedding(
             audio, audio_len, sample_rate=sample_rate
         )
@@ -493,14 +524,30 @@ class CodecHelper:
             )
         return groups
 
-    def audio_to_semantic_codes_and_embedding(
+    def audio_to_semantic_codes_and_acoustic_embedding(
         self,
         audio: torch.Tensor,
         audio_len: torch.Tensor,
         num_semantic_codebooks: int,
         sample_rate=None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Encode audio and quantize only the leading semantic groups."""
+        """Return semantic tokens and only the continuous acoustic representation."""
+        if self.is_hybrid_codec:
+            if num_semantic_codebooks != self.codec_model.num_codebooks:
+                raise ValueError(
+                    "Hybrid one-shot prediction must use every semantic codebook; "
+                    f"expected {self.codec_model.num_codebooks}, got {num_semantic_codebooks}."
+                )
+            self.codec_model.eval()
+            with (
+                torch.no_grad(),
+                torch.autocast(device_type=audio.device.type, enabled=False),
+            ):
+                semantic_codes, residual_mu, _, embedding_len = self.codec_model.encode_hybrid(
+                    audio=audio, audio_len=audio_len, sample_rate=sample_rate
+                )
+            return semantic_codes, embedding_len, residual_mu
+
         if not 0 < num_semantic_codebooks < self.codec_model.num_codebooks:
             raise ValueError(
                 f"num_semantic_codebooks must be in [1, {self.codec_model.num_codebooks - 1}], "
@@ -523,12 +570,17 @@ class CodecHelper:
                 semantic_indices.append(
                     quantizer_groups[group_index].encode(inputs=group_input, input_len=embedding_len)
                 )
-            embedding = self._continuous_fsq_embedding(prequantized_embedding, embedding_len)
+            continuous_embedding = self._continuous_fsq_embedding(prequantized_embedding, embedding_len)
         semantic_codes = torch.cat(semantic_indices, dim=0).permute(1, 0, 2).contiguous()
-        return semantic_codes, embedding_len, embedding
+        semantic_dim = num_semantic_codebooks * group_dim
+        return semantic_codes, embedding_len, continuous_embedding[:, semantic_dim:]
 
     def _embedding_dim_per_codebook(self) -> int:
-        vector_quantizer = self.codec_model.vector_quantizer
+        vector_quantizer = (
+            self.codec_model.semantic_codec.vector_quantizer
+            if self.is_hybrid_codec
+            else self.codec_model.vector_quantizer
+        )
         codebook_dim = getattr(vector_quantizer, "codebook_dim", None)
         num_codebooks = self.codec_model.num_codebooks
         if codebook_dim is None or codebook_dim % num_codebooks != 0:
@@ -544,6 +596,18 @@ class CodecHelper:
         num_semantic_codebooks: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Split continuous, compressed FSQ values into semantic and acoustic groups."""
+        if self.is_hybrid_codec:
+            if num_semantic_codebooks != self.codec_model.num_codebooks:
+                raise ValueError(
+                    "Hybrid embeddings contain all semantic codebooks; "
+                    f"expected {self.codec_model.num_codebooks}, got {num_semantic_codebooks}."
+                )
+            semantic_dim = num_semantic_codebooks * self._embedding_dim_per_codebook()
+            expected_dim = semantic_dim + self.codec_model.continuous_dim
+            if embedding.size(1) != expected_dim:
+                raise ValueError(f"Expected hybrid embedding dimension {expected_dim}, got {embedding.size(1)}.")
+            return embedding[:, :semantic_dim], embedding[:, semantic_dim:]
+
         if not 0 < num_semantic_codebooks < self.codec_model.num_codebooks:
             raise ValueError(
                 f"num_semantic_codebooks must be in [1, {self.codec_model.num_codebooks - 1}], "
@@ -571,6 +635,20 @@ class CodecHelper:
     ) -> torch.Tensor:
         """Dequantize only leading semantic groups without constructing acoustic tokens."""
         num_semantic_codebooks = semantic_codes.size(1)
+        if self.is_hybrid_codec:
+            if num_semantic_codebooks != self.codec_model.num_codebooks:
+                raise ValueError(
+                    "Hybrid semantic codes must contain every semantic codebook; "
+                    f"expected {self.codec_model.num_codebooks}, got {num_semantic_codebooks}."
+                )
+            grouped_indices = semantic_codes.permute(1, 0, 2).contiguous()
+            self.codec_model.eval()
+            with torch.no_grad():
+                return self.codec_model.semantic_codec.vector_quantizer.decode(
+                    indices=grouped_indices,
+                    input_len=codes_len,
+                )
+
         if not 0 < num_semantic_codebooks < self.codec_model.num_codebooks:
             raise ValueError("Semantic codes must be a non-empty strict subset of codec codebooks.")
 
@@ -596,6 +674,15 @@ class CodecHelper:
     ) -> torch.Tensor:
         """Compose the codec decoder input without quantizing the acoustic representation."""
         semantic_embedding = self.semantic_codes_to_embedding(semantic_codes, codes_len)
+        if self.is_hybrid_codec:
+            expected_acoustic_dim = self.codec_model.continuous_dim
+            if acoustic_embedding.size(1) != expected_acoustic_dim:
+                raise ValueError(
+                    f"Expected hybrid acoustic embedding dimension {expected_acoustic_dim}, "
+                    f"got {acoustic_embedding.size(1)}."
+                )
+            return torch.cat([semantic_embedding, acoustic_embedding.to(semantic_embedding.dtype)], dim=1)
+
         expected_acoustic_dim = (
             self.codec_model.num_codebooks - semantic_codes.size(1)
         ) * self._embedding_dim_per_codebook()
@@ -622,6 +709,13 @@ class CodecHelper:
             torch.no_grad(),
             torch.autocast(device_type=combined_embedding.device.type, enabled=False),
         ):
+            if self.is_hybrid_codec:
+                audio, audio_len = self.codec_model.decode_hybrid(
+                    tokens=semantic_codes,
+                    tokens_len=codes_len,
+                    residual=acoustic_embedding,
+                )
+                return audio, audio_len, combined_embedding
             audio, audio_len = self.codec_model.decode_audio(
                 inputs=combined_embedding.to(self.codec_model.dtype),
                 input_len=codes_len,

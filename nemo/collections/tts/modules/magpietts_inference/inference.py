@@ -1204,8 +1204,10 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             wav_len = batch["context_audio_lengths"]
             context_audio_embedding = None
             if model.local_transformer_type == LocalTransformerType.FLOW:
-                codes, codes_lens, context_audio_embedding = model._codec_helper.audio_to_semantic_codes_and_embedding(
-                    wav, wav_len, model.num_semantic_codebooks
+                codes, codes_lens, context_audio_embedding = (
+                    model._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
+                        wav, wav_len, model.num_semantic_codebooks
+                    )
                 )
             else:
                 codes, codes_lens = model._codec_helper.audio_to_codes(wav, wav_len)
@@ -1315,15 +1317,12 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
 
                     if model.local_transformer_type == LocalTransformerType.FLOW:
                         user_audio_codes, user_audio_codes_lens, user_audio_embedding = (
-                            model._codec_helper.audio_to_semantic_codes_and_embedding(
+                            model._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
                                 user_audio, user_audio_lens, model.num_semantic_codebooks
                             )
                         )
                         semantic_user_audio = user_audio_codes
-                        _, acoustic_user_audio = model._codec_helper.split_continuous_embedding(
-                            user_audio_embedding,
-                            num_semantic_codebooks=model.num_semantic_codebooks,
-                        )
+                        acoustic_user_audio = user_audio_embedding
                         valid_frames = torch.arange(
                             acoustic_user_audio.size(2), device=acoustic_user_audio.device
                         ).unsqueeze(0) < user_audio_codes_lens.unsqueeze(1)

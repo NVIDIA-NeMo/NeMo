@@ -6,9 +6,12 @@ name: EasyMagpie-OneShotFlowMatching
 
 model:
   # Straight conditional optimal-transport path from Gaussian noise to the continuous
-  # FSQ acoustic embedding. Inference integrates the learned velocity field iteratively.
+  # hybrid residual-mean embedding. Inference integrates the learned velocity field iteratively.
   local_transformer_type: flow_matching
   local_flow_matching_hidden_dim: 1536
+  # Project both the 1536-D backbone state and 6-D semantic codec embedding to
+  # 768 dimensions before concatenating them into the flow head's 1536-D condition.
+  oneshot_condition_projection_dim: 768
   local_flow_matching_n_layers: 3
   local_flow_matching_dropout: 0.0
   local_flow_matching_time_embedding_dim: 128

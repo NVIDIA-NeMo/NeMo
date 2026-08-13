@@ -70,10 +70,11 @@ class ProcessBatchOutput:
     Output dataclass from process_batch containing loss values and model predictions.
 
     Attributes:
-        loss: Total combined loss (codebook_loss + phoneme_loss + local_transformer_loss)
+        loss: Total combined loss
         codebook_loss: Cross-entropy loss for parallel audio codebook prediction
         phoneme_loss: Cross-entropy loss for phoneme prediction (None if no phoneme tokenizer)
         local_transformer_loss: Loss from local transformer (None if not used)
+        acoustic_aux_loss: Masked L1 loss from the training-only acoustic projection
         local_flow_diagnostics: Worst-sample diagnostics populated only when flow loss crosses the debug threshold
         local_transformer_logits: Logits from local transformer (None if not used)
         logits: Predicted logits for audio codes (B, T', num_codebooks * num_tokens_per_codebook)
@@ -91,6 +92,7 @@ class ProcessBatchOutput:
     codebook_loss: torch.Tensor
     phoneme_loss: Optional[torch.Tensor]
     local_transformer_loss: Optional[torch.Tensor]
+    acoustic_aux_loss: Optional[torch.Tensor]
     local_flow_diagnostics: Optional[dict[str, torch.Tensor]]
     local_transformer_logits: Optional[torch.Tensor]
     logits: torch.Tensor
@@ -918,6 +920,27 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             loss_agent_mask,
         )
 
+    def create_semantic_history_keep_mask(self, input_lens: torch.Tensor) -> torch.Tensor:
+        """Copy the reference Beta/ranking infill mask; ``True`` means keep semantic history."""
+        len_mask = get_mask_from_lengths(input_lens).bool()
+        max_len = len_mask.shape[1]
+
+        infill_dist = torch.distributions.beta.Beta(concentration1=1.0, concentration0=2.0)
+        infill_percent = infill_dist.sample(sample_shape=torch.Size([input_lens.size(0)])).to(input_lens.device)
+        infill_percent = (
+            self.semantic_history_infill_min
+            + (self.semantic_history_infill_max - self.semantic_history_infill_min) * infill_percent
+        )
+        infill_len = infill_percent * input_lens.float()
+        infill_rank = torch.clamp_min(infill_len - 1, 0).long().unsqueeze(1)
+
+        infill_vals = torch.rand(size=len_mask.shape, device=input_lens.device)
+        infill_vals = infill_vals * len_mask
+        infill_topk = torch.topk(infill_vals, k=max_len, dim=1, sorted=True).values
+        infill_min_val = torch.gather(infill_topk, index=infill_rank, dim=1)
+        infill_mask = infill_vals >= infill_min_val
+        return infill_mask & len_mask
+
     def prepare_flow_audio_channel_embeddings(
         self,
         audio_codes: torch.Tensor,
@@ -926,6 +949,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         delay: torch.Tensor,
         speech_eos_mask: Optional[torch.Tensor] = None,
         agent_mask: Optional[torch.Tensor] = None,
+        mask_semantic_history: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Prepare teacher-forced semantic tokens plus continuous acoustic states."""
         if audio_embedding is None:
@@ -934,14 +958,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             )
 
         semantic_codes = audio_codes
-        _, acoustic_embedding = self._codec_helper.split_continuous_embedding(
-            audio_embedding,
-            num_semantic_codebooks=self.num_semantic_codebooks,
-        )
         semantic_sequence, acoustic_sequence, sequence_lens = self.prepare_flow_audio_state_sequence(
             semantic_codes=semantic_codes,
             codes_lens=audio_codes_lens,
-            acoustic_embedding=acoustic_embedding,
+            acoustic_embedding=audio_embedding,
             bos_id=self.audio_bos_id,
             eos_id=self.audio_eos_id,
             num_eos_tokens=1 if speech_eos_mask is None else 0,
@@ -1038,15 +1058,23 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 )
                 acoustic_inputs = acoustic_inputs.masked_fill(user_to_agent.unsqueeze(1), 0.0)
 
+        semantic_history_keep_mask = None
+        if self.training and mask_semantic_history:
+            semantic_history_keep_mask = self.create_semantic_history_keep_mask(target_lens)
+        valid_input = get_mask_from_lengths(target_lens, x=semantic_inputs).bool().to(semantic_inputs.device)
+        acoustic_frame = (semantic_inputs < self.codebook_size).all(dim=1)
+
         if self.training and self.acoustic_embedding_noise > 0.0:
-            valid_input = get_mask_from_lengths(target_lens, x=semantic_inputs).bool().to(semantic_inputs.device)
-            acoustic_frame = (semantic_inputs < self.codebook_size).all(dim=1)
             noise_mask = (valid_input & acoustic_frame).unsqueeze(1).to(acoustic_inputs.dtype)
             acoustic_inputs = acoustic_inputs + (
                 torch.randn_like(acoustic_inputs) * self.acoustic_embedding_noise * noise_mask
             )
 
-        audio_embedded = self.embed_flow_audio_state(semantic_inputs, acoustic_inputs)
+        audio_embedded = self.embed_flow_audio_state(
+            semantic_inputs,
+            acoustic_inputs,
+            semantic_history_keep_mask=semantic_history_keep_mask,
+        )
         max_delay = delay.max().item()
         zero_delay = audio_embedded.new_zeros(audio_embedded.size(0), max_delay, audio_embedded.size(2))
         channel_embedding, channel_lens = self.join_embeddings_temporally(
@@ -1263,6 +1291,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 audio_codes=audio_codes,
                 audio_codes_lens=audio_codes_lens,
                 audio_embedding=audio_embedding,
+                mask_semantic_history=mode == 'train' and not dropout_conditional_input,
                 delay=audio_delay,
                 speech_eos_mask=speech_eos_mask,
                 agent_mask=agent_mask,
@@ -1455,6 +1484,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         # Compute local transformer loss if applicable
         local_transformer_loss = None
+        acoustic_aux_loss = None
         local_flow_diagnostics = None
         local_transformer_logits = None
         if self.local_transformer_type == LocalTransformerType.AR:
@@ -1481,16 +1511,12 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 semantic_codes,
                 audio_codes_lens,
             )
-            _, acoustic_embedding = self._codec_helper.split_continuous_embedding(
-                audio_embedding,
-                num_semantic_codebooks=self.num_semantic_codebooks,
-            )
             semantic_embedding_stacked = self.stack_codec_embeddings(
                 semantic_embedding,
                 self.frame_stacking_factor,
             )
             acoustic_embedding_stacked = self.stack_codec_embeddings(
-                acoustic_embedding,
+                audio_embedding,
                 self.frame_stacking_factor,
             )
             flow_lens = torch.div(
@@ -1499,16 +1525,27 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 rounding_mode='floor',
             )
             target_steps = acoustic_embedding_stacked.size(2)
-            flow_condition = torch.cat(
-                [
-                    pred_embeddings[:, :target_steps].transpose(1, 2),
-                    semantic_embedding_stacked.to(pred_embeddings.dtype),
-                ],
-                dim=1,
+            flow_condition = self.project_oneshot_condition(
+                pred_embeddings[:, :target_steps].transpose(1, 2),
+                semantic_embedding_stacked,
             )
             flow_frame_mask = None
             if self.cfg.get("mask_user_on_loss", False) and agent_mask is not None:
                 flow_frame_mask = agent_mask[:, :target_steps]
+            if self.acoustic_aux_projection is not None:
+                acoustic_aux_prediction = self.acoustic_aux_projection(flow_condition)
+                acoustic_aux_mask = get_mask_from_lengths(
+                    flow_lens,
+                    x=acoustic_embedding_stacked,
+                ).bool()
+                if flow_frame_mask is not None:
+                    acoustic_aux_mask = acoustic_aux_mask & flow_frame_mask.bool()
+                acoustic_aux_mask = acoustic_aux_mask.unsqueeze(1).to(acoustic_aux_prediction.dtype)
+                acoustic_aux_error = torch.abs(
+                    acoustic_aux_prediction - acoustic_embedding_stacked.to(acoustic_aux_prediction.dtype)
+                )
+                acoustic_aux_denominator = (acoustic_aux_mask.sum() * acoustic_aux_prediction.size(1)).clamp_min(1.0)
+                acoustic_aux_loss = (acoustic_aux_error * acoustic_aux_mask).sum() / acoustic_aux_denominator
             local_transformer_loss = self.local_predictor.compute_loss(
                 acoustic_embedding_stacked,
                 flow_condition,
@@ -1529,6 +1566,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         if local_transformer_loss is not None:
             loss = loss + self.local_transformer_loss_scale * local_transformer_loss
+        if acoustic_aux_loss is not None:
+            loss = loss + self.acoustic_aux_loss_scale * acoustic_aux_loss
 
         # Compute phoneme loss if applicable
         phoneme_loss = None
@@ -1571,6 +1610,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             codebook_loss=codebook_loss,
             phoneme_loss=phoneme_loss,
             local_transformer_loss=local_transformer_loss,
+            acoustic_aux_loss=acoustic_aux_loss,
             local_flow_diagnostics=local_flow_diagnostics,
             local_transformer_logits=local_transformer_logits,
             logits=logits,
@@ -1636,7 +1676,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     "One-shot acoustic prediction requires raw context audio; set model.load_cached_codes_if_available=false."
                 )
             context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
-                self._codec_helper.audio_to_semantic_codes_and_embedding(
+                self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
                     batch['context_audio'], batch['context_audio_lens'], self.num_semantic_codebooks
                 )
             )
@@ -1657,8 +1697,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 raise ValueError(
                     "One-shot acoustic prediction requires target audio; set model.load_cached_codes_if_available=false."
                 )
-            audio_codes, audio_codes_lens, audio_embedding = self._codec_helper.audio_to_semantic_codes_and_embedding(
-                batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
+            audio_codes, audio_codes_lens, audio_embedding = (
+                self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
+                    batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
+                )
             )
             audio_embedding_lens = audio_codes_lens
         elif 'audio_codes' in batch:
@@ -1734,15 +1776,12 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
             if self.local_transformer_type.is_oneshot:
                 user_audio_codes, user_audio_codes_lens, user_audio_embedding = (
-                    self._codec_helper.audio_to_semantic_codes_and_embedding(
+                    self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
                         user_audio, user_audio_lens, self.num_semantic_codebooks
                     )
                 )
                 semantic_user_audio = user_audio_codes
-                _, acoustic_user_audio = self._codec_helper.split_continuous_embedding(
-                    user_audio_embedding,
-                    num_semantic_codebooks=self.num_semantic_codebooks,
-                )
+                acoustic_user_audio = user_audio_embedding
                 valid_frames = get_mask_from_lengths(user_audio_codes_lens, x=acoustic_user_audio).unsqueeze(1)
                 acoustic_user_audio = acoustic_user_audio * valid_frames.to(acoustic_user_audio.dtype)
                 semantic_user_audio, user_audio_codes_lens = self.stack_codes(
@@ -1913,6 +1952,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             self._log_local_predictor_loss('train', local_transformer_loss)
             if batch_output.local_flow_diagnostics is not None:
                 self._log_local_flow_spike(batch, local_transformer_loss, batch_output.local_flow_diagnostics)
+        if batch_output.acoustic_aux_loss is not None:
+            self.log('train/acoustic_aux_loss', batch_output.acoustic_aux_loss, prog_bar=False, sync_dist=True)
 
         # Log training mode info for multi-mode training
         if batch_output.selected_training_mode is not None:
@@ -1974,7 +2015,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     "One-shot acoustic prediction requires raw context audio; set model.load_cached_codes_if_available=false."
                 )
             context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
-                self._codec_helper.audio_to_semantic_codes_and_embedding(
+                self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
                     batch['context_audio'], batch['context_audio_lens'], self.num_semantic_codebooks
                 )
             )
@@ -1995,8 +2036,10 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 raise ValueError(
                     "One-shot acoustic prediction requires target audio; set model.load_cached_codes_if_available=false."
                 )
-            audio_codes, audio_codes_lens, audio_embedding = self._codec_helper.audio_to_semantic_codes_and_embedding(
-                batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
+            audio_codes, audio_codes_lens, audio_embedding = (
+                self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
+                    batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
+                )
             )
             audio_embedding_lens = audio_codes_lens
         elif 'audio_codes' in batch:
@@ -2067,6 +2110,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             'val_codebook_loss': codebook_loss,
             'val_local_transformer_loss': local_transformer_loss,
         }
+        if batch_output.acoustic_aux_loss is not None:
+            val_output['val_acoustic_aux_loss'] = batch_output.acoustic_aux_loss
 
         if self.phoneme_tokenizer is not None:
             phoneme_loss = batch_output.phoneme_loss
@@ -2321,6 +2366,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         if self.local_transformer_type != LocalTransformerType.NO_LT:
             val_local_transformer_loss = collect("val_local_transformer_loss")
             self._log_local_predictor_loss("val", val_local_transformer_loss)
+        if self.local_transformer_type.is_oneshot and self.acoustic_aux_loss_scale > 0.0:
+            val_acoustic_aux_loss = collect("val_acoustic_aux_loss")
+            self.log("val/acoustic_aux_loss", val_acoustic_aux_loss, prog_bar=False, sync_dist=True)
 
         if self.phoneme_tokenizer is not None:
             val_phoneme_loss = collect("val_phoneme_loss")

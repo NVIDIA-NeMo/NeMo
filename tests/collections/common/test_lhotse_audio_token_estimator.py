@@ -19,22 +19,10 @@ import pytest
 import torch
 from lhotse.testing.dummies import dummy_recording
 
-from nemo.collections.asr.parts.submodules.subsampling import (
-    FeatureStacking,
-    calc_length,
-)
-from nemo.collections.common.data.lhotse.audio_token_estimator import (
-    AudioTokenEstimator,
-)
-from nemo.collections.common.data.lhotse.sampling import (
-    MultimodalSamplingConstraint,
-    TokenCountFilter,
-)
-from nemo.collections.common.data.lhotse.text_adapters import (
-    AudioTurn,
-    NeMoMultimodalConversation,
-    TextTurn,
-)
+from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking, calc_length
+from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
+from nemo.collections.common.data.lhotse.sampling import MultimodalSamplingConstraint, TokenCountFilter
+from nemo.collections.common.data.lhotse.text_adapters import AudioTurn, NeMoMultimodalConversation, TextTurn
 
 
 def _config(chunk_size_seconds=15.0):
@@ -75,25 +63,15 @@ def _reference_single_pass(num_samples: int) -> int:
     return max(1, int(output.item()))
 
 
-@pytest.mark.parametrize(
-    "num_samples", [1_600, 12_345, 16_000, 54_321, 100_001, 240_000]
-)
+@pytest.mark.parametrize("num_samples", [1_600, 12_345, 16_000, 54_321, 100_001, 240_000])
 def test_audio_token_estimator_matches_fastconformer_integer_lengths(num_samples):
-    estimator = AudioTokenEstimator.from_config(
-        _config(chunk_size_seconds=None), sample_rate=16000
-    )
-    assert estimator.estimate_samples(num_samples) == _reference_single_pass(
-        num_samples
-    )
+    estimator = AudioTokenEstimator.from_config(_config(chunk_size_seconds=None), sample_rate=16000)
+    assert estimator.estimate_samples(num_samples) == _reference_single_pass(num_samples)
 
 
-@pytest.mark.parametrize(
-    "num_samples", [1_600, 12_345, 16_000, 54_321, 100_001, 239_999, 240_000]
-)
+@pytest.mark.parametrize("num_samples", [1_600, 12_345, 16_000, 54_321, 100_001, 239_999, 240_000])
 def test_audio_token_estimator_matches_pee_feature_stacking_lengths(num_samples):
-    estimator = AudioTokenEstimator.from_config(
-        _feature_stacking_config(chunk_size_seconds=None), sample_rate=16000
-    )
+    estimator = AudioTokenEstimator.from_config(_feature_stacking_config(chunk_size_seconds=None), sample_rate=16000)
     feature_frames = (num_samples + 2 * 256 - 512) // 160
     subsampling = FeatureStacking(subsampling_factor=8, feat_in=4, feat_out=4)
     expected = max(1, int(subsampling.compute_num_out_frames(feature_frames)))
@@ -107,12 +85,8 @@ def test_audio_token_estimator_matches_pee_feature_stacking_lengths(num_samples)
 def test_current_canary_v2_and_pee_length_estimators_are_numerically_equivalent(
     num_samples,
 ):
-    canary_v2 = AudioTokenEstimator.from_config(
-        _config(chunk_size_seconds=None), sample_rate=16000
-    )
-    pee = AudioTokenEstimator.from_config(
-        _feature_stacking_config(chunk_size_seconds=None), sample_rate=16000
-    )
+    canary_v2 = AudioTokenEstimator.from_config(_config(chunk_size_seconds=None), sample_rate=16000)
+    pee = AudioTokenEstimator.from_config(_feature_stacking_config(chunk_size_seconds=None), sample_rate=16000)
     assert canary_v2.estimate_samples(num_samples) == pee.estimate_samples(num_samples)
 
 
@@ -139,9 +113,7 @@ def test_audio_token_estimator_validates_subsampling_type(subsampling, message):
 
 
 def test_audio_token_estimator_accounts_for_per_chunk_rounding():
-    estimator = AudioTokenEstimator.from_config(
-        _config(chunk_size_seconds=15.0), sample_rate=16000
-    )
+    estimator = AudioTokenEstimator.from_config(_config(chunk_size_seconds=15.0), sample_rate=16000)
     samples = 30 * 16000
 
     # Each 15-second chunk produces 188 frames. The historical duration-only
@@ -151,23 +123,17 @@ def test_audio_token_estimator_accounts_for_per_chunk_rounding():
 
 
 def test_audio_token_estimator_folds_tiny_tail_like_runtime_chunking():
-    estimator = AudioTokenEstimator.from_config(
-        _config(chunk_size_seconds=15.0), sample_rate=16000
-    )
+    estimator = AudioTokenEstimator.from_config(_config(chunk_size_seconds=15.0), sample_rate=16000)
     chunk_samples = 15 * 16000
     samples = chunk_samples + 100
     assert estimator.estimate_samples(samples) == _reference_single_pass(samples)
 
 
 def test_audio_token_estimator_clamps_chunk_size_to_preprocessor_minimum():
-    estimator = AudioTokenEstimator.from_config(
-        _config(chunk_size_seconds=1 / 16000), sample_rate=16000
-    )
+    estimator = AudioTokenEstimator.from_config(_config(chunk_size_seconds=1 / 16000), sample_rate=16000)
     # The preprocessor needs two feature frames, so runtime clamps one-sample
     # chunks to 320 samples before splitting. The 100-sample tail is folded.
-    assert estimator.estimate_samples(740) == _reference_single_pass(
-        320
-    ) + _reference_single_pass(420)
+    assert estimator.estimate_samples(740) == _reference_single_pass(320) + _reference_single_pass(420)
 
 
 def test_exact_multimodal_constraint_matches_real_placeholder_replacement_length():
@@ -190,9 +156,7 @@ def test_exact_multimodal_constraint_matches_real_placeholder_replacement_length
         audio_token_estimator=estimator,
     )
 
-    assert (
-        legacy.measure_length(conversation) == 384
-    )  # 10 - locator + 375 approximate frames
+    assert legacy.measure_length(conversation) == 384  # 10 - locator + 375 approximate frames
     assert exact.measure_length(conversation) == 385  # 10 - locator + 376 real frames
     assert exact.measure_length(cut) == 376
 
@@ -232,9 +196,7 @@ def test_exact_estimator_is_used_by_max_tokens_filter():
     conversation.input_ids = np.arange(10)
 
     legacy = TokenCountFilter(None, 384, measure_total_length=True)
-    exact = TokenCountFilter(
-        None, 384, measure_total_length=True, audio_token_estimator=estimator
-    )
+    exact = TokenCountFilter(None, 384, measure_total_length=True, audio_token_estimator=estimator)
     assert legacy(conversation)
     assert not exact(conversation)
 

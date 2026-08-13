@@ -40,9 +40,7 @@ class ConvSubsamplingSpec:
         required = {"kernel_size", "stride", "padding"}
         missing = required - set(config)
         if missing:
-            raise ValueError(
-                f"audio_token_estimator.subsampling is missing: {sorted(missing)}"
-            )
+            raise ValueError(f"audio_token_estimator.subsampling is missing: {sorted(missing)}")
         ans = cls(
             kernel_size=int(config["kernel_size"]),
             stride=int(config["stride"]),
@@ -50,25 +48,14 @@ class ConvSubsamplingSpec:
             repeat=int(config.get("repeat", 1)),
             ceil_mode=bool(config.get("ceil_mode", False)),
         )
-        if (
-            ans.kernel_size <= 0
-            or ans.stride <= 0
-            or ans.padding < 0
-            or ans.repeat <= 0
-        ):
-            raise ValueError(
-                f"Invalid audio_token_estimator.subsampling values: {config}"
-            )
+        if ans.kernel_size <= 0 or ans.stride <= 0 or ans.padding < 0 or ans.repeat <= 0:
+            raise ValueError(f"Invalid audio_token_estimator.subsampling values: {config}")
         return ans
 
     def __call__(self, length: int) -> int:
         for _ in range(self.repeat):
             numerator = length + 2 * self.padding - self.kernel_size
-            quotient = (
-                -(-numerator // self.stride)
-                if self.ceil_mode
-                else numerator // self.stride
-            )
+            quotient = -(-numerator // self.stride) if self.ceil_mode else numerator // self.stride
             length = quotient + 1
         return length
 
@@ -85,9 +72,7 @@ class FeatureStackingSubsamplingSpec:
             raise ValueError("audio_token_estimator.subsampling is missing: ['factor']")
         ans = cls(factor=int(config["factor"]))
         if ans.factor <= 0:
-            raise ValueError(
-                f"Invalid audio_token_estimator.subsampling values: {config}"
-            )
+            raise ValueError(f"Invalid audio_token_estimator.subsampling values: {config}")
         return ans
 
     def __call__(self, length: int) -> int:
@@ -100,8 +85,7 @@ SubsamplingSpec = ConvSubsamplingSpec | FeatureStackingSubsamplingSpec
 def _subsampling_spec_from_config(config: Mapping[str, Any]) -> SubsamplingSpec:
     if not isinstance(config, Mapping):
         raise TypeError(
-            "Each audio_token_estimator.subsampling stage must be a mapping, "
-            f"got {type(config).__name__}"
+            "Each audio_token_estimator.subsampling stage must be a mapping, " f"got {type(config).__name__}"
         )
     stage_type = config.get("type", "conv")
     if stage_type == "conv":
@@ -109,8 +93,7 @@ def _subsampling_spec_from_config(config: Mapping[str, Any]) -> SubsamplingSpec:
     if stage_type == "feature_stacking":
         return FeatureStackingSubsamplingSpec.from_config(config)
     raise ValueError(
-        "audio_token_estimator.subsampling.type must be 'conv' or "
-        f"'feature_stacking', got {stage_type!r}"
+        "audio_token_estimator.subsampling.type must be 'conv' or " f"'feature_stacking', got {stage_type!r}"
     )
 
 
@@ -152,30 +135,20 @@ class AudioTokenEstimator:
         required = {"n_fft", "hop_length", "stft_pad_amount"}
         missing = required - set(preprocessor)
         if missing:
-            raise ValueError(
-                f"audio_token_estimator.preprocessor is missing: {sorted(missing)}"
-            )
+            raise ValueError(f"audio_token_estimator.preprocessor is missing: {sorted(missing)}")
 
         raw_subsampling = config.get("subsampling")
         if isinstance(raw_subsampling, Mapping):
             raw_subsampling = [raw_subsampling]
-        if not isinstance(raw_subsampling, Sequence) or isinstance(
-            raw_subsampling, (str, bytes)
-        ):
-            raise TypeError(
-                "audio_token_estimator.subsampling must be a mapping or list of mappings"
-            )
-        subsampling = tuple(
-            _subsampling_spec_from_config(stage) for stage in raw_subsampling
-        )
+        if not isinstance(raw_subsampling, Sequence) or isinstance(raw_subsampling, (str, bytes)):
+            raise TypeError("audio_token_estimator.subsampling must be a mapping or list of mappings")
+        subsampling = tuple(_subsampling_spec_from_config(stage) for stage in raw_subsampling)
 
         chunk_size_seconds = config.get("chunk_size_seconds")
         if chunk_size_seconds is not None:
             chunk_size_seconds = float(chunk_size_seconds)
             if chunk_size_seconds <= 0:
-                raise ValueError(
-                    "audio_token_estimator.chunk_size_seconds must be positive or null"
-                )
+                raise ValueError("audio_token_estimator.chunk_size_seconds must be positive or null")
 
         ans = cls(
             sample_rate=int(sample_rate),
@@ -185,15 +158,8 @@ class AudioTokenEstimator:
             subsampling=subsampling,
             chunk_size_seconds=chunk_size_seconds,
         )
-        if (
-            ans.sample_rate <= 0
-            or ans.n_fft <= 0
-            or ans.hop_length <= 0
-            or ans.stft_pad_amount < 0
-        ):
-            raise ValueError(
-                f"Invalid audio_token_estimator.preprocessor values: {preprocessor}"
-            )
+        if ans.sample_rate <= 0 or ans.n_fft <= 0 or ans.hop_length <= 0 or ans.stft_pad_amount < 0:
+            raise ValueError(f"Invalid audio_token_estimator.preprocessor values: {preprocessor}")
         return ans
 
     def estimate_cut(self, cut: Cut) -> int:
@@ -214,10 +180,7 @@ class AudioTokenEstimator:
         if chunk_size is None or num_samples <= chunk_size:
             return self._estimate_single_pass(num_samples)
 
-        spans = [
-            (begin, min(begin + chunk_size, num_samples))
-            for begin in range(0, num_samples, chunk_size)
-        ]
+        spans = [(begin, min(begin + chunk_size, num_samples)) for begin in range(0, num_samples, chunk_size)]
         min_chunk_size = self._min_chunk_size_samples()
         if len(spans) > 1 and spans[-1][1] - spans[-1][0] < min_chunk_size:
             spans[-2] = (spans[-2][0], spans[-1][1])
@@ -225,9 +188,7 @@ class AudioTokenEstimator:
         return sum(self._estimate_single_pass(end - begin) for begin, end in spans)
 
     def _estimate_single_pass(self, num_samples: int) -> int:
-        length = (
-            num_samples + 2 * self.stft_pad_amount - self.n_fft
-        ) // self.hop_length
+        length = (num_samples + 2 * self.stft_pad_amount - self.n_fft) // self.hop_length
         for stage in self.subsampling:
             length = stage(length)
         return max(1, length)
@@ -242,9 +203,7 @@ class AudioTokenEstimator:
         # find the first hop-aligned waveform producing at least two feature frames.
         samples = self.hop_length
         for _ in range(16):
-            feature_frames = (
-                samples + 2 * self.stft_pad_amount - self.n_fft
-            ) // self.hop_length
+            feature_frames = (samples + 2 * self.stft_pad_amount - self.n_fft) // self.hop_length
             if feature_frames >= 2:
                 return samples
             samples += self.hop_length

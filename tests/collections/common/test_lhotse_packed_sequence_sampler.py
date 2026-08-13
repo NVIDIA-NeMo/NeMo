@@ -23,9 +23,7 @@ from lhotse.lazy import LazyIndexedManifestIterator
 from lhotse.testing.dummies import dummy_cut
 from omegaconf import OmegaConf
 
-from nemo.collections.common.data.lhotse.audio_token_estimator import (
-    AudioTokenEstimator,
-)
+from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
 from nemo.collections.common.data.lhotse.dataloader import (
     get_lhotse_sampler_from_config,
     make_structured_with_schema_warnings,
@@ -34,15 +32,11 @@ from nemo.collections.common.data.lhotse.packed_sequence_sampler import (
     PackedSequenceDynamicCutSampler,
     _select_best_fit_indices,
 )
-from nemo.collections.common.data.lhotse.sampling import (
-    MultimodalSamplingConstraint,
-)
+from nemo.collections.common.data.lhotse.sampling import MultimodalSamplingConstraint
 
 
 def _make_cuts(durations=(7.0, 4.0, 6.0, 3.0)):
-    return CutSet.from_cuts(
-        dummy_cut(index, duration=duration) for index, duration in enumerate(durations)
-    )
+    return CutSet.from_cuts(dummy_cut(index, duration=duration) for index, duration in enumerate(durations))
 
 
 def _make_sampler(
@@ -96,9 +90,7 @@ def _batch_ids(batches):
     ("packed", "sampler_type"),
     [(False, DynamicCutSampler), (True, PackedSequenceDynamicCutSampler)],
 )
-def test_packed_sequence_config_flag_selects_exact_sampler(
-    tmp_path, packed, sampler_type
-):
+def test_packed_sequence_config_flag_selects_exact_sampler(tmp_path, packed, sampler_type):
     cuts_path = tmp_path / "cuts.jsonl"
     _make_cuts().to_file(cuts_path)
     config = make_structured_with_schema_warnings(
@@ -246,9 +238,7 @@ def test_packed_sequence_sampler_resume_preserves_packing_buffer(tmp_path, index
 
     sampler = _make_sampler(make_source())
     iterator = iter(sampler)
-    assert _batch_ids([next(iterator)]) == [
-        ["dummy-mono-cut-0000", "dummy-mono-cut-0003"]
-    ]
+    assert _batch_ids([next(iterator)]) == [["dummy-mono-cut-0000", "dummy-mono-cut-0003"]]
     state = sampler.state_dict()
     if indexed:
         assert state["packing_buffer_tokens"] == [(1,), (2,)]
@@ -260,11 +250,7 @@ def test_packed_sequence_sampler_resume_preserves_packing_buffer(tmp_path, index
     resumed.load_state_dict(deepcopy(state))
     actual_remaining = _batch_ids(_drain(iter(resumed)))
 
-    assert (
-        actual_remaining
-        == expected_remaining
-        == [["dummy-mono-cut-0001", "dummy-mono-cut-0002"]]
-    )
+    assert actual_remaining == expected_remaining == [["dummy-mono-cut-0001", "dummy-mono-cut-0002"]]
 
 
 def test_packed_sequence_sampler_indexed_state_contains_only_origin_tokens(tmp_path):
@@ -280,9 +266,7 @@ def test_packed_sequence_sampler_indexed_state_contains_only_origin_tokens(tmp_p
 
     assert state["packing_buffer_tokens"] == [(1,), (2,)]
     assert all(
-        isinstance(token, int)
-        for candidate_tokens in state["packing_buffer_tokens"]
-        for token in candidate_tokens
+        isinstance(token, int) for candidate_tokens in state["packing_buffer_tokens"] for token in candidate_tokens
     )
     live_buffer[0][0].custom["mutated_after_snapshot"] = True
     assert state["packing_buffer_tokens"] == [(1,), (2,)]
@@ -306,21 +290,14 @@ def test_packed_sequence_sampler_indexed_tuple_source_resume(tmp_path):
     iterator = iter(sampler)
     first_batch = next(iterator)
     assert isinstance(first_batch, tuple)
-    assert _batch_ids([first_batch[0]]) == [
-        ["dummy-mono-cut-0000", "dummy-mono-cut-0003"]
-    ]
+    assert _batch_ids([first_batch[0]]) == [["dummy-mono-cut-0000", "dummy-mono-cut-0003"]]
     state = sampler.state_dict()
     assert state["packing_buffer_tokens"] == [(1, 1), (2, 2)]
-    expected = [
-        (_batch_ids([left]), _batch_ids([right])) for left, right in _drain(iterator)
-    ]
+    expected = [(_batch_ids([left]), _batch_ids([right])) for left, right in _drain(iterator)]
 
     resumed = _make_sampler(*make_sources())
     resumed.load_state_dict(deepcopy(state))
-    actual = [
-        (_batch_ids([left]), _batch_ids([right]))
-        for left, right in _drain(iter(resumed))
-    ]
+    actual = [(_batch_ids([left]), _batch_ids([right])) for left, right in _drain(iter(resumed))]
 
     assert actual == expected
 
@@ -329,10 +306,9 @@ def test_packed_sequence_sampler_multiworker_stateful_resume(tmp_path):
     stateful_dataloader = pytest.importorskip("torchdata.stateful_dataloader")
     StatefulDataLoader = stateful_dataloader.StatefulDataLoader
     cuts_path = tmp_path / "cuts.jsonl"
-    CutSet.from_cuts(
-        dummy_cut(index, duration=[7.0, 4.0, 6.0, 3.0][index % 4])
-        for index in range(160)
-    ).to_file(cuts_path)
+    CutSet.from_cuts(dummy_cut(index, duration=[7.0, 4.0, 6.0, 3.0][index % 4]) for index in range(160)).to_file(
+        cuts_path
+    )
     create_jsonl_index(cuts_path)
 
     def make_loader():

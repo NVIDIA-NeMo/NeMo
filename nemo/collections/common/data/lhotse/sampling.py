@@ -23,9 +23,7 @@ from lhotse.dataset import SamplingConstraint, TokenConstraint
 from lhotse.dataset.sampling.dynamic_bucketing import FixedBucketBatchSizeConstraint
 from lhotse.utils import ifnone
 
-from nemo.collections.common.data.lhotse.audio_token_estimator import (
-    AudioTokenEstimator,
-)
+from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
 from nemo.collections.common.data.lhotse.text_adapters import (
     Formattable,
     NeMoMultimodalConversation,
@@ -100,29 +98,19 @@ class MultimodalSamplingConstraint(SamplingConstraint):
         if not self.use_packed_sequence_sampling:
             raise RuntimeError("would_exceed() is only valid for packed sequence sampling")
         num_tokens = self.measure_length(example)
-        if (
-            self._internal.max_examples is not None
-            and self._internal.num_examples + 1 > self._internal.max_examples
-        ):
+        if self._internal.max_examples is not None and self._internal.num_examples + 1 > self._internal.max_examples:
             return True
         return (
-            self._internal.max_tokens is not None
-            and self._internal.current + num_tokens > self._internal.max_tokens
+            self._internal.max_tokens is not None and self._internal.current + num_tokens > self._internal.max_tokens
         )
 
     def reached_limit(self) -> bool:
         """Return whether the current packed batch exactly reached a limit."""
         if not self.use_packed_sequence_sampling:
             raise RuntimeError("reached_limit() is only valid for packed sequence sampling")
-        if (
-            self._internal.max_examples is not None
-            and self._internal.num_examples >= self._internal.max_examples
-        ):
+        if self._internal.max_examples is not None and self._internal.num_examples >= self._internal.max_examples:
             return True
-        return (
-            self._internal.max_tokens is not None
-            and self._internal.current >= self._internal.max_tokens
-        )
+        return self._internal.max_tokens is not None and self._internal.current >= self._internal.max_tokens
 
     def reset(self) -> None:
         self._internal.reset()

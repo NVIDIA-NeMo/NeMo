@@ -58,11 +58,7 @@ def _validate_missing_optimizer_state(
     prefixes = {name: f"{optimizer_key}.state.{name}" for name in parameter_names}
     owned_target_keys: dict[str, set[str]] = {name: set() for name in parameter_names}
     for key in target_keys:
-        owners = [
-            name
-            for name, prefix in prefixes.items()
-            if key == prefix or key.startswith(f"{prefix}.")
-        ]
+        owners = [name for name, prefix in prefixes.items() if key == prefix or key.startswith(f"{prefix}.")]
         if owners:
             # Parameter FQNs are normally not prefixes of each other. Choosing
             # the longest match also handles that edge case deterministically.
@@ -87,8 +83,7 @@ def _validate_missing_optimizer_state(
     unexpected_missing = missing_keys - classified_missing_keys
     if unexpected_missing:
         raise RuntimeError(
-            "Checkpoint is missing optimizer metadata or unrecognized state keys: "
-            f"{sorted(unexpected_missing)[:5]}"
+            "Checkpoint is missing optimizer metadata or unrecognized state keys: " f"{sorted(unexpected_missing)[:5]}"
         )
     return sorted(missing_parameters)
 
@@ -285,10 +280,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         gradient before the save; partial states and missing optimizer metadata
         remain hard errors.
         """
-        from lightning.pytorch.strategies.model_parallel import (
-            _METADATA_FILENAME,
-            _is_sharded_checkpoint,
-        )
+        from lightning.pytorch.strategies.model_parallel import _METADATA_FILENAME, _is_sharded_checkpoint
 
         path = Path(self.broadcast(checkpoint_path))
         if not _is_sharded_checkpoint(path):
@@ -306,20 +298,14 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         assert self.lightning_module is not None
         module_state = {"state_dict": get_model_state_dict(self.model)}
         load(module_state, checkpoint_id=path)
-        self.model.load_state_dict(
-            module_state["state_dict"], strict=self.lightning_module.strict_loading
-        )
+        self.model.load_state_dict(module_state["state_dict"], strict=self.lightning_module.strict_loading)
 
         state_dict_options = StateDictOptions(cpu_offload=True)
         metadata = FileSystemReader(path).read_metadata()
         for idx, optimizer in enumerate(self.optimizers):
             optimizer_key = f"optimizer_{idx}"
-            optimizer_state = {
-                optimizer_key: get_optimizer_state_dict(self.model, optimizer)
-            }
-            planner, missing_parameters = _optimizer_load_planner(
-                optimizer_state, metadata, optimizer_key
-            )
+            optimizer_state = {optimizer_key: get_optimizer_state_dict(self.model, optimizer)}
+            planner, missing_parameters = _optimizer_load_planner(optimizer_state, metadata, optimizer_key)
             load(optimizer_state, checkpoint_id=path, planner=planner)
             set_optimizer_state_dict(
                 self.model,
@@ -427,11 +413,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
         Returns:
             Tuple of ``(device_mesh, moe_mesh)``.
         """
-        from nemo_automodel.components.distributed import (
-            DistributedSetup,
-            FSDP2Config,
-            ParallelismSizes,
-        )
+        from nemo_automodel.components.distributed import DistributedSetup, FSDP2Config, ParallelismSizes
 
         if self._distributed_config is None:
             self._distributed_config = FSDP2Config()
@@ -473,9 +455,7 @@ class AutomodelParallelStrategy(ModelParallelStrategy):
     @override
     def distributed_sampler_kwargs(self) -> Dict[str, Any]:
         if self._device_mesh is None:
-            raise RuntimeError(
-                "Accessing distributed_sampler_kwargs before setup_environment() is not allowed."
-            )
+            raise RuntimeError("Accessing distributed_sampler_kwargs before setup_environment() is not allowed.")
         # automodel's flattened "dp" submesh covers dp_replicate * dp_shard
         dp_mesh = self._device_mesh["dp"]
         return {"num_replicas": dp_mesh.size(), "rank": dp_mesh.get_local_rank()}

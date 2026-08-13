@@ -14,16 +14,10 @@
 
 import pytest
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
-from nemo_automodel.components.distributed.config import (
-    FSDP2Config,
-    MoEParallelizerConfig,
-)
+from nemo_automodel.components.distributed.config import FSDP2Config, MoEParallelizerConfig
 from omegaconf import DictConfig
 
-from nemo.collections.speechlm2.parts.parallel import (
-    AutomodelParallelStrategy,
-    _validate_missing_optimizer_state,
-)
+from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy, _validate_missing_optimizer_state
 from nemo.utils.trainer_utils import _resolve_automodel_configs, resolve_trainer_cfg
 
 # ---------------------------------------------------------------------------
@@ -63,9 +57,7 @@ class TestAutomodelParallelStrategy:
         assert llm_only.activation_checkpointing_llm is True
         assert llm_only.activation_checkpointing_perception is False
 
-        perception_only = AutomodelParallelStrategy(
-            activation_checkpointing_perception=True
-        )
+        perception_only = AutomodelParallelStrategy(activation_checkpointing_perception=True)
         assert perception_only.activation_checkpointing_llm is False
         assert perception_only.activation_checkpointing_perception is True
 
@@ -119,9 +111,7 @@ class TestAutomodelParallelStrategy:
         active = "optimizer_0.state.llm.model.layer.weight"
         unused = "optimizer_0.state.llm.mtp.layer.weight"
         fields = {"step", "exp_avg", "exp_avg_sq"}
-        target = {
-            f"{prefix}.{field}" for prefix in (active, unused) for field in fields
-        }
+        target = {f"{prefix}.{field}" for prefix in (active, unused) for field in fields}
         checkpoint = {f"{active}.{field}" for field in fields}
         assert _validate_missing_optimizer_state(
             target_keys=target,

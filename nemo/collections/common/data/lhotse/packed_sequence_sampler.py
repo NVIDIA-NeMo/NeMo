@@ -15,16 +15,13 @@
 from collections.abc import Sequence
 from typing import Any
 
+from lhotse import CutSet
 from lhotse.dataset import DynamicCutSampler
 from lhotse.dataset.sampling.dynamic import DurationBatcher, Filter
 from lhotse.lazy import get_graph_origin, resolve_iterator_source
 
-from lhotse import CutSet
 
-
-def _select_best_fit_indices(
-    lengths: Sequence[int], capacity: int, max_items: int | None = None
-) -> list[int]:
+def _select_best_fit_indices(lengths: Sequence[int], capacity: int, max_items: int | None = None) -> list[int]:
     """Select an exact best-fit subset, preferring earlier items on ties."""
     if capacity < 0:
         raise ValueError(f"capacity must be non-negative (got {capacity})")
@@ -91,8 +88,7 @@ class ExactTokenBatcher(DurationBatcher):
         super().__init__(*args, **kwargs)
         if packing_buffer_size <= 0:
             raise ValueError(
-                "shuffle_buffer_size must be a positive packing-buffer size "
-                f"(got {packing_buffer_size})"
+                "shuffle_buffer_size must be a positive packing-buffer size " f"(got {packing_buffer_size})"
             )
         self.packing_buffer_size = packing_buffer_size
         self._source_exhausted = False
@@ -108,32 +104,20 @@ class ExactTokenBatcher(DurationBatcher):
 
     @staticmethod
     def _measured_example(example_or_tuple):
-        return (
-            example_or_tuple[0]
-            if isinstance(example_or_tuple, tuple)
-            else example_or_tuple
-        )
+        return example_or_tuple[0] if isinstance(example_or_tuple, tuple) else example_or_tuple
 
     def _fill_packing_buffer(self) -> None:
-        while (
-            len(self.reuse_cuts_buffer) < self.packing_buffer_size
-            and not self._source_exhausted
-        ):
+        while len(self.reuse_cuts_buffer) < self.packing_buffer_size and not self._source_exhausted:
             try:
                 self.reuse_cuts_buffer.append(next(self.cuts_iter))
             except StopIteration:
                 self._source_exhausted = True
 
     def _measure_integer_length(self, example_or_tuple) -> int:
-        length = self.constraint.measure_length(
-            self._measured_example(example_or_tuple)
-        )
+        length = self.constraint.measure_length(self._measured_example(example_or_tuple))
         integer_length = int(length)
         if integer_length != length:
-            raise ValueError(
-                "Packed sequence sampling requires integer token lengths, "
-                f"but measured {length!r}."
-            )
+            raise ValueError("Packed sequence sampling requires integer token lengths, " f"but measured {length!r}.")
         return integer_length
 
     def _limits(self) -> tuple[int, int | None]:
@@ -144,18 +128,14 @@ class ExactTokenBatcher(DurationBatcher):
             max_tokens = getattr(internal, "max_tokens", None)
             max_examples = getattr(internal, "max_examples", max_examples)
         if max_tokens is None:
-            raise ValueError(
-                "Packed sequence sampling requires batch_tokens to define the exact token cap."
-            )
+            raise ValueError("Packed sequence sampling requires batch_tokens to define the exact token cap.")
         max_tokens = int(max_tokens)
         if max_tokens <= 0:
             raise ValueError(f"batch_tokens must be positive (got {max_tokens})")
         if max_examples is not None:
             max_examples = int(max_examples)
             if max_examples <= 0:
-                raise ValueError(
-                    f"batch_size must be positive or null (got {max_examples})"
-                )
+                raise ValueError(f"batch_size must be positive or null (got {max_examples})")
         return max_tokens, max_examples
 
     def _discard(self, examples) -> None:
@@ -182,18 +162,10 @@ class ExactTokenBatcher(DurationBatcher):
             )
 
         remaining_items = None if max_examples is None else max_examples - 1
-        tail_indices = _select_best_fit_indices(
-            lengths[1:], max_tokens - anchor_length, max_items=remaining_items
-        )
+        tail_indices = _select_best_fit_indices(lengths[1:], max_tokens - anchor_length, max_items=remaining_items)
         selected_indices = {0, *(index + 1 for index in tail_indices)}
-        examples = [
-            example for index, example in enumerate(pool) if index in selected_indices
-        ]
-        deferred = [
-            example
-            for index, example in enumerate(pool)
-            if index not in selected_indices
-        ]
+        examples = [example for index, example in enumerate(pool) if index in selected_indices]
+        deferred = [example for index, example in enumerate(pool) if index not in selected_indices]
         self.reuse_cuts_buffer.clear()
         self.reuse_cuts_buffer.extend(deferred)
 
@@ -201,16 +173,10 @@ class ExactTokenBatcher(DurationBatcher):
         for example in examples:
             self.constraint.add(self._measured_example(example))
         if self.constraint.exceeded():
-            raise AssertionError(
-                "Best-fit packed batch exceeded its configured constraint."
-            )
+            raise AssertionError("Best-fit packed batch exceeded its configured constraint.")
 
         is_final_batch = self._source_exhausted and not self.reuse_cuts_buffer
-        if (
-            is_final_batch
-            and self.drop_last
-            and not self.constraint.close_to_exceeding()
-        ):
+        if is_final_batch and self.drop_last and not self.constraint.close_to_exceeding():
             self._discard(examples)
             raise StopIteration()
 
@@ -234,8 +200,7 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
     ):
         if shuffle_buffer_size is None or shuffle_buffer_size <= 0:
             raise ValueError(
-                "shuffle_buffer_size must be a positive packing-buffer size "
-                f"(got {shuffle_buffer_size})"
+                "shuffle_buffer_size must be a positive packing-buffer size " f"(got {shuffle_buffer_size})"
             )
         # Consume the public `shuffle` argument for config compatibility, but
         # do not allocate DynamicCutSampler's second, reservoir-style buffer.
@@ -252,19 +217,13 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
         self._inject_restored_packing_buffer = False
 
     def _uses_indexed_restore(self) -> bool:
-        return bool(self.cuts) and all(
-            getattr(source, "has_constant_time_access", False) for source in self.cuts
-        )
+        return bool(self.cuts) and all(getattr(source, "has_constant_time_access", False) for source in self.cuts)
 
     @staticmethod
     def _capture_packing_buffer_tokens(buffer) -> list[tuple[Any, ...]]:
         saved = []
         for example_or_tuple in buffer:
-            examples = (
-                example_or_tuple
-                if isinstance(example_or_tuple, tuple)
-                else (example_or_tuple,)
-            )
+            examples = example_or_tuple if isinstance(example_or_tuple, tuple) else (example_or_tuple,)
             tokens = tuple(get_graph_origin(example) for example in examples)
             if any(token is None for token in tokens):
                 raise RuntimeError(
@@ -278,13 +237,9 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
         state = super().state_dict()
         if self._uses_indexed_restore():
             if self._batcher is not None:
-                state["packing_buffer_tokens"] = self._capture_packing_buffer_tokens(
-                    self._batcher.reuse_cuts_buffer
-                )
+                state["packing_buffer_tokens"] = self._capture_packing_buffer_tokens(self._batcher.reuse_cuts_buffer)
             else:
-                state["packing_buffer_tokens"] = list(
-                    self._restored_packing_buffer_tokens
-                )
+                state["packing_buffer_tokens"] = list(self._restored_packing_buffer_tokens)
         else:
             # Replay restoration deterministically rebuilds the post-filter pool.
             state["packing_buffer_tokens"] = None
@@ -329,10 +284,7 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
                     f"{len(tokens)} != {len(active_sources)}."
                 )
             restored.append(
-                tuple(
-                    resolve_iterator_source(source)[token]
-                    for source, token in zip(active_sources, tokens)
-                )
+                tuple(resolve_iterator_source(source)[token] for source, token in zip(active_sources, tokens))
             )
         restored.extend(self._restored_legacy_examples)
         return restored
@@ -340,14 +292,10 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
     def _initialize_epoch_iterator(self, *, rebuild_sources: bool) -> None:
         if rebuild_sources or self._active_cuts is None:
             self._active_cuts = self._make_epoch_sources()
-        source_iterators = [
-            iter(resolve_iterator_source(source)) for source in self._active_cuts
-        ]
+        source_iterators = [iter(resolve_iterator_source(source)) for source in self._active_cuts]
         filtered_examples = Filter(
             iterator=zip(*source_iterators),
-            predicate=lambda examples: all(
-                self._filter_fn(example) for example in examples
-            ),
+            predicate=lambda examples: all(self._filter_fn(example) for example in examples),
             diagnostics=self.diagnostics,
         )
         self._batcher = ExactTokenBatcher(

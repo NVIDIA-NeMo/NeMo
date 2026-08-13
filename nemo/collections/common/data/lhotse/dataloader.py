@@ -48,6 +48,9 @@ from nemo.collections.common.data.lhotse.cutset import (
     guess_parse_cutset,
     read_cutset_from_config,
 )
+from nemo.collections.common.data.lhotse.packed_sequence_sampler import (
+    PackedSequenceDynamicCutSampler,
+)
 from nemo.collections.common.data.lhotse.sampling import (
     BucketingFilter,
     CERFilter,
@@ -956,7 +959,12 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             f"Creating a Lhotse DynamicCutSampler (bucketing is disabled, "
             f"(max_batch_duration={config.batch_duration} max_batch_size={config.batch_size})"
         )
-        sampler = DynamicCutSampler(
+        sampler_cls = (
+            PackedSequenceDynamicCutSampler
+            if config.use_packed_sequence_sampling
+            else DynamicCutSampler
+        )
+        sampler = sampler_cls(
             cuts,
             constraint=constraint,
             shuffle=config.shuffle,

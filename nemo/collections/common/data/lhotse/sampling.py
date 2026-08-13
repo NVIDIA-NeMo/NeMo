@@ -83,6 +83,35 @@ class MultimodalSamplingConstraint(SamplingConstraint):
     def close_to_exceeding(self) -> bool:
         return self._internal.close_to_exceeding()
 
+    def would_exceed(self, example: Any) -> bool:
+        """Return whether adding ``example`` would exceed a packed batch limit."""
+        if not self.use_packed_sequence_sampling:
+            raise RuntimeError("would_exceed() is only valid for packed sequence sampling")
+        num_tokens = self.measure_length(example)
+        if (
+            self._internal.max_examples is not None
+            and self._internal.num_examples + 1 > self._internal.max_examples
+        ):
+            return True
+        return (
+            self._internal.max_tokens is not None
+            and self._internal.current + num_tokens > self._internal.max_tokens
+        )
+
+    def reached_limit(self) -> bool:
+        """Return whether the current packed batch exactly reached a limit."""
+        if not self.use_packed_sequence_sampling:
+            raise RuntimeError("reached_limit() is only valid for packed sequence sampling")
+        if (
+            self._internal.max_examples is not None
+            and self._internal.num_examples >= self._internal.max_examples
+        ):
+            return True
+        return (
+            self._internal.max_tokens is not None
+            and self._internal.current >= self._internal.max_tokens
+        )
+
     def reset(self) -> None:
         self._internal.reset()
 
@@ -118,8 +147,9 @@ class PackedTokenConstraint(TokenConstraint):
     Generic TokenConstraint budgets padded work as num_examples times the
     longest example. For THD/packed execution, useful work and activation
     storage instead scale with the sum of per-example lengths, already tracked
-    in current. As in historical Lhotse strict=False mode, the current mean
-    estimates whether one more example would exceed the budget.
+    in current. Candidate-aware batching enforces the hard limit using the
+    actual next example; the current mean remains only as an end-of-stream
+    fullness heuristic for drop-last behavior.
     """
 
     def exceeded(self) -> bool:

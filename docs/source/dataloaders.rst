@@ -698,9 +698,13 @@ To enable bucketing, set ``batch_size: null`` and use the following options:
 
 * ``use_packed_sequence_sampling: true`` changes ``batch_tokens`` accounting
   from ``batch_size * longest_sequence`` to the sum of the measured sequence
-  lengths. Use it only when the dataset and model preserve a padding-free
-  representation through the expensive model path. It is especially useful
-  for heterogeneous, non-bucketed batches.
+  lengths. For heterogeneous, non-bucketed batches, NeMo examines the actual
+  next candidate and defers it to the following batch when it would cross the
+  budget. ``batch_tokens`` is therefore a hard upper bound rather than a
+  lookahead heuristic. Set ``max_tokens`` less than or equal to
+  ``batch_tokens`` so an individual over-budget example is filtered before
+  batching. Use this option only when the dataset and model preserve a
+  padding-free representation through the expensive model path.
 
 * (non-oomptimizer-only) ``quadratic_factor`` is a quadratic penalty to equalize the GPU memory usage between buckets of short and long sequence lengths for models with quadratic memory usage. It is only a heuristic and may not be as efficient as using OOMptimizer.
 
@@ -809,8 +813,10 @@ A :class:`~lhotse.dataset.sampling.base.SamplingConstraint` decides what
   equivalent-token units alongside text. Enforces all of the above plus
   ``min_tpt``/``max_tpt`` (token-per-token ratio filtering).
   With ``use_packed_sequence_sampling: true``, it wraps a packed token
-  constraint that budgets the sum of per-example lengths and uses the current
-  mean length to decide whether another example is likely to fit.
+  constraint that budgets the sum of per-example lengths. The non-bucketing
+  sampler tests the measured length of each actual candidate before admitting
+  it, defers candidates that do not fit, and saves that deferred candidate in
+  sampler state for exact resume.
 * ``FixedBucketBatchSizeConstraint2D`` — activated automatically when
   ``bucket_duration_bins`` is given as a list of ``[duration, tokens]``
   pairs **and** ``bucket_batch_size`` is set. Each bucket gets its own
@@ -844,8 +850,9 @@ has three parts:
   ``audio_cu_seqlens``, and ``audio_lens``. When ``batch_tokens`` is also
   supplied, it emits ``packing_efficiency = sum(example.num_tokens) /
   batch_tokens`` after fault-tolerant collation; SALMAutomodel logs this scalar
-  on training steps. The metric is omitted if exact sampler measurements are
-  unavailable.
+  on training steps. Under exact packed sampling the metric is at most ``1.0``;
+  lower values represent unused token budget. The metric is omitted if exact
+  sampler measurements are unavailable.
 
 * **Model forward signature.** The forward path must consume both the packed
   values and explicit boundaries (for example cumulative sequence lengths and

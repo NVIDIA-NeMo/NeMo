@@ -14,11 +14,12 @@
 
 import random
 from io import BytesIO
-from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
+from huggingface_hub import snapshot_download
+from huggingface_hub.errors import LocalEntryNotFoundError
 from lhotse import CutSet, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.testing.dummies import dummy_cut, dummy_recording
@@ -38,9 +39,12 @@ NUM_AUDIO_CODEBOOKS = 8
 
 BPE_TOKENIZER_NAME = "nemotron_bpe"
 BPE_TOKENIZER_MODEL = "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
-BPE_TOKENIZER_CACHED_PATH = Path("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/")
-if BPE_TOKENIZER_CACHED_PATH.exists():
-    BPE_TOKENIZER_MODEL = str(BPE_TOKENIZER_CACHED_PATH)
+try:
+    # Attempt to resolve local cache for CI tests
+    BPE_TOKENIZER_MODEL = snapshot_download(BPE_TOKENIZER_MODEL, local_files_only=True)
+except LocalEntryNotFoundError:
+    # For local tests, can call into HF servers to download as needed
+    pass
 
 
 def _seed_everything():

@@ -3,12 +3,12 @@
 Tutorials
 =========
 
-The best way to get started with NeMo is to start with one of our tutorials. These tutorials cover various domains and provide both introductory and advanced topics. They are designed to help you understand and use the NeMo toolkit effectively.
+The best way to get started with NeMo Speech is to start with one of our tutorials. These tutorials cover various domains and provide both introductory and advanced topics. They are designed to help you understand and use NeMo Speech effectively.
 
 Running Tutorials on Colab
 --------------------------
 
-Most NeMo tutorials can be run on `Google's Colab <https://colab.research.google.com/notebooks/intro.ipynb>`_.
+Most NeMo Speech tutorials can be run on `Google's Colab <https://colab.research.google.com/notebooks/intro.ipynb>`_.
 
 To run a tutorial:
 
@@ -181,4 +181,3 @@ Tutorial Overview
    * - Utility Tools
      - Utility Tools for Speech and Text: CTC Segmentation
      - `CTC Segmentation <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tools/CTC_Segmentation_Tutorial.ipynb>`_
-

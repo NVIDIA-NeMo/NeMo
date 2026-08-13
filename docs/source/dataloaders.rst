@@ -335,7 +335,12 @@ Let's briefly go over each of the Lhotse dataloading arguments:
 * ``num_buckets`` is the number of buckets in the bucketing sampler. Bigger value means less padding but also less randomization.
 * ``num_cuts_for_bins_estimate`` is the number of utterance we will sample before the start of the training to estimate the duration bins for buckets. Larger number results in a more accurate estimatation but also a bigger lag before starting the training.
 * ``bucket_buffer_size`` is the number of utterances (data and metadata) we will hold in memory to be distributed between buckets. With bigger ``batch_duration``, this number may need to be increased for dynamic bucketing sampler to work properly (typically it will emit a warning if this is too low).
-* ``shuffle_buffer_size`` is an extra number of utterances we will hold in memory to perform approximate shuffling (via reservoir-like sampling). Bigger number means more memory usage but also better randomness.
+* ``shuffle_buffer_size`` is an extra number of utterances we will hold in
+  memory to perform approximate shuffling (via reservoir-like sampling).
+  Bigger values mean more memory usage but also better randomness. When
+  ``use_packed_sequence_sampling: true``, this option is repurposed as the
+  size of the single post-filter best-fit packing pool; the sampler disables
+  its reservoir because indexed sources are already Feistel-shuffled.
 
 The PyTorch Lightning ``trainer`` related arguments:
 
@@ -698,10 +703,14 @@ To enable bucketing, set ``batch_size: null`` and use the following options:
 
 * ``use_packed_sequence_sampling: true`` changes ``batch_tokens`` accounting
   from ``batch_size * longest_sequence`` to the sum of the measured sequence
-  lengths. For heterogeneous, non-bucketed batches, NeMo examines the actual
-  next candidate and defers it to the following batch when it would cross the
-  budget. ``batch_tokens`` is therefore a hard upper bound rather than a
-  lookahead heuristic. Set ``max_tokens`` less than or equal to
+  lengths. For heterogeneous, non-bucketed batches, NeMo fills a bounded
+  post-filter pool of ``shuffle_buffer_size`` candidates and chooses the exact
+  best-fit subset without exceeding the budget. The oldest candidate is always
+  included, which bounds displacement and prevents starvation. ``batch_tokens``
+  is therefore a hard upper bound. The sampler passes ``shuffle=False`` to its
+  ``DynamicCutSampler`` parent so that this packing pool is the only buffer;
+  with indexed input and ``shuffle: true``, the lazy data source supplies the
+  random Feistel permutation. Set ``max_tokens`` less than or equal to
   ``batch_tokens`` so an individual over-budget example is filtered before
   batching. Use this option only when the dataset and model preserve a
   padding-free representation through the expensive model path.
@@ -814,9 +823,10 @@ A :class:`~lhotse.dataset.sampling.base.SamplingConstraint` decides what
   ``min_tpt``/``max_tpt`` (token-per-token ratio filtering).
   With ``use_packed_sequence_sampling: true``, it wraps a packed token
   constraint that budgets the sum of per-example lengths. The non-bucketing
-  sampler tests the measured length of each actual candidate before admitting
-  it, defers candidates that do not fit, and saves that deferred candidate in
-  sampler state for exact resume.
+  sampler performs deterministic best-fit selection from the bounded
+  ``shuffle_buffer_size`` packing pool while requiring its oldest candidate.
+  For indexed sources, buffered candidates are saved as immutable graph-origin
+  tokens and reconstructed by random access for exact O(1) resume.
 * ``FixedBucketBatchSizeConstraint2D`` — activated automatically when
   ``bucket_duration_bins`` is given as a list of ``[duration, tokens]``
   pairs **and** ``bucket_batch_size`` is set. Each bucket gets its own
@@ -871,6 +881,8 @@ the actual encoder execution mode::
     batch_tokens: 16384
     max_tokens: 16384
     use_packed_sequence_sampling: ${model.packed_encoder_sequences}
+    shuffle: true
+    shuffle_buffer_size: 128
 
 Do not enable the option merely because the LLM is packed if the dominant
 encoder path still pads to the longest example.

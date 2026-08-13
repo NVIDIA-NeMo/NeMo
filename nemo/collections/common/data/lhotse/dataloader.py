@@ -107,6 +107,7 @@ class LhotseDataLoadingConfig:
     concurrent_bucketing: bool = True  # fetches data in a background thread
     bucketing_2d_strict_mode: bool = True  # reduces padding by discarding significant outliers
     #   d. Other Lhotse sampling options.
+    # Reservoir size normally; post-filter best-fit pool size in packed mode.
     shuffle_buffer_size: int | None = 10000
     drop_last: bool = False
     shard_seed: int | str = "trng"

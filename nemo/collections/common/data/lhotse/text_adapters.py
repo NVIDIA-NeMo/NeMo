@@ -1005,15 +1005,20 @@ def collate_conversation_audio_packed_fault_tolerant(
     return torch.cat(ordered_rows), audio_cu_seqlens, audio_lens, CutSet(ok)
 
 
-def _compute_num_audio_tokens(example: NeMoMultimodalConversation, mode: Literal["context", "answer", "all"]) -> int:
+def _compute_num_audio_tokens(
+    example: NeMoMultimodalConversation,
+    mode: Literal["context", "answer", "all"],
+    audio_token_estimator=None,
+) -> int:
     if not example.has_audio_turns:
         return 0
-    assert example.token_equivalent_duration is not None, (
-        "Cannot compute the length of a NeMoMultimodalConversation: "
-        "token_equivalent_duration must be set in order to estimate the number of tokens equivalent to audio turns. "
-        "Did you forget to set token_equivalent_duration option in your dataloading config? "
-        "Tip: generally it should be set to frame_shift * total_subsampling_factor of your audio encoder model."
-    )
+    if audio_token_estimator is None:
+        assert example.token_equivalent_duration is not None, (
+            "Cannot compute the length of a NeMoMultimodalConversation: "
+            "token_equivalent_duration must be set in order to estimate the number of tokens equivalent to audio "
+            "turns. Did you forget to set token_equivalent_duration option in your dataloading config? "
+            "Tip: generally it should be set to frame_shift * total_subsampling_factor of your audio encoder model."
+        )
     if mode == "context":
         turns = example.turns[:-1]
     elif mode == "answer":
@@ -1023,12 +1028,52 @@ def _compute_num_audio_tokens(example: NeMoMultimodalConversation, mode: Literal
     else:
         raise RuntimeError(f"invalid mode for number of audio token computation: {mode}")
     return sum(
-        [
-            # subtract 1 for each audio locator tag as its token will be replaced
-            math.ceil(turn.cut.duration / example.token_equivalent_duration) - 1
-            for turn in turns
-            if isinstance(turn, AudioTurn)
-        ]
+        # Subtract one for each audio locator tag: its token is replaced by the
+        # encoder frames rather than retained alongside them.
+        (
+            audio_token_estimator.estimate_cut(turn.cut)
+            if audio_token_estimator is not None
+            else math.ceil(turn.cut.duration / example.token_equivalent_duration)
+        )
+        - 1
+        for turn in turns
+        if isinstance(turn, AudioTurn)
+    )
+
+
+def measure_formattable_length(
+    example: Formattable,
+    mode: Literal["input", "output", "total"],
+    *,
+    audio_token_estimator=None,
+) -> int | None:
+    """Measure a prompt-formatted example, optionally with exact audio lengths.
+
+    The legacy ``Formattable`` properties continue to use
+    ``token_equivalent_duration``. Sampling constraints and token filters call
+    this helper so an ``audio_token_estimator`` can replace the duration
+    approximation without storing model-specific configuration on every data
+    example.
+    """
+    if not isinstance(example, NeMoMultimodalConversation) or audio_token_estimator is None:
+        return {
+            "input": example.input_length,
+            "output": example.output_length,
+            "total": example.total_length,
+        }[mode]
+
+    ids = {
+        "input": example.context_ids,
+        "output": example.answer_ids,
+        "total": example.input_ids,
+    }[mode]
+    if ids is None:
+        return None
+    audio_mode = {"input": "context", "output": "answer", "total": "all"}[mode]
+    return ids.shape[0] + _compute_num_audio_tokens(
+        example,
+        audio_mode,
+        audio_token_estimator=audio_token_estimator,
     )
 
 

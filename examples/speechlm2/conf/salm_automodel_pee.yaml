@@ -252,6 +252,20 @@ data:
     sample_rate: 16000
     prompt_format: ${model.prompt_format}
     token_equivalent_duration: 0.08
+    # Sample-exact Canary-v2/PEE audio frame count, including per-chunk rounding.
+    # Required when use_packed_sequence_sampling enforces a hard model-token cap.
+    audio_token_estimator: &canary_v2_audio_token_estimator
+      preprocessor:
+        n_fft: 512
+        hop_length: 160
+        stft_pad_amount: 256
+      subsampling:
+        kernel_size: 3
+        stride: 2
+        padding: 1
+        repeat: 3
+        ceil_mode: false
+      chunk_size_seconds: ${model.encoder_chunk_size_seconds}
     input_cfg:
       - type: lhotse_as_conversation
         cuts_path: ???  # needs to be set
@@ -273,8 +287,8 @@ data:
     # shuffle_buffer_size: 128  # Best-fit packing pool when packed sampling is enabled
     # measure_total_length: true
     # Note: `batch_tokens`, `bucket_duration_bins`, and `max_tokens` all represent tokens as
-    #  the sum of input audio frames and output text tokens. Number of audio frames is
-    #  calculated using `token_equivalent_duration`.
+    #  the sum of input audio frames and output text tokens. `audio_token_estimator` gives
+    #  exact frame counts; `token_equivalent_duration` remains the legacy fallback.
     # batch_tokens: 4000
     # max_tokens: 2048
     # bucket_duration_bins: [64, 128, 256, 384, 512, 768, 1024, 1280, 1536, 2048]
@@ -287,6 +301,7 @@ data:
     # They inherit all settings from validation_ds, but can individually override them.
     prompt_format: ${model.prompt_format}
     token_equivalent_duration: 0.08
+    audio_token_estimator: *canary_v2_audio_token_estimator
     datasets:
       val_set_0:  # rename to your dataset name, add more as needed
         input_cfg:

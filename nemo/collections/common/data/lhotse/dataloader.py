@@ -43,6 +43,9 @@ from lhotse.lazy import LazyFlattener
 from lhotse.utils import fix_random_seed
 from omegaconf import DictConfig, OmegaConf
 
+from nemo.collections.common.data.lhotse.audio_token_estimator import (
+    AudioTokenEstimator,
+)
 from nemo.collections.common.data.lhotse.cutset import (
     IncompleteConfigError,
     guess_parse_cutset,
@@ -130,6 +133,9 @@ class LhotseDataLoadingConfig:
     use_multimodal_sampling: bool = False
     audio_locator_tag: str | None = None  # global audio placeholder token, propagates to datasets in input_cfg
     token_equivalent_duration: float | None = None
+    # Sample-exact audio-to-model-token length arithmetic. When set, this
+    # supersedes token_equivalent_duration for constraints and token filters.
+    audio_token_estimator: Any = None
     batch_tokens: int | None = None
     # Use sum-of-lengths rather than padded batch-size-times-maximum accounting.
     # Enable this when the encoder consumes packed sequences.
@@ -807,6 +813,10 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
         config.shard_seed = fixed_seed
 
     _auto_detect_bucketing_and_validate_batch_size(config)
+    audio_token_estimator = AudioTokenEstimator.from_config(
+        config.audio_token_estimator,
+        sample_rate=config.sample_rate,
+    )
 
     # Apply channel selector
     if config.channel_selector is not None:
@@ -901,7 +911,12 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # We can filter after the augmentations because they are applied only when calling load_audio().
     cuts = cuts.filter(DurationFilter(config.min_duration, config.max_duration))
     cuts = cuts.filter(
-        TokenCountFilter(config.min_tokens, config.max_tokens, measure_total_length=config.measure_total_length)
+        TokenCountFilter(
+            config.min_tokens,
+            config.max_tokens,
+            measure_total_length=config.measure_total_length,
+            audio_token_estimator=audio_token_estimator,
+        )
     )
 
     # validation status filtering
@@ -924,7 +939,12 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     # Select the strategy customizing Lhotse sampler behaviour.
     # Provides support for dynamic batch sizes, multimodal dataloading, 2D bucketing, etc.
     bucket_duration_bins = determine_bucket_duration_bins(config)
-    cuts, constraint = determine_sampling_constraint(cuts, bucket_duration_bins, config)
+    cuts, constraint = determine_sampling_constraint(
+        cuts,
+        bucket_duration_bins,
+        config,
+        audio_token_estimator=audio_token_estimator,
+    )
 
     # 3. The sampler.
     if config.use_bucketing:
@@ -1048,7 +1068,13 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     return sampler, use_iterable_dataset
 
 
-def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) -> tuple[CutSet, SamplingConstraint]:
+def determine_sampling_constraint(
+    cuts: CutSet,
+    bucket_duration_bins,
+    config,
+    *,
+    audio_token_estimator: AudioTokenEstimator | None = None,
+) -> tuple[CutSet, SamplingConstraint]:
     """
     Select an appropriate sampling strategy (constraint) for Lhotse samplers based on the configuration.
     Sampling constraint affects the batch size (static/dynamic) and bucketing behaviour (1D/2D).
@@ -1069,6 +1095,7 @@ def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) ->
                 max_seq_len_buckets=bucket_duration_bins,
                 batch_sizes=config.bucket_batch_size,
                 token_equivalent_duration=config.token_equivalent_duration,
+                audio_token_estimator=audio_token_estimator,
                 strict_2d=config.bucketing_2d_strict_mode,
                 max_ratio=config.max_tpt if isinstance(config.max_tpt, Sequence) else None,
                 measure_total_length=config.measure_total_length,
@@ -1077,6 +1104,7 @@ def determine_sampling_constraint(cuts: CutSet, bucket_duration_bins, config) ->
         else:
             constraint = MultimodalSamplingConstraint(
                 token_equivalent_duration=config.token_equivalent_duration,
+                audio_token_estimator=audio_token_estimator,
                 batch_size=config.batch_size,
                 batch_tokens=config.batch_tokens,
                 quadratic_factor=config.quadratic_factor,

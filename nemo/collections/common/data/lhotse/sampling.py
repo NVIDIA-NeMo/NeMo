@@ -23,7 +23,14 @@ from lhotse.dataset import SamplingConstraint, TokenConstraint
 from lhotse.dataset.sampling.dynamic_bucketing import FixedBucketBatchSizeConstraint
 from lhotse.utils import ifnone
 
-from nemo.collections.common.data.lhotse.text_adapters import Formattable, NeMoMultimodalConversation
+from nemo.collections.common.data.lhotse.audio_token_estimator import (
+    AudioTokenEstimator,
+)
+from nemo.collections.common.data.lhotse.text_adapters import (
+    Formattable,
+    NeMoMultimodalConversation,
+    measure_formattable_length,
+)
 
 
 @dataclass
@@ -37,6 +44,11 @@ class MultimodalSamplingConstraint(SamplingConstraint):
     # How many seconds of audio is a text token worth; balances audio to text ratio in a mini-batch.
     # Generally set this to frame_shift * total_subsampling_factor of your audio encoder.
     token_equivalent_duration: float | None = None
+
+    # Optional sample-exact description of the audio preprocessor, encoder
+    # subsampling, and SALM encoder chunking policy. This supersedes the
+    # duration-based approximation above when provided.
+    audio_token_estimator: AudioTokenEstimator | None = None
 
     # Defines maximum batch size (may be lower than that if batch_length is also specified).
     batch_size: int | None = None
@@ -117,7 +129,7 @@ class MultimodalSamplingConstraint(SamplingConstraint):
 
     def measure_length(self, example: Any) -> float:
         if isinstance(example, Cut):
-            audio_len_in_tokens = math.ceil(example.duration / self.token_equivalent_duration)
+            audio_len_in_tokens = self._measure_audio(example)
             if self.measure_total_length:
                 # Total length of a Cut (audio+text example) is counted as the sum of:
                 # * num_tokens in each supervision segment ("utterance") in the Cut
@@ -131,13 +143,40 @@ class MultimodalSamplingConstraint(SamplingConstraint):
                 return audio_len_in_tokens
         elif isinstance(example, Formattable):
             try:
-                return example.total_length if self.measure_total_length else example.input_length
+                if (
+                    self.use_packed_sequence_sampling
+                    and isinstance(example, NeMoMultimodalConversation)
+                    and example.has_audio_turns
+                    and self.audio_token_estimator is None
+                ):
+                    raise ValueError(
+                        "Exact packed sequence sampling with audio requires audio_token_estimator metadata that "
+                        "matches the model's preprocessor, subsampling, and encoder chunking configuration. "
+                        "token_equivalent_duration is only an approximation and cannot enforce a hard model-token cap."
+                    )
+                mode = "total" if self.measure_total_length else "input"
+                return measure_formattable_length(
+                    example,
+                    mode,
+                    audio_token_estimator=self.audio_token_estimator,
+                )
             except (AttributeError, AssertionError) as e:
                 raise RuntimeError(
                     "Couldn't determine the length of a text example; "
                     "have you provided both prompt_format and tokenizer when instantiating the dataloader?"
                 ) from e
         raise RuntimeError(f"Unsupported example type: {type(example)}")
+
+    def _measure_audio(self, example: Cut) -> int:
+        if self.audio_token_estimator is not None:
+            return self.audio_token_estimator.estimate_cut(example)
+        if self.use_packed_sequence_sampling:
+            raise ValueError(
+                "Exact packed sequence sampling with audio requires audio_token_estimator metadata that matches "
+                "the model's preprocessor, subsampling, and encoder chunking configuration. "
+                "token_equivalent_duration is only an approximation and cannot enforce a hard model-token cap."
+            )
+        return math.ceil(example.duration / self.token_equivalent_duration)
 
 
 @dataclass
@@ -278,6 +317,10 @@ class MultimodalFixedBucketBatchSizeConstraint2D(FixedBucketBatchSizeConstraint2
     # Generally set this to frame_shift * total_subsampling_factor of your audio encoder.
     token_equivalent_duration: float | None = None
 
+    # Optional sample-exact audio length estimator. Bucketing remains backward
+    # compatible with token_equivalent_duration when this is unset.
+    audio_token_estimator: AudioTokenEstimator | None = None
+
     # When False (default), we only consider the input part of the example to determine its length,
     # e.g. for a Cut that means its audio duration converted to tokens, for text that means len(context_ids), etc.
     # When True, we consider the sum of input and output lengths together (useful mostly for decoder-only models).
@@ -288,7 +331,11 @@ class MultimodalFixedBucketBatchSizeConstraint2D(FixedBucketBatchSizeConstraint2
             # Total length of a Cut (audio+text example) is counted as the sum of:
             # * num_tokens in each supervision segment ("utterance") in the Cut
             # * num_frames of audio (frame=token) given a token-equivalent-duration (basically a frame shift)
-            audio_len_in_tokens = math.ceil(example.duration / self.token_equivalent_duration)
+            audio_len_in_tokens = (
+                self.audio_token_estimator.estimate_cut(example)
+                if self.audio_token_estimator is not None
+                else math.ceil(example.duration / self.token_equivalent_duration)
+            )
             text_tokens = _measure_tokens(example)
 
             if self.bucketing_2d_enabled:
@@ -302,9 +349,24 @@ class MultimodalFixedBucketBatchSizeConstraint2D(FixedBucketBatchSizeConstraint2
 
         elif isinstance(example, Formattable):
             if self.bucketing_2d_enabled:
-                return example.input_length, example.output_length
+                return (
+                    measure_formattable_length(
+                        example,
+                        "input",
+                        audio_token_estimator=self.audio_token_estimator,
+                    ),
+                    measure_formattable_length(
+                        example,
+                        "output",
+                        audio_token_estimator=self.audio_token_estimator,
+                    ),
+                )
             else:
-                return example.total_length if self.measure_total_length else example.input_length
+                return measure_formattable_length(
+                    example,
+                    "total" if self.measure_total_length else "input",
+                    audio_token_estimator=self.audio_token_estimator,
+                )
 
         raise RuntimeError(f"Unsupported example type: {type(example)}")
 
@@ -447,10 +509,17 @@ class TokenCountFilter:
     and enable ``TokenPerTokenFilter`` for additional filtering on the output sequence length.
     """
 
-    def __init__(self, t_min: float | None, t_max: float | None, measure_total_length: bool) -> None:
+    def __init__(
+        self,
+        t_min: float | None,
+        t_max: float | None,
+        measure_total_length: bool,
+        audio_token_estimator: AudioTokenEstimator | None = None,
+    ) -> None:
         self.t_min = ifnone(t_min, -1)
         self.t_max = ifnone(t_max, float("inf"))
         self.measure_total_length = measure_total_length
+        self.audio_token_estimator = audio_token_estimator
         self.enabled = self.t_min > 0 or self.t_max < float("inf")
 
     def __call__(self, example) -> bool:
@@ -462,7 +531,11 @@ class TokenCountFilter:
             f"allow us to select the right sequence length for filtering. We got: {example}"
         )
         try:
-            length = example.total_length if self.measure_total_length else example.input_length
+            length = measure_formattable_length(
+                example,
+                "total" if self.measure_total_length else "input",
+                audio_token_estimator=self.audio_token_estimator,
+            )
         except (AttributeError, AssertionError) as e:
             raise RuntimeError(
                 f"Cannot measure token count for example: {example} "

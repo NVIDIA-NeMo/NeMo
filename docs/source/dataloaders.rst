@@ -685,6 +685,13 @@ intentionally streaming-only. See :ref:`indexed-resumable-dataloading`.
 
 * (multimodal-only) ``token_equivalent_duration: 0.08`` is used to be able to measure audio examples in the number of "tokens". For example, if we're using fbank with 0.01s frame shift and an acoustic model that has a subsampling factor of 0.08, then a reasonable setting for this could be 0.08 (which means every subsampled frame counts as one token). Calibrate this value to fit your needs.
 
+* (multimodal-only) ``audio_token_estimator`` replaces the duration approximation
+  with sample-exact integer length arithmetic for the audio preprocessor,
+  convolution/pooling subsampling stages, and optional encoder chunking. Use it
+  whenever ``batch_tokens`` must be a hard limit on the sequence actually passed
+  to the model. ``chunk_size_seconds`` must match the model's encoder chunking
+  option; rounding is applied independently to every chunk.
+
 **Text/multimodal bucketing and OOMptimizer.** Analogous to bucketing for audio data, we provide two scripts to support efficient bucketing:
 
 * ``scripts/speech_llm/estimate_token_bins.py`` which estimates 1D or 2D buckets based on the input config, tokenizer, and prompt format. It also estimates input/output token count distribution and suggested ``max_tpt`` (token-per-token) filtering values.
@@ -827,6 +834,9 @@ A :class:`~lhotse.dataset.sampling.base.SamplingConstraint` decides what
   ``shuffle_buffer_size`` packing pool while requiring its oldest candidate.
   For indexed sources, buffered candidates are saved as immutable graph-origin
   tokens and reconstructed by random access for exact O(1) resume.
+  Audio examples additionally require ``audio_token_estimator`` in this mode;
+  ``token_equivalent_duration`` cannot guarantee a hard cap because frame and
+  subsampling rounding (especially at encoder chunk boundaries) is discrete.
 * ``FixedBucketBatchSizeConstraint2D`` — activated automatically when
   ``bucket_duration_bins`` is given as a list of ``[duration, tokens]``
   pairs **and** ``bucket_batch_size`` is set. Each bucket gets its own
@@ -845,13 +855,22 @@ not pack tensors or alter a model's attention behavior. The complete contract
 has three parts:
 
 * **Examples visible to the sampler.** Each example must be either a Lhotse
-  ``Cut`` or NeMo ``Formattable``. A ``Cut`` requires
-  ``token_equivalent_duration`` so audio duration can be converted to tokens;
+  ``Cut`` or NeMo ``Formattable``. A ``Cut`` normally uses
+  ``token_equivalent_duration`` to convert audio duration to tokens;
   with ``measure_total_length: true``, tokenized supervision text is added.
   A ``Formattable`` must have been prompt-formatted/tokenized so its
   ``input_length`` and ``total_length`` are available. The multimodal
   constraint records the resulting scalar as ``example.num_tokens`` for the
-  downstream dataset.
+  downstream dataset. For exact packed audio sampling,
+  ``audio_token_estimator`` is mandatory and supersedes the duration estimate
+  in both token filters and sampling constraints. Its ``preprocessor`` mapping
+  specifies ``n_fft``, ``hop_length``, and per-side ``stft_pad_amount``;
+  ``subsampling`` is one mapping (or a list of mappings) with ``kernel_size``,
+  ``stride``, per-side ``padding``, ``repeat``, and ``ceil_mode``. This metadata
+  must describe every temporal reduction before audio embeddings replace the
+  locator token. ``chunk_size_seconds`` must equal the model's encoder chunk
+  size (or be ``null`` when chunking is disabled). NeMo fails clearly on the
+  first audio example if packed sampling is requested without this metadata.
 
 * **Dataset/collator output.** The Dataset class must accept the sampler's
   ``CutSet`` mini-batch and retain the individual sequence boundaries while
@@ -880,6 +899,18 @@ the actual encoder execution mode::
     measure_total_length: true
     batch_tokens: 16384
     max_tokens: 16384
+    audio_token_estimator:
+      preprocessor:
+        n_fft: 512
+        hop_length: 160
+        stft_pad_amount: 256
+      subsampling:
+        kernel_size: 3
+        stride: 2
+        padding: 1
+        repeat: 3
+        ceil_mode: false
+      chunk_size_seconds: ${model.encoder_chunk_size_seconds}
     use_packed_sequence_sampling: ${model.packed_encoder_sequences}
     shuffle: true
     shuffle_buffer_size: 128
@@ -1659,7 +1690,7 @@ options by what they control.
 
 **Sampling — multimodal.** ``use_multimodal_sampling``, ``prompt_format``,
 ``pretokenize``, ``audio_locator_tag``, ``token_equivalent_duration``,
-``batch_tokens``, ``use_packed_sequence_sampling``, ``quadratic_factor``,
+``audio_token_estimator``, ``batch_tokens``, ``use_packed_sequence_sampling``, ``quadratic_factor``,
 ``min_tokens``, ``max_tokens``,
 ``min_tpt``, ``max_tpt``, ``measure_total_length``.
 

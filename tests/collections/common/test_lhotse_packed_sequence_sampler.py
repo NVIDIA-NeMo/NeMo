@@ -15,11 +15,17 @@
 from copy import deepcopy
 
 import pytest
+from lhotse import CutSet
 from lhotse.dataset import DynamicCutSampler
 from lhotse.dataset.iterable_dataset import IdentityDataset, IterableDatasetWrapper
 from lhotse.indexing import create_jsonl_index
 from lhotse.lazy import LazyIndexedManifestIterator
 from lhotse.testing.dummies import dummy_cut
+from omegaconf import OmegaConf
+
+from nemo.collections.common.data.lhotse.audio_token_estimator import (
+    AudioTokenEstimator,
+)
 from nemo.collections.common.data.lhotse.dataloader import (
     get_lhotse_sampler_from_config,
     make_structured_with_schema_warnings,
@@ -31,9 +37,6 @@ from nemo.collections.common.data.lhotse.packed_sequence_sampler import (
 from nemo.collections.common.data.lhotse.sampling import (
     MultimodalSamplingConstraint,
 )
-from omegaconf import OmegaConf
-
-from lhotse import CutSet
 
 
 def _make_cuts(durations=(7.0, 4.0, 6.0, 3.0)):
@@ -52,6 +55,17 @@ def _make_sampler(
         *cuts,
         constraint=MultimodalSamplingConstraint(
             token_equivalent_duration=1.0,
+            audio_token_estimator=AudioTokenEstimator.from_config(
+                {
+                    "preprocessor": {
+                        "n_fft": 16000,
+                        "hop_length": 16000,
+                        "stft_pad_amount": 8000,
+                    },
+                    "subsampling": [],
+                },
+                sample_rate=16000,
+            ),
             batch_size=batch_size,
             batch_tokens=batch_tokens,
             measure_total_length=False,
@@ -99,6 +113,14 @@ def test_packed_sequence_config_flag_selects_exact_sampler(
                 "pretokenize": False,
                 "batch_tokens": 10,
                 "token_equivalent_duration": 1.0,
+                "audio_token_estimator": {
+                    "preprocessor": {
+                        "n_fft": 16000,
+                        "hop_length": 16000,
+                        "stft_pad_amount": 8000,
+                    },
+                    "subsampling": [],
+                },
                 "use_packed_sequence_sampling": packed,
                 "measure_total_length": False,
                 "seed": 0,

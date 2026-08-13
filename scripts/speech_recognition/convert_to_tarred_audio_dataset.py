@@ -574,7 +574,7 @@ class ASRTarredDatasetBuilder:
         filtered_duration = 0.0
         print(f"Reading manifest: {manifest_path}")
         with open(manifest_path, 'r', encoding='utf-8') as m:
-            for line in m:
+            for line in tqdm(m):
                 line = line.strip()
                 if not line:
                     continue
@@ -622,7 +622,7 @@ class ASRTarredDatasetBuilder:
         # Trim audio based on offset and duration.
         start_sample = int(offset * sampling_rate)
         num_frames = int(duration * sampling_rate) if duration else -1
-        audio, sampling_rate = soundfile.read(file_path, start=start_sample, frames=num_frames)
+        audio, sampling_rate = soundfile.read(audio_filepath, start=start_sample, frames=num_frames)
 
         # Determine codec parameters.
         if codec is not None:

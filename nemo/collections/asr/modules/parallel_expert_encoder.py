@@ -1736,6 +1736,55 @@ class ParallelExpertEncoder(nn.Module):
             for name, data in zip(names, data_outputs)
         }
 
+
+    def _forward_all_sequence_packed_serial_training(self, audio_signal, length):
+        """Run packed PEE branches serially with one checkpoint per trainable branch."""
+        outputs = {}
+        group_speech_moe = getattr(self, 'sequence_packed_serial_speech_grouped_moe', False)
+        use_checkpoint = self.activation_checkpointing and torch.is_grad_enabled()
+
+        for name in self.pee.expert_names:
+            expert = self.pee.experts[name]
+            signal_requires_grad = (
+                audio_signal.data.requires_grad
+                if isinstance(audio_signal, PackedEncoderActivations)
+                else audio_signal.requires_grad
+            )
+            branch_requires_grad = signal_requires_grad or any(p.requires_grad for p in expert.parameters())
+
+            def run(signal, signal_length, *, name=name, expert=expert):
+                if name == 'speech' and group_speech_moe:
+                    packed = self.pee.forward_grouped_sequence_packed(
+                        signal,
+                        signal_length,
+                        backend=self.sequence_packed_ggemm_backend,
+                        moe_mode=self._sequence_packed_moe_execution_mode(),
+                        fused_qkv=True,
+                        expert_names=(name,),
+                    )[name]
+                else:
+                    packed = expert.forward_sequence_packed(signal, signal_length, fused_qkv=True)
+                max_seqlen = torch.tensor(packed.max_seqlen, dtype=torch.int64)
+                return packed.data, packed.lengths, packed.cu_seqlens, max_seqlen
+
+            if use_checkpoint and branch_requires_grad:
+
+                def context_fn(expert=expert):
+                    return contextlib.nullcontext(), _suppress_moe_stat_accumulation(expert)
+
+                data, output_lengths, cu_seqlens, max_seqlen = checkpoint(
+                    run, audio_signal, length, use_reentrant=False, context_fn=context_fn
+                )
+            else:
+                with torch.set_grad_enabled(torch.is_grad_enabled() and branch_requires_grad):
+                    data, output_lengths, cu_seqlens, max_seqlen = run(audio_signal, length)
+
+            outputs[name] = _new_packed_encoder_activations(
+                data, output_lengths, cu_seqlens, int(max_seqlen)
+            )
+
+        return outputs
+
     def _forward(self, audio_signal, length, spk_targets=None):
         """Offline (non-chunked) forward pass. See :meth:`forward` for argument semantics.
 
@@ -1846,7 +1895,16 @@ class ParallelExpertEncoder(nn.Module):
                     raise RuntimeError("The serial THD reference does not support PEE boundary checkpointing.")
                 packed = self.pee.forward_all_sequence_packed(signal, signal_length, fused_qkv=True)
             elif self.training:
-                packed = self._forward_all_sequence_packed_training(signal, signal_length)
+                execution_mode = getattr(self, 'sequence_packed_execution_mode', 'grouped')
+                if execution_mode == 'serial_checkpointed':
+                    packed = self._forward_all_sequence_packed_serial_training(signal, signal_length)
+                elif execution_mode == 'grouped':
+                    packed = self._forward_all_sequence_packed_training(signal, signal_length)
+                else:
+                    raise ValueError(
+                        f"Unknown sequence_packed_execution_mode={execution_mode!r}; "
+                        "expected 'grouped' or 'serial_checkpointed'."
+                    )
             else:
                 packed = self.pee.forward_grouped_sequence_packed(
                     signal,

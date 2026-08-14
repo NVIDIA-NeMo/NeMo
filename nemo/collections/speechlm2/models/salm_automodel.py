@@ -71,6 +71,22 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self._use_fsdp = False
         self._use_tp = False
         self._garbage_collection = GarbageCollectionManager(self.cfg.get("gc_every_steps", None))
+        self._fused_linear_cross_entropy = None
+        cross_entropy_backend = str(self.cfg.get("cross_entropy_backend", "eager"))
+        if cross_entropy_backend not in ("eager", "fused_linear"):
+            raise ValueError(
+                "model.cross_entropy_backend must be 'eager' or 'fused_linear', "
+                f"got {cross_entropy_backend!r}."
+            )
+        if cross_entropy_backend == "fused_linear":
+            if self.lss_loss is not None:
+                raise ValueError(
+                    "model.cross_entropy_backend='fused_linear' is incompatible with model.lss_loss because "
+                    "the training path deliberately does not materialize full logits."
+                )
+            from nemo_automodel.components.loss.linear_ce import FusedLinearCrossEntropy
+
+            self._fused_linear_cross_entropy = FusedLinearCrossEntropy(ignore_index=-100, reduction="sum")
 
         if self.cfg.get("init_configure_model", False):
             self.configure_model()
@@ -181,6 +197,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             seq_len = input_embeds.shape[0] if input_embeds.ndim == 2 else input_embeds.shape[1]
             llm_input_ids = torch.zeros((1, seq_len), device=input_embeds.device, dtype=torch.long)
 
+        use_fused_linear_ce = self.training and self._fused_linear_cross_entropy is not None and cache is None
+        if use_fused_linear_ce:
+            llm_kwargs["output_hidden_states"] = True
+            llm_kwargs["compute_logits"] = False
+
         out = self.llm(
             input_ids=llm_input_ids,
             inputs_embeds=input_embeds,
@@ -195,6 +216,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             ans = {"logits": out}
         else:
             ans = {"logits": out['logits']}  # (B, T, text_vocab_size)
+            if use_fused_linear_ce:
+                hidden_states = out.get("hidden_states", None)
+                if hidden_states is None:
+                    raise RuntimeError("Fused linear CE requires the LLM to return final hidden states.")
+                if isinstance(hidden_states, (list, tuple)):
+                    hidden_states = hidden_states[-1]
+                ans["hidden_states"] = hidden_states
             if cache is not None:
                 ans["cache"] = out["past_key_values"]
         return ans
@@ -424,6 +452,34 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         batch, batch_idx = read_batch(dataloader_iter, self)
         return self._training_step_batch(batch, batch_idx)
 
+    def _compute_training_cross_entropy_sum(
+        self, forward_outputs: dict[str, Tensor], target_ids: Tensor, dp_group
+    ) -> tuple[Tensor, Tensor | None]:
+        """Return local summed CE and optional full logits used by auxiliary losses."""
+        if self._fused_linear_cross_entropy is not None:
+            hidden_states = forward_outputs.get("hidden_states", None)
+            if hidden_states is None:
+                raise RuntimeError("Fused linear CE requires final hidden states from forward().")
+            lm_head = self.llm.get_output_embeddings() if hasattr(self.llm, "get_output_embeddings") else None
+            if lm_head is None:
+                lm_head = self.llm.lm_head
+            loss_sum = self._fused_linear_cross_entropy(
+                hidden_states,
+                target_ids,
+                lm_head.weight,
+                grad_reduce_group=dp_group,
+            )
+            return loss_sum, None
+
+        logits = forward_outputs["logits"]
+        loss_sum = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            target_ids.reshape(-1),
+            reduction="sum",
+            ignore_index=-100,
+        )
+        return loss_sum, logits
+
     def _training_step_batch(self, batch: dict | None, batch_idx: int):
         self._current_batch_idx = batch_idx
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
@@ -458,12 +514,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         num_frames_global = num_frames_global.clamp(min=1)
 
         with loss_parallel():
-            logits = forward_outputs["logits"]
-            loss_sum = torch.nn.functional.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),  # BSHD (B,T,V) or THD (1,T,V) -> (*, V)
-                inputs["target_ids"].reshape(-1),  # BSHD (B,T) or THD (T,) -> (*,)
-                reduction="sum",
-                ignore_index=-100,
+            loss_sum, logits = self._compute_training_cross_entropy_sum(
+                forward_outputs, inputs["target_ids"], dp_group
             )
             loss = loss_sum * dp_size / num_frames_global
         if (dummy_audio_loss := inputs.get("dummy_audio_loss")) is not None:

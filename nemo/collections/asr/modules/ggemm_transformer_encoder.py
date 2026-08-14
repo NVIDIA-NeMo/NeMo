@@ -606,8 +606,9 @@ class GGEMMTransformerEncoder(nn.Module):
         backend: str = 'baddbmm',
         moe_mode: str = 'dense',
         fused_qkv: bool = False,
+        expert_names: Sequence[str] | None = None,
     ) -> Dict[str, PackedEncoderActivations]:
-        """Run all experts in layer lockstep using native THD grouped kernels.
+        """Run all or selected experts in layer lockstep using native THD grouped kernels.
 
         Compatible experts share QKV/output projection GEMMs, concatenate their
         token-flat attention heads into one variable-length attention call, and
@@ -621,6 +622,7 @@ class GGEMMTransformerEncoder(nn.Module):
             backend=backend,
             moe_mode=moe_mode,
             fused_qkv=fused_qkv,
+            expert_names=expert_names,
         )
 
     # -----------------------------------------------------------------------
@@ -1189,7 +1191,7 @@ class GGEMMTransformerEncoder(nn.Module):
         if moe_mode not in ('dense', 'topk', 'native'):
             raise ValueError(f"moe_mode must be 'dense', 'topk', or 'native', got {moe_mode!r}.")
         plans = []
-        for n in self.expert_names:
+        for n in encs:
             layer = encs[n].layers[layer_idx]
             ffn = layer.ffn
             if isinstance(ffn, MoEFeedForward) and state[n]['x'].shape[0] == 0:
@@ -1475,7 +1477,14 @@ class GGEMMTransformerEncoder(nn.Module):
             disp_out = out[s_expert, within]  # (M, d) -- one row per (token, expert) pair
             moe._last_grouped_backend = 'capacity_baddbmm' if backend == 'grouped_mm' else backend
         acc = torch.zeros(N, d, dtype=torch.float32, device=x.device)
-        acc.index_add_(0, s_token, disp_out.float() * s_weight.float().unsqueeze(-1))
+        # Keep the router-weighted combine in fp32, but bound its transient.
+        # Materializing all M routed rows at once can exceed 0.5 GiB for a
+        # single 15-second-window pack even when persistent activations fit.
+        combine_chunk_rows = 16_384
+        for start in range(0, M, combine_chunk_rows):
+            end = min(start + combine_chunk_rows, M)
+            weighted = disp_out[start:end].float() * s_weight[start:end].float().unsqueeze(-1)
+            acc.index_add_(0, s_token[start:end], weighted)
         o = acc.to(x.dtype).reshape(input_shape)
         state[n]['x'] = x + layer.drop(o)
 
@@ -1488,10 +1497,19 @@ class GGEMMTransformerEncoder(nn.Module):
         backend: str,
         moe_mode: str,
         fused_qkv: bool,
+        expert_names: Sequence[str] | None = None,
     ) -> Dict[str, PackedEncoderActivations]:
         if backend not in GROUPED_GEMM_BACKENDS:
             raise ValueError(f"Unknown grouped-GEMM backend '{backend}'; expected one of {GROUPED_GEMM_BACKENDS}.")
-        encs = {name: self.experts[name] for name in self.expert_names}
+        names = tuple(self.expert_names if expert_names is None else expert_names)
+        if not names:
+            raise ValueError("expert_names must contain at least one expert.")
+        if len(names) != len(set(names)):
+            raise ValueError(f"expert_names must be unique, got {names!r}.")
+        unknown = [name for name in names if name not in self.experts]
+        if unknown:
+            raise KeyError(f"Unknown experts {unknown!r}; available experts: {self.expert_names}.")
+        encs = {name: self.experts[name] for name in names}
         for name, expert in encs.items():
             if not hasattr(expert, 'layers') or not hasattr(expert, 'n_layers'):
                 raise TypeError(f"Expert '{name}' is not a TransformerEncoder-family module with per-layer access.")
@@ -1608,7 +1626,7 @@ class GGEMMTransformerEncoder(nn.Module):
     def _sequence_packed_grouped_attention_step(self, encs, state, layer_idx, fused_qkv, trace):
         projected = {}
         projection_buckets = {}
-        for name in self.expert_names:
+        for name in encs:
             layer = encs[name].layers[layer_idx]
             attn = layer.attn
             hidden = layer.norm1(state[name]['x'])
@@ -1664,7 +1682,7 @@ class GGEMMTransformerEncoder(nn.Module):
             trace['qkv_grouped_projection_calls'] += grouped_calls
 
         attention_buckets = {}
-        for name in self.expert_names:
+        for name in encs:
             expert = encs[name]
             attn = expert.layers[layer_idx].attn
             q, _k, _v = projected[name]
@@ -1715,7 +1733,7 @@ class GGEMMTransformerEncoder(nn.Module):
             trace['attention_grouped_experts'] += len(names)
 
         output_buckets = {}
-        for name in self.expert_names:
+        for name in encs:
             attn = encs[name].layers[layer_idx].attn
             flat = attention_outputs[name].reshape(state[name]['x'].shape[0], attn.d_model)
             key = (flat.shape[0], attn.d_model, flat.dtype, flat.device)

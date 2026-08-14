@@ -280,6 +280,27 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         map_location="cpu",
         strict=True,
     )
+    if (execution_mode := model.cfg.get("pe_sequence_packed_execution_mode", None)) is not None:
+        if execution_mode not in ("grouped", "serial_checkpointed"):
+            raise ValueError(
+                "model.pe_sequence_packed_execution_mode must be grouped or serial_checkpointed, "
+                f"got {execution_mode!r}."
+            )
+        pe_encoder.sequence_packed_execution_mode = execution_mode
+        logging.info("Overrode ParallelExpertEncoder sequence_packed_execution_mode=%s", execution_mode)
+
+    if (serial_speech_grouped := model.cfg.get("pe_sequence_packed_serial_speech_grouped_moe", None)) is not None:
+        if not isinstance(serial_speech_grouped, bool):
+            raise ValueError(
+                "model.pe_sequence_packed_serial_speech_grouped_moe must be a boolean, "
+                f"got {serial_speech_grouped!r}."
+            )
+        pe_encoder.sequence_packed_serial_speech_grouped_moe = serial_speech_grouped
+        logging.info(
+            "Overrode ParallelExpertEncoder sequence_packed_serial_speech_grouped_moe=%s",
+            serial_speech_grouped,
+        )
+
     if (spk_kernel_scale := model.cfg.get("spk_kernel_scale", None)) is not None:
         pe_encoder.spk_kernel_scale = float(spk_kernel_scale)
 

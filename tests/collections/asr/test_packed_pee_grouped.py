@@ -254,6 +254,48 @@ def test_grouped_sequence_packed_matches_serial_gradients_and_moe_routing():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('group_speech_moe', [False, True])
+def test_serial_checkpointed_training_matches_serial_reference_gradients(group_speech_moe):
+    torch.manual_seed(0)
+    reference_encoder = build_toy_pe_encoder(freeze_sound=True).train()
+    checkpointed_encoder = build_toy_pe_encoder(freeze_sound=True).train()
+    checkpointed_encoder.load_state_dict(reference_encoder.state_dict())
+    checkpointed_encoder.set_activation_checkpointing(True)
+    checkpointed_encoder.sequence_packed_execution_mode = 'serial_checkpointed'
+    checkpointed_encoder.sequence_packed_serial_speech_grouped_moe = group_speech_moe
+    mels = torch.randn(2, _MEL_FEATURES, 32)
+    signal_lengths = torch.tensor([32, 17])
+    packed_mels = pack_encoder_output(mels.transpose(1, 2), signal_lengths)
+    signal, signal_lengths = reference_encoder._prepare_input(packed_mels, signal_lengths)
+    checkpointed_signal, _ = checkpointed_encoder._prepare_input(packed_mels, signal_lengths)
+
+    reference = reference_encoder.pee.forward_all_sequence_packed(signal, signal_lengths, fused_qkv=True)
+    reference_loss = _expert_loss(reference, reference_encoder.pee.experts['speech'])
+    reference_loss.backward()
+    checkpointed = checkpointed_encoder._forward_all_sequence_packed_serial_training(checkpointed_signal, signal_lengths)
+    checkpointed_loss = _expert_loss(checkpointed, checkpointed_encoder.pee.experts['speech'])
+    checkpointed_loss.backward()
+    if group_speech_moe:
+        backend = checkpointed_encoder.pee.experts['speech'].layers[0].ffn._last_grouped_backend
+        assert backend in ('grouped_mm', 'capacity_baddbmm')
+
+    for name in reference:
+        torch.testing.assert_close(checkpointed[name].data, reference[name].data, rtol=1e-5, atol=1e-6)
+        assert torch.equal(checkpointed[name].lengths, reference[name].lengths)
+        assert torch.equal(checkpointed[name].cu_seqlens, reference[name].cu_seqlens)
+    for (name, reference_parameter), (_, checkpointed_parameter) in zip(
+        reference_encoder.pee.named_parameters(),
+        checkpointed_encoder.pee.named_parameters(),
+    ):
+        if not reference_parameter.requires_grad:
+            assert reference_parameter.grad is None and checkpointed_parameter.grad is None
+            continue
+        assert reference_parameter.grad is not None, name
+        assert checkpointed_parameter.grad is not None, name
+        torch.testing.assert_close(checkpointed_parameter.grad, reference_parameter.grad, rtol=3e-4, atol=3e-5)
+
+
+@pytest.mark.unit
 def test_grouped_sequence_packed_respects_frozen_expert_dropout_mode():
     def with_dropout(factory):
         config = factory()

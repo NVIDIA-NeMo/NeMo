@@ -206,6 +206,68 @@ def test_salm_automodel_training_step_uses_dataloader_iter_signature():
     assert list(inspect.signature(SALMAutomodel.training_step).parameters) == ["self", "dataloader_iter"]
 
 
+def test_salm_automodel_fused_linear_forward_keeps_hidden_states_without_logits():
+    class FakeLLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.kwargs = None
+
+        def forward(self, **kwargs):
+            self.kwargs = kwargs
+            hidden = kwargs["inputs_embeds"] + 3
+            logits = hidden[..., :0] if kwargs.get("compute_logits") is False else hidden[..., :1]
+            return {"logits": logits, "hidden_states": (hidden,)}
+
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    torch.nn.Module.__init__(model)
+    model.cfg = {}
+    model._fused_linear_cross_entropy = object()
+    model.llm = FakeLLM()
+    model.train()
+    inputs = torch.randn(1, 5, 4)
+
+    outputs = model.forward(inputs)
+
+    assert model.llm.kwargs["compute_logits"] is False
+    assert model.llm.kwargs["output_hidden_states"] is True
+    assert "compute_mtp" not in model.llm.kwargs
+    torch.testing.assert_close(outputs["hidden_states"], inputs + 3)
+    assert outputs["logits"].shape == (1, 5, 0)
+
+
+def test_salm_automodel_fused_linear_loss_consumes_hidden_states_and_lm_weight():
+    calls = []
+
+    class FakeFusedLoss:
+        def __call__(self, hidden_states, target_ids, weight, grad_reduce_group):
+            calls.append((hidden_states, target_ids, weight, grad_reduce_group))
+            return hidden_states.new_tensor(7.0)
+
+    class FakeLLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lm_head = torch.nn.Linear(3, 5, bias=False)
+
+        def get_output_embeddings(self):
+            return self.lm_head
+
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    torch.nn.Module.__init__(model)
+    model.llm = FakeLLM()
+    model._fused_linear_cross_entropy = FakeFusedLoss()
+    hidden = torch.randn(1, 4, 3)
+    targets = torch.tensor([[0, 1, -100, 2]])
+    group = object()
+
+    loss_sum, logits = model._compute_training_cross_entropy_sum(
+        {"hidden_states": hidden, "logits": torch.empty(0)}, targets, group
+    )
+
+    assert loss_sum.item() == 7.0
+    assert logits is None
+    assert calls == [(hidden, targets, model.llm.lm_head.weight, group)]
+
+
 def test_salm_automodel_notifies_garbage_collection_after_optimizer_step(monkeypatch):
     calls = []
 

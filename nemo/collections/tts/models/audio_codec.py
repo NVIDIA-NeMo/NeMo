@@ -73,6 +73,7 @@ class HybridCodecOutput:
     residual_logvar: torch.Tensor
     residual_enabled: torch.Tensor
     kl_loss: torch.Tensor
+    mean_loss: torch.Tensor
 
 
 class AudioCodecModel(ModelPT):
@@ -284,6 +285,7 @@ class AudioCodecModel(ModelPT):
         hybrid_cfg = cfg.hybrid_codec
         self.residual_dropout_rate = hybrid_cfg.get("residual_dropout_rate", 0.5)
         self.kl_loss_scale = hybrid_cfg.get("kl_loss_scale", 1.0)
+        self.mean_loss_scale = hybrid_cfg.get("mean_loss_scale", 0.0)
         self.vae_std = hybrid_cfg.get("vae_std")
         initial_logvar = hybrid_cfg.get("initial_logvar", -6.0)
 
@@ -291,6 +293,10 @@ class AudioCodecModel(ModelPT):
             raise ValueError(f"Residual dropout rate must be in [0, 1], got {self.residual_dropout_rate}.")
         if self.vae_std is not None and self.vae_std <= 0.0:
             raise ValueError(f"VAE standard deviation must be positive, got {self.vae_std}.")
+        if self.mean_loss_scale < 0.0:
+            raise ValueError(f"Mean loss scale must be non-negative, got {self.mean_loss_scale}.")
+        if self.vae_std is None and self.mean_loss_scale:
+            raise ValueError("`mean_loss_scale` is only supported when fixed `vae_std` is configured.")
 
         self.semantic_dim = self.semantic_codec.vector_quantizer.codebook_dim
         self.encoder_dim = self._module_config_value(cfg.audio_encoder, "out_dim")
@@ -326,12 +332,13 @@ class AudioCodecModel(ModelPT):
 
         logging.info(
             "Hybrid codec enabled: semantic_dim=%d, continuous_dim=%d, decoder_dim=%d, residual_dropout=%.3f, "
-            "vae_std=%s",
+            "vae_std=%s, mean_loss_scale=%g",
             self.semantic_dim,
             self.continuous_dim,
             self.decoder_dim,
             self.residual_dropout_rate,
             self.vae_std,
+            self.mean_loss_scale,
         )
 
     @property
@@ -405,6 +412,15 @@ class AudioCodecModel(ModelPT):
         denominator = (valid.sum() * residual_mu.shape[1]).clamp_min(1.0)
         return (kl * valid).sum() / denominator
 
+    @staticmethod
+    def _masked_mean_square(residual_mu: torch.Tensor, encoded_len: torch.Tensor) -> torch.Tensor:
+        """Mean squared residual mean over valid latent elements."""
+        frame_index = torch.arange(residual_mu.shape[-1], device=residual_mu.device)
+        valid = frame_index.unsqueeze(0) < encoded_len.unsqueeze(1)
+        valid = valid.unsqueeze(1).to(residual_mu.dtype)
+        denominator = (valid.sum() * residual_mu.shape[1]).clamp_min(1.0)
+        return (residual_mu.square() * valid).sum() / denominator
+
     def _encode_hybrid(
         self, audio: torch.Tensor, audio_len: torch.Tensor, sample_rate: Optional[int] = None
     ) -> HybridCodecOutput:
@@ -441,6 +457,7 @@ class AudioCodecModel(ModelPT):
         semantic_embedding = self.semantic_to_decoder(semantic_codes)
 
         residual_mu = self.residual_mu(encoded)
+        mean_loss = residual_mu.new_zeros(())
         if self.vae_std is None:
             residual_logvar = self.residual_logvar(encoded).clamp(min=-30.0, max=20.0)
             kl_loss = self._masked_standard_normal_kl(
@@ -449,6 +466,8 @@ class AudioCodecModel(ModelPT):
         else:
             residual_logvar = torch.full_like(residual_mu, 2.0 * math.log(self.vae_std))
             kl_loss = residual_mu.new_zeros(())
+            if self.mean_loss_scale:
+                mean_loss = self._masked_mean_square(residual_mu=residual_mu, encoded_len=encoded_len)
 
         if self.training:
             if self.vae_std is None:
@@ -476,6 +495,7 @@ class AudioCodecModel(ModelPT):
             residual_logvar=residual_logvar,
             residual_enabled=residual_enabled,
             kl_loss=kl_loss,
+            mean_loss=mean_loss,
         )
 
     @typecheck(
@@ -796,6 +816,7 @@ class AudioCodecModel(ModelPT):
             encoded_len = hybrid.encoded_len
             commit_loss = 0.0
             kl_loss = hybrid.kl_loss
+            mean_loss = hybrid.mean_loss
             residual_enabled = hybrid.residual_enabled
         else:
             # [B, D, T_encoded]
@@ -818,6 +839,7 @@ class AudioCodecModel(ModelPT):
             else:
                 commit_loss = 0.0
             kl_loss = audio.new_zeros(())
+            mean_loss = audio.new_zeros(())
             residual_enabled = torch.ones(audio.shape[0], device=audio.device, dtype=torch.bool)
 
         # [B, T]
@@ -830,7 +852,18 @@ class AudioCodecModel(ModelPT):
             slm_emb = None
             slm_emb_pred = None
 
-        return (audio, audio_len, audio_gen, commit_loss, encoded, slm_emb, slm_emb_pred, kl_loss, residual_enabled)
+        return (
+            audio,
+            audio_len,
+            audio_gen,
+            commit_loss,
+            encoded,
+            slm_emb,
+            slm_emb_pred,
+            kl_loss,
+            mean_loss,
+            residual_enabled,
+        )
 
     @property
     def disc_update_prob(self) -> float:
@@ -896,6 +929,7 @@ class AudioCodecModel(ModelPT):
             slm_emb,
             slm_emb_pred,
             kl_loss,
+            mean_loss,
             residual_enabled,
         ) = self._process_batch(batch)
 
@@ -969,6 +1003,9 @@ class AudioCodecModel(ModelPT):
             metrics["g_loss_kl"] = kl_loss
             metrics["residual_enabled_rate"] = residual_enabled.float().mean()
             generator_losses.append(self.kl_loss_scale * kl_loss)
+            if self.mean_loss_scale:
+                metrics["g_loss_mean"] = mean_loss
+                generator_losses.append(self.mean_loss_scale * mean_loss)
 
         if self.mmd_loss_scale:
             loss_mmd = self.mmd_loss_fn(inputs=codes)

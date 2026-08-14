@@ -54,6 +54,7 @@ from typing import Any, Optional
 
 import torch
 import torch.nn.functional as F
+from lightning.fabric.plugins.precision.utils import _DtypeContextManager
 from lightning.pytorch.utilities.model_summary import ModelSummary
 from omegaconf import DictConfig, OmegaConf
 from torch import Tensor
@@ -397,6 +398,30 @@ class StreamingSTTModelAutomodel(StreamingSTTModel):
         Called by Lightning after ``setup_environment()``, so ``device_mesh`` is
         available and Automodel can shard the LLM while loading its weights.
         Safe to call twice — the second call is a no-op.
+
+        TODO(rebase onto newer NeMo): this signature mirrors the SALMAutomodel of
+        the vendored NeMo. Upstream (NVIDIA/NeMo main) has since collapsed the
+        four parallelism arguments into one object::
+
+            def configure_model(self, distributed_setup=None, activation_checkpointing_perception=None):
+                device_mesh     = distributed_setup.mesh_context.device_mesh
+                self._moe_mesh  = distributed_setup.mesh_context.moe_mesh
+                automodel_kwargs["distributed_setup"] = distributed_setup
+
+        Do NOT port that early: today's ``AutomodelParallelStrategy`` exposes
+        ``distributed_config`` / ``moe_config`` / ``moe_mesh`` /
+        ``activation_checkpointing_llm`` and has no ``distributed_setup``, and the
+        pinned ``nemo_automodel``'s ``from_pretrained`` takes ``device_mesh`` /
+        ``moe_mesh`` / ``tp_plan`` but not ``distributed_setup`` — so the new-style
+        hook would silently take the no-mesh branch and train unsharded, without
+        gradient synchronization. Migrate all of it together (strategy +
+        nemo_automodel + SALMAutomodel + this class), and at that point also:
+
+        * move :meth:`training_step` to upstream's ``training_step(dataloader_iter)``
+          / ``_training_step_batch`` split — it is where ``_forward_default_dtype``
+          is captured for :meth:`backward`;
+        * fold upstream's ``NotImplementedError`` for ``pp_size > 1`` into
+          :meth:`_validate_parallelism_compatibility`, which already rejects TP/CP.
         """
         resolved_mesh = device_mesh if device_mesh is not None else self.device_mesh
         if self.llm is not None:
@@ -681,13 +706,43 @@ class StreamingSTTModelAutomodel(StreamingSTTModel):
     def training_step(self, batch, batch_idx: int):
         # Recorded for _setup_moe_fsdp_sync(), which runs during backward().
         self._current_batch_idx = batch_idx
+        # Lightning runs training_step inside precision_plugin.train_step_context()
+        # -> forward_context(), so this is the default dtype the forward saw. See
+        # backward() for why it has to be replayed there.
+        self._forward_default_dtype = torch.get_default_dtype()
         ans = super().training_step(batch, batch_idx)
         self.maybe_log_moe_metrics(batch_idx)
         return ans
 
     def backward(self, *args, **kwargs):
+        """Backward under the forward's default dtype, so AC recompute matches.
+
+        ``precision: bf16-true`` resolves to Lightning's ``HalfPrecision``, whose
+        ``forward_context()`` sets the *global default dtype* to bf16 — but only
+        around the forward. Backward, and therefore any activation-checkpointing
+        recompute, runs outside it at the fp32 default. Anything the LLM creates
+        without an explicit dtype (notably the empty per-expert buffers a MoE layer
+        builds when an expert receives zero tokens) is then bf16 when saved and
+        fp32 when recomputed, and torch raises::
+
+            CheckpointError: Recomputed values for the following tensors have
+            different metadata than during the forward pass.
+            saved: {'shape': [0, 1], 'dtype': torch.bfloat16}
+            recomputed: {'shape': [0, 1], 'dtype': torch.float32}
+
+        Replaying the captured default dtype makes recompute see exactly what the
+        forward saw. Mirroring the recorded value (rather than forcing
+        ``_resolve_dtype()``) keeps this correct for precision plugins that do NOT
+        touch the default dtype, e.g. ``bf16-flash``/``FlashPrecision`` — there the
+        captured value is already fp32 and this is a no-op.
+        """
         self._setup_moe_fsdp_sync()
-        super().backward(*args, **kwargs)
+        dtype = getattr(self, "_forward_default_dtype", None)
+        ctx = (
+            _DtypeContextManager(dtype) if dtype is not None and dtype != torch.get_default_dtype() else nullcontext()
+        )
+        with ctx:
+            super().backward(*args, **kwargs)
 
     def _setup_moe_fsdp_sync(self):
         """Configure MoE FSDP gradient sync for gradient accumulation.

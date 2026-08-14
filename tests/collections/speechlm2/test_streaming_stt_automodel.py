@@ -30,6 +30,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.speechlm2.data.streaming_stt_dataset import AUDIO_TOKEN_IDX, IGNORE_INDEX, StreamingSTTBatch
 from nemo.collections.speechlm2.models import StreamingSTTModelAutomodel
+from nemo.collections.speechlm2.models.streaming_stt_model import StreamingSTTModel
 
 BLANK_TOKEN = "<blank>"
 CHUNK_SIZE = 2
@@ -508,3 +509,64 @@ def test_hyperparameters_are_serializable(model):
     """PTL checkpoints store cfg as a plain dict."""
     assert isinstance(model.hparams["cfg"], dict)
     OmegaConf.create(model.hparams["cfg"])
+
+
+# ===========================================================================
+# Activation-checkpointing recompute under bf16-true
+# ===========================================================================
+
+
+def test_backward_replays_the_forward_default_dtype(model):
+    """`precision: bf16-true` (Lightning HalfPrecision) sets the *global* default
+    dtype around the forward only. Anything the LLM creates without an explicit
+    dtype inside an activation-checkpointed block — e.g. the empty per-expert
+    buffers a MoE layer builds when an expert receives zero tokens — is then bf16
+    when saved and fp32 when recomputed, and torch raises CheckpointError.
+    backward() must therefore run under the dtype the forward captured."""
+    from lightning.fabric.plugins.precision.utils import _DtypeContextManager
+
+    seen = {}
+
+    class _Recorder(StreamingSTTModelAutomodel):
+        def _setup_moe_fsdp_sync(self):
+            pass
+
+    model.__class__ = _Recorder
+    # what Lightning's train_step_context() would have left behind
+    with _DtypeContextManager(torch.bfloat16):
+        model._forward_default_dtype = torch.get_default_dtype()
+    assert model._forward_default_dtype == torch.bfloat16
+
+    loss = (torch.ones(1, requires_grad=True) * 2).sum()
+    original = StreamingSTTModel.backward
+
+    def _capture(self, *args, **kwargs):
+        seen["dtype"] = torch.get_default_dtype()
+
+    StreamingSTTModel.backward = _capture
+    try:
+        assert torch.get_default_dtype() == torch.float32  # outside the forward ctx
+        model.backward(loss)
+    finally:
+        StreamingSTTModel.backward = original
+
+    assert seen["dtype"] == torch.bfloat16, "recompute would run at a different default dtype than the forward"
+    assert torch.get_default_dtype() == torch.float32, "default dtype must be restored"
+
+
+def test_backward_is_a_noop_when_forward_did_not_change_dtype(model):
+    """With precision plugins that leave the default dtype alone (bf16-flash /
+    FlashPrecision, fp32), nothing should be forced."""
+    seen = {}
+    model._forward_default_dtype = torch.float32
+    original = StreamingSTTModel.backward
+
+    def _capture(self, *args, **kwargs):
+        seen["dtype"] = torch.get_default_dtype()
+
+    StreamingSTTModel.backward = _capture
+    try:
+        model.backward((torch.ones(1, requires_grad=True) * 2).sum())
+    finally:
+        StreamingSTTModel.backward = original
+    assert seen["dtype"] == torch.float32

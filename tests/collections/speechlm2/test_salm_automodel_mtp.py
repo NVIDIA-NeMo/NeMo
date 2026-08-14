@@ -456,6 +456,52 @@ def test_validation_step_preserves_mtp_counter_precision_with_bf16_logits(monkey
     assert valid.item() == 10_003
 
 
+def test_validation_step_warns_when_cp_disables_mtp_teacher_forced_metrics(monkeypatch):
+    """CP-precomputed MTP targets disable agreement metrics with a visible warning."""
+    model = _bare_model()
+    model.llm = torch.nn.Module()
+    model.llm.mtp = torch.nn.Identity()
+    model.llm.compute_mtp_in_eval = False
+    model.lss_loss = None
+    SALMAutomodel.on_validation_epoch_start(model)
+
+    inputs = {
+        "input_embeds": torch.zeros(2, 4),
+        "attention_mask": None,
+        "target_ids": torch.tensor([0, 1]),
+        "mtp_per_depth_targets": (torch.tensor([1, -100]),),
+        "llm_kwargs": {},
+    }
+    model.prepare_inputs = lambda _batch: inputs
+    model.forward = lambda *_args, **_kwargs: {
+        "logits": torch.zeros(2, 4),
+        "mtp_per_depth_h": [torch.zeros(2, 4)],
+    }
+    monkeypatch.setattr(
+        salm_module,
+        "calculate_mtp_teacher_forced_agreement",
+        lambda **_kwargs: pytest.fail("CP validation must not calculate rank-local agreement metrics"),
+    )
+    warnings = []
+    monkeypatch.setattr(
+        salm_module.logging,
+        "warning",
+        lambda message, **kwargs: warnings.append((message, kwargs)),
+    )
+
+    SALMAutomodel.validation_step(model, {"ds": {}}, batch_idx=0)
+
+    assert warnings == [
+        (
+            "MTP teacher-forced agreement metrics are disabled under context parallelism because "
+            "rank-local verifier predictions cannot be shifted across CP boundaries.",
+            {"mode": salm_module.logging_mode.ONCE},
+        )
+    ]
+    assert not model._partial_val_mtp_correct["ds"]
+    assert not model._partial_val_mtp_valid["ds"]
+
+
 def test_calculate_mtp_teacher_forced_agreement_with_heads_counts(monkeypatch):
     '''Agreement compares drafts with teacher-forced verifier predictions and requires a matched prefix.'''
     pytest.importorskip('nemo_automodel.components.models.common.mtp', reason='needs Automodel roll_tensor')

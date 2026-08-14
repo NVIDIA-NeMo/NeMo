@@ -35,78 +35,6 @@ from torch import Tensor
 from nemo.collections.speechlm2.parts.input_utils import _unpad_inputs
 
 
-@dataclass(frozen=True)
-class _PackedMTPInputs:
-    """MTP tensors prepared in global packed order and optionally CP-sharded.
-
-    Every tuple contains one tensor per MTP depth. ``embed_inputs`` tensors
-    have shape [tokens, hidden]; ``position_ids`` and ``targets`` tensors have
-    shape [tokens]. Invalid future positions at packed-sequence boundaries are
-    zero-filled for model inputs and use ``ignore_index`` for targets.
-    """
-
-    embed_inputs: tuple[Tensor, ...]
-    position_ids: tuple[Tensor, ...]
-    targets: tuple[Tensor, ...]
-
-
-def _shift_packed_tensor_for_mtp(tensor: Tensor, depth: int, seq_idx: Tensor) -> Tensor:
-    """Shift a packed tensor left without crossing document boundaries.
-
-    Args:
-        tensor: Global packed tensor of shape [tokens, ...].
-        depth: Number of future-token positions to shift.
-        seq_idx: Packed document IDs of shape [tokens].
-
-    Returns:
-        A tensor with the same shape and dtype as ``tensor``. Positions whose
-        future token is outside their current document are zero.
-    """
-    if depth < 1:
-        raise ValueError(f"MTP depth must be positive, got {depth}")
-    if tensor.shape[0] != seq_idx.shape[0]:
-        raise ValueError(
-            f"Packed tensor token count {tensor.shape[0]} does not match seq_idx token count {seq_idx.shape[0]}"
-        )
-
-    shifted = torch.roll(tensor, shifts=-depth, dims=0)
-    shifted_seq_idx = torch.roll(seq_idx, shifts=-depth, dims=0)
-    token_idx = torch.arange(seq_idx.numel(), device=seq_idx.device)
-    valid = (token_idx + depth < seq_idx.numel()) & (shifted_seq_idx == seq_idx)
-    while valid.ndim < shifted.ndim:
-        valid = valid.unsqueeze(-1)
-    return torch.where(valid, shifted, torch.zeros((), dtype=tensor.dtype, device=tensor.device))
-
-
-def _build_packed_mtp_inputs(packed: dict[str, Tensor], num_depths: int) -> _PackedMTPInputs:
-    """Prepare globally shifted, boundary-safe MTP tensors before CP sharding.
-
-    ``packed`` contains embeddings [tokens, hidden], position IDs [tokens],
-    labels [tokens], and global ``cu_seqlens``. The returned tensors retain
-    those layouts and global token order.
-    """
-    from nemo.collections.speechlm2.parts.mtp import iter_mtp_depth_targets, resolve_mtp_seq_idx
-
-    if num_depths < 1:
-        raise ValueError(f"num_depths must be positive, got {num_depths}")
-    seq_idx = resolve_mtp_seq_idx(packed["position_ids"], cu_seqlens=packed["cu_seqlens"])
-    if seq_idx is None:
-        raise RuntimeError("Could not derive packed sequence IDs from cu_seqlens")
-
-    depths = range(1, num_depths + 1)
-    return _PackedMTPInputs(
-        embed_inputs=tuple(_shift_packed_tensor_for_mtp(packed["inputs_embeds"], depth, seq_idx) for depth in depths),
-        position_ids=tuple(_shift_packed_tensor_for_mtp(packed["position_ids"], depth, seq_idx) for depth in depths),
-        targets=tuple(
-            iter_mtp_depth_targets(
-                packed["labels"],
-                num_depths,
-                cu_seqlens=packed["cu_seqlens"],
-            )
-        ),
-    )
-
-
 def pack_audio_into_text_embeds(
     input_ids: Tensor,
     embeds: Tensor,
@@ -426,3 +354,69 @@ def prepare_packed_llm_inputs(
         result["llm_kwargs"]["mtp_per_depth_position_ids"] = mtp_inputs.position_ids
         result["mtp_per_depth_targets"] = mtp_inputs.targets
     return result
+
+
+@dataclass(frozen=True)
+class _PackedMTPInputs:
+    """MTP tensors prepared in global packed order and optionally CP-sharded.
+
+    Every tuple contains one tensor per MTP depth. ``embed_inputs`` tensors
+    have shape [tokens, hidden]; ``position_ids`` and ``targets`` tensors have
+    shape [tokens]. Invalid future positions at packed-sequence boundaries are
+    zero-filled for model inputs and use ``ignore_index`` for targets.
+    """
+
+    embed_inputs: tuple[Tensor, ...]
+    position_ids: tuple[Tensor, ...]
+    targets: tuple[Tensor, ...]
+
+
+def _shift_packed_tensor_for_mtp(tensor: Tensor, depth: int, seq_idx: Tensor) -> Tensor:
+    """Shift a packed tensor left without crossing document boundaries.
+
+    Args:
+        tensor: Global packed tensor of shape [tokens, ...].
+        depth: Number of future-token positions to shift.
+        seq_idx: Packed document IDs of shape [tokens].
+
+    Returns:
+        A tensor with the same shape and dtype as ``tensor``. Positions whose
+        future token is outside their current document are zero.
+    """
+    if depth < 1:
+        raise ValueError(f"MTP depth must be positive, got {depth}")
+    if tensor.shape[0] != seq_idx.shape[0]:
+        raise ValueError(
+            f"Packed tensor token count {tensor.shape[0]} does not match seq_idx token count {seq_idx.shape[0]}"
+        )
+
+    shifted = torch.roll(tensor, shifts=-depth, dims=0)
+    shifted_seq_idx = torch.roll(seq_idx, shifts=-depth, dims=0)
+    token_idx = torch.arange(seq_idx.numel(), device=seq_idx.device)
+    valid = (token_idx + depth < seq_idx.numel()) & (shifted_seq_idx == seq_idx)
+    while valid.ndim < shifted.ndim:
+        valid = valid.unsqueeze(-1)
+    return torch.where(valid, shifted, torch.zeros((), dtype=tensor.dtype, device=tensor.device))
+
+
+def _build_packed_mtp_inputs(packed: dict[str, Tensor], num_depths: int) -> _PackedMTPInputs:
+    """Prepare globally shifted, boundary-safe MTP tensors before CP sharding.
+
+    ``packed`` contains embeddings [tokens, hidden], position IDs [tokens],
+    labels [tokens], and global ``cu_seqlens``. The returned tensors retain
+    those layouts and global token order.
+    """
+    from nemo.collections.speechlm2.parts.mtp import iter_mtp_depth_targets, resolve_mtp_seq_idx
+
+    if num_depths < 1:
+        raise ValueError(f"num_depths must be positive, got {num_depths}")
+    seq_idx = resolve_mtp_seq_idx(packed["position_ids"], cu_seqlens=packed["cu_seqlens"])
+    if seq_idx is None:
+        raise RuntimeError("Could not derive packed sequence IDs from cu_seqlens")
+
+    depths = range(1, num_depths + 1)
+    return _PackedMTPInputs(
+        embed_inputs=tuple(_shift_packed_tensor_for_mtp(packed["inputs_embeds"], depth, seq_idx) for depth in depths),
+        position_ids=tuple(_shift_packed_tensor_for_mtp(packed["position_ids"], depth, seq_idx) for depth in depths),
+        targets=tuple(iter_mtp_depth_targets(packed["labels"], num_depths, seq_idx=seq_idx)),
+    )

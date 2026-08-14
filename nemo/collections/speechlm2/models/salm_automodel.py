@@ -51,7 +51,7 @@ from nemo.collections.speechlm2.parts.pretrained import (
 )
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.core.utils.lightning_utils import read_batch
-from nemo.utils import logging
+from nemo.utils import logging, logging_mode
 
 
 class SALMAutomodel(LightningModule, HFHubMixin):
@@ -703,7 +703,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
             # Multi-Token Prediction teacher-forced prefix agreement for each depth.
             mtp_h = forward_outputs.get("mtp_per_depth_h", None)
-            if mtp_h is not None and "mtp_per_depth_targets" not in inputs:
+            if mtp_h is not None and "mtp_per_depth_targets" in inputs:
+                logging.warning(
+                    "MTP teacher-forced agreement metrics are disabled under context parallelism because "
+                    "rank-local verifier predictions cannot be shifted across CP boundaries.",
+                    mode=logging_mode.ONCE,
+                )
+            elif mtp_h is not None:
                 mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
                 correct_by_head, valid_by_head = calculate_mtp_teacher_forced_agreement(
                     mtp_per_depth_h=mtp_h,

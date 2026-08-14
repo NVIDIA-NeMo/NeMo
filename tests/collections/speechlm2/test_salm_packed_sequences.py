@@ -229,6 +229,29 @@ def test_mtp_inputs_are_shifted_before_te_context_parallel_partition(monkeypatch
     assert not torch.equal(local_results[0][2].targets[0], rank_zero_wrong_local_targets[0])
 
 
+def test_build_packed_mtp_inputs_reuses_resolved_seq_idx(monkeypatch):
+    """Target construction reuses the sequence IDs already resolved for input shifts."""
+    packed = {
+        "inputs_embeds": torch.arange(16, dtype=torch.float32).reshape(8, 2),
+        "labels": torch.arange(8),
+        "position_ids": torch.tensor([0, 1, 2, 3, 0, 1, 2, 3]),
+        "cu_seqlens": torch.tensor([0, 4, 8], dtype=torch.int32),
+    }
+    searchsorted = torch.searchsorted
+    calls = []
+
+    def _record_searchsorted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return searchsorted(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "searchsorted", _record_searchsorted)
+
+    mtp_inputs = _build_packed_mtp_inputs(packed, 2)
+
+    assert len(calls) == 1
+    assert len(mtp_inputs.targets) == 2
+
+
 def test_position_ids_reset_per_utt():
     input_ids, embeds, target_ids, replacements = _basic_batch()
     out = pack_audio_into_text_embeds(

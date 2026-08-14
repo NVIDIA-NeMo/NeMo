@@ -737,7 +737,12 @@ class StreamingSTTModelAutomodel(StreamingSTTModel):
         captured value is already fp32 and this is a no-op.
         """
         self._setup_moe_fsdp_sync()
+        # Escape hatch for bisecting this replay itself: model.replay_forward_dtype_in_backward=false
+        # restores stock behaviour (backward at the fp32 default). Only do that with
+        # activation_checkpointing_llm=false, or the CheckpointError comes back.
         dtype = getattr(self, "_forward_default_dtype", None)
+        if not self.cfg.get("replay_forward_dtype_in_backward", True):
+            dtype = None
         ctx = (
             _DtypeContextManager(dtype) if dtype is not None and dtype != torch.get_default_dtype() else nullcontext()
         )
@@ -796,20 +801,47 @@ class StreamingSTTModelAutomodel(StreamingSTTModel):
         self._log_grad_norm(norm)
 
     def _log_grad_norm(self, norm) -> None:
-        """Log the pre-clip gradient norm, and warn loudly when it is non-finite."""
+        """Log the pre-clip gradient norm, and localize it when it is non-finite."""
         if norm is None:
             return
         norm = norm.full_tensor() if isinstance(norm, DTensor) else norm
         norm = norm.detach().float()
         if not torch.isfinite(norm):
             logging.warning(
-                "Non-finite gradient norm (%s) at step %s — clipping will scale every parameter by it, "
-                "so the whole model (perception included) becomes NaN from the next forward on. "
-                "With attn=te, try NVTE_FUSED_ATTN=0 or automodel_backend.attn=sdpa.",
+                "Non-finite gradient norm (%s) at step %s — clipping scales EVERY parameter by it, so the "
+                "whole model (perception included) is NaN from the next forward on. First offenders:\n%s",
                 norm.item(),
                 getattr(self, "_current_batch_idx", "?"),
+                self._first_nonfinite_grads(),
             )
         self.log("grad_norm", norm, on_step=True, prog_bar=True)
+
+    def _first_nonfinite_grads(self, limit: int = 8) -> str:
+        """Names of the first parameters whose gradient is non-finite.
+
+        Which module they live in is the whole diagnosis: gradients inside
+        ``llm.*`` only means the LLM backward produced them, whereas
+        ``perception.*`` being hit too (before any clipping has run) points at the
+        loss or the interleaved embeddings instead. Only called on the non-finite
+        path, so the full parameter scan costs nothing in a healthy step. Uses the
+        local shard of a ``DTensor`` to avoid a collective inside a warning.
+        """
+        hits, scanned = [], 0
+        for name, p in self.named_parameters():
+            if p.grad is None:
+                continue
+            scanned += 1
+            g = p.grad
+            g = g.to_local() if isinstance(g, DTensor) else g
+            if g.numel() and not torch.isfinite(g).all():
+                finite = torch.isfinite(g)
+                hits.append(f"    {name}: {int((~finite).sum())}/{g.numel()} non-finite")
+                if len(hits) >= limit:
+                    hits.append(f"    ... (stopping after {limit})")
+                    break
+        if not hits:
+            return f"    (no non-finite parameter grads among {scanned} scanned — the norm itself overflowed)"
+        return "\n".join(hits)
 
     # ------------------------------------------------------------------
     # MoE helpers (no-ops for dense LLMs)

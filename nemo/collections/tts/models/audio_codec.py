@@ -97,6 +97,7 @@ class AudioCodecModel(ModelPT):
 
         if "vector_quantizer" in cfg:
             self.vector_quantizer = safe_instantiate(cfg.vector_quantizer)
+            self.codebook_dropout_rate = cfg.get("codebook_dropout_rate", 0.0)
 
             vq_output_types = list(self.vector_quantizer.output_types.keys())
 
@@ -106,10 +107,10 @@ class AudioCodecModel(ModelPT):
             else:
                 self.vector_quantizer_has_commit_loss = False
                 logging.info('Vector quantizer does not support commit loss.')
-
         else:
             logging.warning('Vector quantizer will not be used.')
             self.vector_quantizer = None
+            self.codebook_dropout_rate = 0.0
 
         # Decoder setup
         self.audio_decoder = safe_instantiate(cfg.audio_decoder)
@@ -428,6 +429,7 @@ class AudioCodecModel(ModelPT):
             "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
             "audio_len": NeuralType(tuple('B'), LengthsType()),
             "sample_rate": NeuralType(tuple(), IntType(), optional=True),
+            "num_codebooks": NeuralType(tuple(), IntType(), optional=True),
         },
         output_types={
             "tokens": NeuralType(('B', 'C', 'T_encoded'), TokenIndex()),
@@ -435,7 +437,11 @@ class AudioCodecModel(ModelPT):
         },
     )
     def encode(
-        self, audio: torch.Tensor, audio_len: torch.Tensor, sample_rate: Optional[int] = None
+        self,
+        audio: torch.Tensor,
+        audio_len: torch.Tensor,
+        sample_rate: Optional[int] = None,
+        num_codebooks: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Convert input time-domain audio signal into a discrete representation (tokens).
 
@@ -443,6 +449,8 @@ class AudioCodecModel(ModelPT):
             audio: input time-domain signal, shape `(batch, number of samples)`
             audio_len: valid length for each example in the batch, shape `(batch size,)`
             sample_rate: sample rate of input audio (int)
+            num_codebooks: number of codebooks to use for reconstructing audio.
+                Using fewer codebooks will only be accurate for codecs trained with codebook dropout.
 
         Returns:
             Tokens for each codebook for each frame, shape `(batch, number of codebooks, number of frames)`,
@@ -450,6 +458,12 @@ class AudioCodecModel(ModelPT):
         """
         # Apply encoder to obtain a continuous vector for each frame
         encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
+
+        if num_codebooks:
+            assert self.vector_quantizer is not None
+            num_codebooks_batch = num_codebooks * torch.ones([encoded.shape[0]])
+            encoded = self.vector_quantizer.dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks_batch)
+
         # Apply quantizer to obtain discrete representation per frame
         tokens = self.quantize(encoded=encoded, encoded_len=encoded_len)
         return tokens, encoded_len
@@ -550,6 +564,17 @@ class AudioCodecModel(ModelPT):
         audio, audio_len = self.pad_audio(audio=audio, audio_len=audio_len, samples_per_frame=self.samples_per_frame)
         return audio, audio_len
 
+    def _dropout_random_codebooks(self, encoded):
+        """Dropout a random number of codebooks for each batch element"""
+        batch_size = encoded.shape[0]
+        # [B]
+        apply_dropout = torch.rand(size=[batch_size], device=encoded.device) < self.codebook_dropout_rate
+        # Select random integers in range (1, num_codebooks - 1)
+        num_codebooks = torch.randint(low=1, high=self.num_codebooks, size=[batch_size], device=encoded.device)
+        num_codebooks = torch.where(apply_dropout, num_codebooks, self.num_codebooks)
+        out = self.vector_quantizer.dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks)
+        return out
+
     def _process_batch(self, batch):
         # [B, T_audio]
         audio = batch.get("audio")
@@ -577,6 +602,9 @@ class AudioCodecModel(ModelPT):
             encoded = encoded.to(encoded.dtype)  # make sure encoded is converted to the right dtype
         else:
             commit_loss = 0.0
+
+        if self.training and self.codebook_dropout_rate:
+            encoded = self._dropout_random_codebooks(encoded)
 
         # [B, T]
         audio_gen, _ = self.audio_decoder(inputs=encoded, input_len=encoded_len)

@@ -765,21 +765,51 @@ class StreamingSTTModelAutomodel(StreamingSTTModel):
             self.llm.prepare_for_grad_accumulation()
 
     def configure_gradient_clipping(self, optimizer, gradient_clip_val, gradient_clip_algorithm=None):
-        """Mesh-aware gradient clipping.
+        """Mesh-aware gradient clipping, logging the pre-clip gradient norm.
 
         When Automodel parallelizes the LLM, some parameters end up as DTensors
         on the ``(dp_replicate, dp_shard_cp)`` mesh while others may be on the
         flattened ``dp`` mesh. PyTorch's ``clip_grad_norm_`` requires all norms
         to share the same mesh for ``torch.stack``, so delegate to Automodel's
         implementation which groups parameters by ``(mesh_id, placements)``.
+
+        The norm is logged as ``grad_norm`` because it is the earliest signal
+        that training is diverging: a single ``inf``/``nan`` gradient makes the
+        global norm non-finite, and clipping then scales *every* parameter by
+        that value — so one bad backward silently NaNs the whole model (encoder
+        included) while the forward that produced it looked perfectly healthy.
         """
+        norm = None
         if not self._use_fsdp or gradient_clip_val is None or gradient_clip_val <= 0:
+            params = [p for group in optimizer.param_groups for p in group["params"] if p.grad is not None]
+            if params:
+                norm = torch.linalg.vector_norm(
+                    torch.stack([torch.linalg.vector_norm(p.grad.detach().float(), 2) for p in params]), 2
+                )
+            self._log_grad_norm(norm)
             return super().configure_gradient_clipping(optimizer, gradient_clip_val, gradient_clip_algorithm)
         from nemo_automodel.components.training.utils import _clip_grad_norm_impl
 
         params = [p for group in optimizer.param_groups for p in group["params"] if p.grad is not None]
         if params:
-            _clip_grad_norm_impl(params, max_norm=gradient_clip_val)
+            norm = _clip_grad_norm_impl(params, max_norm=gradient_clip_val)
+        self._log_grad_norm(norm)
+
+    def _log_grad_norm(self, norm) -> None:
+        """Log the pre-clip gradient norm, and warn loudly when it is non-finite."""
+        if norm is None:
+            return
+        norm = norm.full_tensor() if isinstance(norm, DTensor) else norm
+        norm = norm.detach().float()
+        if not torch.isfinite(norm):
+            logging.warning(
+                "Non-finite gradient norm (%s) at step %s — clipping will scale every parameter by it, "
+                "so the whole model (perception included) becomes NaN from the next forward on. "
+                "With attn=te, try NVTE_FUSED_ATTN=0 or automodel_backend.attn=sdpa.",
+                norm.item(),
+                getattr(self, "_current_batch_idx", "?"),
+            )
+        self.log("grad_norm", norm, on_step=True, prog_bar=True)
 
     # ------------------------------------------------------------------
     # MoE helpers (no-ops for dense LLMs)

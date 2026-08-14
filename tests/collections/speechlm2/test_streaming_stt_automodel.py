@@ -570,3 +570,55 @@ def test_backward_is_a_noop_when_forward_did_not_change_dtype(model):
     finally:
         StreamingSTTModel.backward = original
     assert seen["dtype"] == torch.float32
+
+
+# ===========================================================================
+# Gradient-norm logging
+# ===========================================================================
+
+
+def _fake_optimizer(params):
+    return SimpleNamespace(param_groups=[{"params": params}])
+
+
+def test_grad_norm_is_logged(model, monkeypatch):
+    """grad_norm is the earliest divergence signal: one inf gradient makes the
+    global norm non-finite and clipping then scales every parameter by it."""
+    logged = {}
+    monkeypatch.setattr(type(model), "log", lambda self, name, value, **kw: logged.__setitem__(name, value))
+    monkeypatch.setattr(StreamingSTTModel, "configure_gradient_clipping", lambda self, *a, **k: None, raising=False)
+    p = torch.nn.Parameter(torch.zeros(4))
+    p.grad = torch.tensor([3.0, 4.0, 0.0, 0.0])  # norm == 5
+
+    model.configure_gradient_clipping(_fake_optimizer([p]), gradient_clip_val=1.0)
+
+    assert "grad_norm" in logged
+    torch.testing.assert_close(logged["grad_norm"], torch.tensor(5.0))
+
+
+def test_non_finite_grad_norm_warns(model, monkeypatch):
+    """An inf gradient must produce a loud, actionable warning — this is the
+    failure mode where the forward looks healthy and the model NaNs one step later.
+    NeMo's logger does not propagate to caplog, so capture it at the source."""
+    import nemo.collections.speechlm2.models.streaming_stt_model_automodel as mod
+
+    warnings_seen = []
+    monkeypatch.setattr(type(model), "log", lambda self, name, value, **kw: None)
+    monkeypatch.setattr(StreamingSTTModel, "configure_gradient_clipping", lambda self, *a, **k: None, raising=False)
+    monkeypatch.setattr(mod.logging, "warning", lambda msg, *a, **k: warnings_seen.append(msg % a if a else msg))
+    p = torch.nn.Parameter(torch.zeros(2))
+    p.grad = torch.tensor([float("inf"), 0.0])
+
+    model.configure_gradient_clipping(_fake_optimizer([p]), gradient_clip_val=1.0)
+
+    assert any("Non-finite gradient norm" in w for w in warnings_seen), warnings_seen
+    assert any("NVTE_FUSED_ATTN=0" in w for w in warnings_seen), "the warning should name the likely fix"
+
+
+def test_grad_norm_logging_skipped_without_grads(model, monkeypatch):
+    """No gradients yet (e.g. sanity-check val) must not log or crash."""
+    logged = {}
+    monkeypatch.setattr(type(model), "log", lambda self, name, value, **kw: logged.__setitem__(name, value))
+    monkeypatch.setattr(StreamingSTTModel, "configure_gradient_clipping", lambda self, *a, **k: None, raising=False)
+    model.configure_gradient_clipping(_fake_optimizer([]), gradient_clip_val=1.0)
+    assert logged == {}

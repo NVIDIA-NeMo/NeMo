@@ -1,0 +1,15 @@
+defaults:
+  - easy_magpietts_lhotse_oneshot_flow_matching
+  - _self_
+
+name: EasyMagpie-OneShotFlowMatching-FSQ
+
+model:
+  # VoxtralTTS-style path for the 12.5 Hz grouped-FSQ semantic + acoustic codec:
+  # predict bounded pre-round acoustic FSQ values, quantize them once, then use
+  # the resulting acoustic tokens both for backbone feedback and codec decoding.
+  require_hybrid_codec: false
+  oneshot_quantize_acoustic_feedback: true
+  # Backbone feedback is discrete in this mode, so continuous teacher-input noise
+  # would have no effect.
+  acoustic_embedding_noise: 0.0

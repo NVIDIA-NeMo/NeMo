@@ -573,7 +573,41 @@ class CodecHelper:
             continuous_embedding = self._continuous_fsq_embedding(prequantized_embedding, embedding_len)
         semantic_codes = torch.cat(semantic_indices, dim=0).permute(1, 0, 2).contiguous()
         semantic_dim = num_semantic_codebooks * group_dim
-        return semantic_codes, embedding_len, continuous_embedding[:, semantic_dim:]
+        acoustic_embedding = self.clamp_acoustic_embedding(
+            continuous_embedding[:, semantic_dim:],
+            num_semantic_codebooks=num_semantic_codebooks,
+        )
+        return semantic_codes, embedding_len, acoustic_embedding
+
+    def audio_to_semantic_codes_acoustic_embedding_and_codes(
+        self,
+        audio: torch.Tensor,
+        audio_len: torch.Tensor,
+        num_semantic_codebooks: int,
+        sample_rate=None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return bounded flow targets plus codec-produced teacher-forcing tokens."""
+        if self.is_hybrid_codec:
+            raise ValueError("Hybrid codec residuals do not have acoustic token groups.")
+        codes, embedding_len, continuous_embedding = self.audio_to_codes_and_embedding(
+            audio,
+            audio_len,
+            sample_rate=sample_rate,
+        )
+        _, acoustic_embedding = self.split_continuous_embedding(
+            continuous_embedding,
+            num_semantic_codebooks=num_semantic_codebooks,
+        )
+        acoustic_embedding = self.clamp_acoustic_embedding(
+            acoustic_embedding,
+            num_semantic_codebooks=num_semantic_codebooks,
+        )
+        return (
+            codes[:, :num_semantic_codebooks],
+            embedding_len,
+            acoustic_embedding,
+            codes[:, num_semantic_codebooks:],
+        )
 
     def _embedding_dim_per_codebook(self) -> int:
         vector_quantizer = (
@@ -665,6 +699,86 @@ class CodecHelper:
                     )
                 )
         return torch.cat(semantic_embeddings, dim=1)
+
+    def acoustic_embedding_to_codes(
+        self,
+        acoustic_embedding: torch.Tensor,
+        num_semantic_codebooks: int,
+        codes_len: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Quantize bounded, normalized pre-round FSQ acoustic values into tokens.
+
+        ``audio_to_semantic_codes_and_acoustic_embedding`` returns each FSQ
+        scalar after the quantizer's bounded compression and normalization, but
+        before rounding. Calling ``encode`` on that representation would apply
+        the compression a second time, so quantization is performed directly in
+        the normalized code domain here.
+        """
+        if self.is_hybrid_codec:
+            raise ValueError("Hybrid codec residuals do not have acoustic token groups to quantize.")
+        if not 0 < num_semantic_codebooks < self.codec_model.num_codebooks:
+            raise ValueError(
+                f"num_semantic_codebooks must be in [1, {self.codec_model.num_codebooks - 1}], "
+                f"got {num_semantic_codebooks}."
+            )
+
+        quantizer_groups = self._independent_quantizer_groups()[num_semantic_codebooks:]
+        group_dim = self._embedding_dim_per_codebook()
+        expected_dim = len(quantizer_groups) * group_dim
+        if acoustic_embedding.ndim != 3 or acoustic_embedding.size(1) != expected_dim:
+            raise ValueError(
+                f"Expected acoustic embedding [B, {expected_dim}, T], got {tuple(acoustic_embedding.shape)}."
+            )
+
+        acoustic_embedding = self.clamp_acoustic_embedding(
+            acoustic_embedding,
+            num_semantic_codebooks=num_semantic_codebooks,
+        )
+        acoustic_groups = acoustic_embedding.chunk(len(quantizer_groups), dim=1)
+        acoustic_indices = []
+        for group_embedding, quantizer_group in zip(acoustic_groups, quantizer_groups):
+            num_levels = quantizer_group.num_levels.to(device=group_embedding.device)
+            scale = (num_levels // 2).to(dtype=group_embedding.dtype)
+            nonnegative_codes = torch.round(group_embedding.float() * scale.float()) + scale.float()
+            nonnegative_codes = torch.maximum(nonnegative_codes, torch.zeros_like(nonnegative_codes))
+            nonnegative_codes = torch.minimum(nonnegative_codes, (num_levels - 1).float())
+            quantized_codes = quantizer_group.nonnegative_to_codes(nonnegative_codes)
+            acoustic_indices.append(quantizer_group.codes_to_indices(quantized_codes))
+        acoustic_codes = torch.stack(acoustic_indices, dim=1).long()
+        if codes_len is not None:
+            valid = get_mask_from_lengths(codes_len, x=acoustic_codes).unsqueeze(1)
+            acoustic_codes = acoustic_codes.masked_fill(~valid, 0)
+        return acoustic_codes
+
+    def clamp_acoustic_embedding(
+        self,
+        acoustic_embedding: torch.Tensor,
+        num_semantic_codebooks: int,
+    ) -> torch.Tensor:
+        """Clip normalized pre-round FSQ values to each acoustic group's compression range."""
+        if self.is_hybrid_codec:
+            raise ValueError("Hybrid codec residuals do not have bounded acoustic FSQ groups.")
+        quantizer_groups = self._independent_quantizer_groups()[num_semantic_codebooks:]
+        group_dim = self._embedding_dim_per_codebook()
+        expected_dim = len(quantizer_groups) * group_dim
+        if acoustic_embedding.ndim != 3 or acoustic_embedding.size(1) != expected_dim:
+            raise ValueError(
+                f"Expected acoustic embedding [B, {expected_dim}, T], got {tuple(acoustic_embedding.shape)}."
+            )
+
+        clipped_groups = []
+        for group_embedding, quantizer_group in zip(
+            acoustic_embedding.chunk(len(quantizer_groups), dim=1), quantizer_groups
+        ):
+            num_levels = quantizer_group.num_levels.to(device=group_embedding.device)
+            scale = (num_levels // 2).to(dtype=group_embedding.dtype)
+            output_scale = ((num_levels - 1) / 2).to(dtype=group_embedding.dtype)
+            output_scale = output_scale * (1 - quantizer_group.eps)
+            output_offset = torch.where(num_levels % 2 == 0, 0.5, 0).to(dtype=group_embedding.dtype)
+            lower = ((-output_scale - output_offset) / scale).view(1, -1, 1)
+            upper = ((output_scale - output_offset) / scale).view(1, -1, 1)
+            clipped_groups.append(torch.maximum(torch.minimum(group_embedding, upper), lower))
+        return torch.cat(clipped_groups, dim=1)
 
     def compose_semantic_acoustic_embedding(
         self,

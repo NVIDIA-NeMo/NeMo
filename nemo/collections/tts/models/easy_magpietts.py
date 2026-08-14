@@ -947,6 +947,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         audio_codes_lens: torch.Tensor,
         audio_embedding: torch.Tensor,
         delay: torch.Tensor,
+        audio_acoustic_codes: Optional[torch.Tensor] = None,
         speech_eos_mask: Optional[torch.Tensor] = None,
         agent_mask: Optional[torch.Tensor] = None,
         mask_semantic_history: bool = False,
@@ -956,6 +957,8 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             raise ValueError(
                 "One-shot acoustic prediction requires the codec encoder output for backbone teacher forcing."
             )
+        if self.oneshot_quantize_acoustic_feedback and audio_acoustic_codes is None:
+            raise ValueError("Quantized one-shot teacher forcing requires acoustic tokens produced by the codec.")
 
         semantic_codes = audio_codes
         semantic_sequence, acoustic_sequence, sequence_lens = self.prepare_flow_audio_state_sequence(
@@ -966,6 +969,18 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             eos_id=self.audio_eos_id,
             num_eos_tokens=1 if speech_eos_mask is None else 0,
         )
+
+        acoustic_code_sequence = None
+        if audio_acoustic_codes is not None:
+            acoustic_code_sequence, acoustic_code_lens = self.prepare_oneshot_acoustic_code_sequence(
+                acoustic_codes=audio_acoustic_codes,
+                codes_lens=audio_codes_lens,
+                bos_id=self.audio_bos_id,
+                eos_id=self.audio_eos_id,
+                num_eos_tokens=1 if speech_eos_mask is None else 0,
+            )
+            if not torch.equal(acoustic_code_lens, sequence_lens):
+                raise ValueError("Semantic and acoustic teacher-token lengths must match.")
 
         semantic_before_speech_eos = None
         acoustic_before_speech_eos = None
@@ -1064,16 +1079,17 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         valid_input = get_mask_from_lengths(target_lens, x=semantic_inputs).bool().to(semantic_inputs.device)
         acoustic_frame = (semantic_inputs < self.codebook_size).all(dim=1)
 
-        if self.training and self.acoustic_embedding_noise > 0.0:
+        if self.training and not self.oneshot_quantize_acoustic_feedback and self.acoustic_embedding_noise > 0.0:
             noise_mask = (valid_input & acoustic_frame).unsqueeze(1).to(acoustic_inputs.dtype)
             acoustic_inputs = acoustic_inputs + (
                 torch.randn_like(acoustic_inputs) * self.acoustic_embedding_noise * noise_mask
             )
 
-        audio_embedded = self.embed_flow_audio_state(
+        audio_embedded = self.embed_oneshot_audio_state(
             semantic_inputs,
             acoustic_inputs,
             semantic_history_keep_mask=semantic_history_keep_mask,
+            acoustic_codes=acoustic_code_sequence[:, :, :-1] if acoustic_code_sequence is not None else None,
         )
         max_delay = delay.max().item()
         zero_delay = audio_embedded.new_zeros(audio_embedded.size(0), max_delay, audio_embedded.size(2))
@@ -1122,7 +1138,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         context_audio_codes_lens: torch.Tensor,
         audio_embedding: Optional[torch.Tensor] = None,
         audio_embedding_lens: Optional[torch.Tensor] = None,
+        audio_acoustic_codes: Optional[torch.Tensor] = None,
         context_audio_embedding: Optional[torch.Tensor] = None,
+        context_audio_acoustic_codes: Optional[torch.Tensor] = None,
         phoneme_tokens: Optional[torch.Tensor] = None,
         phoneme_tokens_lens: Optional[torch.Tensor] = None,
         phoneme_turn_dropout: Optional[torch.Tensor] = None,
@@ -1204,6 +1222,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 context_audio_codes=context_audio_codes,
                 context_audio_codes_lens=context_audio_codes_lens,
                 context_audio_embedding=context_audio_embedding,
+                context_audio_acoustic_codes=context_audio_acoustic_codes,
                 training_mode=selected_training_mode,
                 dropout_conditional_input=dropout_conditional_input,
             )
@@ -1291,6 +1310,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 audio_codes=audio_codes,
                 audio_codes_lens=audio_codes_lens,
                 audio_embedding=audio_embedding,
+                audio_acoustic_codes=audio_acoustic_codes,
                 mask_semantic_history=mode == 'train' and not dropout_conditional_input,
                 delay=audio_delay,
                 speech_eos_mask=speech_eos_mask,
@@ -1670,16 +1690,27 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
     def training_step(self, batch, batch_idx):
         context_audio_embedding = None
+        context_audio_acoustic_codes = None
         if self.local_transformer_type.is_oneshot:
             if 'context_audio' not in batch:
                 raise ValueError(
                     "One-shot acoustic prediction requires raw context audio; set model.load_cached_codes_if_available=false."
                 )
-            context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
-                self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
+            if self.oneshot_quantize_acoustic_feedback:
+                (
+                    context_audio_codes,
+                    context_audio_codes_lens,
+                    context_audio_embedding,
+                    context_audio_acoustic_codes,
+                ) = self._codec_helper.audio_to_semantic_codes_acoustic_embedding_and_codes(
                     batch['context_audio'], batch['context_audio_lens'], self.num_semantic_codebooks
                 )
-            )
+            else:
+                context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
+                    self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
+                        batch['context_audio'], batch['context_audio_lens'], self.num_semantic_codebooks
+                    )
+                )
         elif 'context_audio_codes' in batch:
             context_audio_codes = batch['context_audio_codes']
             context_audio_codes_lens = batch['context_audio_codes_lens']
@@ -1692,16 +1723,24 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         audio_embedding = None
         audio_embedding_lens = None
+        audio_acoustic_codes = None
         if self.local_transformer_type.is_oneshot:
             if 'audio' not in batch:
                 raise ValueError(
                     "One-shot acoustic prediction requires target audio; set model.load_cached_codes_if_available=false."
                 )
-            audio_codes, audio_codes_lens, audio_embedding = (
-                self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
-                    batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
+            if self.oneshot_quantize_acoustic_feedback:
+                audio_codes, audio_codes_lens, audio_embedding, audio_acoustic_codes = (
+                    self._codec_helper.audio_to_semantic_codes_acoustic_embedding_and_codes(
+                        batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
+                    )
                 )
-            )
+            else:
+                audio_codes, audio_codes_lens, audio_embedding = (
+                    self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
+                        batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
+                    )
+                )
             audio_embedding_lens = audio_codes_lens
         elif 'audio_codes' in batch:
             audio_codes = batch['audio_codes']
@@ -1775,13 +1814,22 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     user_audio[silence_mask] = 0.0
 
             if self.local_transformer_type.is_oneshot:
-                user_audio_codes, user_audio_codes_lens, user_audio_embedding = (
-                    self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
-                        user_audio, user_audio_lens, self.num_semantic_codebooks
+                user_audio_acoustic_codes = None
+                if self.oneshot_quantize_acoustic_feedback:
+                    user_audio_codes, user_audio_codes_lens, user_audio_embedding, user_audio_acoustic_codes = (
+                        self._codec_helper.audio_to_semantic_codes_acoustic_embedding_and_codes(
+                            user_audio, user_audio_lens, self.num_semantic_codebooks
+                        )
                     )
-                )
+                else:
+                    user_audio_codes, user_audio_codes_lens, user_audio_embedding = (
+                        self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
+                            user_audio, user_audio_lens, self.num_semantic_codebooks
+                        )
+                    )
                 semantic_user_audio = user_audio_codes
                 acoustic_user_audio = user_audio_embedding
+                raw_user_audio_codes_lens = user_audio_codes_lens
                 valid_frames = get_mask_from_lengths(user_audio_codes_lens, x=acoustic_user_audio).unsqueeze(1)
                 acoustic_user_audio = acoustic_user_audio * valid_frames.to(acoustic_user_audio.dtype)
                 semantic_user_audio, user_audio_codes_lens = self.stack_codes(
@@ -1793,7 +1841,21 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     self.num_semantic_codebooks,
                 )
                 acoustic_user_audio = self.stack_codec_embeddings(acoustic_user_audio, self.frame_stacking_factor)
-                user_audio_embedded = self.embed_flow_audio_state(semantic_user_audio, acoustic_user_audio)
+                acoustic_user_audio_codes = None
+                if user_audio_acoustic_codes is not None:
+                    acoustic_user_audio_codes, acoustic_user_audio_lens = self.stack_codes(
+                        user_audio_acoustic_codes,
+                        raw_user_audio_codes_lens,
+                        self.audio_bos_id,
+                        self.audio_eos_id,
+                        self.frame_stacking_factor,
+                        self.num_audio_codebooks - self.num_semantic_codebooks,
+                    )
+                    if not torch.equal(acoustic_user_audio_lens, user_audio_codes_lens):
+                        raise ValueError("User semantic and acoustic token lengths must match.")
+                user_audio_embedded = self.embed_oneshot_audio_state(
+                    semantic_user_audio, acoustic_user_audio, acoustic_codes=acoustic_user_audio_codes
+                )
             else:
                 user_audio_codes, user_audio_codes_lens = self._codec_helper.audio_to_codes(
                     user_audio,
@@ -1929,7 +1991,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_audio_codes_lens=context_audio_codes_lens,
             audio_embedding=audio_embedding,
             audio_embedding_lens=audio_embedding_lens,
+            audio_acoustic_codes=audio_acoustic_codes,
             context_audio_embedding=context_audio_embedding,
+            context_audio_acoustic_codes=context_audio_acoustic_codes,
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             phoneme_turn_dropout=batch.get('phoneme_turn_dropout'),
@@ -2009,16 +2073,27 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             f"batch_idx: {batch_idx}"
         )
         context_audio_embedding = None
+        context_audio_acoustic_codes = None
         if self.local_transformer_type.is_oneshot:
             if 'context_audio' not in batch:
                 raise ValueError(
                     "One-shot acoustic prediction requires raw context audio; set model.load_cached_codes_if_available=false."
                 )
-            context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
-                self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
+            if self.oneshot_quantize_acoustic_feedback:
+                (
+                    context_audio_codes,
+                    context_audio_codes_lens,
+                    context_audio_embedding,
+                    context_audio_acoustic_codes,
+                ) = self._codec_helper.audio_to_semantic_codes_acoustic_embedding_and_codes(
                     batch['context_audio'], batch['context_audio_lens'], self.num_semantic_codebooks
                 )
-            )
+            else:
+                context_audio_codes, context_audio_codes_lens, context_audio_embedding = (
+                    self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
+                        batch['context_audio'], batch['context_audio_lens'], self.num_semantic_codebooks
+                    )
+                )
         elif 'context_audio_codes' in batch:
             context_audio_codes = batch['context_audio_codes']
             context_audio_codes_lens = batch['context_audio_codes_lens']
@@ -2031,16 +2106,24 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
 
         audio_embedding = None
         audio_embedding_lens = None
+        audio_acoustic_codes = None
         if self.local_transformer_type.is_oneshot:
             if 'audio' not in batch:
                 raise ValueError(
                     "One-shot acoustic prediction requires target audio; set model.load_cached_codes_if_available=false."
                 )
-            audio_codes, audio_codes_lens, audio_embedding = (
-                self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
-                    batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
+            if self.oneshot_quantize_acoustic_feedback:
+                audio_codes, audio_codes_lens, audio_embedding, audio_acoustic_codes = (
+                    self._codec_helper.audio_to_semantic_codes_acoustic_embedding_and_codes(
+                        batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
+                    )
                 )
-            )
+            else:
+                audio_codes, audio_codes_lens, audio_embedding = (
+                    self._codec_helper.audio_to_semantic_codes_and_acoustic_embedding(
+                        batch['audio'], batch['audio_lens'], self.num_semantic_codebooks
+                    )
+                )
             audio_embedding_lens = audio_codes_lens
         elif 'audio_codes' in batch:
             audio_codes = batch['audio_codes']
@@ -2061,7 +2144,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             context_audio_codes_lens=context_audio_codes_lens,
             audio_embedding=audio_embedding,
             audio_embedding_lens=audio_embedding_lens,
+            audio_acoustic_codes=audio_acoustic_codes,
             context_audio_embedding=context_audio_embedding,
+            context_audio_acoustic_codes=context_audio_acoustic_codes,
             phoneme_tokens=batch.get('phoneme_tokens'),
             phoneme_tokens_lens=batch.get('phoneme_tokens_lens'),
             mode="val",

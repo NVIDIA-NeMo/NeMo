@@ -13,3 +13,8 @@ model:
   # Backbone feedback is discrete in this mode, so continuous teacher-input noise
   # would have no effect.
   acoustic_embedding_noise: 0.0
+  # Independently mask codec-provided acoustic-token history using the same
+  # Beta(1, 2) / random-ranking cadence as the reference acoustic decoder.
+  # The scaled 25-100% keep range has a mean keep fraction of 50%.
+  acoustic_history_infill_min: 0.25
+  acoustic_history_infill_max: 1.0

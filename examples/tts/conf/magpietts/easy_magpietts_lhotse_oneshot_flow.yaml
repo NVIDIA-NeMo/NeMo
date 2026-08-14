@@ -37,9 +37,9 @@ model:
   # Standard deviation of Gaussian noise added only to valid teacher-forced acoustic inputs during training.
   # The acoustic prediction target and validation/inference inputs remain clean.
   acoustic_embedding_noise: 0.1
-  # Match the acoustic-mask reference: draw a per-sample keep fraction from a
-  # scaled Beta(1, 2), then retain exactly that many randomly ranked semantic
-  # history frames with a learned mask embedding for the rest. Mean keep is 50%.
+  # Match the semantic side of the acoustic-mask reference: draw a per-sample
+  # keep fraction from a scaled Beta(1, 2), then retain exactly that many randomly
+  # ranked semantic history frames with a learned mask embedding. Mean keep is 50%.
   semantic_history_infill_min: 0.25
   semantic_history_infill_max: 1.0
   # A single pointwise projection predicts the acoustic embedding from the projected

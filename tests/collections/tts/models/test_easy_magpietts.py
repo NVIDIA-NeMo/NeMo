@@ -821,6 +821,7 @@ def test_flow_matching_can_optimize_only_oneshot_predictor():
                 "local_flow_matching_n_layers": 2,
                 "local_flow_matching_time_embedding_dim": 8,
                 "train_oneshot_local_predictor_only": True,
+                "oneshot_quantize_acoustic_feedback": True,
             }
         )
     )
@@ -834,6 +835,7 @@ def test_flow_matching_can_optimize_only_oneshot_predictor():
     assert any(name.startswith("flow_hidden_condition_projection.") for name in trainable_names)
     assert any(name.startswith("flow_semantic_condition_projection.") for name in trainable_names)
     assert "semantic_history_mask_embedding" in trainable_names
+    assert "acoustic_history_mask_embedding" in trainable_names
     assert all(
         name.startswith(
             (
@@ -842,6 +844,7 @@ def test_flow_matching_can_optimize_only_oneshot_predictor():
                 "flow_hidden_condition_projection.",
                 "flow_semantic_condition_projection.",
                 "semantic_history_mask_embedding",
+                "acoustic_history_mask_embedding",
             )
         )
         for name in trainable_names
@@ -967,6 +970,29 @@ def test_one_shot_semantic_history_mask_matches_reference_exact_keep_count():
     assert not keep_mask[1, 4:].any()
 
 
+def test_one_shot_acoustic_history_mask_matches_reference_exact_keep_count():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "oneshot_quantize_acoustic_feedback": True,
+                "acoustic_history_infill_min": 0.5,
+                "acoustic_history_infill_max": 0.5,
+            }
+        )
+    )
+    input_lens = torch.tensor([6, 4], dtype=torch.long)
+
+    keep_mask = model.create_acoustic_history_keep_mask(input_lens)
+
+    assert keep_mask.shape == (2, 6)
+    assert keep_mask.sum(dim=1).tolist() == [3, 2]
+    assert not keep_mask[1, 4:].any()
+
+
 def test_one_shot_semantic_history_mask_preserves_acoustic_feedback_and_specials():
     model = _make_easy_magpie_model(
         tiny_easy_magpie_cfg(
@@ -1002,6 +1028,51 @@ def test_one_shot_semantic_history_mask_preserves_acoustic_feedback_and_specials
     torch.testing.assert_close(masked[:, 0], clean[:, 0])
     torch.testing.assert_close(masked[:, 2:], clean[:, 2:])
     torch.testing.assert_close(masked[:, 1], acoustic_projected[:, 1])
+    assert not torch.allclose(masked[:, 1], clean[:, 1])
+
+
+def test_one_shot_acoustic_history_mask_preserves_semantics_and_specials():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "oneshot_quantize_acoustic_feedback": True,
+            }
+        )
+    )
+    full_codes = _toy_codes(model, batch_size=1, num_frames=4)
+    semantic_channels = model.num_semantic_codebooks
+    semantic_inputs = full_codes[:, :semantic_channels].clone()
+    acoustic_inputs = full_codes[:, semantic_channels:]
+    semantic_inputs[:, :, 0] = model.audio_bos_id
+    semantic_inputs[:, :, 3] = model.audio_eos_id
+    acoustic_embedding = torch.zeros(1, model.acoustic_codec_embedding_dim, 4)
+    keep_mask = torch.tensor([[False, False, True, False]])
+
+    clean = model.embed_oneshot_audio_state(
+        semantic_inputs,
+        acoustic_embedding,
+        acoustic_codes=acoustic_inputs,
+    )
+    masked = model.embed_oneshot_audio_state(
+        semantic_inputs,
+        acoustic_embedding,
+        acoustic_codes=acoustic_inputs,
+        acoustic_history_keep_mask=keep_mask,
+    )
+    semantic_input = model.embed_audio_tokens(semantic_inputs)
+    expected_masked_frame = semantic_input[:, 1] * semantic_channels / model.num_audio_codebooks
+
+    torch.testing.assert_close(
+        model.acoustic_history_mask_embedding,
+        torch.zeros_like(model.acoustic_history_mask_embedding),
+    )
+    torch.testing.assert_close(masked[:, 0], clean[:, 0])
+    torch.testing.assert_close(masked[:, 2:], clean[:, 2:])
+    torch.testing.assert_close(masked[:, 1], expected_masked_frame)
     assert not torch.allclose(masked[:, 1], clean[:, 1])
 
 
@@ -1058,6 +1129,56 @@ def test_one_shot_semantic_history_masking_is_training_conditional_only():
             audio_embedding=acoustic_embedding,
             delay=delay,
             mask_semantic_history=True,
+        )
+
+
+def test_one_shot_acoustic_history_masking_is_training_conditional_only():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "oneshot_quantize_acoustic_feedback": True,
+                "acoustic_history_infill_min": 0.25,
+                "acoustic_history_infill_max": 1.0,
+            }
+        )
+    )
+    full_codes = _toy_codes(model, batch_size=1, num_frames=4)
+    codes = full_codes[:, : model.num_semantic_codebooks]
+    acoustic_codes = full_codes[:, model.num_semantic_codebooks :]
+    codes_lens = torch.tensor([4], dtype=torch.long)
+    delay = torch.tensor([0], dtype=torch.long)
+    acoustic_embedding = torch.randn(1, model.acoustic_codec_embedding_dim, 4)
+
+    model.train()
+    keep_mask = torch.ones(1, 5, dtype=torch.bool)
+    with patch.object(model, "create_acoustic_history_keep_mask", return_value=keep_mask) as mask_mock:
+        model.prepare_flow_audio_channel_embeddings(
+            audio_codes=codes,
+            audio_codes_lens=codes_lens,
+            audio_embedding=acoustic_embedding,
+            audio_acoustic_codes=acoustic_codes,
+            delay=delay,
+            mask_acoustic_history=True,
+        )
+    mask_mock.assert_called_once_with(codes_lens + 1)
+
+    model.eval()
+    with patch.object(
+        model,
+        "create_acoustic_history_keep_mask",
+        side_effect=AssertionError("validation and inference must not mask acoustic history"),
+    ):
+        model.prepare_flow_audio_channel_embeddings(
+            audio_codes=codes,
+            audio_codes_lens=codes_lens,
+            audio_embedding=acoustic_embedding,
+            audio_acoustic_codes=acoustic_codes,
+            delay=delay,
+            mask_acoustic_history=True,
         )
 
 

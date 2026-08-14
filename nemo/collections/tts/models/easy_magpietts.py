@@ -920,17 +920,19 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             loss_agent_mask,
         )
 
-    def create_semantic_history_keep_mask(self, input_lens: torch.Tensor) -> torch.Tensor:
-        """Copy the reference Beta/ranking infill mask; ``True`` means keep semantic history."""
+    @staticmethod
+    def _create_history_keep_mask(
+        input_lens: torch.Tensor,
+        infill_min: float,
+        infill_max: float,
+    ) -> torch.Tensor:
+        """Copy the reference Beta/ranking infill mask; True means keep history."""
         len_mask = get_mask_from_lengths(input_lens).bool()
         max_len = len_mask.shape[1]
 
         infill_dist = torch.distributions.beta.Beta(concentration1=1.0, concentration0=2.0)
         infill_percent = infill_dist.sample(sample_shape=torch.Size([input_lens.size(0)])).to(input_lens.device)
-        infill_percent = (
-            self.semantic_history_infill_min
-            + (self.semantic_history_infill_max - self.semantic_history_infill_min) * infill_percent
-        )
+        infill_percent = infill_min + (infill_max - infill_min) * infill_percent
         infill_len = infill_percent * input_lens.float()
         infill_rank = torch.clamp_min(infill_len - 1, 0).long().unsqueeze(1)
 
@@ -940,6 +942,18 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         infill_min_val = torch.gather(infill_topk, index=infill_rank, dim=1)
         infill_mask = infill_vals >= infill_min_val
         return infill_mask & len_mask
+
+    def create_semantic_history_keep_mask(self, input_lens: torch.Tensor) -> torch.Tensor:
+        """Sample the reference semantic-history keep mask."""
+        return self._create_history_keep_mask(
+            input_lens, self.semantic_history_infill_min, self.semantic_history_infill_max
+        )
+
+    def create_acoustic_history_keep_mask(self, input_lens: torch.Tensor) -> torch.Tensor:
+        """Independently sample the reference acoustic-history keep mask."""
+        return self._create_history_keep_mask(
+            input_lens, self.acoustic_history_infill_min, self.acoustic_history_infill_max
+        )
 
     def prepare_flow_audio_channel_embeddings(
         self,
@@ -951,6 +965,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         speech_eos_mask: Optional[torch.Tensor] = None,
         agent_mask: Optional[torch.Tensor] = None,
         mask_semantic_history: bool = False,
+        mask_acoustic_history: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Prepare teacher-forced semantic tokens plus continuous acoustic states."""
         if audio_embedding is None:
@@ -1076,6 +1091,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         semantic_history_keep_mask = None
         if self.training and mask_semantic_history:
             semantic_history_keep_mask = self.create_semantic_history_keep_mask(target_lens)
+        acoustic_history_keep_mask = None
+        if self.training and mask_acoustic_history:
+            acoustic_history_keep_mask = self.create_acoustic_history_keep_mask(target_lens)
         valid_input = get_mask_from_lengths(target_lens, x=semantic_inputs).bool().to(semantic_inputs.device)
         acoustic_frame = (semantic_inputs < self.codebook_size).all(dim=1)
 
@@ -1089,6 +1107,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
             semantic_inputs,
             acoustic_inputs,
             semantic_history_keep_mask=semantic_history_keep_mask,
+            acoustic_history_keep_mask=acoustic_history_keep_mask,
             acoustic_codes=acoustic_code_sequence[:, :, :-1] if acoustic_code_sequence is not None else None,
         )
         max_delay = delay.max().item()
@@ -1312,6 +1331,11 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 audio_embedding=audio_embedding,
                 audio_acoustic_codes=audio_acoustic_codes,
                 mask_semantic_history=mode == 'train' and not dropout_conditional_input,
+                # The reference masks acoustic history independently on every
+                # training batch, including CFG-unconditional batches.
+                mask_acoustic_history=mode == 'train'
+                and self.oneshot_quantize_acoustic_feedback
+                and self.acoustic_history_infill_min < 1.0,
                 delay=audio_delay,
                 speech_eos_mask=speech_eos_mask,
                 agent_mask=agent_mask,

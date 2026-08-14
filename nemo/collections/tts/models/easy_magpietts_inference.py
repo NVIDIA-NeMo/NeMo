@@ -447,6 +447,21 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 self.semantic_history_infill_min,
                 self.semantic_history_infill_max,
             )
+            self.acoustic_history_infill_min = float(cfg.get("acoustic_history_infill_min", 1.0))
+            self.acoustic_history_infill_max = float(cfg.get("acoustic_history_infill_max", 1.0))
+            if not 0.0 <= self.acoustic_history_infill_min <= self.acoustic_history_infill_max <= 1.0:
+                raise ValueError(
+                    "acoustic history infill fractions must satisfy "
+                    f"0 <= min <= max <= 1, got {self.acoustic_history_infill_min} and "
+                    f"{self.acoustic_history_infill_max}."
+                )
+            if self.acoustic_history_infill_min < 1.0 and not self.oneshot_quantize_acoustic_feedback:
+                raise ValueError("Acoustic history masking requires quantized one-shot acoustic feedback.")
+            logging.info(
+                "Teacher-forced acoustic history infill range: [%s, %s]",
+                self.acoustic_history_infill_min,
+                self.acoustic_history_infill_max,
+            )
             self.acoustic_aux_loss_scale = float(cfg.get("acoustic_aux_loss_scale", 0.0))
             if self.acoustic_aux_loss_scale < 0.0:
                 raise ValueError(f"acoustic_aux_loss_scale must be non-negative, got {self.acoustic_aux_loss_scale}.")
@@ -720,6 +735,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             stacked_acoustic_dim = self.acoustic_codec_embedding_dim * self.frame_stacking_factor
             self.flow_acoustic_in_projection = nn.Linear(stacked_acoustic_dim, cfg.embedding_dim)
             self.semantic_history_mask_embedding = nn.Parameter(torch.zeros(1, 1, cfg.embedding_dim))
+            if self.oneshot_quantize_acoustic_feedback:
+                self.acoustic_history_mask_embedding = nn.Parameter(torch.zeros(1, 1, cfg.embedding_dim))
             # This path has no counterpart in the pretrained discrete model. Start it as an
             # exact no-op so loading the pretrained backbone does not inject a random residual.
             nn.init.zeros_(self.flow_acoustic_in_projection.weight)
@@ -1134,6 +1151,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 "local_flow.",
                 "flow_acoustic_in_projection.",
                 "semantic_history_mask_embedding",
+                "acoustic_history_mask_embedding",
                 "flow_hidden_condition_projection.",
                 "flow_semantic_condition_projection.",
                 "acoustic_aux_projection.",
@@ -1366,9 +1384,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         acoustic_embedding: torch.Tensor,
         semantic_history_keep_mask: Optional[torch.Tensor] = None,
         acoustic_codes: Optional[torch.Tensor] = None,
+        acoustic_history_keep_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Embed a one-shot state continuously or through quantized acoustic token tables."""
         if not self.oneshot_quantize_acoustic_feedback:
+            if acoustic_history_keep_mask is not None:
+                raise ValueError("Acoustic history masking requires quantized one-shot acoustic feedback.")
             return self.embed_flow_audio_state(
                 semantic_codes,
                 acoustic_embedding,
@@ -1379,23 +1400,33 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             full_codes = self.quantize_oneshot_acoustic_state(semantic_codes, acoustic_embedding)
         else:
             full_codes = self.compose_oneshot_audio_tokens(semantic_codes, acoustic_codes)
-        if semantic_history_keep_mask is None:
+        if semantic_history_keep_mask is None and acoustic_history_keep_mask is None:
             return self.embed_audio_tokens(full_codes)
 
         semantic_channels = semantic_codes.size(1)
         acoustic_codes = full_codes[:, semantic_channels:]
         semantic_input = self.embed_audio_tokens(semantic_codes)
         expected_mask_shape = (semantic_codes.size(0), semantic_codes.size(2))
-        if semantic_history_keep_mask.shape != expected_mask_shape:
-            raise ValueError(
-                f"Expected semantic history keep mask {expected_mask_shape}, "
-                f"got {tuple(semantic_history_keep_mask.shape)}."
-            )
         real_semantic_frame = (semantic_codes < self.codebook_size).all(dim=1)
-        semantic_history_mask = real_semantic_frame & ~semantic_history_keep_mask.bool()
-        mask_embedding = self.semantic_history_mask_embedding.to(semantic_input.dtype).expand_as(semantic_input)
-        semantic_input = torch.where(semantic_history_mask.unsqueeze(2), mask_embedding, semantic_input)
+        if semantic_history_keep_mask is not None:
+            if semantic_history_keep_mask.shape != expected_mask_shape:
+                raise ValueError(
+                    f"Expected semantic history keep mask {expected_mask_shape}, "
+                    f"got {tuple(semantic_history_keep_mask.shape)}."
+                )
+            semantic_history_mask = real_semantic_frame & ~semantic_history_keep_mask.bool()
+            mask_embedding = self.semantic_history_mask_embedding.to(semantic_input.dtype).expand_as(semantic_input)
+            semantic_input = torch.where(semantic_history_mask.unsqueeze(2), mask_embedding, semantic_input)
         acoustic_input = self.embed_audio_tokens(acoustic_codes, codebook_offset=semantic_channels)
+        if acoustic_history_keep_mask is not None:
+            if acoustic_history_keep_mask.shape != expected_mask_shape:
+                raise ValueError(
+                    f"Expected acoustic history keep mask {expected_mask_shape}, "
+                    f"got {tuple(acoustic_history_keep_mask.shape)}."
+                )
+            acoustic_history_mask = real_semantic_frame & ~acoustic_history_keep_mask.bool()
+            mask_embedding = self.acoustic_history_mask_embedding.to(acoustic_input.dtype).expand_as(acoustic_input)
+            acoustic_input = torch.where(acoustic_history_mask.unsqueeze(2), mask_embedding, acoustic_input)
         acoustic_channels = acoustic_codes.size(1)
         return (semantic_input * semantic_channels + acoustic_input * acoustic_channels) / (
             semantic_channels + acoustic_channels

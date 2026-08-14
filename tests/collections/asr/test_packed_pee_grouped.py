@@ -272,7 +272,9 @@ def test_serial_checkpointed_training_matches_serial_reference_gradients(group_s
     reference = reference_encoder.pee.forward_all_sequence_packed(signal, signal_lengths, fused_qkv=True)
     reference_loss = _expert_loss(reference, reference_encoder.pee.experts['speech'])
     reference_loss.backward()
-    checkpointed = checkpointed_encoder._forward_all_sequence_packed_serial_training(checkpointed_signal, signal_lengths)
+    checkpointed = checkpointed_encoder._forward_all_sequence_packed_serial_training(
+        checkpointed_signal, signal_lengths
+    )
     checkpointed_loss = _expert_loss(checkpointed, checkpointed_encoder.pee.experts['speech'])
     checkpointed_loss.backward()
     if group_speech_moe:

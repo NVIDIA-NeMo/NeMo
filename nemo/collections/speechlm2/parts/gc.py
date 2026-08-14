@@ -25,13 +25,9 @@ class GarbageCollectionManager:
 
     def __init__(self, gc_every_steps: int | None) -> None:
         if gc_every_steps is not None and (
-            isinstance(gc_every_steps, bool)
-            or not isinstance(gc_every_steps, int)
-            or gc_every_steps <= 0
+            isinstance(gc_every_steps, bool) or not isinstance(gc_every_steps, int) or gc_every_steps <= 0
         ):
-            raise ValueError(
-                f"model.gc_every_steps must be a positive integer or null, got {gc_every_steps!r}"
-            )
+            raise ValueError(f"model.gc_every_steps must be a positive integer or null, got {gc_every_steps!r}")
         self.gc_every_steps = gc_every_steps
         self._collector = None
         self._optimizer_step_count = 0

@@ -78,8 +78,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         cross_entropy_backend = str(self.cfg.get("cross_entropy_backend", "eager"))
         if cross_entropy_backend not in ("eager", "fused_linear"):
             raise ValueError(
-                "model.cross_entropy_backend must be 'eager' or 'fused_linear', "
-                f"got {cross_entropy_backend!r}."
+                "model.cross_entropy_backend must be 'eager' or 'fused_linear', " f"got {cross_entropy_backend!r}."
             )
         if cross_entropy_backend == "fused_linear":
             if self.lss_loss is not None:

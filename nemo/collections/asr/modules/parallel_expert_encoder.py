@@ -1736,7 +1736,6 @@ class ParallelExpertEncoder(nn.Module):
             for name, data in zip(names, data_outputs)
         }
 
-
     def _forward_all_sequence_packed_serial_training(self, audio_signal, length):
         """Run packed PEE branches serially with one checkpoint per trainable branch."""
         outputs = {}
@@ -1779,9 +1778,7 @@ class ParallelExpertEncoder(nn.Module):
                 with torch.set_grad_enabled(torch.is_grad_enabled() and branch_requires_grad):
                     data, output_lengths, cu_seqlens, max_seqlen = run(audio_signal, length)
 
-            outputs[name] = _new_packed_encoder_activations(
-                data, output_lengths, cu_seqlens, int(max_seqlen)
-            )
+            outputs[name] = _new_packed_encoder_activations(data, output_lengths, cu_seqlens, int(max_seqlen))
 
         return outputs
 

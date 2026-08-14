@@ -218,9 +218,7 @@ def test_salm_automodel_pad_token_override_preserves_eot_labels(monkeypatch):
         def add_special_tokens(self, _tokens):
             return 0
 
-    salm_module = __import__(
-        "nemo.collections.speechlm2.models.salm_automodel", fromlist=["AutoTokenizer"]
-    )
+    salm_module = __import__("nemo.collections.speechlm2.models.salm_automodel", fromlist=["AutoTokenizer"])
     monkeypatch.setattr(salm_module, "AutoTokenizer", FakeTokenizer)
     model = SALMAutomodel(
         {

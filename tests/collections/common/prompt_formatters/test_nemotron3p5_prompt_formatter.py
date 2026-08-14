@@ -39,12 +39,8 @@ def test_nemotron3p5_training_basic(bpe_tokenizer_with_think):
 
 def test_nemotron3p5_inference_generation_prompt(bpe_tokenizer_with_think):
     formatter = Nemotron3p5PromptFormatter(bpe_tokenizer_with_think)
-    thinking = formatter.encode_dialog(
-        [{"role": "user", "slots": {"message": "TEST"}}], enable_thinking=True
-    )
-    no_thinking = formatter.encode_dialog(
-        [{"role": "user", "slots": {"message": "TEST"}}], enable_thinking=False
-    )
+    thinking = formatter.encode_dialog([{"role": "user", "slots": {"message": "TEST"}}], enable_thinking=True)
+    no_thinking = formatter.encode_dialog([{"role": "user", "slots": {"message": "TEST"}}], enable_thinking=False)
 
     assert (
         bpe_tokenizer_with_think.ids_to_text(thinking["input_ids"].tolist())

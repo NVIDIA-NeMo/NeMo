@@ -39,4 +39,5 @@ class Nemotron3p5PromptFormatter(NemotronNanoV3PromptFormatter):
 
 @registered_prompt_format_fn(Cut, Nemotron3p5PromptFormatter)
 def nemotron3p5(cut: Cut, prompt: Nemotron3p5PromptFormatter):
+    """Format a Lhotse cut with the Nemotron 3.5 SpeechLM wire format."""
     return nemotron_nano_v3(cut, prompt)

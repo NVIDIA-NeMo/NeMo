@@ -102,6 +102,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         return getattr(getattr(self, "llm", None), "mtp", None) is not None
 
     @property
+    def _mtp_num_depths(self) -> int:
+        """Return the logical number of MTP prediction depths."""
+        if not self._mtp_enabled:
+            return 0
+        mtp_config = getattr(self.llm, "mtp_config", None)
+        if mtp_config is None:
+            raise RuntimeError("The attached MTP head does not expose its logical depth through llm.mtp_config")
+        return int(mtp_config.num_layers)
+
+    @property
     def embed_tokens(self):
         """Navigate to the LLM's embedding layer (kept inside the LLM)."""
         if self.llm is None:
@@ -178,8 +188,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         |speech and text embeddings| -> |llm| -> |lm_head| -> |token ids|
 
         ``llm_kwargs`` carries optional THD/packed-sequence metadata
-        (``qkv_format``, ``cu_seqlens``, ``position_ids``, ``max_seqlen``);
-        it is empty for the BSHD path.
+        (``qkv_format``, ``cu_seqlens``, ``position_ids``, ``max_seqlen``)
+        and CP-prepared MTP position IDs. ``mtp_embed_inputs`` is removed and
+        passed through Automodel's positional per-depth embedding contract.
+        These values are absent for the BSHD path.
         """
         # input_embeds: (B, T, H) for BSHD or (T_total, H) for THD packed
         # (the THD shape mirrors Automodel's _shard_thd_chunk_for_te output —
@@ -192,8 +204,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             seq_len = input_embeds.shape[0] if input_embeds.ndim == 2 else input_embeds.shape[1]
             llm_input_ids = torch.zeros((1, seq_len), device=input_embeds.device, dtype=torch.long)
 
+        mtp_embed_inputs = tuple(llm_kwargs.pop("mtp_embed_inputs", ()))
         out = self.llm(
-            input_ids=llm_input_ids,
+            llm_input_ids,
+            *mtp_embed_inputs,
             inputs_embeds=input_embeds,
             attention_mask=attention_mask,
             past_key_values=cache,
@@ -323,6 +337,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 padding_id=self.text_pad_id,
                 placeholder_id=self.audio_locator_tag_id,
                 device_mesh=device_mesh,
+                mtp_num_depths=self._mtp_num_depths,
             )
             if dummy_audio_loss is not None:
                 ans["dummy_audio_loss"] = dummy_audio_loss
@@ -408,11 +423,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         )
         mtp_cfg = self.cfg.get("mtp", None)
         mtp_enabled = mtp_cfg is not None and bool(mtp_cfg.get("enabled", False))
-        if cp_size > 1 and mtp_enabled:
-            raise ValueError(
-                "SALMAutomodel MTP currently requires cp_size=1. Context parallelism uses an interleaved "
-                "THD partition, so rank-local labels cannot be rolled into correct next-token MTP targets yet."
-            )
         if tp_size > 1 and mtp_enabled:
             raise ValueError(
                 "SALMAutomodel MTP currently requires tp_size=1. The MTP head has no tensor-parallel plan, "
@@ -493,10 +503,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             # from the current sequence's last token. Pass cu_seqlens (empty/None for
             # BSHD, where each row is already a single sequence) so the loss derives
             # seq_idx and masks cross-sequence targets.
-            mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
+            mtp_per_depth_targets = inputs.get("mtp_per_depth_targets")
+            mtp_cu_seqlens = (
+                None if mtp_per_depth_targets is not None else inputs.get("llm_kwargs", {}).get("cu_seqlens")
+            )
             with loss_parallel():
                 mtp_loss_output = calculate_mtp_loss(
                     self._mtp_loss_fn,
+                    mtp_per_depth_targets=mtp_per_depth_targets,
                     mtp_per_depth_h=mtp_h,
                     labels=inputs["target_ids"],
                     model=self.llm,
@@ -689,7 +703,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
             # Multi-Token Prediction teacher-forced prefix agreement for each depth.
             mtp_h = forward_outputs.get("mtp_per_depth_h", None)
-            if mtp_h is not None:
+            if mtp_h is not None and "mtp_per_depth_targets" not in inputs:
                 mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
                 correct_by_head, valid_by_head = calculate_mtp_teacher_forced_agreement(
                     mtp_per_depth_h=mtp_h,

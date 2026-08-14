@@ -57,6 +57,23 @@ def test_mtp_enabled_true_when_mtp_attached():
     assert model._mtp_enabled
 
 
+def test_mtp_num_depths_uses_logical_head_depth():
+    model = _bare_model()
+    model.llm = torch.nn.Module()
+    model.llm.mtp = torch.nn.Linear(4, 4)
+    model.llm.mtp_config = type("MTPConfig", (), {"num_layers": 3})()
+
+    assert model._mtp_num_depths == 3
+
+
+def test_mtp_num_depths_is_zero_without_head():
+    model = _bare_model()
+    model.llm = torch.nn.Module()
+    model.llm.mtp = None
+
+    assert model._mtp_num_depths == 0
+
+
 def test_disabled_mtp_overrides_native_checkpoint_head(monkeypatch):
     """Native checkpoint MTP weights are not instantiated when MTP is disabled."""
     from omegaconf import DictConfig
@@ -299,8 +316,12 @@ class _FakeLLM(torch.nn.Module):
         super().__init__()
         self._out = out
         self.mtp = None
+        self.args = None
+        self.kwargs = None
 
-    def forward(self, **_kwargs):
+    def forward(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
         return self._out
 
 
@@ -336,6 +357,30 @@ def test_forward_omits_mtp_per_depth_h_when_absent():
     )
 
     assert 'mtp_per_depth_h' not in result
+
+
+def test_forward_passes_cp_precomputed_mtp_inputs_to_automodel():
+    fake_out = _DictLikeOutput(logits=torch.randn(1, 4, 32))
+    model = _make_forward_model(fake_out)
+    input_embeds = torch.randn(4, 8)
+    mtp_embed_inputs = (torch.randn(4, 8), torch.randn(4, 8))
+    mtp_position_ids = (torch.tensor([1, 2, 3, 0]), torch.tensor([2, 3, 0, 0]))
+
+    model.forward(
+        input_embeds=input_embeds,
+        qkv_format="thd",
+        position_ids=torch.arange(4),
+        mtp_embed_inputs=mtp_embed_inputs,
+        mtp_per_depth_position_ids=mtp_position_ids,
+    )
+
+    assert model.llm.args is not None
+    torch.testing.assert_close(model.llm.args[0], torch.zeros(1, 4, dtype=torch.long))
+    assert len(model.llm.args[1:]) == len(mtp_embed_inputs)
+    for actual, expected in zip(model.llm.args[1:], mtp_embed_inputs):
+        assert actual is expected
+    assert model.llm.kwargs["mtp_per_depth_position_ids"] is mtp_position_ids
+    assert "mtp_embed_inputs" not in model.llm.kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +617,14 @@ def test_training_step_forwards_packed_cu_seqlens_to_mtp_loss(monkeypatch):
     assert captured_kwargs["labels"] is inputs["target_ids"]
     assert captured_kwargs["return_per_depth"] is True
 
+    mtp_per_depth_targets = [torch.tensor([1, 2, 3, 4, -100])]
+    inputs["mtp_per_depth_targets"] = mtp_per_depth_targets
+    captured_kwargs.clear()
+    model._training_step_batch({"input_ids": torch.tensor([[1, 2, 3, 4, 5]])}, batch_idx=1)
+
+    assert captured_kwargs["mtp_per_depth_targets"] is mtp_per_depth_targets
+    assert captured_kwargs["cu_seqlens"] is None
+
 
 def test_mtp_validation_forward_uses_and_restores_native_gate():
     llm = torch.nn.Module()
@@ -605,7 +658,7 @@ def test_mtp_validation_forward_restores_native_gate_after_error():
 
 
 @pytest.mark.parametrize("hook_name", ["on_validation_start", "on_test_start"])
-def test_standalone_evaluation_rejects_mtp_context_parallelism(monkeypatch, hook_name):
+def test_standalone_evaluation_allows_mtp_context_parallelism(monkeypatch, hook_name):
     from omegaconf import DictConfig
 
     import nemo.collections.speechlm2.parts.parallel as parallel_module
@@ -626,8 +679,7 @@ def test_standalone_evaluation_rejects_mtp_context_parallelism(monkeypatch, hook
     model._device_mesh = _Mesh()
     monkeypatch.setattr(parallel_module, "validate_parallelism_compatibility", lambda **_kwargs: None)
 
-    with pytest.raises(ValueError, match="requires cp_size=1"):
-        getattr(model, hook_name)()
+    getattr(model, hook_name)()
 
 
 def test_mtp_rejects_tensor_parallelism_before_training(monkeypatch):

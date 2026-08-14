@@ -39,8 +39,6 @@ hybrid_codec:
   # Mean-only VAE mode with VibeVoice-style per-example noise scaling and no KL.
   # Set to null to learn the variance and use kl_loss_scale/initial_logvar instead.
   vae_std: 0.625
-  # Among residual-enabled training examples, use z this often; the rest use mu.
-  vae_sample_rate: 0.5
   kl_loss_scale: 0.01
   initial_logvar: -6.0
 

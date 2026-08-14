@@ -72,7 +72,6 @@ class HybridCodecOutput:
     residual_mu: torch.Tensor
     residual_logvar: torch.Tensor
     residual_enabled: torch.Tensor
-    residual_sampled: torch.Tensor
     kl_loss: torch.Tensor
 
 
@@ -286,15 +285,12 @@ class AudioCodecModel(ModelPT):
         self.residual_dropout_rate = hybrid_cfg.get("residual_dropout_rate", 0.5)
         self.kl_loss_scale = hybrid_cfg.get("kl_loss_scale", 1.0)
         self.vae_std = hybrid_cfg.get("vae_std")
-        self.vae_sample_rate = hybrid_cfg.get("vae_sample_rate", 1.0)
         initial_logvar = hybrid_cfg.get("initial_logvar", -6.0)
 
         if not 0.0 <= self.residual_dropout_rate <= 1.0:
             raise ValueError(f"Residual dropout rate must be in [0, 1], got {self.residual_dropout_rate}.")
         if self.vae_std is not None and self.vae_std <= 0.0:
             raise ValueError(f"VAE standard deviation must be positive, got {self.vae_std}.")
-        if not 0.0 <= self.vae_sample_rate <= 1.0:
-            raise ValueError(f"VAE sample rate must be in [0, 1], got {self.vae_sample_rate}.")
 
         self.semantic_dim = self.semantic_codec.vector_quantizer.codebook_dim
         self.encoder_dim = self._module_config_value(cfg.audio_encoder, "out_dim")
@@ -330,13 +326,12 @@ class AudioCodecModel(ModelPT):
 
         logging.info(
             "Hybrid codec enabled: semantic_dim=%d, continuous_dim=%d, decoder_dim=%d, residual_dropout=%.3f, "
-            "vae_std=%s, vae_sample_rate=%.3f",
+            "vae_std=%s",
             self.semantic_dim,
             self.continuous_dim,
             self.decoder_dim,
             self.residual_dropout_rate,
             self.vae_std,
-            self.vae_sample_rate,
         )
 
     @property
@@ -456,22 +451,17 @@ class AudioCodecModel(ModelPT):
             kl_loss = residual_mu.new_zeros(())
 
         if self.training:
-            residual_enabled = torch.rand(audio.shape[0], device=audio.device) >= self.residual_dropout_rate
-            residual_sampled = residual_enabled & (
-                torch.rand(audio.shape[0], device=audio.device) < self.vae_sample_rate
-            )
             if self.vae_std is None:
-                residual_z = residual_mu + torch.randn_like(residual_mu) * torch.exp(0.5 * residual_logvar)
+                residual = residual_mu + torch.randn_like(residual_mu) * torch.exp(0.5 * residual_logvar)
             else:
                 noise_scale = self.vae_std * torch.randn(
                     audio.shape[0], device=residual_mu.device, dtype=residual_mu.dtype
                 )
-                residual_z = residual_mu + noise_scale[:, None, None] * torch.randn_like(residual_mu)
-            residual = torch.where(residual_sampled[:, None, None], residual_z, residual_mu)
+                residual = residual_mu + noise_scale[:, None, None] * torch.randn_like(residual_mu)
+            residual_enabled = torch.rand(audio.shape[0], device=audio.device) >= self.residual_dropout_rate
         else:
             residual = residual_mu
             residual_enabled = torch.ones(audio.shape[0], device=audio.device, dtype=torch.bool)
-            residual_sampled = torch.zeros_like(residual_enabled)
 
         residual_mask = residual_enabled[:, None, None].to(residual.dtype)
         residual_embedding = self.residual_to_decoder(residual) * residual_mask
@@ -485,7 +475,6 @@ class AudioCodecModel(ModelPT):
             residual_mu=residual_mu,
             residual_logvar=residual_logvar,
             residual_enabled=residual_enabled,
-            residual_sampled=residual_sampled,
             kl_loss=kl_loss,
         )
 

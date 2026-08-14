@@ -29,6 +29,8 @@ up_sample_rates: [8, 8, 5, 2]
 num_codebooks: 8
 encoder_out_dim: 42
 decoder_input_dim: 48
+# Opt in to symmetric L=4 acoustic FSQ with 50/25/25 quantized/dithered/unquantized training routing.
+dithered_acoustic_fsq: false
 
 model:
 
@@ -136,6 +138,8 @@ model:
     _target_: nemo.collections.tts.modules.audio_codec_modules.GroupFiniteScalarQuantizer
     num_groups: ${num_codebooks}
     num_levels_per_group: [4, 4, 4, 4, 4, 4]
+    dithered_acoustic_fsq: ${dithered_acoustic_fsq}
+    num_semantic_groups: 1
 
   discriminator:
     _target_: nemo.collections.tts.modules.audio_codec_modules.Discriminator

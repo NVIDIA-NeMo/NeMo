@@ -206,6 +206,48 @@ def test_salm_automodel_training_step_uses_dataloader_iter_signature():
     assert list(inspect.signature(SALMAutomodel.training_step).parameters) == ["self", "dataloader_iter"]
 
 
+def test_salm_automodel_pad_token_override_preserves_eot_labels(monkeypatch):
+    seen = {}
+
+    class FakeTokenizer:
+        def __init__(self, _src, *, use_fast, trust_remote_code, pad_token):
+            seen["pad_token"] = pad_token
+            self.pad = 0 if pad_token == "<unk>" else 11
+            self.unk_id = 0
+
+        def add_special_tokens(self, _tokens):
+            return 0
+
+    salm_module = __import__(
+        "nemo.collections.speechlm2.models.salm_automodel", fromlist=["AutoTokenizer"]
+    )
+    monkeypatch.setattr(salm_module, "AutoTokenizer", FakeTokenizer)
+    model = SALMAutomodel(
+        {
+            "pretrained_llm": "unused",
+            "audio_locator_tag": "<|audio|>",
+            "pad_token": "<unk>",
+        }
+    )
+
+    assert seen["pad_token"] == "<unk>"
+    assert model.text_pad_id == 0
+
+    from nemo.collections.speechlm2.parts.packed_sequences import (
+        prepare_packed_llm_inputs,
+    )
+
+    packed = prepare_packed_llm_inputs(
+        input_ids=torch.tensor([[0, 10, 11, 10, 42, 11]]),
+        text_embs=torch.randn(1, 6, 2),
+        audio_embs=[],
+        target_ids=torch.tensor([[-100, -100, -100, -100, 42, 11]]),
+        padding_id=model.text_pad_id,
+        placeholder_id=999,
+    )
+    assert packed["target_ids"].tolist() == [-100, -100, 42, 11, -100]
+
+
 def test_salm_automodel_fused_linear_forward_keeps_hidden_states_without_logits():
     class FakeLLM(torch.nn.Module):
         def __init__(self):

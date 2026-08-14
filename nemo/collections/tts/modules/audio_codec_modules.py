@@ -1351,12 +1351,13 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
     Args:
         num_levels: number of levels for each dimension/element of the input vector
         eps: small regularization constant for scaling
+        symmetric_levels: use uniformly spaced levels spanning [-1, 1]
 
     References:
         Mentzer et al., Finite Scalar Quantization: VQ-VAE Made Simple (https://arxiv.org/abs/2309.15505v1)
     """
 
-    def __init__(self, num_levels: List[int], eps: float = 1e-3):
+    def __init__(self, num_levels: List[int], eps: float = 1e-3, symmetric_levels: bool = False):
         super().__init__()
 
         # index base per dimension of the input vector
@@ -1372,6 +1373,7 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
 
         # Regularization
         self.eps = eps
+        self.symmetric_levels = symmetric_levels
 
         logging.debug('Initializing %s with', self.__class__.__name__)
         logging.debug('\tdim:           %s', self.dim)
@@ -1452,6 +1454,12 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
         output_types={"codes": NeuralType(('B', 'D', 'T'), TokenIndex())},
     )
     def inputs_to_codes(self, inputs: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
+        if self.symmetric_levels:
+            # Uniformly quantize clipped inputs to levels spanning [-1, 1].
+            scale = (self.num_levels - 1) / 2
+            codes_nonnegative = self.round(inputs=(inputs.clamp(-1.0, 1.0) + 1.0) * scale, input_len=input_len)
+            return codes_nonnegative / scale - 1.0
+
         # apply compression
         compressed = self.compress(inputs=inputs, input_len=input_len)
         # apply rounding to nearest integer
@@ -1463,11 +1471,17 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
 
     def codes_to_nonnegative(self, codes: torch.Tensor) -> torch.Tensor:
         """Convert values centered arouund zero to nonnegative values."""
+        if self.symmetric_levels:
+            scale = (self.num_levels - 1) / 2
+            return torch.round((codes + 1.0) * scale)
         scale = offset = self.num_levels // 2
         return scale * codes + offset
 
     def nonnegative_to_codes(self, codes_nonnegative: torch.Tensor) -> torch.Tensor:
         """Convert nonnegative values to values centered arouund zero."""
+        if self.symmetric_levels:
+            scale = (self.num_levels - 1) / 2
+            return codes_nonnegative / scale - 1.0
         scale = offset = self.num_levels // 2
         return (codes_nonnegative - offset) / scale
 
@@ -1555,22 +1569,49 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
 
     Args:
         num_groups: number of groups to split the input into, each group will be quantized separately using num_codebooks//num_groups codebooks
-        codebook_dim: embedding dimension, will be split into num_groups
+        num_levels_per_group: scalar levels used by each group
+        dithered_acoustic_fsq: use symmetric levels and 50/25/25 dither-style routing for trailing acoustic groups
+            during training
+        num_semantic_groups: number of leading groups that remain normally quantized with
+            ``num_levels_per_group``
         **kwargs: parameters of FiniteScalarQuantizer
 
     References:
         Yang et al, HiFi-Codec: Group-residual Vector quantization for High Fidelity Audio Codec, 2023 (http://arxiv.org/abs/2305.02765).
     """
 
-    def __init__(self, num_groups: int, num_levels_per_group: List[int], **kwargs):
+    def __init__(
+        self,
+        num_groups: int,
+        num_levels_per_group: List[int],
+        dithered_acoustic_fsq: bool = False,
+        num_semantic_groups: int = 0,
+        **kwargs,
+    ):
         super().__init__()
 
         self.num_groups = num_groups
         self.codebook_dim_per_group = len(num_levels_per_group)
+        self.dithered_acoustic_fsq = dithered_acoustic_fsq
+        self.num_semantic_groups = num_semantic_groups
+
+        if self.dithered_acoustic_fsq:
+            if not 0 < self.num_semantic_groups < self.num_groups:
+                raise ValueError(
+                    "Dithered acoustic FSQ requires num_semantic_groups in "
+                    f"[1, {self.num_groups - 1}], got {self.num_semantic_groups}."
+                )
 
         # Initialize FSQ for each group
         self.fsqs = torch.nn.ModuleList(
-            [FiniteScalarQuantizer(num_levels=num_levels_per_group, **kwargs) for _ in range(self.num_groups)]
+            [
+                FiniteScalarQuantizer(
+                    num_levels=num_levels_per_group,
+                    symmetric_levels=self.dithered_acoustic_fsq and group_index >= self.num_semantic_groups,
+                    **kwargs,
+                )
+                for group_index in range(self.num_groups)
+            ]
         )
 
         logging.debug('Initialized %s with', self.__class__.__name__)
@@ -1596,13 +1637,35 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
 
     @typecheck()
     def forward(self, inputs, input_len):
-        """Quantize each group separately, then concatenate the results."""
+        """Quantize each group, with optional dither-style routing for acoustic groups during training."""
         inputs_grouped = inputs.chunk(self.num_groups, dim=1)
 
         dequantized, indices = [], []
 
-        for in_group, fsq_group in zip(inputs_grouped, self.fsqs):
+        acoustic_route = None
+        if self.training and self.dithered_acoustic_fsq:
+            acoustic_route = torch.rand(inputs.size(0), 1, 1, device=inputs.device)
+
+        for group_index, (in_group, fsq_group) in enumerate(zip(inputs_grouped, self.fsqs)):
             dequantized_group, indices_group = fsq_group(inputs=in_group, input_len=input_len)
+
+            if acoustic_route is not None and group_index >= self.num_semantic_groups:
+                continuous_group = in_group.clamp(min=-1.0, max=1.0)
+
+                num_levels = fsq_group.num_levels.to(device=in_group.device, dtype=in_group.dtype)
+                dither_noise = (2.0 * torch.rand_like(continuous_group) - 1.0) / num_levels
+                dithered_group = continuous_group + dither_noise
+
+                use_dither = acoustic_route < 0.25
+                use_unquantized = (acoustic_route >= 0.25) & (acoustic_route < 0.5)
+                dequantized_group = torch.where(
+                    use_dither,
+                    dithered_group,
+                    torch.where(use_unquantized, continuous_group, dequantized_group),
+                )
+                if input_len is not None:
+                    dequantized_group = mask_sequence_tensor(dequantized_group, input_len)
+
             dequantized.append(dequantized_group)
             indices.append(indices_group)
 

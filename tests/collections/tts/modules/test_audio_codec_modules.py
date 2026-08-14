@@ -471,3 +471,71 @@ class TestFiniteScalarQuantizer:
                 torch.testing.assert_close(
                     indices, indices_fw_grouped[g], msg=f'example {i}: indices mismatch for group {g}'
                 )
+
+    @pytest.mark.unit
+    def test_group_fsq_uses_symmetric_l4_only_for_acoustic_groups_when_enabled(self):
+        disabled = GroupFiniteScalarQuantizer(
+            num_groups=13,
+            num_levels_per_group=[4, 4, 4, 4, 4, 4],
+            dithered_acoustic_fsq=False,
+            num_semantic_groups=1,
+        )
+        assert [fsq.codebook_size for fsq in disabled.fsqs] == [4**6] * 13
+        assert not any(fsq.symmetric_levels for fsq in disabled.fsqs)
+
+        enabled = GroupFiniteScalarQuantizer(
+            num_groups=13,
+            num_levels_per_group=[4, 4, 4, 4, 4, 4],
+            dithered_acoustic_fsq=True,
+            num_semantic_groups=1,
+        )
+        assert enabled.codebook_size == 4**6
+        assert [fsq.codebook_size for fsq in enabled.fsqs] == [4**6] * 13
+        assert not enabled.fsqs[0].symmetric_levels
+        assert all(fsq.symmetric_levels for fsq in enabled.fsqs[1:])
+
+        acoustic_levels = enabled.fsqs[1].nonnegative_to_codes(torch.arange(4).view(1, 1, 4))
+        acoustic_levels = acoustic_levels[:, 0, :].squeeze(0)
+        torch.testing.assert_close(acoustic_levels, torch.tensor([-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0]))
+
+    @pytest.mark.unit
+    def test_group_fsq_dithers_only_symmetric_acoustic_groups(self, monkeypatch):
+        gfsq = GroupFiniteScalarQuantizer(
+            num_groups=3,
+            num_levels_per_group=[4, 4],
+            dithered_acoustic_fsq=True,
+            num_semantic_groups=1,
+        )
+        inputs = torch.tensor(
+            [
+                [[-2.0, 0.0], [2.0, 0.5], [-1.5, 0.0], [1.5, 0.5], [-1.0, 0.0], [1.0, 0.5]],
+                [[-1.0, 0.0], [1.0, 0.5], [-0.5, 0.0], [0.5, 0.5], [-0.25, 0.0], [0.25, 0.5]],
+                [[-2.0, 0.0], [2.0, 0.5], [-1.5, 0.0], [1.5, 0.5], [-1.0, 0.0], [1.0, 0.5]],
+                [[-1.0, 0.0], [1.0, 0.5], [-0.5, 0.0], [0.5, 0.5], [-0.25, 0.0], [0.25, 0.5]],
+            ]
+        )
+        input_len = torch.full((inputs.size(0),), inputs.size(2), dtype=torch.int32)
+
+        assert gfsq.codebook_size == 4**2
+        assert [fsq.codebook_size for fsq in gfsq.fsqs] == [4**2] * 3
+
+        gfsq.eval()
+        quantized, expected_indices = gfsq(inputs=inputs, input_len=input_len)
+
+        gfsq.train()
+        monkeypatch.setattr(
+            torch,
+            'rand',
+            lambda *shape, **kwargs: torch.tensor([0.1, 0.3, 0.6, 0.9], device=kwargs.get('device')).view(4, 1, 1),
+        )
+        monkeypatch.setattr(torch, 'rand_like', lambda value: torch.ones_like(value))
+        mixed, actual_indices = gfsq(inputs=inputs, input_len=input_len)
+
+        group_dim = gfsq.codebook_dim_per_group
+        torch.testing.assert_close(mixed[:, :group_dim], quantized[:, :group_dim])
+        torch.testing.assert_close(mixed[2:, group_dim:], quantized[2:, group_dim:])
+        torch.testing.assert_close(actual_indices, expected_indices)
+
+        continuous_acoustic = torch.cat(inputs.chunk(gfsq.num_groups, dim=1)[1:], dim=1).clamp(-1.0, 1.0)
+        torch.testing.assert_close(mixed[0, group_dim:], continuous_acoustic[0] + 1.0 / 4.0)
+        torch.testing.assert_close(mixed[1, group_dim:], continuous_acoustic[1])

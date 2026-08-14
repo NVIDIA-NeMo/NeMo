@@ -69,7 +69,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
         self.tokenizer = AutoTokenizer(
-            tokenizer_src, use_fast=True, trust_remote_code=self.cfg.get("trust_remote_code", False)
+            tokenizer_src,
+            use_fast=True,
+            trust_remote_code=self.cfg.get("trust_remote_code", False),
+            pad_token=self.cfg.get("pad_token", None),
         )
         self.tokenizer.add_special_tokens({"additional_special_tokens": [self.audio_locator_tag]})
         self.speaker_token_ids = build_speaker_tokens(self.cfg.get("speaker_tokens", None), self.tokenizer)

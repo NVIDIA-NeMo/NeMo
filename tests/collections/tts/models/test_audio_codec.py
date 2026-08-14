@@ -95,8 +95,7 @@ def acoustic_codec_model():
     return acoustic_codec_model
 
 
-@pytest.fixture()
-def hybrid_codec_model():
+def create_hybrid_codec_model(vae_std=None, vae_sample_rate=1.0, residual_dropout_rate=1.0):
     semantic_model_cfg = create_codec_config()
     semantic_model_cfg.vector_quantizer.params.num_groups = 1
     semantic_model_cfg.audio_encoder.params.out_dim = 5
@@ -107,11 +106,19 @@ def hybrid_codec_model():
     hybrid_model_cfg.audio_encoder.params.out_dim = 35
     hybrid_model_cfg.hybrid_codec = {
         'continuous_dim': 35,
-        'residual_dropout_rate': 1.0,
+        'residual_dropout_rate': residual_dropout_rate,
         'kl_loss_scale': 0.1,
+        'vae_sample_rate': vae_sample_rate,
     }
+    if vae_std is not None:
+        hybrid_model_cfg.hybrid_codec.vae_std = vae_std
     hybrid_model_cfg.optim = {"_target_": "torch.optim.Adam", "lr": 1e-3}
     return AudioCodecModel(cfg=hybrid_model_cfg)
+
+
+@pytest.fixture()
+def hybrid_codec_model():
+    return create_hybrid_codec_model()
 
 
 class TestAudioCodecModel:
@@ -216,6 +223,36 @@ class TestAudioCodecModel:
         assert all(
             id(parameter) not in optimizer_params for parameter in hybrid_codec_model.semantic_codec.parameters()
         )
+
+    @pytest.mark.unit
+    def test_hybrid_codec_fixed_vae_std(self, monkeypatch):
+        vae_std = 0.625
+        hybrid_codec_model = create_hybrid_codec_model(vae_std=vae_std, vae_sample_rate=0.5, residual_dropout_rate=0.0)
+        audio = torch.randn(size=(2, 12000))
+        audio_len = torch.tensor([12000, 10000])
+        monkeypatch.setattr(torch, "randn_like", torch.ones_like)
+        rand_values = iter([torch.ones(2), torch.tensor([0.25, 0.75])])
+        monkeypatch.setattr(torch, "rand", lambda *args, **kwargs: next(rand_values).to(kwargs.get("device")))
+        monkeypatch.setattr(
+            torch,
+            "randn",
+            lambda *args, **kwargs: torch.ones(*args, device=kwargs.get("device"), dtype=kwargs.get("dtype")),
+        )
+
+        hybrid_codec_model.train()
+        hybrid = hybrid_codec_model._encode_hybrid(
+            audio=audio,
+            audio_len=audio_len,
+            sample_rate=hybrid_codec_model.sample_rate,
+        )
+
+        assert torch.allclose(hybrid.residual_logvar.exp(), torch.full_like(hybrid.residual_logvar, vae_std**2))
+        assert torch.equal(hybrid.kl_loss, torch.zeros_like(hybrid.kl_loss))
+        assert hybrid_codec_model.residual_logvar is None
+        assert not any(key.startswith("residual_logvar.") for key in hybrid_codec_model.state_dict())
+        assert torch.equal(hybrid.residual_sampled, torch.tensor([True, False]))
+        assert torch.allclose(hybrid.decoder_inputs[0, 5:], hybrid.residual_mu[0] + vae_std)
+        assert torch.allclose(hybrid.decoder_inputs[1, 5:], hybrid.residual_mu[1])
 
     @pytest.mark.unit
     def test_hybrid_codec_encode_and_decode(self, hybrid_codec_model):

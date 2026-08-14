@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import itertools
+import math
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +72,7 @@ class HybridCodecOutput:
     residual_mu: torch.Tensor
     residual_logvar: torch.Tensor
     residual_enabled: torch.Tensor
+    residual_sampled: torch.Tensor
     kl_loss: torch.Tensor
 
 
@@ -283,10 +285,16 @@ class AudioCodecModel(ModelPT):
         hybrid_cfg = cfg.hybrid_codec
         self.residual_dropout_rate = hybrid_cfg.get("residual_dropout_rate", 0.5)
         self.kl_loss_scale = hybrid_cfg.get("kl_loss_scale", 1.0)
+        self.vae_std = hybrid_cfg.get("vae_std")
+        self.vae_sample_rate = hybrid_cfg.get("vae_sample_rate", 1.0)
         initial_logvar = hybrid_cfg.get("initial_logvar", -6.0)
 
         if not 0.0 <= self.residual_dropout_rate <= 1.0:
             raise ValueError(f"Residual dropout rate must be in [0, 1], got {self.residual_dropout_rate}.")
+        if self.vae_std is not None and self.vae_std <= 0.0:
+            raise ValueError(f"VAE standard deviation must be positive, got {self.vae_std}.")
+        if not 0.0 <= self.vae_sample_rate <= 1.0:
+            raise ValueError(f"VAE sample rate must be in [0, 1], got {self.vae_sample_rate}.")
 
         self.semantic_dim = self.semantic_codec.vector_quantizer.codebook_dim
         self.encoder_dim = self._module_config_value(cfg.audio_encoder, "out_dim")
@@ -295,11 +303,12 @@ class AudioCodecModel(ModelPT):
 
         self.semantic_to_decoder = torch.nn.Conv1d(self.semantic_dim, self.decoder_dim, kernel_size=1)
         self.residual_mu = torch.nn.Conv1d(self.encoder_dim, self.continuous_dim, kernel_size=1)
-        self.residual_logvar = torch.nn.Conv1d(self.encoder_dim, self.continuous_dim, kernel_size=1)
+        self.residual_logvar = None
+        if self.vae_std is None:
+            self.residual_logvar = torch.nn.Conv1d(self.encoder_dim, self.continuous_dim, kernel_size=1)
+            torch.nn.init.zeros_(self.residual_logvar.weight)
+            torch.nn.init.constant_(self.residual_logvar.bias, initial_logvar)
         self.residual_to_decoder = torch.nn.Conv1d(self.continuous_dim, self.decoder_dim, kernel_size=1, bias=False)
-
-        torch.nn.init.zeros_(self.residual_logvar.weight)
-        torch.nn.init.constant_(self.residual_logvar.bias, initial_logvar)
 
         # With the reference 6-D semantic + 72-D spectral layout, initialize the additive
         # projections to exactly reproduce the previous 78-D concatenated decoder input.
@@ -320,11 +329,14 @@ class AudioCodecModel(ModelPT):
                 self.residual_to_decoder.weight[self.semantic_dim :, :, 0] = torch.eye(self.continuous_dim)
 
         logging.info(
-            "Hybrid codec enabled: semantic_dim=%d, continuous_dim=%d, decoder_dim=%d, residual_dropout=%.3f",
+            "Hybrid codec enabled: semantic_dim=%d, continuous_dim=%d, decoder_dim=%d, residual_dropout=%.3f, "
+            "vae_std=%s, vae_sample_rate=%.3f",
             self.semantic_dim,
             self.continuous_dim,
             self.decoder_dim,
             self.residual_dropout_rate,
+            self.vae_std,
+            self.vae_sample_rate,
         )
 
     @property
@@ -434,17 +446,32 @@ class AudioCodecModel(ModelPT):
         semantic_embedding = self.semantic_to_decoder(semantic_codes)
 
         residual_mu = self.residual_mu(encoded)
-        residual_logvar = self.residual_logvar(encoded).clamp(min=-30.0, max=20.0)
-        kl_loss = self._masked_standard_normal_kl(
-            residual_mu=residual_mu, residual_logvar=residual_logvar, encoded_len=encoded_len
-        )
+        if self.vae_std is None:
+            residual_logvar = self.residual_logvar(encoded).clamp(min=-30.0, max=20.0)
+            kl_loss = self._masked_standard_normal_kl(
+                residual_mu=residual_mu, residual_logvar=residual_logvar, encoded_len=encoded_len
+            )
+        else:
+            residual_logvar = torch.full_like(residual_mu, 2.0 * math.log(self.vae_std))
+            kl_loss = residual_mu.new_zeros(())
 
         if self.training:
-            residual = residual_mu + torch.randn_like(residual_mu) * torch.exp(0.5 * residual_logvar)
             residual_enabled = torch.rand(audio.shape[0], device=audio.device) >= self.residual_dropout_rate
+            residual_sampled = residual_enabled & (
+                torch.rand(audio.shape[0], device=audio.device) < self.vae_sample_rate
+            )
+            if self.vae_std is None:
+                residual_z = residual_mu + torch.randn_like(residual_mu) * torch.exp(0.5 * residual_logvar)
+            else:
+                noise_scale = self.vae_std * torch.randn(
+                    audio.shape[0], device=residual_mu.device, dtype=residual_mu.dtype
+                )
+                residual_z = residual_mu + noise_scale[:, None, None] * torch.randn_like(residual_mu)
+            residual = torch.where(residual_sampled[:, None, None], residual_z, residual_mu)
         else:
             residual = residual_mu
             residual_enabled = torch.ones(audio.shape[0], device=audio.device, dtype=torch.bool)
+            residual_sampled = torch.zeros_like(residual_enabled)
 
         residual_mask = residual_enabled[:, None, None].to(residual.dtype)
         residual_embedding = self.residual_to_decoder(residual) * residual_mask
@@ -458,6 +485,7 @@ class AudioCodecModel(ModelPT):
             residual_mu=residual_mu,
             residual_logvar=residual_logvar,
             residual_enabled=residual_enabled,
+            residual_sampled=residual_sampled,
             kl_loss=kl_loss,
         )
 
@@ -1178,12 +1206,10 @@ class AudioCodecModel(ModelPT):
         se_params = self.speaker_encoder.parameters() if self.use_scl_loss else []
         if self.hybrid_codec_enabled:
             vq_params = []
-            hybrid_params = itertools.chain(
-                self.semantic_to_decoder.parameters(),
-                self.residual_mu.parameters(),
-                self.residual_logvar.parameters(),
-                self.residual_to_decoder.parameters(),
-            )
+            hybrid_modules = [self.semantic_to_decoder, self.residual_mu, self.residual_to_decoder]
+            if self.residual_logvar is not None:
+                hybrid_modules.append(self.residual_logvar)
+            hybrid_params = itertools.chain.from_iterable(module.parameters() for module in hybrid_modules)
         else:
             vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
             hybrid_params = []

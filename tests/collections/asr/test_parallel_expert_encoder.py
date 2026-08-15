@@ -194,7 +194,10 @@ def test_online_inference_context_toggles_dispatch():
     [
         (10, 240),  # 3 full windows
         (10, 200),  # partial last window
+        (10, 201),  # partial last window requiring ceil division
+        (10, 84),  # half-step tail that Python round-to-even used to drop
         (5, 64),  # many small windows
+        (5, 65),  # many small windows requiring ceil division
         (50, 160),  # single window -> fast path delegates to _forward
     ],
 )

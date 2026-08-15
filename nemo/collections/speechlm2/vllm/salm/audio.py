@@ -221,11 +221,17 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
     def _get_encoder_chunk_size_seconds(self) -> float | None:
         """Return the per-encoder-call chunk size baked into the checkpoint.
 
-        Mirrors the training-time ``model.encoder_chunk_size_seconds`` field
-        (see ``encode_audio_with_optional_chunking``). ``None`` means the
-        encoder runs once over the full audio, matching legacy checkpoints.
+        Standard perception encoders mirror the training-time
+        ``model.encoder_chunk_size_seconds`` field. A mounted
+        ParallelExpertEncoder instead owns its context-preserving online
+        windowing and the model deliberately bypasses generic waveform
+        chunking, so its prompt estimator must also use one full-audio pass.
+        ``None`` means the encoder runs once over the full audio.
         """
-        return getattr(self.get_hf_config(), "encoder_chunk_size_seconds", None)
+        config = self.get_hf_config()
+        if getattr(config, "pe_encoder_path", None) not in (None, "", False):
+            return None
+        return getattr(config, "encoder_chunk_size_seconds", None)
 
     @staticmethod
     def _estimate_audio_tokens_single_pass(audio_length_samples: int) -> int:

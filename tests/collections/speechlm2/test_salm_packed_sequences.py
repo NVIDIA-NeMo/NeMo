@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import nemo.collections.speechlm2.parts.packed_sequences as packed_sequences_module
 from nemo.collections.speechlm2.parts.mtp import iter_mtp_depth_targets
 from nemo.collections.speechlm2.parts.packed_sequences import (
     _build_packed_mtp_inputs,
@@ -250,6 +251,31 @@ def test_build_packed_mtp_inputs_reuses_resolved_seq_idx(monkeypatch):
 
     assert len(calls) == 1
     assert len(mtp_inputs.targets) == 2
+
+
+def test_build_packed_mtp_inputs_reuses_shift_masks(monkeypatch):
+    """Embeddings and position IDs reuse one packed-boundary mask per depth."""
+    packed = {
+        "inputs_embeds": torch.arange(16, dtype=torch.float32).reshape(8, 2),
+        "labels": torch.arange(8),
+        "position_ids": torch.tensor([0, 1, 2, 3, 0, 1, 2, 3]),
+        "cu_seqlens": torch.tensor([0, 4, 8], dtype=torch.int32),
+    }
+    shift = packed_sequences_module._shift_packed_tensor_for_mtp
+    masks_by_depth = {}
+
+    def _record_shift(tensor, depth, valid_mask):
+        masks_by_depth.setdefault(depth, []).append(valid_mask)
+        return shift(tensor, depth, valid_mask)
+
+    monkeypatch.setattr(packed_sequences_module, "_shift_packed_tensor_for_mtp", _record_shift)
+
+    _build_packed_mtp_inputs(packed, 2)
+
+    assert set(masks_by_depth) == {1, 2}
+    for masks in masks_by_depth.values():
+        assert len(masks) == 2
+        assert masks[0] is masks[1]
 
 
 def test_position_ids_reset_per_utt():

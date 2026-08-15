@@ -457,7 +457,7 @@ def test_validation_step_preserves_mtp_counter_precision_with_bf16_logits(monkey
 
 
 def test_validation_step_warns_when_cp_disables_mtp_teacher_forced_metrics(monkeypatch):
-    """CP-precomputed MTP targets disable agreement metrics with a visible warning."""
+    """CP-precomputed MTP targets disable the unused MTP forward with a visible warning."""
     model = _bare_model()
     model.llm = torch.nn.Module()
     model.llm.mtp = torch.nn.Identity()
@@ -473,10 +473,13 @@ def test_validation_step_warns_when_cp_disables_mtp_teacher_forced_metrics(monke
         "llm_kwargs": {},
     }
     model.prepare_inputs = lambda _batch: inputs
-    model.forward = lambda *_args, **_kwargs: {
-        "logits": torch.zeros(2, 4),
-        "mtp_per_depth_h": [torch.zeros(2, 4)],
-    }
+    mtp_eval_states = []
+
+    def _forward(*_args, **_kwargs):
+        mtp_eval_states.append(model.llm.compute_mtp_in_eval)
+        return {"logits": torch.zeros(2, 4)}
+
+    model.forward = _forward
     monkeypatch.setattr(
         salm_module,
         "calculate_mtp_teacher_forced_agreement",
@@ -491,6 +494,7 @@ def test_validation_step_warns_when_cp_disables_mtp_teacher_forced_metrics(monke
 
     SALMAutomodel.validation_step(model, {"ds": {}}, batch_idx=0)
 
+    assert mtp_eval_states == [False]
     assert warnings == [
         (
             "MTP teacher-forced agreement metrics are disabled under context parallelism because "

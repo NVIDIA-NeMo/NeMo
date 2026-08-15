@@ -371,13 +371,25 @@ class _PackedMTPInputs:
     targets: tuple[Tensor, ...]
 
 
-def _shift_packed_tensor_for_mtp(tensor: Tensor, depth: int, seq_idx: Tensor) -> Tensor:
+def _build_packed_mtp_shift_masks(seq_idx: Tensor, num_depths: int) -> tuple[Tensor, ...]:
+    """Build one packed-boundary validity mask per MTP depth."""
+    if num_depths < 1:
+        raise ValueError(f"num_depths must be positive, got {num_depths}")
+
+    token_idx = torch.arange(seq_idx.numel(), device=seq_idx.device)
+    return tuple(
+        (token_idx + depth < seq_idx.numel()) & (torch.roll(seq_idx, shifts=-depth, dims=0) == seq_idx)
+        for depth in range(1, num_depths + 1)
+    )
+
+
+def _shift_packed_tensor_for_mtp(tensor: Tensor, depth: int, valid_mask: Tensor) -> Tensor:
     """Shift a packed tensor left without crossing document boundaries.
 
     Args:
         tensor: Global packed tensor of shape [tokens, ...].
         depth: Number of future-token positions to shift.
-        seq_idx: Packed document IDs of shape [tokens].
+        valid_mask: Precomputed packed-boundary validity mask of shape [tokens].
 
     Returns:
         A tensor with the same shape and dtype as ``tensor``. Positions whose
@@ -385,15 +397,13 @@ def _shift_packed_tensor_for_mtp(tensor: Tensor, depth: int, seq_idx: Tensor) ->
     """
     if depth < 1:
         raise ValueError(f"MTP depth must be positive, got {depth}")
-    if tensor.shape[0] != seq_idx.shape[0]:
+    if tensor.shape[0] != valid_mask.shape[0]:
         raise ValueError(
-            f"Packed tensor token count {tensor.shape[0]} does not match seq_idx token count {seq_idx.shape[0]}"
+            f"Packed tensor token count {tensor.shape[0]} does not match validity mask token count {valid_mask.shape[0]}"
         )
 
     shifted = torch.roll(tensor, shifts=-depth, dims=0)
-    shifted_seq_idx = torch.roll(seq_idx, shifts=-depth, dims=0)
-    token_idx = torch.arange(seq_idx.numel(), device=seq_idx.device)
-    valid = (token_idx + depth < seq_idx.numel()) & (shifted_seq_idx == seq_idx)
+    valid = valid_mask
     while valid.ndim < shifted.ndim:
         valid = valid.unsqueeze(-1)
     return torch.where(valid, shifted, torch.zeros((), dtype=tensor.dtype, device=tensor.device))
@@ -415,8 +425,15 @@ def _build_packed_mtp_inputs(packed: dict[str, Tensor], num_depths: int) -> _Pac
         raise RuntimeError("Could not derive packed sequence IDs from cu_seqlens")
 
     depths = range(1, num_depths + 1)
+    valid_masks = _build_packed_mtp_shift_masks(seq_idx, num_depths)
     return _PackedMTPInputs(
-        embed_inputs=tuple(_shift_packed_tensor_for_mtp(packed["inputs_embeds"], depth, seq_idx) for depth in depths),
-        position_ids=tuple(_shift_packed_tensor_for_mtp(packed["position_ids"], depth, seq_idx) for depth in depths),
+        embed_inputs=tuple(
+            _shift_packed_tensor_for_mtp(packed["inputs_embeds"], depth, valid_mask)
+            for depth, valid_mask in zip(depths, valid_masks)
+        ),
+        position_ids=tuple(
+            _shift_packed_tensor_for_mtp(packed["position_ids"], depth, valid_mask)
+            for depth, valid_mask in zip(depths, valid_masks)
+        ),
         targets=tuple(iter_mtp_depth_targets(packed["labels"], num_depths, seq_idx=seq_idx)),
     )

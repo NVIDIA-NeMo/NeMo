@@ -667,8 +667,15 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             if dataset_batch is None:
                 continue  # some dataset is exhausted
             inputs = self.prepare_inputs(dataset_batch)
+            mtp_metrics_disabled_for_cp = self._mtp_enabled and "mtp_per_depth_targets" in inputs
+            if mtp_metrics_disabled_for_cp:
+                logging.warning(
+                    "MTP teacher-forced agreement metrics are disabled under context parallelism because "
+                    "rank-local verifier predictions cannot be shifted across CP boundaries.",
+                    mode=logging_mode.ONCE,
+                )
             # Enable MTP only around the validation forward while keeping the model in eval mode.
-            with mtp_validation_forward(self.llm, enabled=self._mtp_enabled):
+            with mtp_validation_forward(self.llm, enabled=self._mtp_enabled and not mtp_metrics_disabled_for_cp):
                 forward_outputs = self(
                     inputs["input_embeds"],
                     attention_mask=inputs["attention_mask"],
@@ -703,13 +710,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
             # Multi-Token Prediction teacher-forced prefix agreement for each depth.
             mtp_h = forward_outputs.get("mtp_per_depth_h", None)
-            if mtp_h is not None and "mtp_per_depth_targets" in inputs:
-                logging.warning(
-                    "MTP teacher-forced agreement metrics are disabled under context parallelism because "
-                    "rank-local verifier predictions cannot be shifted across CP boundaries.",
-                    mode=logging_mode.ONCE,
-                )
-            elif mtp_h is not None:
+            if mtp_h is not None:
                 mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
                 correct_by_head, valid_by_head = calculate_mtp_teacher_forced_agreement(
                     mtp_per_depth_h=mtp_h,

@@ -857,6 +857,40 @@ class TestMTPPlugin:
         assert padded["backbone.embeddings.weight"].shape == (5, 3)
         assert padded["lm_head.weight"].shape == (5, 3)
 
+    def test_mtp_weight_remap_splits_packed_experts(self):
+        """Packed Automodel MTP experts must become vLLM per-expert weights."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import _remap_nemo_mtp_weights
+
+        down_projs = torch.arange(24, dtype=torch.float32).reshape(2, 4, 3)
+        up_projs = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+        remapped = dict(
+            _remap_nemo_mtp_weights(
+                [
+                    ("llm.mtp.layers.1.mixer.experts.down_projs", down_projs),
+                    ("llm.mtp.layers.1.mixer.experts.gate_and_up_projs", up_projs),
+                    ("llm.mtp.layers.1.mixer.experts._extra_state", torch.tensor(1)),
+                ]
+            )
+        )
+
+        assert set(remapped) == {
+            "mtp.layers.1.mixer.experts.0.down_proj.weight",
+            "mtp.layers.1.mixer.experts.1.down_proj.weight",
+            "mtp.layers.1.mixer.experts.0.up_proj.weight",
+            "mtp.layers.1.mixer.experts.1.up_proj.weight",
+        }
+        for expert_idx in range(2):
+            down = remapped[f"mtp.layers.1.mixer.experts.{expert_idx}.down_proj.weight"]
+            up = remapped[f"mtp.layers.1.mixer.experts.{expert_idx}.up_proj.weight"]
+            assert down.shape == (3, 4)
+            assert up.shape == (4, 3)
+            assert down.dtype == down_projs.dtype
+            assert up.dtype == up_projs.dtype
+            assert torch.equal(down, down_projs[expert_idx].t())
+            assert torch.equal(up, up_projs[expert_idx].t())
+
     @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
     def test_mtp_hybrid_override_pattern_from_config(self):
         """mtp_hybrid_override_pattern should read hybrid_override_pattern from mtp config dict."""

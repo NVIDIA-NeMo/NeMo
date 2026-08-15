@@ -39,10 +39,26 @@ from nemo.collections.speechlm2.vllm.salm.audio import _pad_to_vocab_size
 def _remap_nemo_mtp_weights(
     items: Iterable[tuple[str, torch.Tensor]], target_vocab: int | None = None
 ) -> Iterable[tuple[str, torch.Tensor]]:
-    """Map exported NeMo SpeechLM names to ``NemotronHMTP`` aliases."""
+    """Map exported NeMo SpeechLM names and packed experts to vLLM aliases."""
     for name, tensor in items:
+        if "._extra_state" in name:
+            continue
+
         if name.startswith("llm."):
             name = name[len("llm.") :]
+
+        # NeMo stores every expert in one rank-3 tensor, while vLLM's
+        # NemotronHMTP loader expects one transposed matrix per expert.
+        if name.endswith(".experts.down_projs"):
+            prefix = name.removesuffix(".experts.down_projs")
+            for expert_idx, expert_tensor in enumerate(tensor):
+                yield f"{prefix}.experts.{expert_idx}.down_proj.weight", expert_tensor.t()
+            continue
+        if name.endswith(".experts.gate_and_up_projs"):
+            prefix = name.removesuffix(".experts.gate_and_up_projs")
+            for expert_idx, expert_tensor in enumerate(tensor):
+                yield f"{prefix}.experts.{expert_idx}.up_proj.weight", expert_tensor.t()
+            continue
 
         # NemotronHMTP.load_weights only admits embedding names containing
         # ``embeddings`` and then maps this backbone alias to

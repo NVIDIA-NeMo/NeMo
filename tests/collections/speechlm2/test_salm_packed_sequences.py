@@ -21,12 +21,11 @@ import torch
 
 import nemo.collections.speechlm2.parts.packed_sequences as packed_sequences_module
 from nemo.collections.speechlm2.parts.mtp import iter_mtp_depth_targets
-from nemo.collections.speechlm2.parts.packed_sequences import (
-    _build_packed_mtp_inputs,
-    _shard_packed_for_cp,
-    pack_audio_into_text_embeds,
-    prepare_packed_llm_inputs,
-)
+
+_build_packed_mtp_inputs = packed_sequences_module._build_packed_mtp_inputs
+_shard_packed_for_cp = packed_sequences_module._shard_packed_for_cp
+pack_audio_into_text_embeds = packed_sequences_module.pack_audio_into_text_embeds
+prepare_packed_llm_inputs = packed_sequences_module.prepare_packed_llm_inputs
 
 PAD = 0
 AUDIO = 100

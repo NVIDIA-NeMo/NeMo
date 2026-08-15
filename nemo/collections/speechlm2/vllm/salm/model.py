@@ -159,9 +159,10 @@ class NeMoSpeechLMForConditionalGeneration(
         # inference over the full audio, so it bypasses the chunking helper.
         with torch.no_grad():
             if self._uses_pe_encoder:
-                audio_embs, audio_emb_lens = self.perception(
-                    input_signal=audio_signal, input_signal_length=audio_lengths
-                )
+                with self.perception.encoder.online_inference():
+                    audio_embs, audio_emb_lens = self.perception(
+                        input_signal=audio_signal, input_signal_length=audio_lengths
+                    )
                 audio_embeds = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
             else:
                 audio_embeds = encode_audio_with_optional_chunking(

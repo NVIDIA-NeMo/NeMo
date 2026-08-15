@@ -19,6 +19,7 @@ token handling, and backend selection -- without requiring GPU or model
 weights.
 """
 
+import contextlib
 import importlib.util
 from types import SimpleNamespace
 
@@ -332,6 +333,84 @@ class TestAudioProcessing:
         }
         pe_encoder = _Encoder(pe_d_model, feat_in=128)
         return perception, pe_encoder
+
+    @staticmethod
+    def _make_pe_processing_model(torch, *, fail_forward=False):
+        from nemo.collections.speechlm2.vllm.salm.model import (
+            NeMoSpeechLMForConditionalGeneration,
+        )
+
+        class _Encoder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.online_inference_enabled = False
+                self.context_entries = 0
+                self.context_exits = 0
+
+            @contextlib.contextmanager
+            def online_inference(self):
+                self.context_entries += 1
+                self.online_inference_enabled = True
+                try:
+                    yield
+                finally:
+                    self.online_inference_enabled = False
+                    self.context_exits += 1
+
+        class _Perception(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.anchor = torch.nn.Parameter(torch.ones(1))
+                self.encoder = _Encoder()
+                self.online_enabled_during_forward = None
+
+            def forward(self, input_signal, input_signal_length):
+                self.online_enabled_during_forward = self.encoder.online_inference_enabled
+                if fail_forward:
+                    raise RuntimeError("synthetic PE forward failure")
+                batch_size = input_signal.shape[0]
+                return torch.ones(batch_size, 3, 4), torch.full((batch_size,), 3, dtype=torch.long)
+
+        model = object.__new__(NeMoSpeechLMForConditionalGeneration)
+        torch.nn.Module.__init__(model)
+        model.perception = _Perception()
+        model._uses_pe_encoder = True
+        return model
+
+    def test_pe_processing_enters_and_exits_online_inference(self):
+        import torch
+
+        model = self._make_pe_processing_model(torch)
+        audio_input = SimpleNamespace(
+            audio_signal=torch.ones(1, 16),
+            audio_signal_length=torch.tensor([16]),
+        )
+
+        result = model._process_audio(audio_input)
+
+        assert len(result) == 1
+        assert result[0].shape == (3, 4)
+        assert model.perception.online_enabled_during_forward is True
+        assert model.perception.encoder.context_entries == 1
+        assert model.perception.encoder.context_exits == 1
+        assert model.perception.encoder.online_inference_enabled is False
+
+    def test_pe_processing_error_does_not_leak_online_inference_state(self):
+        import torch
+
+        model = self._make_pe_processing_model(torch, fail_forward=True)
+        audio_input = SimpleNamespace(
+            audio_signal=torch.ones(1, 16),
+            audio_signal_length=torch.tensor([16]),
+        )
+
+        with pytest.raises(RuntimeError, match="synthetic PE forward failure"):
+            model._process_audio(audio_input)
+
+        assert model.perception.online_enabled_during_forward is True
+        assert model.perception.encoder.context_entries == 1
+        assert model.perception.encoder.context_exits == 1
+        assert model.perception.encoder.online_inference_enabled is False
 
     def test_pe_mount_allows_replacing_canary_encoder_with_wider_pee(self, monkeypatch):
         import torch

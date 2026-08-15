@@ -118,6 +118,7 @@ def create_oneshot_local_predictor(
             time_embedding_dim=int(cfg.get("local_flow_matching_time_embedding_dim", 128)),
             inference_steps=int(cfg.get("local_flow_matching_inference_steps", 8)),
             solver=str(cfg.get("local_flow_matching_solver", "midpoint")),
+            num_noise_samples=int(cfg.get("local_flow_matching_train_num_noise_samples", 1)),
         )
 
     if predictor_type == DIFFUSION:

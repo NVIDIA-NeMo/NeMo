@@ -1,0 +1,16 @@
+defaults:
+  - easy_magpietts_lhotse_oneshot_flow_matching_fsq
+  - _self_
+
+name: EasyMagpie-OneShotFlowMatching-FSQ-Multi
+
+model:
+  # Keep all semantic and acoustic history for this ablation.
+  semantic_history_infill_min: 1.0
+  semantic_history_infill_max: 1.0
+  acoustic_history_infill_min: 1.0
+  acoustic_history_infill_max: 1.0
+
+  # Reuse each backbone condition with independent flow noise/time samples.
+  # This expands only the flow estimator batch and keeps its mean loss scale fixed.
+  local_flow_matching_train_num_noise_samples: 4

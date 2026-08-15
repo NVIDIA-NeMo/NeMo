@@ -138,10 +138,13 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
         time_embedding_dim: int = 128,
         inference_steps: int = 8,
         solver: str = MIDPOINT_SOLVER,
+        num_noise_samples: int = 1,
     ):
         super().__init__(acoustic_channels=acoustic_channels)
         if inference_steps < 1:
             raise ValueError(f"inference_steps must be positive, got {inference_steps}")
+        if num_noise_samples < 1:
+            raise ValueError(f"num_noise_samples must be positive, got {num_noise_samples}")
         solver = solver.lower()
         if solver not in (EULER_SOLVER, MIDPOINT_SOLVER):
             raise ValueError(
@@ -150,6 +153,7 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
 
         self.inference_steps = inference_steps
         self.solver = solver
+        self.num_noise_samples = num_noise_samples
         self.estimator = PointwiseFlowMatchingEstimator(
             acoustic_channels=acoustic_channels,
             condition_channels=condition_channels,
@@ -219,6 +223,13 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
         lengths: torch.Tensor,
         frame_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        num_noise_samples = self.num_noise_samples if self.training else 1
+        if num_noise_samples > 1:
+            acoustic_embedding = acoustic_embedding.repeat_interleave(num_noise_samples, dim=0)
+            condition = condition.repeat_interleave(num_noise_samples, dim=0)
+            lengths = lengths.repeat_interleave(num_noise_samples, dim=0)
+            if frame_mask is not None:
+                frame_mask = frame_mask.repeat_interleave(num_noise_samples, dim=0)
         squared_error, mask, _, _, _ = self._loss_tensors(acoustic_embedding, condition, lengths, frame_mask)
         denominator = (mask.float().sum() * self.acoustic_channels).clamp_min(1.0)
         return squared_error.sum() / denominator

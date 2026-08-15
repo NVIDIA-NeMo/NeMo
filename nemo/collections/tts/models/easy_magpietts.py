@@ -1330,7 +1330,9 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 audio_codes_lens=audio_codes_lens,
                 audio_embedding=audio_embedding,
                 audio_acoustic_codes=audio_acoustic_codes,
-                mask_semantic_history=mode == 'train' and not dropout_conditional_input,
+                mask_semantic_history=mode == 'train'
+                and not dropout_conditional_input
+                and self.semantic_history_infill_min < 1.0,
                 # The reference masks acoustic history independently on every
                 # training batch, including CFG-unconditional batches.
                 mask_acoustic_history=mode == 'train'

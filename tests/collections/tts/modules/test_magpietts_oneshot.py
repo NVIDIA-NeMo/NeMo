@@ -67,6 +67,7 @@ def test_flow_matching_implements_oneshot_predictor_contract():
             "local_flow_matching_n_layers": 2,
             "local_flow_matching_time_embedding_dim": 8,
             "local_flow_matching_inference_steps": 2,
+            "local_flow_matching_train_num_noise_samples": 4,
         },
     )
 
@@ -74,6 +75,7 @@ def test_flow_matching_implements_oneshot_predictor_contract():
     assert isinstance(predictor, OneShotLocalFlowMatching)
     assert predictor.inference_steps == 2
     assert predictor.solver == "midpoint"
+    assert predictor.num_noise_samples == 4
 
 
 def test_diffusion_implements_oneshot_predictor_contract():

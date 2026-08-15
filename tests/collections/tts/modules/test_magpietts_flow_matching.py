@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import patch
+
 import pytest
 import torch
 from torch import nn
@@ -77,6 +79,73 @@ def test_flow_matching_loss_ignores_padding_and_explicitly_masked_frames():
     changed_loss = predictor.compute_loss(changed_acoustic, changed_condition, lengths, frame_mask=frame_mask)
 
     assert torch.equal(loss, changed_loss)
+
+
+class _RecordingZeroVelocity(nn.Module):
+    def forward(self, state, condition, time, mask):
+        self.state = state.detach().clone()
+        self.condition = condition.detach().clone()
+        self.time = time.detach().clone()
+        self.mask = mask.detach().clone()
+        return condition[:, : state.size(1)] * 0.0
+
+
+def test_flow_matching_loss_reuses_conditions_with_independent_noise_samples():
+    num_noise_samples = 4
+    predictor = _make_predictor(num_noise_samples=num_noise_samples)
+    estimator = _RecordingZeroVelocity()
+    predictor.estimator = estimator
+    acoustic = torch.zeros(2, 12, 3)
+    condition = torch.arange(2 * 20 * 3, dtype=torch.float32).view(2, 20, 3).requires_grad_()
+    lengths = torch.tensor([3, 2])
+    frame_mask = torch.tensor([[True, True, False], [True, False, False]])
+    expanded_batch_size = acoustic.size(0) * num_noise_samples
+
+    def deterministic_noise(value):
+        return torch.arange(value.numel(), device=value.device, dtype=value.dtype).view_as(value) / value.numel()
+
+    def deterministic_time(size, *, device):
+        return torch.arange(1, size + 1, device=device, dtype=torch.float32) / (size + 1)
+
+    with (
+        patch.object(torch, "randn_like", side_effect=deterministic_noise) as noise_mock,
+        patch.object(torch, "rand", side_effect=deterministic_time) as time_mock,
+    ):
+        loss = predictor.compute_loss(acoustic, condition, lengths, frame_mask=frame_mask)
+    loss.backward()
+
+    expanded_condition = condition.detach().repeat_interleave(num_noise_samples, dim=0)
+    expanded_lengths = lengths.repeat_interleave(num_noise_samples, dim=0)
+    expanded_frame_mask = frame_mask.repeat_interleave(num_noise_samples, dim=0)
+    expected_mask = predictor.length_mask(
+        expanded_lengths, acoustic.size(2), acoustic.dtype
+    ) * expanded_frame_mask.unsqueeze(1)
+
+    assert estimator.state.shape == (expanded_batch_size, 12, 3)
+    torch.testing.assert_close(estimator.condition, expanded_condition * expected_mask)
+    torch.testing.assert_close(estimator.mask, expected_mask)
+    torch.testing.assert_close(
+        estimator.time,
+        torch.arange(1, expanded_batch_size + 1, dtype=torch.float32) / (expanded_batch_size + 1),
+    )
+    assert not torch.equal(estimator.state[0], estimator.state[1])
+    assert condition.grad is not None
+    assert noise_mock.call_args.args[0].size(0) == expanded_batch_size
+    time_mock.assert_called_once_with(expanded_batch_size, device=acoustic.device)
+
+
+def test_flow_matching_validation_does_not_expand_noise_samples():
+    predictor = _make_predictor(num_noise_samples=4)
+    estimator = _RecordingZeroVelocity()
+    predictor.estimator = estimator
+    predictor.eval()
+    acoustic = torch.zeros(2, 12, 3)
+    condition = torch.zeros(2, 20, 3)
+    lengths = torch.tensor([3, 2])
+
+    predictor.compute_loss(acoustic, condition, lengths)
+
+    assert estimator.state.size(0) == acoustic.size(0)
 
 
 class _ConditionVelocity(nn.Module):

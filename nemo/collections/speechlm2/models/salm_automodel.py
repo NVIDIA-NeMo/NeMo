@@ -395,13 +395,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
     def on_validation_start(self) -> None:
         """Reject unsupported parallel layouts for fit and standalone validation."""
-        self._validate_parallelism_compatibility()
+        self._validate_parallelism_compatibility(check_backward=False)
 
     def on_test_start(self) -> None:
         """Reject unsupported parallel layouts for standalone testing."""
-        self._validate_parallelism_compatibility()
+        self._validate_parallelism_compatibility(check_backward=False)
 
-    def _validate_parallelism_compatibility(self) -> None:
+    def _validate_parallelism_compatibility(self, *, check_backward: bool = True) -> None:
         """Raise on known-incompatible THD/CP/backend configurations.
 
         Delegates to :func:`nemo.collections.speechlm2.parts.parallel.validate_parallelism_compatibility`
@@ -431,6 +431,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             attn_backend=attn_backend,
             nvte_fused_attn=nvte_fused_attn,
             device_capability=device_capability,
+            check_backward=check_backward,
         )
         mtp_cfg = self.cfg.get("mtp", None)
         mtp_enabled = mtp_cfg is not None and bool(mtp_cfg.get("enabled", False))

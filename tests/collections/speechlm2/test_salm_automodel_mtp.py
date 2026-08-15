@@ -767,12 +767,20 @@ def test_standalone_evaluation_allows_mtp_context_parallelism(monkeypatch, hook_
     model = _bare_model()
     model.cfg = DictConfig({"mtp": {"enabled": True}, "packed_sequences": True})
     model._device_mesh = _Mesh()
-    monkeypatch.setattr(parallel_module, "validate_parallelism_compatibility", lambda **_kwargs: None)
+    captured_kwargs = {}
+    monkeypatch.setattr(
+        parallel_module,
+        "validate_parallelism_compatibility",
+        lambda **kwargs: captured_kwargs.update(kwargs),
+    )
 
     getattr(model, hook_name)()
 
+    assert captured_kwargs["check_backward"] is False
 
-def test_mtp_rejects_tensor_parallelism_before_training(monkeypatch):
+
+@pytest.mark.parametrize("check_backward", [True, False])
+def test_mtp_rejects_tensor_parallelism_before_training(monkeypatch, check_backward):
     from omegaconf import DictConfig
 
     import nemo.collections.speechlm2.parts.parallel as parallel_module
@@ -794,7 +802,7 @@ def test_mtp_rejects_tensor_parallelism_before_training(monkeypatch):
     monkeypatch.setattr(parallel_module, "validate_parallelism_compatibility", lambda **_kwargs: None)
 
     with pytest.raises(ValueError, match="requires tp_size=1"):
-        model._validate_parallelism_compatibility()
+        model._validate_parallelism_compatibility(check_backward=check_backward)
 
 
 def test_vocab_argmax_does_not_materialize_full_dtensor_logits(monkeypatch):

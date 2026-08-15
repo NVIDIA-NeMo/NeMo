@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import contextlib
 import inspect
 
 import torch
@@ -22,7 +23,11 @@ from transformers.models.bert.modeling_bert import BertEncoder
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
 from nemo.collections.asr.parts.mixins import TranscribeConfig
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, unpack_encoder_output
+from nemo.collections.asr.parts.packed_sequence import (
+    PackedEncoderActivations,
+    pack_encoder_output,
+    unpack_encoder_output,
+)
 from nemo.core import Exportable, NeuralModule, typecheck
 
 
@@ -286,6 +291,174 @@ class IdentityConnector(nn.Module):
 
     def forward(self, audio_signal, length=None, *args, **kwargs):
         return audio_signal, length
+
+
+class IndependentDualEncoder(nn.Module):
+    """Run two acoustic encoders independently and concatenate their states.
+
+    Both branches see the same preprocessed features and must have the same input
+    width and subsampling factor. Chunking is configured independently for each
+    branch. It is applied *after* feature stacking, so chunk boundaries do not
+    duplicate STFT padding and both outputs retain exactly the same frame grid.
+
+    This is primarily intended for a trainable ASR encoder paired with a frozen
+    auxiliary encoder. A frozen branch is kept in evaluation mode and runs under
+    ``no_grad`` even when the parent perception module is training.
+    """
+
+    supports_sequence_packed_output = True
+
+    def __init__(
+        self,
+        asr_encoder: nn.Module,
+        auxiliary_encoder: nn.Module,
+        *,
+        frame_shift_seconds: float,
+        asr_chunk_size_seconds: float | None = None,
+        auxiliary_chunk_size_seconds: float | None = None,
+        freeze_auxiliary: bool = True,
+    ) -> None:
+        super().__init__()
+        self.asr_encoder = asr_encoder
+        self.auxiliary_encoder = auxiliary_encoder
+        self.frame_shift_seconds = float(frame_shift_seconds)
+        self.asr_chunk_size_seconds = asr_chunk_size_seconds
+        self.auxiliary_chunk_size_seconds = auxiliary_chunk_size_seconds
+        self.freeze_auxiliary = bool(freeze_auxiliary)
+
+        if self.frame_shift_seconds <= 0:
+            raise ValueError(f"frame_shift_seconds must be positive, got {frame_shift_seconds!r}.")
+        for name, value in (
+            ("asr_chunk_size_seconds", asr_chunk_size_seconds),
+            ("auxiliary_chunk_size_seconds", auxiliary_chunk_size_seconds),
+        ):
+            if value is not None and float(value) <= 0:
+                raise ValueError(f"{name} must be positive or null, got {value!r}.")
+
+        self._feat_in = self._matching_positive_int("_feat_in")
+        self.subsampling_factor = self._matching_positive_int("subsampling_factor")
+        self.d_model = self._encoder_width(asr_encoder) + self._encoder_width(auxiliary_encoder)
+
+        if not all(
+            bool(getattr(encoder, "supports_sequence_packed_output", False))
+            and callable(getattr(encoder, "forward_sequence_packed", None))
+            for encoder in (asr_encoder, auxiliary_encoder)
+        ):
+            raise TypeError("IndependentDualEncoder requires two native sequence-packed encoders.")
+
+        if self.freeze_auxiliary:
+            self.auxiliary_encoder.requires_grad_(False)
+            self.auxiliary_encoder.eval()
+
+    def _matching_positive_int(self, attr: str) -> int:
+        values = [int(getattr(encoder, attr, -1) or -1) for encoder in (self.asr_encoder, self.auxiliary_encoder)]
+        if values[0] <= 0 or values[0] != values[1]:
+            raise ValueError(f"Both encoders must have the same positive {attr}; got {values}.")
+        return values[0]
+
+    @staticmethod
+    def _encoder_width(encoder: nn.Module) -> int:
+        width = int(getattr(encoder, "_feat_out", getattr(encoder, "d_model", -1)) or -1)
+        if width <= 0:
+            raise ValueError(f"Could not determine output width for {type(encoder).__name__}.")
+        return width
+
+    def _chunk_size_tokens(self, chunk_size_seconds: float | None) -> int | None:
+        if chunk_size_seconds is None:
+            return None
+        token_seconds = self.frame_shift_seconds * self.subsampling_factor
+        return max(1, round(float(chunk_size_seconds) / token_seconds))
+
+    @staticmethod
+    def _chunk_metadata(packed: PackedEncoderActivations, max_tokens: int) -> PackedEncoderActivations:
+        chunk_lengths = []
+        for length in packed.lengths.detach().cpu().tolist():
+            if length == 0:
+                chunk_lengths.append(0)
+                continue
+            chunk_lengths.extend([max_tokens] * (length // max_tokens))
+            if length % max_tokens:
+                chunk_lengths.append(length % max_tokens)
+        lengths = torch.as_tensor(chunk_lengths, dtype=torch.int64, device=packed.data.device)
+        cu_seqlens = torch.cat(
+            [
+                torch.zeros(1, dtype=torch.int32, device=packed.data.device),
+                lengths.cumsum(0, dtype=torch.int32),
+            ]
+        ).contiguous()
+        return PackedEncoderActivations(
+            data=packed.data,
+            lengths=lengths,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=min(max_tokens, packed.max_seqlen),
+            padding_value=packed.padding_value,
+            padded_length=None,
+        )
+
+    def _forward_branch(
+        self,
+        encoder: nn.Module,
+        features: PackedEncoderActivations,
+        chunk_size_seconds: float | None,
+    ) -> PackedEncoderActivations:
+        max_tokens = self._chunk_size_tokens(chunk_size_seconds)
+        if max_tokens is None or features.max_seqlen <= max_tokens:
+            return encoder.forward_sequence_packed(features, features.lengths)
+
+        pre_encode = getattr(encoder, "pre_encode", None)
+        wrapped = getattr(pre_encode, "_checkpoint_wrapped_module", pre_encode)
+        if type(wrapped).__name__ != "FeatureStacking":
+            raise TypeError(
+                "Post-stacking chunking requires subsampling='feature_stacking'; "
+                f"got {type(wrapped).__name__} for {type(encoder).__name__}."
+            )
+        pre_encoded = pre_encode(features)
+        chunked = self._chunk_metadata(pre_encoded, max_tokens)
+        encoded_chunks = encoder.forward_sequence_packed(
+            chunked,
+            chunked.lengths,
+            bypass_pre_encode=True,
+        )
+        return pre_encoded.with_data(encoded_chunks.data)
+
+    def forward_sequence_packed(self, audio_signal, length=None) -> PackedEncoderActivations:
+        if not isinstance(audio_signal, PackedEncoderActivations):
+            if length is None:
+                raise ValueError("length is required for padded IndependentDualEncoder input.")
+            audio_signal = pack_encoder_output(audio_signal.transpose(1, 2), length)
+        elif length is not None and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths):
+            raise ValueError("length must match audio_signal.lengths for packed input.")
+
+        asr = self._forward_branch(self.asr_encoder, audio_signal, self.asr_chunk_size_seconds)
+        grad_context = torch.no_grad() if self.freeze_auxiliary else contextlib.nullcontext()
+        with grad_context:
+            auxiliary = self._forward_branch(
+                self.auxiliary_encoder,
+                audio_signal,
+                self.auxiliary_chunk_size_seconds,
+            )
+        if not torch.equal(asr.lengths, auxiliary.lengths):
+            raise RuntimeError(
+                "Independent encoder output lengths diverged despite matching subsampling factors: "
+                f"ASR={asr.lengths.detach().cpu().tolist()}, "
+                f"auxiliary={auxiliary.lengths.detach().cpu().tolist()}."
+            )
+        return asr.with_data(torch.cat([asr.data, auxiliary.data], dim=-1))
+
+    def forward(self, audio_signal, length):
+        packed = self.forward_sequence_packed(audio_signal, length)
+        return unpack_encoder_output(packed).transpose(1, 2), packed.lengths
+
+    def set_activation_checkpointing(self, enabled: bool) -> None:
+        _set_encoder_activation_checkpointing(self.asr_encoder, enabled)
+        if not self.freeze_auxiliary:
+            _set_encoder_activation_checkpointing(self.auxiliary_encoder, enabled)
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.freeze_auxiliary:
+            self.auxiliary_encoder.eval()
+        return self
 
 
 def _set_encoder_activation_checkpointing(encoder: nn.Module, enabled: bool) -> None:

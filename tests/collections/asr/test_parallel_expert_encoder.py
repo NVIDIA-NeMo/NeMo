@@ -176,6 +176,16 @@ def toy_diarization_model_cfg() -> DictConfig:
     )
 
 
+def toy_packed_diarization_model_cfg() -> DictConfig:
+    cfg = toy_diarization_model_cfg()
+    cfg.encoder = toy_transformer_asr_encoder_cfg()
+    cfg.encoder.d_model = _DIAR_FC_D_MODEL
+    cfg.encoder.qk_norm = False
+    cfg.transformer_encoder.num_layers = 0
+    cfg.transformer_encoder.pre_ln = False
+    return cfg
+
+
 def build_toy_pe_encoder(**overrides) -> ParallelExpertEncoder:
     kwargs = {
         'asr_encoder_cfg': toy_asr_encoder_cfg(),
@@ -315,7 +325,7 @@ def test_freeze_asr_keeps_both_frozen_branches_in_eval():
 def test_pe_encoder_rejects_incompatible_branch_frame_rates():
     diarization_config = toy_diarization_model_cfg()
     diarization_config.encoder.subsampling_factor = 4
-    with pytest.raises(ValueError, match='diarization output subsampling factor'):
+    with pytest.raises(ValueError, match='embedded diarization encoder subsampling factor'):
         build_toy_pe_encoder(diarization_model_cfg=diarization_config)
 
 
@@ -407,6 +417,93 @@ def test_packed_fallback_matches_padded_forward_for_dense_and_packed_inputs():
 
 
 @pytest.mark.unit
+def test_native_packed_path_is_serial_raw_diar_then_normalized_asr_without_unpack(monkeypatch):
+    encoder = build_toy_pe_encoder(
+        asr_encoder_type='transformer',
+        asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
+        diarization_model_cfg=toy_packed_diarization_model_cfg(),
+    ).eval()
+    lengths = torch.tensor([80, 53])
+    mels = torch.randn(2, _MEL_FEATURES, 80)
+    packed = pack_encoder_output(mels.transpose(1, 2), lengths)
+
+    calls = []
+    original_forward = encoder._forward_packed_branch
+
+    def tracked_forward(branch, features, chunk_size_seconds):
+        calls.append((branch, features.data.detach().clone(), chunk_size_seconds))
+        return original_forward(branch, features, chunk_size_seconds)
+
+    monkeypatch.setattr(encoder, '_forward_packed_branch', tracked_forward)
+    monkeypatch.setattr(
+        pee_module,
+        'unpack_encoder_output',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('native packed path unpacked')),
+    )
+    with torch.no_grad():
+        output = encoder.forward_sequence_packed(packed)
+
+    assert [branch for branch, _, _ in calls] == [encoder.diarization_model.encoder, encoder.asr_encoder]
+    torch.testing.assert_close(calls[0][1], packed.data)
+    assert not torch.equal(calls[1][1], packed.data)
+    assert torch.equal(output.lengths, torch.tensor([10, 7]))
+    assert torch.isfinite(output.data).all()
+
+
+@pytest.mark.unit
+def test_native_packed_output_matches_padded_two_branch_path():
+    torch.manual_seed(0)
+    encoder = build_toy_pe_encoder(
+        asr_encoder_type='transformer',
+        asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
+        diarization_model_cfg=toy_packed_diarization_model_cfg(),
+    ).eval()
+    lengths = torch.tensor([80, 53])
+    mels = torch.randn(2, _MEL_FEATURES, 80)
+    mels[1, :, 53:] = 0.0
+    with torch.no_grad():
+        padded, padded_lengths = encoder(mels, lengths)
+        packed = encoder.forward_sequence_packed(mels, lengths)
+    restored = unpack_encoder_output(packed, total_length=padded.shape[-1])
+    valid = torch.arange(padded.shape[-1])[None, :] < padded_lengths[:, None]
+    torch.testing.assert_close(restored[valid], padded.transpose(1, 2)[valid], rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.unit
+def test_native_packed_branches_chunk_independently_after_feature_stacking(monkeypatch):
+    encoder = build_toy_pe_encoder(
+        asr_encoder_type='transformer',
+        asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
+        diarization_model_cfg=toy_packed_diarization_model_cfg(),
+        frame_shift_seconds=0.01,
+        asr_chunk_size_seconds=None,
+        diar_chunk_size_seconds=0.16,
+    ).eval()
+    packed = pack_encoder_output(torch.randn(2, 80, _MEL_FEATURES), torch.tensor([80, 65]))
+    diar_calls = []
+    asr_calls = []
+    diar_forward = encoder.diarization_model.encoder.forward_sequence_packed
+    asr_forward = encoder.asr_encoder.forward_sequence_packed
+
+    def tracked_diar(audio_signal, length, *args, **kwargs):
+        diar_calls.append((audio_signal.lengths.detach().cpu().tolist(), kwargs.get('bypass_pre_encode', False)))
+        return diar_forward(audio_signal, length, *args, **kwargs)
+
+    def tracked_asr(audio_signal, length, *args, **kwargs):
+        asr_calls.append((audio_signal.lengths.detach().cpu().tolist(), kwargs.get('bypass_pre_encode', False)))
+        return asr_forward(audio_signal, length, *args, **kwargs)
+
+    monkeypatch.setattr(encoder.diarization_model.encoder, 'forward_sequence_packed', tracked_diar)
+    monkeypatch.setattr(encoder.asr_encoder, 'forward_sequence_packed', tracked_asr)
+    with torch.no_grad():
+        output = encoder.forward_sequence_packed(packed)
+
+    assert diar_calls == [([2, 2, 2, 2, 2, 2, 2, 2, 2, 1], True)]
+    assert asr_calls == [([80, 65], False)]
+    assert output.lengths.tolist() == [10, 9]
+
+
+@pytest.mark.unit
 def test_packed_fallback_rejects_online_scope():
     encoder = build_toy_pe_encoder().eval()
     with encoder.online_inference(), pytest.raises(RuntimeError, match='offline API'):
@@ -414,22 +511,28 @@ def test_packed_fallback_rejects_online_scope():
 
 
 @pytest.mark.unit
-def test_activation_checkpointing_dispatches_through_owned_policy(monkeypatch):
-    encoder = build_toy_pe_encoder().train()
-    calls = []
-
-    def tracked(function, *args, **kwargs):
-        calls.append(function)
-        kwargs.pop('use_reentrant')
-        return function(*args, **kwargs)
-
-    monkeypatch.setattr(pee_module, 'checkpoint', tracked)
+def test_activation_checkpointing_wraps_trainable_asr_layers_and_packed_backward():
+    encoder = build_toy_pe_encoder(
+        asr_encoder_type='transformer',
+        asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
+        diarization_model_cfg=toy_packed_diarization_model_cfg(),
+    ).train()
     encoder.set_activation_checkpointing(True)
-    mels = torch.randn(1, _MEL_FEATURES, 64, requires_grad=True)
-    output, _ = encoder._run_asr(mels, torch.tensor([64]))
-    output.square().mean().backward()
-    assert len(calls) == 1
+    encoder.set_activation_checkpointing(True)
+
+    assert getattr(encoder.asr_encoder.pre_encode, '_checkpoint_wrapped_module', None) is not None
+    assert all(getattr(layer, '_checkpoint_wrapped_module', None) is not None for layer in encoder.asr_encoder.layers)
+    assert all(
+        getattr(layer, '_checkpoint_wrapped_module', None) is None
+        for layer in encoder.diarization_model.encoder.layers
+    )
+
+    mels = torch.randn(1, 64, _MEL_FEATURES, requires_grad=True)
+    packed = pack_encoder_output(mels, torch.tensor([64]))
+    output = encoder._run_asr_packed(packed)
+    output.data.square().mean().backward()
     assert mels.grad is not None
+    assert torch.isfinite(mels.grad).all()
 
 
 def dispatch_stub(enabled):

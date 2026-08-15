@@ -364,6 +364,43 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
     if (spk_kernel_scale := model.cfg.get("spk_kernel_scale", None)) is not None:
         pe_encoder.spk_kernel_scale = float(spk_kernel_scale)
 
+    asr_chunk_size = model.cfg.get("pe_asr_chunk_size_seconds", pe_encoder.asr_chunk_size_seconds)
+    diar_chunk_size = model.cfg.get("pe_diar_chunk_size_seconds", pe_encoder.diar_chunk_size_seconds)
+    if model.cfg.get("encoder_chunk_size_seconds", None) is not None:
+        raise ValueError(
+            "ParallelExpertEncoder independent execution requires "
+            "model.encoder_chunk_size_seconds=null; set pe_asr_chunk_size_seconds and "
+            "pe_diar_chunk_size_seconds instead."
+        )
+    if (asr_chunk_size is not None or diar_chunk_size is not None) and not model.cfg.get(
+        "packed_encoder_sequences", False
+    ):
+        raise ValueError(
+            "ParallelExpertEncoder independent branch chunking requires "
+            "model.packed_encoder_sequences=true."
+        )
+    pe_encoder.asr_chunk_size_seconds = pe_encoder._validate_chunk_size(
+        "pe_asr_chunk_size_seconds", asr_chunk_size
+    )
+    pe_encoder.diar_chunk_size_seconds = pe_encoder._validate_chunk_size(
+        "pe_diar_chunk_size_seconds", diar_chunk_size
+    )
+    pe_encoder.frame_shift_seconds = (
+        model.perception.preprocessor.featurizer.hop_length
+        / model.perception.preprocessor.featurizer.sample_rate
+    )
+
+    if getattr(model.perception, "spec_augmentation", None) is not None:
+        raise ValueError(
+            "ParallelExpertEncoder requires perception.spec_augment=null: the frozen streaming "
+            "Sortformer must consume clean, unnormalised mels rather than ASR augmentation masks."
+        )
+
+    # These synchronization collectives are unnecessary under HSDP and become
+    # unsafe if independently chunked branches make a data-dependent number of calls.
+    pe_encoder.asr_encoder.sync_max_audio_length = False
+    pe_encoder.diarization_model.encoder.sync_max_audio_length = False
+
     # The outgoing width is unconstrained because that encoder is discarded.
     # The unchanged mel frontend and downstream adapter/projection must still match.
     existing_d_model = int(getattr(model.perception.encoder, "d_model", -1))
@@ -426,12 +463,16 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
     model.perception.encoder = pe_encoder
     logging.info(
         "Mounted ParallelExpertEncoder from %s onto model.perception.encoder "
-        "(ASR Conformer + Sortformer, d_model=%d, n_spk=%d, "
+        "(ASR %s + Sortformer, d_model=%d, n_spk=%d, chunks: asr=%s diar=%s seconds, "
         "frozen: asr=%s diar=%s, spk_kernel_scale=%g); "
+        "ASR normalizes internally; streaming Sortformer receives raw mels; "
         "perception preprocessor normalization disabled (was %r).",
         pe_encoder_path,
+        pe_encoder.asr_encoder_type,
         int(pe_encoder.d_model),
         int(pe_encoder.n_spk),
+        pe_encoder.asr_chunk_size_seconds,
+        pe_encoder.diar_chunk_size_seconds,
         bool(pe_encoder.freeze_asr),
         bool(pe_encoder.freeze_diar),
         float(pe_encoder.spk_kernel_scale),

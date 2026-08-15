@@ -14,6 +14,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 import torch
 from omegaconf import DictConfig
 
@@ -63,10 +64,21 @@ def test_setup_parallel_expert_encoder_mounts_two_branch_bridge_and_disables_out
     pe_encoder.freeze_asr = False
     pe_encoder.freeze_diar = True
     pe_encoder.spk_kernel_scale = 1.0
+    pe_encoder.asr_encoder_type = "transformer"
+    pe_encoder.asr_chunk_size_seconds = None
+    pe_encoder.diar_chunk_size_seconds = None
+    pe_encoder._validate_chunk_size = lambda _name, value: value
+    pe_encoder.asr_encoder = SimpleNamespace(sync_max_audio_length=True)
+    pe_encoder.diarization_model = SimpleNamespace(
+        encoder=SimpleNamespace(sync_max_audio_length=True)
+    )
 
     perception = SimpleNamespace(
         encoder=SimpleNamespace(d_model=32),
-        preprocessor=SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature")),
+        preprocessor=SimpleNamespace(
+            featurizer=SimpleNamespace(normalize="per_feature", hop_length=160, sample_rate=16000)
+        ),
+        spec_augmentation=None,
         proj=torch.nn.Identity(),
     )
     model = SimpleNamespace(
@@ -89,3 +101,6 @@ def test_setup_parallel_expert_encoder_mounts_two_branch_bridge_and_disables_out
     assert model.perception.encoder is pe_encoder
     assert model.perception.preprocessor.featurizer.normalize is None
     assert model.cfg.perception.preprocessor.normalize is None
+    assert pe_encoder.frame_shift_seconds == pytest.approx(0.01)
+    assert pe_encoder.asr_encoder.sync_max_audio_length is False
+    assert pe_encoder.diarization_model.encoder.sync_max_audio_length is False

@@ -437,7 +437,7 @@ def test_validation_step_preserves_mtp_counter_precision_with_bf16_logits(monkey
         "llm_kwargs": {},
     }
     logits = torch.zeros(1, 2, 4, dtype=torch.bfloat16)
-    model.prepare_inputs = lambda _batch: inputs
+    model.prepare_inputs = lambda _batch, **_kwargs: inputs
     model.forward = lambda *_args, **_kwargs: {
         "logits": logits,
         "mtp_per_depth_h": [torch.zeros(1, 2, 4)],
@@ -459,11 +459,20 @@ def test_validation_step_preserves_mtp_counter_precision_with_bf16_logits(monkey
 
 
 def test_validation_step_warns_when_cp_disables_mtp_teacher_forced_metrics(monkeypatch):
-    """CP-precomputed MTP targets disable the unused MTP forward with a visible warning."""
+    """CP validation skips MTP inputs/forward/metrics with a visible warning."""
+
+    class _CPDeviceMesh:
+        mesh_dim_names = ("cp",)
+
+        def __getitem__(self, name):
+            assert name == "cp"
+            return SimpleNamespace(size=lambda: 2)
+
     model = _bare_model()
     model.llm = torch.nn.Module()
     model.llm.mtp = torch.nn.Identity()
     model.llm.compute_mtp_in_eval = False
+    model._device_mesh = _CPDeviceMesh()
     model.lss_loss = None
     SALMAutomodel.on_validation_epoch_start(model)
 
@@ -471,15 +480,23 @@ def test_validation_step_warns_when_cp_disables_mtp_teacher_forced_metrics(monke
         "input_embeds": torch.zeros(2, 4),
         "attention_mask": None,
         "target_ids": torch.tensor([0, 1]),
-        "mtp_per_depth_targets": (torch.tensor([1, -100]),),
         "llm_kwargs": {},
     }
-    model.prepare_inputs = lambda _batch: inputs
+    include_mtp_input_flags = []
+
+    def _prepare_inputs(_batch, *, include_mtp_inputs=True):
+        include_mtp_input_flags.append(include_mtp_inputs)
+        return inputs
+
+    model.prepare_inputs = _prepare_inputs
     mtp_eval_states = []
 
     def _forward(*_args, **_kwargs):
         mtp_eval_states.append(model.llm.compute_mtp_in_eval)
-        return {"logits": torch.zeros(2, 4)}
+        return {
+            "logits": torch.zeros(2, 4),
+            "mtp_per_depth_h": [torch.zeros(2, 4)],
+        }
 
     model.forward = _forward
     monkeypatch.setattr(
@@ -496,6 +513,7 @@ def test_validation_step_warns_when_cp_disables_mtp_teacher_forced_metrics(monke
 
     SALMAutomodel.validation_step(model, {"ds": {}}, batch_idx=0)
 
+    assert include_mtp_input_flags == [False]
     assert mtp_eval_states == [False]
     assert warnings == [
         (
@@ -689,6 +707,26 @@ def test_mtp_validation_forward_uses_and_restores_native_gate():
 
     assert not llm.compute_mtp_in_eval
     assert not llm.training
+
+
+def test_mtp_validation_forward_skips_model_without_native_gate(monkeypatch):
+    llm = torch.nn.Module()
+    warnings = []
+    monkeypatch.setattr(
+        mtp_module.logging,
+        "warning",
+        lambda message, **kwargs: warnings.append((message, kwargs)),
+    )
+
+    with mtp_module.mtp_validation_forward(llm, enabled=True):
+        assert not hasattr(llm, "compute_mtp_in_eval")
+
+    assert warnings == [
+        (
+            "Module does not expose compute_mtp_in_eval; skipping the MTP validation forward.",
+            {"mode": mtp_module.logging_mode.ONCE},
+        )
+    ]
 
 
 def test_mtp_validation_forward_restores_native_gate_after_error():

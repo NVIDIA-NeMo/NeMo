@@ -112,6 +112,14 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         return int(mtp_config.num_layers)
 
     @property
+    def _context_parallel_size(self) -> int:
+        """Return the configured context-parallel world size."""
+        device_mesh = getattr(self, "_device_mesh", None)
+        if device_mesh is None or "cp" not in (device_mesh.mesh_dim_names or ()):
+            return 1
+        return int(device_mesh["cp"].size())
+
+    @property
     def embed_tokens(self):
         """Navigate to the LLM's embedding layer (kept inside the LLM)."""
         if self.llm is None:
@@ -262,7 +270,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 stacklevel=2,
             )
 
-    def prepare_inputs(self, batch: dict):
+    def prepare_inputs(self, batch: dict, *, include_mtp_inputs: bool = True):
         """
         Performs additional processing on the mini-batch collected from dataloader.
         Notably:
@@ -280,6 +288,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         When ``batch["spk_targets"]`` is present, those RTTM-derived speaker
         targets are injected into a ``ParallelExpertEncoder``. Otherwise, the
         encoder runs its embedded Sortformer to predict diarization.
+
+        ``include_mtp_inputs=False`` avoids constructing future-token tensors
+        when validation cannot consume MTP outputs, such as under CP.
         """
         from nemo.collections.speechlm2.parts.cp_helpers import (
             encode_audio_with_cp_distribution,
@@ -337,7 +348,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 padding_id=self.text_pad_id,
                 placeholder_id=self.audio_locator_tag_id,
                 device_mesh=device_mesh,
-                mtp_num_depths=self._mtp_num_depths,
+                mtp_num_depths=self._mtp_num_depths if include_mtp_inputs else 0,
             )
             if dummy_audio_loss is not None:
                 ans["dummy_audio_loss"] = dummy_audio_loss
@@ -664,8 +675,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         for name, dataset_batch in batch.items():
             if dataset_batch is None:
                 continue  # some dataset is exhausted
-            inputs = self.prepare_inputs(dataset_batch)
-            mtp_metrics_disabled_for_cp = self._mtp_enabled and "mtp_per_depth_targets" in inputs
+            mtp_metrics_disabled_for_cp = self._mtp_enabled and self._context_parallel_size > 1
+            inputs = self.prepare_inputs(
+                dataset_batch,
+                include_mtp_inputs=not mtp_metrics_disabled_for_cp,
+            )
             if mtp_metrics_disabled_for_cp:
                 logging.warning(
                     "MTP teacher-forced agreement metrics are disabled under context parallelism because "
@@ -708,7 +722,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
             # Multi-Token Prediction teacher-forced prefix agreement for each depth.
             mtp_h = forward_outputs.get("mtp_per_depth_h", None)
-            if mtp_h is not None:
+            if mtp_h is not None and not mtp_metrics_disabled_for_cp:
                 mtp_cu_seqlens = inputs.get("llm_kwargs", {}).get("cu_seqlens")
                 correct_by_head, valid_by_head = calculate_mtp_teacher_forced_agreement(
                     mtp_per_depth_h=mtp_h,

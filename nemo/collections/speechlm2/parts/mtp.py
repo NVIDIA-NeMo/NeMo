@@ -22,7 +22,7 @@ from typing import Any
 import torch
 from torch.distributed.tensor import DTensor
 
-from nemo.utils import logging
+from nemo.utils import logging, logging_mode
 
 
 def build_mtp_loss_fn() -> torch.nn.Module:
@@ -197,7 +197,15 @@ def mtp_validation_forward(llm: torch.nn.Module, *, enabled: bool):
         yield
         return
 
-    previous = llm.compute_mtp_in_eval
+    previous = getattr(llm, "compute_mtp_in_eval", None)
+    if previous is None:
+        logging.warning(
+            f"{type(llm).__name__} does not expose compute_mtp_in_eval; skipping the MTP validation forward.",
+            mode=logging_mode.ONCE,
+        )
+        yield
+        return
+
     llm.compute_mtp_in_eval = True
     try:
         yield

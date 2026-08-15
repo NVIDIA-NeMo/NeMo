@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -654,12 +656,12 @@ def test_training_step_forwards_packed_cu_seqlens_to_mtp_loss(monkeypatch):
 
     def _calculate_mtp_loss(*_args, **kwargs):
         captured_kwargs.update(kwargs)
-        return salm_module.MTPLossOutput(
+        return SimpleNamespace(
             loss=torch.tensor(0.25),
             per_depth_losses=[torch.tensor(2.5)],
         )
 
-    monkeypatch.setattr(salm_module, "calculate_mtp_loss", _calculate_mtp_loss)
+    monkeypatch.setattr(salm_module, "calculate_mtp_loss_with_per_depth", _calculate_mtp_loss)
 
     model._training_step_batch({"input_ids": torch.tensor([[1, 2, 3, 4, 5]])}, batch_idx=0)
 

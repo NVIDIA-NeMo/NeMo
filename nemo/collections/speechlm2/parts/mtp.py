@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from typing import Any
 
 import torch
 from torch.distributed.tensor import DTensor
@@ -44,6 +45,19 @@ def build_mtp_loss_fn() -> torch.nn.Module:
         "Install cut-cross-entropy to reduce peak MTP loss memory."
     )
     return MaskedCrossEntropy(reduction="sum", fp32_upcast=False)
+
+
+def calculate_mtp_loss_with_per_depth(*args: Any, **kwargs: Any) -> Any:
+    """Call Automodel's per-depth MTP loss API only when MTP training runs."""
+    try:
+        from nemo_automodel.components.loss.mtp import MTPLossOutput, calculate_mtp_loss
+    except ImportError as error:
+        raise RuntimeError("MTP training requires an Automodel version with per-depth MTP loss support") from error
+
+    output = calculate_mtp_loss(*args, **kwargs)
+    if not isinstance(output, MTPLossOutput):
+        raise TypeError("Automodel did not return the requested per-depth MTP loss output")
+    return output
 
 
 def resolve_mtp_seq_idx(

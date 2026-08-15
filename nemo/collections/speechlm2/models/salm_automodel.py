@@ -19,7 +19,6 @@ from typing import Any
 import torch
 import torch.distributed as dist
 from lightning import LightningModule
-from nemo_automodel.components.loss.mtp import MTPLossOutput, calculate_mtp_loss
 from omegaconf import DictConfig, OmegaConf
 from torch import Tensor
 from torch.distributed.fsdp import fully_shard
@@ -36,6 +35,7 @@ from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.mtp import (
     build_mtp_loss_fn,
+    calculate_mtp_loss_with_per_depth,
     calculate_mtp_teacher_forced_agreement,
     compute_mtp_agreement_lengths,
     mtp_validation_forward,
@@ -508,7 +508,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 None if mtp_per_depth_targets is not None else inputs.get("llm_kwargs", {}).get("cu_seqlens")
             )
             with loss_parallel():
-                mtp_loss_output = calculate_mtp_loss(
+                mtp_loss_output = calculate_mtp_loss_with_per_depth(
                     self._mtp_loss_fn,
                     mtp_per_depth_targets=mtp_per_depth_targets,
                     mtp_per_depth_h=mtp_h,
@@ -520,8 +520,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     cu_seqlens=mtp_cu_seqlens,
                     return_per_depth=True,
                 )
-                if not isinstance(mtp_loss_output, MTPLossOutput):
-                    raise TypeError("Automodel did not return the requested per-depth MTP loss output")
                 mtp_loss = mtp_loss_output.loss
                 mtp_raw_loss_by_head = mtp_loss_output.per_depth_losses
             mtp_loss = dp_size * mtp_loss

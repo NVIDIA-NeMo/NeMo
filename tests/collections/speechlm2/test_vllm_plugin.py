@@ -815,6 +815,54 @@ class TestPluginRegistration:
         assert "NeMoSpeechLMForConditionalGeneration" in ModelRegistry.get_supported_archs()
         assert NeMoSpeechLMForConditionalGeneration is not None
 
+    def test_register_model_config_hook(self, monkeypatch):
+        """The outer Speech architecture must delegate Nemotron-H cache defaults."""
+        from transformers import AutoConfig
+        from vllm.model_executor.models.config import MODELS_CONFIG_MAP
+
+        from nemo.collections.speechlm2.vllm.salm import register
+        from nemo.collections.speechlm2.vllm.salm.config_hook import (
+            NeMoSpeechLMForConditionalGenerationConfig,
+        )
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError()),
+        )
+
+        register()
+
+        assert MODELS_CONFIG_MAP["NeMoSpeechLMForConditionalGeneration"] is NeMoSpeechLMForConditionalGenerationConfig
+
+    @pytest.mark.parametrize(
+        ("is_hybrid", "backbone_dtype", "initial_dtype", "expected_dtype"),
+        [
+            (True, None, "auto", "float32"),
+            (True, "float16", "auto", "float16"),
+            (True, "float32", "float16", "float16"),
+            (False, None, "auto", "auto"),
+        ],
+    )
+    def test_model_config_hook_sets_only_hybrid_auto_cache_dtype(
+        self, is_hybrid, backbone_dtype, initial_dtype, expected_dtype
+    ):
+        from nemo.collections.speechlm2.vllm.salm.config_hook import (
+            NeMoSpeechLMForConditionalGenerationConfig,
+        )
+
+        text_config = SimpleNamespace()
+        if backbone_dtype is not None:
+            text_config.mamba_ssm_cache_dtype = backbone_dtype
+        vllm_config = SimpleNamespace(
+            cache_config=SimpleNamespace(mamba_ssm_cache_dtype=initial_dtype),
+            model_config=SimpleNamespace(hf_config=SimpleNamespace(is_hybrid=is_hybrid, text_config=text_config)),
+        )
+
+        NeMoSpeechLMForConditionalGenerationConfig.verify_and_update_config(vllm_config)
+
+        assert vllm_config.cache_config.mamba_ssm_cache_dtype == expected_dtype
+
     def test_register_does_not_patch_fast_tokenizer(self, monkeypatch):
         from transformers import AutoConfig, PreTrainedTokenizerFast
 

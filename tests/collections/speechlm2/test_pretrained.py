@@ -14,6 +14,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import torch
 from omegaconf import DictConfig
 
 from nemo.collections.speechlm2.parts import pretrained
@@ -52,3 +53,39 @@ def test_setup_speech_encoder_hydrates_missing_config_without_weights():
     assert model.cfg.perception.encoder.n_layers == 2
     assert model.cfg.perception.output_dim == 8
     assert model.cfg.perception.modality_adapter.output_dim == 8
+
+
+def test_setup_parallel_expert_encoder_mounts_two_branch_bridge_and_disables_outer_normalization():
+    pe_encoder = torch.nn.Linear(1, 1)
+    pe_encoder.d_model = 32
+    pe_encoder.n_spk = 4
+    pe_encoder._feat_in = 80
+    pe_encoder.freeze_asr = False
+    pe_encoder.freeze_diar = True
+    pe_encoder.spk_kernel_scale = 1.0
+
+    perception = SimpleNamespace(
+        encoder=SimpleNamespace(d_model=32),
+        preprocessor=SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature")),
+        proj=torch.nn.Identity(),
+    )
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "pe_encoder_path": "fake/pee-two-branch",
+                "perception": {
+                    "preprocessor": {"features": 80, "normalize": "per_feature"},
+                    "modality_adapter": {"d_model": 32},
+                },
+            }
+        ),
+        perception=perception,
+    )
+
+    with patch.object(pretrained.ParallelExpertEncoderPT, "load_from_nemo", return_value=pe_encoder) as load:
+        pretrained.setup_parallel_expert_encoder(model)
+
+    load.assert_called_once_with("fake/pee-two-branch", map_location="cpu", strict=True)
+    assert model.perception.encoder is pe_encoder
+    assert model.perception.preprocessor.featurizer.normalize is None
+    assert model.cfg.perception.preprocessor.normalize is None

@@ -81,7 +81,7 @@ def _make_perception(device) -> AudioPerceptionModule:
 
 
 def _make_pee_perception(device) -> AudioPerceptionModule:
-    encoder = build_toy_pe_encoder(always_run_diarization=True).to(device=device, dtype=torch.bfloat16)
+    encoder = build_toy_pe_encoder().to(device=device, dtype=torch.bfloat16)
     perception = AudioPerceptionModule.__new__(AudioPerceptionModule)
     torch.nn.Module.__init__(perception)
     perception.preprocessor = _RepeatFeaturePreprocessor()
@@ -153,7 +153,7 @@ def _run_fsdp2_packed_perception_test(rank: int, world_size: int, init_file: str
         dist.destroy_process_group()
 
 
-def _run_fsdp2_grouped_pee_test(rank: int, world_size: int, init_file: str):
+def _run_fsdp2_pee_fallback_test(rank: int, world_size: int, init_file: str):
     torch.cuda.set_device(rank)
     dist.init_process_group("nccl", init_method=f"file://{init_file}", rank=rank, world_size=world_size)
     try:
@@ -166,11 +166,7 @@ def _run_fsdp2_grouped_pee_test(rank: int, world_size: int, init_file: str):
         raw_audio = torch.randn(1, frames, device=device, dtype=torch.bfloat16, requires_grad=True)
         lengths = torch.tensor([frames if rank == 0 else 0], device=device)
         packed = perception.forward_sequence_packed(input_signal=raw_audio, input_signal_length=lengths)
-        auxiliary = perception.encoder.pee.experts['speech'].get_moe_auxiliary_loss()
-        loss = packed.data.float().sum()
-        if auxiliary is not None:
-            loss = loss + auxiliary
-        loss.backward()
+        packed.data.float().sum().backward()
 
         assert raw_audio.grad is not None and torch.isfinite(raw_audio.grad).all()
         assert all(
@@ -178,18 +174,13 @@ def _run_fsdp2_grouped_pee_test(rank: int, world_size: int, init_file: str):
             for parameter in perception.parameters()
             if parameter.requires_grad
         )
-        trace = perception.encoder.pee._last_sequence_packed_execution
-        assert trace['mode'] == 'grouped_thd'
-        assert trace['attention_grouped_experts'] == 3 * trace['layers']
-
         perception.zero_grad(set_to_none=True)
         empty_audio = torch.randn(1, 16, device=device, dtype=torch.bfloat16, requires_grad=True)
         empty = perception.forward_sequence_packed(
             input_signal=empty_audio,
             input_signal_length=torch.tensor([0], device=device),
         )
-        empty_auxiliary = perception.encoder.pee.experts['speech'].get_moe_auxiliary_loss()
-        (empty.data.sum() + empty_auxiliary).backward()
+        empty.data.sum().backward()
         assert empty_audio.grad is not None
         assert all(parameter.grad is not None for parameter in perception.parameters() if parameter.requires_grad)
 
@@ -215,8 +206,8 @@ def _run_fsdp2_grouped_pee_test(rank: int, world_size: int, init_file: str):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason="Test requires 2 GPUs")
-def test_grouped_pee_packed_perception_fsdp2_empty_rank_all_empty_and_cp(tmp_path):
-    mp.spawn(_run_fsdp2_grouped_pee_test, args=(2, str(tmp_path / "grouped_pee_fsdp2_init")), nprocs=2, join=True)
+def test_pee_padded_fallback_perception_fsdp2_empty_rank_all_empty_and_cp(tmp_path):
+    mp.spawn(_run_fsdp2_pee_fallback_test, args=(2, str(tmp_path / "pee_fallback_fsdp2_init")), nprocs=2, join=True)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason="Test requires 2 GPUs")

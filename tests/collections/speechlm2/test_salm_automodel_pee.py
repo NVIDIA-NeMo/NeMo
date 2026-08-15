@@ -11,10 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SALMAutomodel tests for a multi-expert perception recipe.
+"""SALMAutomodel tests for the two-branch PEE perception recipe.
 
 Mirrors ``test_salm_automodel.py`` but swaps the plain ConformerEncoder for a
-tiny multi-expert encoder. It exercises SALM training, validation, generation,
+tiny ASR Conformer + Sortformer encoder. It exercises training, validation, generation,
 and external speaker-target routing end to end.
 """
 import importlib.util
@@ -92,7 +92,7 @@ SOT_CFG = {
 
 
 def mount_dummy_pe_encoder(model: SALMAutomodel) -> ParallelExpertEncoder:
-    """Mount the dummy multi-expert encoder onto ``model.perception.encoder``.
+    """Mount the dummy two-branch encoder onto ``model.perception.encoder``.
 
     This swaps the perception encoder without an on-disk bundle, disables the
     outer preprocessor normalization (re-applied internally), and matches the

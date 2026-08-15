@@ -233,14 +233,14 @@ def _make_waveform_perception(encoder_kind: str) -> AudioPerceptionModule:
         )
         features = 8
     else:
-        encoder = build_toy_pe_encoder(always_run_diarization=True)
+        encoder = build_toy_pe_encoder()
         features = 128
 
     perception = AudioPerceptionModule.__new__(AudioPerceptionModule)
     torch.nn.Module.__init__(perception)
     perception.preprocessor = AudioToMelSpectrogramPreprocessor(
         features=features,
-        normalize="per_feature",
+        normalize=None if encoder_kind == "pee" else "per_feature",
         dither=0,
         pad_to=0,
     )

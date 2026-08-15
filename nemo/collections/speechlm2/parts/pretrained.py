@@ -255,8 +255,7 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
     weights_path = artifact / "model.safetensors"
     if not artifact.is_dir() or not config_path.is_file() or not weights_path.is_file():
         raise FileNotFoundError(
-            "model.speaker_encoder.path must contain model_config.yaml and model.safetensors; "
-            f"got {artifact}."
+            "model.speaker_encoder.path must contain model_config.yaml and model.safetensors; " f"got {artifact}."
         )
     if model.cfg.get("encoder_chunk_size_seconds", None) is not None:
         raise ValueError(
@@ -274,8 +273,7 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
     speaker.load_state_dict(state, strict=True)
 
     frame_shift_seconds = (
-        model.perception.preprocessor.featurizer.hop_length
-        / model.perception.preprocessor.featurizer.sample_rate
+        model.perception.preprocessor.featurizer.hop_length / model.perception.preprocessor.featurizer.sample_rate
     )
     dual = IndependentDualEncoder(
         model.perception.encoder,
@@ -362,26 +360,6 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         map_location="cpu",
         strict=True,
     )
-    if (execution_mode := model.cfg.get("pe_sequence_packed_execution_mode", None)) is not None:
-        if execution_mode not in ("grouped", "serial_checkpointed"):
-            raise ValueError(
-                "model.pe_sequence_packed_execution_mode must be grouped or serial_checkpointed, "
-                f"got {execution_mode!r}."
-            )
-        pe_encoder.sequence_packed_execution_mode = execution_mode
-        logging.info("Overrode ParallelExpertEncoder sequence_packed_execution_mode=%s", execution_mode)
-
-    if (serial_speech_grouped := model.cfg.get("pe_sequence_packed_serial_speech_grouped_moe", None)) is not None:
-        if not isinstance(serial_speech_grouped, bool):
-            raise ValueError(
-                "model.pe_sequence_packed_serial_speech_grouped_moe must be a boolean, "
-                f"got {serial_speech_grouped!r}."
-            )
-        pe_encoder.sequence_packed_serial_speech_grouped_moe = serial_speech_grouped
-        logging.info(
-            "Overrode ParallelExpertEncoder sequence_packed_serial_speech_grouped_moe=%s",
-            serial_speech_grouped,
-        )
 
     if (spk_kernel_scale := model.cfg.get("spk_kernel_scale", None)) is not None:
         pe_encoder.spk_kernel_scale = float(spk_kernel_scale)
@@ -398,9 +376,9 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
             model.cfg.get("pretrained_asr", "ASR"),
         )
 
-    # The preprocessor is NOT replaced, so its mel count must match what the speech expert
+    # The preprocessor is NOT replaced, so its mel count must match what the ASR encoder
     # was trained on. Nothing downstream would catch a mismatch: it surfaces as a shape
-    # error inside the expert's first convolution, far from the cause.
+    # error inside the encoder's first convolution, far from the cause.
     pe_feat_in = int(getattr(pe_encoder, "_feat_in", -1) or -1)
     mel_bins = model.cfg.get("perception", {}).get("preprocessor", {}).get("features", None)
     if pe_feat_in > 0 and mel_bins is not None and int(mel_bins) != pe_feat_in:
@@ -446,26 +424,16 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         pass
 
     model.perception.encoder = pe_encoder
-    # `merge_sound_expert_to_asr` is a route, not an on/off switch: False means the CTC
-    # event tags are injected, which reads backwards as a bare bool in a log line.
-    if pe_encoder.merge_sound_expert_to_asr:
-        sound_route = "encoder states"
-    else:
-        sound_route = f"{int(pe_encoder.n_sound_events)} CTC event tags"
-        if int(pe_encoder.n_sound_styles):
-            sound_route += f" + {int(pe_encoder.n_sound_styles)} style tags"
     logging.info(
         "Mounted ParallelExpertEncoder from %s onto model.perception.encoder "
-        "(d_model=%d, n_spk=%d, frozen: speech=%s speaker=%s sound=%s, "
-        "sound->ASR via %s, spk_kernel_scale=%g); "
+        "(ASR Conformer + Sortformer, d_model=%d, n_spk=%d, "
+        "frozen: asr=%s diar=%s, spk_kernel_scale=%g); "
         "perception preprocessor normalization disabled (was %r).",
         pe_encoder_path,
         int(pe_encoder.d_model),
         int(pe_encoder.n_spk),
-        bool(pe_encoder.freeze_speech),
-        bool(pe_encoder.freeze_speaker),
-        bool(pe_encoder.freeze_sound),
-        sound_route,
+        bool(pe_encoder.freeze_asr),
+        bool(pe_encoder.freeze_diar),
         float(pe_encoder.spk_kernel_scale),
         prev_normalize,
     )

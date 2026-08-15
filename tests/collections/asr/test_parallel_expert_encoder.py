@@ -21,7 +21,9 @@ import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
 
-from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerEncoder
+import nemo.collections.asr.modules.parallel_expert_encoder as pee_module
+from nemo.collections.asr.models import SortformerEncLabelModel
+from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.modules.parallel_expert_encoder import (
     ParallelExpertEncoder,
     ParallelExpertEncoderPT,
@@ -30,664 +32,430 @@ from nemo.collections.asr.modules.parallel_expert_encoder import (
     _disable_dist_feature_sync,
 )
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
-from nemo.collections.asr.parts.packed_sequence import unpack_encoder_output
+from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, unpack_encoder_output
 
-# ``@experimental`` wraps the class in a wrapt proxy, so ``__new__`` (used to build
-# bare instances that skip the heavy real ``__init__``) must target the underlying
-# class. Attribute access / isinstance still go through the proxy name.
-_PEE = getattr(ParallelExpertEncoder, "__wrapped__", ParallelExpertEncoder)
-# @experimental wraps these in a wrapt proxy; isinstance needs the real class.
-_MOE_ENCODER_CLS = getattr(MoETransformerEncoder, "__wrapped__", MoETransformerEncoder)
-_TF_ENCODER_CLS = getattr(TransformerEncoder, "__wrapped__", TransformerEncoder)
+_PEE = getattr(ParallelExpertEncoder, '__wrapped__', ParallelExpertEncoder)
 
-
-# ----------------------------------------------------------------------------- #
-# Module-level context managers / helpers
-# ----------------------------------------------------------------------------- #
-@pytest.mark.unit
-def test_clone_config_is_deep_and_handles_none():
-    cfg = OmegaConf.create({"a": {"b": 1}})
-    clone = _clone_config(cfg)
-    assert clone == cfg
-    clone.a.b = 2
-    assert cfg.a.b == 1  # original untouched
-    assert _clone_config(None) is None
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("target_dtype", [torch.float64, torch.float16])
-def test_default_dtype_sets_and_restores(target_dtype):
-    prev = torch.get_default_dtype()
-    with _default_dtype(target_dtype):
-        assert torch.get_default_dtype() == target_dtype
-    assert torch.get_default_dtype() == prev
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("noop_dtype", [torch.get_default_dtype(), torch.int32])
-def test_default_dtype_noop_paths(noop_dtype):
-    # Same-dtype and non-floating dtype are both no-ops.
-    prev = torch.get_default_dtype()
-    with _default_dtype(noop_dtype):
-        assert torch.get_default_dtype() == prev
-    assert torch.get_default_dtype() == prev
-
-
-@pytest.mark.unit
-def test_disable_dist_feature_sync_noop_when_uninitialized():
-    assert not dist.is_initialized()
-    orig = dist.is_initialized
-    with _disable_dist_feature_sync():
-        pass
-    assert dist.is_initialized is orig  # nothing patched when dist is down
-
-
-# ----------------------------------------------------------------------------- #
-# Static pure helpers
-# ----------------------------------------------------------------------------- #
-@pytest.mark.unit
-@pytest.mark.parametrize("max_pos, dim", [(4, 8), (1, 16), (10, 4)])
-def test_build_sinusoid_position_encoding(max_pos, dim):
-    pe = ParallelExpertEncoder._build_sinusoid_position_encoding(max_pos, dim)
-    assert pe.shape == (max_pos, dim)
-    # row 0: sin(0)=0 on even indices, cos(0)=1 on odd indices
-    assert torch.allclose(pe[0, 0::2], torch.zeros(dim // 2))
-    assert torch.allclose(pe[0, 1::2], torch.ones(dim // 2))
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "cur_len, target_len",
-    [(3, 6), (6, 3), (5, 5), (1, 4)],
-)
-def test_align_diar_frames_length_and_padding(cur_len, target_len):
-    n_spk = 3
-    diar = torch.arange(cur_len * n_spk, dtype=torch.float32).reshape(1, cur_len, n_spk)
-    out = ParallelExpertEncoder._align_diar_frames(diar, target_len)
-    assert out.shape == (1, target_len, n_spk)
-    if target_len <= cur_len:
-        # truncation keeps the leading frames unchanged
-        assert torch.equal(out, diar[:, :target_len, :])
-    else:
-        # padding repeats the last frame
-        assert torch.equal(out[:, :cur_len, :], diar)
-        for t in range(cur_len, target_len):
-            assert torch.equal(out[:, t, :], diar[:, -1, :])
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("param_dtype", [torch.float64, torch.float16])
-def test_match_module_io_casts_to_expert_dtype(param_dtype):
-    """Mels arrive fp32; `_match_module_io` moves them onto the experts' device/dtype.
-
-    It reads the dtype off the container's own parameters, so it is an instance
-    method rather than the free function it used to be.
-    """
-    enc = build_toy_pe_encoder().to(param_dtype)
-    tensor = torch.zeros(2, 4, dtype=torch.float32)
-    assert enc._match_module_io(tensor).dtype == param_dtype
-
-
-@pytest.mark.unit
-def test_match_module_io_paramless_container_unchanged():
-    enc = build_toy_pe_encoder()
-    tensor = torch.zeros(2, 4, dtype=torch.float32)
-    # Stub out the parameter source: with nothing to match, the tensor passes through.
-    enc.pee = nn.Identity()
-    out = enc._match_module_io(tensor)
-    assert out is tensor and out.dtype == torch.float32
-
-
-# ----------------------------------------------------------------------------- #
-# forward() offline/online dispatch
-# ----------------------------------------------------------------------------- #
-def dispatch_stub(online_inference_length, enabled):
-    """Bare encoder with both branch methods stubbed.
-
-    forward() dispatches purely on `online_inference_enabled` (set by the
-    `online_inference()` context manager) AND a positive window -- NOT on the audio
-    length. Long-form splitting happens one level down, inside _forward_online.
-    """
-    enc = _PEE.__new__(_PEE)
-    nn.Module.__init__(enc)
-    enc.online_inference_length = online_inference_length
-    enc.online_inference_enabled = enabled
-    enc._forward = lambda **kw: ("offline", None, {})
-    enc._forward_online = lambda **kw: ("online", None, {})
-    return enc
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "online_len, enabled, expected",
-    [
-        (500, True, "online"),  # context manager open + positive window
-        (500, False, "offline"),  # not opened -> training/validation path
-        (0, True, "offline"),  # windowing disabled by online_inference_length=0
-        (0, False, "offline"),
-    ],
-)
-def test_forward_dispatch(online_len, enabled, expected):
-    enc = dispatch_stub(online_len, enabled)
-    audio = torch.zeros(1, 8, 200)
-    length = torch.tensor([200])
-    assert enc.forward(audio, length)[0] == expected
-
-
-@pytest.mark.unit
-def test_online_inference_context_toggles_dispatch():
-    """The context manager is the only thing that turns the windowed path on."""
-    enc = dispatch_stub(500, False)
-    audio, length = torch.zeros(1, 8, 200), torch.tensor([200])
-    assert enc.forward(audio, length)[0] == "offline"
-    with _PEE.online_inference(enc):
-        assert enc.forward(audio, length)[0] == "online"
-    assert enc.forward(audio, length)[0] == "offline"  # restored on exit
-
-
-# ----------------------------------------------------------------------------- #
-# _forward_online orchestration (stubbed ASR encoder, provided spk_targets)
-# ----------------------------------------------------------------------------- #
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "win, n_frames",
-    [
-        (10, 240),  # 3 full windows
-        (10, 200),  # partial last window
-        (5, 64),  # many small windows
-        (50, 160),  # single window -> fast path delegates to _forward
-    ],
-)
-def test_forward_online_output_length_telescopes(win, n_frames):
-    """Windowed output must telescope back to the same frame count as one offline pass.
-
-    Uses the real encoder: the old hand-built stub could not express the three-expert
-    container, and a stub that drifts from the module is how this suite went stale.
-    """
-    b = 2
-    enc = build_toy_pe_encoder(
-        online_inference_length=win,
-        diar_spkcache_update_period=win,
-    )
-    enc._suppress_online_pbar = True
-    enc.eval()
-
-    mels = torch.randn(b, _MEL_FEATURES, n_frames)
-    length = torch.tensor([n_frames] * b)
-
-    with torch.no_grad():
-        off_out, off_len = enc(mels, length)
-        with enc.online_inference():
-            on_out, on_len = enc(mels, length)
-
-    assert on_out.shape[0] == b and on_out.shape[1] == enc.d_model
-    # Both paths cover the same audio, so they must agree on the frame count.
-    assert on_out.shape[2] == off_out.shape[2], (on_out.shape, off_out.shape)
-    assert on_len.tolist() == [on_out.shape[2]] * b
-    assert torch.isfinite(on_out).all()
-
-
-# ----------------------------------------------------------------------------- #
-# Bundle checkpoint helpers
-# ----------------------------------------------------------------------------- #
-@pytest.mark.unit
-def test_extract_encoder_state_dict_selects_requested_expert_encoder():
-    state = {
-        "encoder.layers.0.weight": torch.tensor([1.0]),
-        "transformer_encoder.layers.0.weight": torch.tensor([2.0]),
-        "decoder.weight": torch.tensor([3.0]),
-    }
-
-    asr_encoder = ParallelExpertEncoderPT.extract_encoder_state_dict(state)
-    speaker_encoder = ParallelExpertEncoderPT.extract_encoder_state_dict(state, "transformer_encoder")
-
-    assert set(asr_encoder) == {"layers.0.weight"}
-    assert asr_encoder["layers.0.weight"] is state["encoder.layers.0.weight"]
-    assert set(speaker_encoder) == {"layers.0.weight"}
-    assert speaker_encoder["layers.0.weight"] is state["transformer_encoder.layers.0.weight"]
-
-
-def write_nemo(path, *, target=None, include_cfg=True):
-    with tarfile.open(path, "w") as tf:
-        if include_cfg:
-            data = (f"target: {target}\n" if target is not None else "foo: bar\n").encode()
-            info = tarfile.TarInfo(name="model_config.yaml")
-            info.size = len(data)
-            tf.addfile(info, io.BytesIO(data))
-        else:
-            data = b"not a config"
-            info = tarfile.TarInfo(name="weights.ckpt")
-            info.size = len(data)
-            tf.addfile(info, io.BytesIO(data))
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "target, expected",
-    [
-        ("nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT", True),
-        ("ParallelExpertEncoderPT", True),
-        ("nemo.collections.asr.models.SomethingElse", False),
-        (None, False),  # model_config.yaml present but no `target`
-    ],
-)
-def test_is_pe_nemo_by_target(tmp_path, target, expected):
-    nemo_path = str(tmp_path / "bundle.nemo")
-    write_nemo(nemo_path, target=target)
-    assert ParallelExpertEncoderPT.is_pe_nemo(nemo_path) is expected
-
-
-@pytest.mark.unit
-def test_is_pe_nemo_without_model_config(tmp_path):
-    nemo_path = str(tmp_path / "no_cfg.nemo")
-    write_nemo(nemo_path, include_cfg=False)
-    assert ParallelExpertEncoderPT.is_pe_nemo(nemo_path) is False
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "bad_path",
-    [None, 123, "missing.nemo", "not_a_nemo.txt"],
-)
-def test_is_pe_nemo_rejects_bad_paths(tmp_path, bad_path):
-    # a real-but-non-.nemo file to exercise the suffix check
-    if bad_path == "not_a_nemo.txt":
-        p = tmp_path / "not_a_nemo.txt"
-        p.write_text("hello")
-        bad_path = str(p)
-    assert ParallelExpertEncoderPT.is_pe_nemo(bad_path) is False
-
-
-# ----------------------------------------------------------------------------- #
-# Bundle save guard rails
-# ----------------------------------------------------------------------------- #
-@pytest.mark.unit
-def test_save_to_nemo_rejects_non_encoder(tmp_path):
-    with pytest.raises(TypeError):
-        ParallelExpertEncoderPT.save_to_nemo(
-            nn.Linear(2, 2), str(tmp_path / "out.nemo"), template_bundle_path=str(tmp_path / "tpl.nemo")
-        )
-
-
-@pytest.mark.unit
-def test_save_to_nemo_missing_template(tmp_path):
-    # __new__ skips the heavy initializer so the test reaches the template check.
-    fake_encoder = _PEE.__new__(_PEE)
-    with pytest.raises(FileNotFoundError):
-        ParallelExpertEncoderPT.save_to_nemo(
-            fake_encoder,
-            str(tmp_path / "out.nemo"),
-            template_bundle_path=str(tmp_path / "does_not_exist.nemo"),
-        )
-
-
-# ----------------------------------------------------------------------------- #
-# End-to-end fusion with real toy encoders
-#
-# The wrapper loads real sub-encoders and fuses them:
-#   * an ASR ConformerEncoder (cf. tests/collections/asr/test_conformer_encoder.py)
-#   * a Sortformer diarizer    (cf. tests/collections/speaker_tasks/test_diar_sortformer_models.py)
-# These tests build tiny-but-real instances of both and run the wrapper end to end.
-# ----------------------------------------------------------------------------- #
 _MEL_FEATURES = 128
-_ASR_D_MODEL = 32  # speech + sound expert width
-_DIAR_FC_D_MODEL = 16  # half-width speaker expert
+_ASR_D_MODEL = 32
+_DIAR_FC_D_MODEL = 32
 _DIAR_TF_D_MODEL = 16
 _N_SPK = 4
 _SUBSAMPLING_FACTOR = 8
-_N_LAYERS = 1
-_N_HEADS_WIDE = 2  # head_dim 16, shared by all three experts
-_N_HEADS_NARROW = 1
-_CHUNK_LEN = 500  # enc frames per online window
-_SPKCACHE_LEN = 16
 
 
-def _toy_expert_cfg(target: str, d_model: int, n_heads: int, **extra) -> DictConfig:
-    """One tiny flex-encoder expert config.
-
-    All three experts use the flex TransformerEncoder family with a shared
-    front-end (same feat_in / subsampling / frame rate) and rope attention, which is
-    what lets forward_packed batch them into one attention group.
-    """
-    cfg = {
-        '_target_': target,
-        'feat_in': _MEL_FEATURES,
-        'feat_out': -1,
-        'n_layers': _N_LAYERS,
-        'd_model': d_model,
-        'n_heads': n_heads,
-        'subsampling': 'feature_stacking',
-        'subsampling_factor': _SUBSAMPLING_FACTOR,
-        'ff_expansion': 1.0,
-        'self_attention_model': 'rope',
-        'pos_emb_max_len': 5000,
-        'xscaling': False,
-        'qkv_bias': False,
-        'qk_norm': False,
-        'pre_block_norm': True,
-        'attn_mode': 'full',
-        'drop_rate': 0.0,
-        'dropout_pre_encoder': 0.0,
-        'dropout_emb': 0.0,
-    }
-    cfg.update(extra)
-    return DictConfig(cfg)
-
-
-def toy_speech_expert_cfg() -> DictConfig:
-    """Speech expert: the MoE backbone the speaker kernel and sound merge fuse into."""
-    return _toy_expert_cfg(
-        'nemo.collections.asr.modules.MoETransformerEncoder',
-        d_model=_ASR_D_MODEL,
-        n_heads=_N_HEADS_WIDE,
-        moe_num_experts=4,
-        moe_top_k=2,
-    )
-
-
-def toy_speaker_expert_cfg() -> DictConfig:
-    """Speaker expert with half the width of the speech and sound experts."""
-    return _toy_expert_cfg(
-        'nemo.collections.asr.modules.TransformerEncoder',
-        d_model=_DIAR_FC_D_MODEL,
-        n_heads=_N_HEADS_NARROW,
-    )
-
-
-def toy_sound_expert_cfg() -> DictConfig:
-    """Sound expert: same width as speech, since the merge is an elementwise add."""
-    return _toy_expert_cfg(
-        'nemo.collections.asr.modules.TransformerEncoder',
-        d_model=_ASR_D_MODEL,
-        n_heads=_N_HEADS_WIDE,
-    )
-
-
-def toy_sound_ctc_head_cfg() -> DictConfig:
-    """Tiny sound CTC head with both event and style tags."""
-    vocabulary = [
-        'ordinary_piece',
-        '<ev:laughter>',
-        '<ev:music>',
-        '<sty:stt:anger>',
-        '<sty:end:anger>',
-    ]
+def toy_asr_encoder_cfg() -> DictConfig:
     return DictConfig(
         {
-            '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
-            'feat_in': _ASR_D_MODEL,
-            'num_classes': len(vocabulary),
-            'vocabulary': vocabulary,
-            'add_blank': True,
+            '_target_': 'nemo.collections.asr.modules.ConformerEncoder',
+            'feat_in': _MEL_FEATURES,
+            'feat_out': -1,
+            'n_layers': 1,
+            'd_model': _ASR_D_MODEL,
+            'subsampling': 'dw_striding',
+            'subsampling_factor': _SUBSAMPLING_FACTOR,
+            'subsampling_conv_channels': 16,
+            'ff_expansion_factor': 4,
+            'self_attention_model': 'rel_pos',
+            'n_heads': 4,
+            'att_context_size': [-1, -1],
+            'conv_kernel_size': 9,
+            'dropout': 0.0,
+            'dropout_pre_encoder': 0.0,
+            'dropout_emb': 0.0,
+            'dropout_att': 0.0,
         }
     )
 
 
-def toy_sortformer_modules_cfg() -> DictConfig:
-    """Sortformer head + streaming cache logic, loaded separately from the encoder."""
+def toy_transformer_asr_encoder_cfg() -> DictConfig:
     return DictConfig(
         {
-            '_target_': 'nemo.collections.asr.modules.sortformer_modules.SortformerModules',
-            'num_spks': _N_SPK,
-            'dropout_rate': 0.0,
-            'fc_d_model': _DIAR_FC_D_MODEL,
-            'tf_d_model': _DIAR_TF_D_MODEL,
+            '_target_': 'nemo.collections.asr.modules.transformer_encoder.TransformerEncoder',
+            'feat_in': _MEL_FEATURES,
+            'd_model': _ASR_D_MODEL,
+            'n_heads': 2,
+            'n_layers': 1,
+            'subsampling': 'feature_stacking',
             'subsampling_factor': _SUBSAMPLING_FACTOR,
-            'spkcache_len': _SPKCACHE_LEN,
-            'fifo_len': 0,
-            'chunk_len': _CHUNK_LEN,
-            'spkcache_update_period': _CHUNK_LEN,
-            'chunk_left_context': 0,
-            'chunk_right_context': 0,
-            'spkcache_sil_frames_per_spk': 1,
+            'drop_rate': 0.0,
+            'dropout_pre_encoder': 0.0,
+            'dropout_emb': 0.0,
+            'qkv_bias': False,
+            'qk_norm': True,
+            'ff_expansion': 2.0,
+            'pre_block_norm': True,
+            'self_attention_model': 'rope',
+            'attn_mode': 'full',
+            'sync_max_audio_length': False,
+        }
+    )
+
+
+def toy_diarization_model_cfg() -> DictConfig:
+    defaults = {'fc_d_model': _DIAR_FC_D_MODEL, 'tf_d_model': _DIAR_TF_D_MODEL}
+    return DictConfig(
+        {
+            'target': 'nemo.collections.asr.models.sortformer_diar_models.SortformerEncLabelModel',
+            'sample_rate': 16000,
+            'pil_weight': 0.5,
+            'ats_weight': 0.5,
+            'max_num_of_spks': _N_SPK,
+            'streaming_mode': False,
+            'async_streaming': False,
+            'model_defaults': DictConfig(defaults),
+            'preprocessor': DictConfig(
+                {
+                    '_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor',
+                    'normalize': 'per_feature',
+                    'window_size': 0.025,
+                    'sample_rate': 16000,
+                    'window_stride': 0.01,
+                    'window': 'hann',
+                    'features': _MEL_FEATURES,
+                    'n_fft': 512,
+                    'frame_splicing': 1,
+                    'dither': 0.00001,
+                }
+            ),
+            'encoder': DictConfig(
+                {
+                    '_target_': 'nemo.collections.asr.modules.ConformerEncoder',
+                    'feat_in': _MEL_FEATURES,
+                    'feat_out': -1,
+                    'n_layers': 1,
+                    'd_model': _DIAR_FC_D_MODEL,
+                    'subsampling': 'dw_striding',
+                    'subsampling_factor': _SUBSAMPLING_FACTOR,
+                    'subsampling_conv_channels': 16,
+                    'causal_downsampling': False,
+                    'ff_expansion_factor': 4,
+                    'self_attention_model': 'rel_pos',
+                    'n_heads': 4,
+                    'att_context_size': [-1, -1],
+                    'conv_kernel_size': 9,
+                    'conv_norm_type': 'batch_norm',
+                    'dropout': 0.0,
+                    'dropout_pre_encoder': 0.0,
+                    'dropout_emb': 0.0,
+                    'dropout_att': 0.0,
+                }
+            ),
+            'transformer_encoder': DictConfig(
+                {
+                    '_target_': 'nemo.collections.asr.modules.transformer.transformer_encoders.TransformerEncoder',
+                    'num_layers': 1,
+                    'hidden_size': _DIAR_TF_D_MODEL,
+                    'inner_size': 32,
+                    'num_attention_heads': 4,
+                    'attn_score_dropout': 0.0,
+                    'attn_layer_dropout': 0.0,
+                    'ffn_dropout': 0.0,
+                    'hidden_act': 'relu',
+                    'pre_ln': False,
+                    'pre_ln_final_layer_norm': True,
+                }
+            ),
+            'sortformer_modules': DictConfig(
+                {
+                    '_target_': 'nemo.collections.asr.modules.sortformer_modules.SortformerModules',
+                    'num_spks': _N_SPK,
+                    'dropout_rate': 0.0,
+                    'fc_d_model': _DIAR_FC_D_MODEL,
+                    'tf_d_model': _DIAR_TF_D_MODEL,
+                }
+            ),
+            'loss': DictConfig(
+                {
+                    '_target_': 'nemo.collections.asr.losses.bce_loss.BCELoss',
+                    'weight': None,
+                    'reduction': 'mean',
+                }
+            ),
         }
     )
 
 
 def build_toy_pe_encoder(**overrides) -> ParallelExpertEncoder:
-    """Construct a real encoder from the tiny three-expert configs."""
-    kwargs = dict(
-        speech_expert_cfg=toy_speech_expert_cfg(),
-        speaker_expert_cfg=toy_speaker_expert_cfg(),
-        sound_expert_cfg=toy_sound_expert_cfg(),
-        sortformer_modules_cfg=toy_sortformer_modules_cfg(),
-        asr_normalize_type='per_feature',
-        # Keep the input far below one window so forward() stays on the offline path.
-        online_inference_length=_CHUNK_LEN,
-        chunk_left_context=0,
-        chunk_right_context=0,
-        diar_fifo_len=0,
-        diar_spkcache_update_period=_CHUNK_LEN,
-        diar_spkcache_len=_SPKCACHE_LEN,
-        # The existing fixture exercises the legacy encoder-state route. Tests for the
-        # new default SoundToken route provide a CTC head explicitly below.
-        merge_sound_expert_to_asr=True,
-    )
+    kwargs = {
+        'asr_encoder_cfg': toy_asr_encoder_cfg(),
+        'diarization_model_cfg': toy_diarization_model_cfg(),
+        'asr_normalize_type': 'per_feature',
+        'online_inference_length': 500,
+    }
     kwargs.update(overrides)
     return ParallelExpertEncoder(**kwargs)
 
 
-@pytest.mark.unit
-def test_pe_encoder_builds_and_wires_all_three_experts():
-    enc = build_toy_pe_encoder()
-    # All three experts are real flex encoders inside one GGEMM container.
-    assert set(enc.pee.expert_names) == {"speech", "speaker", "sound"}
-    assert isinstance(enc.pee.experts["speech"], _MOE_ENCODER_CLS)
-    assert isinstance(enc.pee.experts["speaker"], _TF_ENCODER_CLS)
-    assert isinstance(enc.pee.experts["sound"], _TF_ENCODER_CLS)
-    # Decoder/head metadata belongs to the owning model, not the GGEMM container.
-    assert enc.get_expert_task("speech") == "asr_encoder"
-    assert enc.get_expert_task("speaker") == "diarization"
-    assert enc.get_expert_task("sound") == "sound_ctc"
-    assert not hasattr(enc.pee, "expert_tasks")
-    # The speech expert is the backbone: it drives the drop-in ConformerEncoder props.
-    assert enc.d_model == _ASR_D_MODEL
-    assert enc.subsampling_factor == _SUBSAMPLING_FACTOR
-    # Speaker count + fusion kernel come from the Sortformer head.
-    assert enc.n_spk == _N_SPK
-    assert enc.diar_kernel.shape == (_N_SPK, _ASR_D_MODEL)
-    # The sound merge is an elementwise add, so sound must match the speech width.
-    assert enc.pee.experts["sound"].d_model == enc.d_model
-    # Defaults: ONLY the speaker branch is frozen. Its kernel comes from a hard
-    # threshold on the speaker activities, so no gradient reaches it through the
-    # fusion anyway. Speech and sound both train.
-    assert all(not p.requires_grad for p in enc.pee.experts["speaker"].parameters())
-    assert all(not p.requires_grad for p in enc.sortformer_modules.parameters())
-    assert any(p.requires_grad for p in enc.pee.experts["speech"].parameters())
-    assert any(p.requires_grad for p in enc.pee.experts["sound"].parameters())
+def bundle_config(**overrides) -> DictConfig:
+    config = {
+        'target': 'nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT',
+        'asr_encoder_cfg': toy_asr_encoder_cfg(),
+        'diarization_model_cfg': toy_diarization_model_cfg(),
+        'asr_normalize_type': 'per_feature',
+    }
+    config.update(overrides)
+    return OmegaConf.create(config)
+
+
+def write_bundle(path, config, state=None):
+    config_bytes = OmegaConf.to_yaml(config).encode()
+    weights = io.BytesIO()
+    torch.save(state or {}, weights)
+    with tarfile.open(path, 'w') as archive:
+        config_info = tarfile.TarInfo('model_config.yaml')
+        config_info.size = len(config_bytes)
+        archive.addfile(config_info, io.BytesIO(config_bytes))
+        weight_bytes = weights.getvalue()
+        weight_info = tarfile.TarInfo('model_weights.ckpt')
+        weight_info.size = len(weight_bytes)
+        archive.addfile(weight_info, io.BytesIO(weight_bytes))
 
 
 @pytest.mark.unit
-def test_ggemm_packed_matches_per_expert_reference():
-    """The packed inference kernel must preserve every expert's native output."""
-    enc = build_toy_pe_encoder().eval()
-    mels = torch.randn(2, _MEL_FEATURES, 64)
-    lengths = torch.tensor([64, 48])
-    signal, signal_lengths = enc._prepare_input(mels, lengths)
+def test_clone_config_is_deep_and_handles_none():
+    config = OmegaConf.create({'a': {'b': 1}})
+    clone = _clone_config(config)
+    clone.a.b = 2
+    assert config.a.b == 1
+    assert _clone_config(None) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('target_dtype', [torch.float64, torch.float16])
+def test_default_dtype_sets_and_restores(target_dtype):
+    previous = torch.get_default_dtype()
+    with _default_dtype(target_dtype):
+        assert torch.get_default_dtype() == target_dtype
+    assert torch.get_default_dtype() == previous
+
+
+@pytest.mark.unit
+def test_disable_dist_feature_sync_noop_when_uninitialized():
+    assert not dist.is_initialized()
+    original = dist.is_initialized
+    with _disable_dist_feature_sync():
+        pass
+    assert dist.is_initialized is original
+
+
+@pytest.mark.unit
+def test_static_helpers_align_and_cast():
+    diar = torch.arange(9, dtype=torch.float32).reshape(1, 3, 3)
+    aligned = ParallelExpertEncoder._align_diar_frames(diar, 5)
+    assert aligned.shape == (1, 5, 3)
+    assert torch.equal(aligned[:, -1], diar[:, -1])
+
+    module = nn.Linear(4, 4).to(torch.float64)
+    cast = ParallelExpertEncoder._match_module_io(torch.zeros(2, 4), module)
+    assert cast.dtype == torch.float64
+
+
+@pytest.mark.unit
+def test_pe_encoder_builds_two_real_branches_and_freezes_diarizer():
+    encoder = build_toy_pe_encoder()
+    assert isinstance(encoder.asr_encoder, ConformerEncoder)
+    assert encoder.asr_encoder_type == 'fastconformer'
+    assert isinstance(encoder.diarization_model, SortformerEncLabelModel)
+    assert encoder.d_model == _ASR_D_MODEL
+    assert encoder.subsampling_factor == _SUBSAMPLING_FACTOR
+    assert encoder.n_spk == _N_SPK
+    assert all(not parameter.requires_grad for parameter in encoder.diarization_model.parameters())
+    assert any(parameter.requires_grad for parameter in encoder.asr_encoder.parameters())
+
+    encoder.train()
+    assert encoder.asr_encoder.training
+    assert not encoder.diarization_model.training
+
+
+@pytest.mark.unit
+def test_pe_encoder_selects_native_transformer_asr_branch():
+    encoder = build_toy_pe_encoder(
+        asr_encoder_type='transformer',
+        asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
+    )
+    assert isinstance(encoder.asr_encoder, TransformerEncoder)
+    assert encoder.asr_encoder_type == 'transformer'
+    assert encoder.d_model == _ASR_D_MODEL
+    assert encoder.subsampling_factor == _SUBSAMPLING_FACTOR
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ('asr_encoder_type', 'asr_encoder_cfg', 'expected_class'),
+    [
+        ('fastconformer', toy_transformer_asr_encoder_cfg, 'ConformerEncoder'),
+        ('transformer', toy_asr_encoder_cfg, 'TransformerEncoder'),
+    ],
+)
+def test_pe_encoder_rejects_asr_encoder_type_config_mismatch(asr_encoder_type, asr_encoder_cfg, expected_class):
+    with pytest.raises(TypeError, match=rf"requires .*{expected_class}"):
+        build_toy_pe_encoder(
+            asr_encoder_type=asr_encoder_type,
+            asr_encoder_cfg=asr_encoder_cfg(),
+        )
+
+
+@pytest.mark.unit
+def test_pe_encoder_rejects_unknown_asr_encoder_type():
+    with pytest.raises(ValueError, match='asr_encoder_type must be one of'):
+        build_toy_pe_encoder(asr_encoder_type='auto')
+
+
+@pytest.mark.unit
+def test_freeze_asr_keeps_both_frozen_branches_in_eval():
+    encoder = build_toy_pe_encoder(freeze_asr=True)
+    encoder.train()
+    assert not encoder.asr_encoder.training
+    assert not encoder.diarization_model.training
+    assert all(not parameter.requires_grad for parameter in encoder.asr_encoder.parameters())
+
+
+@pytest.mark.unit
+def test_pe_encoder_rejects_incompatible_branch_frame_rates():
+    diarization_config = toy_diarization_model_cfg()
+    diarization_config.encoder.subsampling_factor = 4
+    with pytest.raises(ValueError, match='diarization output subsampling factor'):
+        build_toy_pe_encoder(diarization_model_cfg=diarization_config)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ('asr_encoder_type', 'asr_encoder_cfg'),
+    [
+        ('fastconformer', toy_asr_encoder_cfg),
+        ('transformer', toy_transformer_asr_encoder_cfg),
+    ],
+)
+def test_offline_forward_runs_both_branches(asr_encoder_type, asr_encoder_cfg):
+    encoder = build_toy_pe_encoder(
+        asr_encoder_type=asr_encoder_type,
+        asr_encoder_cfg=asr_encoder_cfg(),
+    ).eval()
+    mels = torch.randn(2, _MEL_FEATURES, 160)
+    lengths = torch.tensor([160, 137])
+    with torch.no_grad():
+        output, output_lengths = encoder(mels, lengths)
+    assert output.shape[:2] == (2, _ASR_D_MODEL)
+    assert output.shape[-1] == int(output_lengths.max())
+    assert torch.isfinite(output).all()
+
+
+@pytest.mark.unit
+def test_mixed_missing_rttm_rows_use_sortformer_predictions(monkeypatch):
+    encoder = build_toy_pe_encoder().eval()
+    mels = torch.randn(3, _MEL_FEATURES, 80)
+    lengths = torch.tensor([80, 72, 64])
+    diarization = torch.rand(3, 10, _N_SPK)
+    asr_states = torch.randn(3, _ASR_D_MODEL, 10)
+    asr_lengths = torch.tensor([10, 9, 8])
+    monkeypatch.setattr(encoder, '_run_diarization', lambda *_: diarization)
+    monkeypatch.setattr(encoder, '_run_asr', lambda *_: (asr_states, asr_lengths))
+
+    targets = torch.zeros(3, 10, _N_SPK)
+    targets[0, :, 0] = 1.0
+    targets[1] = encoder.missing_rttm_target
+    targets[2, :, 2] = 1.0
+    expected = encoder._fuse_diar_and_asr(
+        asr_states,
+        targets,
+        diarization_preds=diarization,
+        use_diarization=torch.tensor([False, True, False]),
+    )
+    actual, actual_lengths = encoder(mels, lengths, spk_targets=targets)
+    torch.testing.assert_close(actual, expected)
+    assert torch.equal(actual_lengths, asr_lengths)
+
+
+@pytest.mark.unit
+def test_speaker_threshold_and_kernel_scale_are_preserved():
+    encoder = build_toy_pe_encoder(speaker_activity_threshold=0.5, spk_kernel_scale=0.25).eval()
+    asr_states = torch.randn(1, _ASR_D_MODEL, 3)
+    targets = torch.full((1, 3, _N_SPK), 0.5)
+    targets[:, 1, 0] = 0.5001
+    fused = encoder._fuse_diar_and_asr(asr_states, targets)
+
+    normalized = encoder.asr_norm(asr_states.transpose(1, 2))
+    binary = (targets > 0.5).to(normalized.dtype)
+    infusion = encoder.diar_norm(binary) @ encoder.diar_kernel
+    expected = (normalized + 0.25 * infusion).transpose(1, 2)
+    torch.testing.assert_close(fused, expected)
+
+
+@pytest.mark.unit
+def test_packed_fallback_matches_padded_forward_for_dense_and_packed_inputs():
+    torch.manual_seed(0)
+    encoder = build_toy_pe_encoder().eval()
+    lengths = torch.tensor([80, 53])
+    mels = torch.randn(2, _MEL_FEATURES, 80)
+    mels[1, :, 53:] = 0.0
+    targets = torch.zeros(2, 10, _N_SPK)
+    targets[0, :, 0] = 1.0
+    targets[1] = -1.0
 
     with torch.no_grad():
-        reference = enc.pee.forward_all(signal, signal_lengths)
-        packed = enc.pee.forward_packed(signal, signal_lengths)
+        padded, output_lengths = encoder(mels, lengths, spk_targets=targets)
+        packed_from_dense = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
+        packed_input = pack_encoder_output(mels.transpose(1, 2), lengths)
+        packed_from_packed = encoder.forward_sequence_packed(packed_input, spk_targets=targets)
 
-    assert set(packed) == set(reference) == {"speech", "speaker", "sound"}
-    for role in reference:
-        reference_states, reference_lengths = reference[role]
-        packed_states, packed_lengths = packed[role]
-        torch.testing.assert_close(packed_states, reference_states, atol=1e-5, rtol=1e-4)
-        assert torch.equal(packed_lengths, reference_lengths)
+    restored = unpack_encoder_output(packed_from_dense, total_length=padded.shape[-1])
+    valid = torch.arange(padded.shape[-1])[None, :] < output_lengths[:, None]
+    torch.testing.assert_close(restored[valid], padded.transpose(1, 2)[valid], rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(packed_from_packed.data, packed_from_dense.data, rtol=1e-5, atol=1e-6)
+    assert torch.equal(packed_from_packed.lengths, packed_from_dense.lengths)
 
 
 @pytest.mark.unit
-def test_pe_encoder_uses_separate_training_and_inference_compute_paths(monkeypatch):
-    """Training uses native expert forwards; eval uses the fused GGEMM path."""
-    enc = build_toy_pe_encoder()
-    mels = torch.randn(1, _MEL_FEATURES, 64)
-    lengths = torch.tensor([64])
-    spk_targets = torch.zeros(1, 8, _N_SPK)
+def test_packed_fallback_rejects_online_scope():
+    encoder = build_toy_pe_encoder().eval()
+    with encoder.online_inference(), pytest.raises(RuntimeError, match='offline API'):
+        encoder.forward_sequence_packed(torch.randn(1, _MEL_FEATURES, 32), torch.tensor([32]))
+
+
+@pytest.mark.unit
+def test_activation_checkpointing_dispatches_through_owned_policy(monkeypatch):
+    encoder = build_toy_pe_encoder().train()
     calls = []
 
-    original_forward_all = enc.pee.forward_all
-    original_forward_packed = enc.pee.forward_packed
+    def tracked(function, *args, **kwargs):
+        calls.append(function)
+        kwargs.pop('use_reentrant')
+        return function(*args, **kwargs)
 
-    def record_forward_all(*args, **kwargs):
-        calls.append("forward_all")
-        return original_forward_all(*args, **kwargs)
+    monkeypatch.setattr(pee_module, 'checkpoint', tracked)
+    encoder.set_activation_checkpointing(True)
+    mels = torch.randn(1, _MEL_FEATURES, 64, requires_grad=True)
+    output, _ = encoder._run_asr(mels, torch.tensor([64]))
+    output.square().mean().backward()
+    assert len(calls) == 1
+    assert mels.grad is not None
 
-    def record_forward_packed(*args, **kwargs):
-        calls.append("forward_packed")
-        return original_forward_packed(*args, **kwargs)
 
-    monkeypatch.setattr(enc.pee, "forward_all", record_forward_all)
-    monkeypatch.setattr(enc.pee, "forward_packed", record_forward_packed)
-
-    enc.train()
-    with torch.no_grad():
-        train_output, _ = enc(mels, lengths, spk_targets=spk_targets)
-    assert calls == ["forward_all"]
-    assert train_output.requires_grad is False
-
-    calls.clear()
-    enc.eval()
-    with torch.no_grad():
-        eval_output, _ = enc(mels, lengths, spk_targets=spk_targets)
-    assert calls == ["forward_packed"]
-    assert eval_output.requires_grad is False
+def dispatch_stub(enabled):
+    encoder = _PEE.__new__(_PEE)
+    nn.Module.__init__(encoder)
+    encoder.online_inference_length = 10
+    encoder.online_inference_enabled = enabled
+    encoder._forward = lambda **kwargs: ('offline', None)
+    encoder._forward_online = lambda **kwargs: ('online', None)
+    return encoder
 
 
 @pytest.mark.unit
-def test_pe_encoder_activation_checkpointing_is_pee_local(monkeypatch):
-    """The owning model controls checkpointing without changing native experts."""
-    from torch.utils.checkpoint import checkpoint as torch_checkpoint
-
-    enc = build_toy_pe_encoder().train()
-    checkpointed = []
-
-    def record_checkpoint(function, *args, **kwargs):
-        checkpointed.append(function)
-        return torch_checkpoint(function, *args, **kwargs)
-
-    monkeypatch.setattr(
-        "nemo.collections.asr.modules.parallel_expert_encoder.checkpoint",
-        record_checkpoint,
-    )
-    for expert in enc.pee.experts.values():
-        parameter = next(expert.parameters())
-
-        def lightweight_forward(audio_signal, length, bypass_pre_encode=False, *, _expert=expert, _p=parameter):
-            del bypass_pre_encode
-            encoded_length = torch.div(length, _SUBSAMPLING_FACTOR, rounding_mode="floor")
-            encoded = _p.reshape(-1)[0] * audio_signal.new_ones(
-                audio_signal.shape[0], _expert.d_model, int(encoded_length.max())
-            )
-            return encoded, encoded_length
-
-        monkeypatch.setattr(expert, "forward", lightweight_forward)
-    enc.set_activation_checkpointing(True)
-
-    assert enc.activation_checkpointing is True
-    assert all(not hasattr(expert, "activation_checkpointing") for expert in enc.pee.experts.values())
-
-    mels = torch.randn(1, _MEL_FEATURES, 64)
-    lengths = torch.tensor([64])
-    outputs = enc._forward_all_training(mels, lengths)
-
-    assert checkpointed == [enc.pee.experts["speech"], enc.pee.experts["sound"]]
-    assert set(outputs) == {"speech", "speaker", "sound"}
-    assert all(torch.isfinite(output).all() for output, _ in outputs.values())
-    sum(output.float().sum() for output, _ in outputs.values()).backward()
-    assert any(parameter.grad is not None for parameter in enc.pee.experts["speech"].parameters())
-    assert any(parameter.grad is not None for parameter in enc.pee.experts["sound"].parameters())
-    assert all(parameter.grad is None for parameter in enc.pee.experts["speaker"].parameters())
+def test_online_inference_context_controls_dispatch_and_restores_state():
+    encoder = dispatch_stub(False)
+    audio = torch.zeros(1, 8, 20)
+    length = torch.tensor([20])
+    assert encoder(audio, length)[0] == 'offline'
+    with encoder.online_inference():
+        assert encoder(audio, length)[0] == 'online'
+    assert encoder(audio, length)[0] == 'offline'
 
 
 @pytest.mark.unit
-@pytest.mark.run_only_on('GPU')
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE checkpoint test requires CUDA")
-def test_pe_encoder_activation_checkpointing_real_cuda_backward():
-    """Checkpoint real native expert/FlexAttention forwards without modifying them."""
-    enc = build_toy_pe_encoder().train().cuda()
-    enc.set_activation_checkpointing(True)
-
-    mels = torch.randn(1, _MEL_FEATURES, 64, device="cuda")
-    lengths = torch.tensor([64], device="cuda")
-    spk_targets = torch.zeros(1, 8, _N_SPK, device="cuda")
-    output, _ = enc(mels, lengths, spk_targets=spk_targets)
-    output.float().sum().backward()
-
-    assert torch.isfinite(output).all()
-    assert any(parameter.grad is not None for parameter in enc.pee.experts["speech"].parameters())
-    assert any(parameter.grad is not None for parameter in enc.pee.experts["sound"].parameters())
-    assert all(parameter.grad is None for parameter in enc.pee.experts["speaker"].parameters())
-
-
-@pytest.mark.unit
-def test_pe_encoder_sound_token_route_uses_frozen_ctc_tags():
-    enc = build_toy_pe_encoder(
-        merge_sound_expert_to_asr=False,
-        sound_ctc_head_cfg=toy_sound_ctc_head_cfg(),
-        freeze_sound=True,
-    ).eval()
-
-    assert enc.sound_event_tokens == ('<ev:laughter>', '<ev:music>')
-    assert enc.sound_style_tokens == ('<sty:stt:anger>', '<sty:end:anger>')
-    assert enc.n_sound_events == 2
-    assert enc.n_sound_styles == 2
-    assert all(not param.requires_grad for param in enc.sound_ctc_head.parameters())
-
-    mels = torch.randn(1, _MEL_FEATURES, 160)
-    length = torch.tensor([160])
-    with torch.no_grad():
-        outputs, encoded_len = enc(mels, length)
-
-    assert outputs.shape == (1, _ASR_D_MODEL, int(encoded_len[0]))
-    assert torch.isfinite(outputs).all()
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("batch_size, n_frames", [(1, 160), (2, 200)])
-def test_pe_encoder_offline_forward_runs_internal_diarizer(batch_size, n_frames):
-    enc = build_toy_pe_encoder().eval()
-    mels = torch.randn(batch_size, _MEL_FEATURES, n_frames)
-    length = torch.full((batch_size,), n_frames, dtype=torch.long)
-
-    with torch.no_grad():
-        outputs, encoded_len = enc(mels, length)  # spk_targets=None -> Sortformer runs internally
-
-    expected_t = int(encoded_len[0].item())
-    assert outputs.shape == (batch_size, _ASR_D_MODEL, expected_t)
-    assert expected_t > 0
-    assert torch.isfinite(outputs).all()
-    assert encoded_len.tolist() == [expected_t] * batch_size
-
-
-@pytest.mark.unit
-def test_pe_encoder_offline_forward_accepts_diar_override_and_fuses_it():
-    enc = build_toy_pe_encoder().eval()
-    batch_size, n_frames = 2, 160
-    mels = torch.randn(batch_size, _MEL_FEATURES, n_frames)
-    length = torch.full((batch_size,), n_frames, dtype=torch.long)
-
-    # Arbitrary diar frame count: PE aligns it to the ASR frame count internally.
-    dp1 = torch.rand(batch_size, 7, _N_SPK)
-    dp2 = torch.rand(batch_size, 7, _N_SPK)
-
-    with torch.no_grad():
-        out1, len1 = enc(mels, length, spk_targets=dp1)
-        out2, len2 = enc(mels, length, spk_targets=dp2)
-
-    expected_t = int(len1[0].item())
-    assert out1.shape == (batch_size, _ASR_D_MODEL, expected_t)
-    assert torch.equal(len1, len2)
-    assert torch.isfinite(out1).all()
-    # Same audio + same (dropout-free, eval) ASR branch, but different speaker
-    # predictions must change the fused output -> proves the diar branch is fused in.
-    assert not torch.allclose(out1, out2)
-
-
-@pytest.mark.unit
-def test_pe_encoder_online_forward_matches_conformer_io_with_real_encoders():
-    # Small window so a modest input crosses onto the long-form online path.
-    enc = build_toy_pe_encoder(
+def test_online_inference_runs_two_real_branches_with_conformer_io():
+    encoder = build_toy_pe_encoder(
         online_inference_length=10,
         chunk_left_context=2,
         chunk_right_context=2,
@@ -695,214 +463,120 @@ def test_pe_encoder_online_forward_matches_conformer_io_with_real_encoders():
         diar_spkcache_update_period=20,
         diar_spkcache_len=20,
     ).eval()
-    enc._suppress_online_pbar = True
+    encoder._suppress_online_pbar = True
+    mels = torch.randn(1, _MEL_FEATURES, 160)
+    lengths = torch.tensor([160])
 
-    batch_size, n_frames = 1, 320  # > online_inference_length * subsampling_factor (=80)
-    mels = torch.randn(batch_size, _MEL_FEATURES, n_frames)
-    length = torch.full((batch_size,), n_frames, dtype=torch.long)
+    with torch.no_grad(), encoder.online_inference():
+        output, output_lengths = encoder(mels, lengths)
 
-    with torch.no_grad():
-        outputs, encoded_len = enc(mels, length)
+    assert output.shape == (1, _ASR_D_MODEL, int(output_lengths[0]))
+    assert torch.isfinite(output).all()
 
-    expected_t = int(encoded_len[0].item())
-    assert outputs.shape == (batch_size, _ASR_D_MODEL, expected_t)
-    assert expected_t > 0
-    assert torch.isfinite(outputs).all()
-
-
-# ----------------------------------------------------------------------------- #
-# GPU end-to-end fusion with real toy encoders
-#
-# These mirror the CPU end-to-end tests but run on CUDA. They additionally
-# exercise the device/dtype-bridging machinery the wrapper exists for: fp32 mels
-# fed into (optionally) bf16 experts on the GPU, handled by `_match_module_io`
-# (offline) and `_default_dtype` / `_disable_dist_feature_sync` (online).
-# ----------------------------------------------------------------------------- #
-@pytest.mark.unit
-@pytest.mark.run_only_on('GPU')
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
-@pytest.mark.parametrize("batch_size, n_frames", [(1, 160), (2, 200)])
-def test_pe_encoder_offline_forward_on_gpu(batch_size, n_frames):
-    enc = build_toy_pe_encoder().eval().cuda()
-    # Mels arrive un-normalised in fp32 (the SALM perception contract).
-    mels = torch.randn(batch_size, _MEL_FEATURES, n_frames, device="cuda", dtype=torch.float32)
-    length = torch.full((batch_size,), n_frames, dtype=torch.long, device="cuda")
-
-    with torch.no_grad():
-        outputs, encoded_len = enc(mels, length)  # spk_targets=None -> Sortformer runs internally
-
-    expected_t = int(encoded_len[0].item())
-    assert outputs.is_cuda
-    assert outputs.shape == (batch_size, _ASR_D_MODEL, expected_t)
-    assert expected_t > 0
-    assert torch.isfinite(outputs).all()
-    assert encoded_len.tolist() == [expected_t] * batch_size
+    targets = torch.zeros(1, output.shape[-1], _N_SPK)
+    targets[:, :, 0] = 1.0
+    with torch.no_grad(), encoder.online_inference():
+        external_output, external_lengths = encoder(mels, lengths, spk_targets=targets)
+    assert external_output.shape == output.shape
+    assert torch.equal(external_lengths, output_lengths)
 
 
 @pytest.mark.unit
-@pytest.mark.run_only_on('GPU')
-@pytest.mark.skipif(
-    not (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
-    reason="PEE bf16 GPU test requires CUDA with bf16 support",
+def test_transformer_online_inference_preserves_partial_feature_stack():
+    encoder = build_toy_pe_encoder(
+        asr_encoder_type='transformer',
+        asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
+        online_inference_length=10,
+        chunk_left_context=2,
+        chunk_right_context=2,
+        diar_fifo_len=10,
+        diar_spkcache_update_period=20,
+        diar_spkcache_len=20,
+    ).eval()
+    encoder._suppress_online_pbar = True
+    mels = torch.randn(1, _MEL_FEATURES, 161)
+    lengths = torch.tensor([161])
+    targets = torch.zeros(1, 21, _N_SPK)
+    targets[:, :, 0] = 1.0
+
+    with torch.no_grad():
+        _, expected_lengths = encoder._run_asr(mels, lengths)
+        with encoder.online_inference():
+            output, output_lengths = encoder(mels, lengths, spk_targets=targets)
+
+    assert torch.equal(output_lengths, expected_lengths)
+    assert output.shape == (1, _ASR_D_MODEL, int(expected_lengths[0]))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ('asr_encoder_type', 'asr_encoder_cfg', 'write_type_flag'),
+    [
+        ('fastconformer', toy_asr_encoder_cfg, False),
+        ('transformer', toy_transformer_asr_encoder_cfg, True),
+    ],
 )
-def test_pe_encoder_offline_forward_bf16_experts_on_gpu():
-    # Experts run in bf16 while mels stay fp32 -> exercises `_match_module_io`
-    # device/dtype bridging on both branches before their conv subsampling.
-    enc = build_toy_pe_encoder().eval().cuda().to(torch.bfloat16)
-    batch_size, n_frames = 2, 200
-    mels = torch.randn(batch_size, _MEL_FEATURES, n_frames, device="cuda", dtype=torch.float32)
-    length = torch.full((batch_size,), n_frames, dtype=torch.long, device="cuda")
+def test_strict_two_branch_bundle_loading(tmp_path, asr_encoder_type, asr_encoder_cfg, write_type_flag):
+    source = build_toy_pe_encoder(
+        asr_encoder_type=asr_encoder_type,
+        asr_encoder_cfg=asr_encoder_cfg(),
+    ).eval()
+    state = {f'encoder.{key}': value for key, value in source.state_dict().items()}
+    archive = tmp_path / 'two_branch.nemo'
+    config_overrides = {'asr_encoder_cfg': asr_encoder_cfg()}
+    if write_type_flag:
+        config_overrides['asr_encoder_type'] = asr_encoder_type
+    write_bundle(archive, bundle_config(**config_overrides), state)
 
-    with torch.no_grad():
-        outputs, encoded_len = enc(mels, length)
-
-    expected_t = int(encoded_len[0].item())
-    assert outputs.is_cuda
-    assert outputs.dtype == torch.bfloat16
-    assert outputs.shape == (batch_size, _ASR_D_MODEL, expected_t)
-    assert torch.isfinite(outputs).all()
-
-
-@pytest.mark.unit
-@pytest.mark.run_only_on('GPU')
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
-def test_pe_encoder_offline_forward_accepts_diar_override_on_gpu():
-    enc = build_toy_pe_encoder().eval().cuda()
-    batch_size, n_frames = 2, 160
-    mels = torch.randn(batch_size, _MEL_FEATURES, n_frames, device="cuda", dtype=torch.float32)
-    length = torch.full((batch_size,), n_frames, dtype=torch.long, device="cuda")
-
-    dp1 = torch.rand(batch_size, 7, _N_SPK, device="cuda")
-    dp2 = torch.rand(batch_size, 7, _N_SPK, device="cuda")
-
-    with torch.no_grad():
-        out1, len1 = enc(mels, length, spk_targets=dp1)
-        out2, len2 = enc(mels, length, spk_targets=dp2)
-
-    expected_t = int(len1[0].item())
-    assert out1.is_cuda
-    assert out1.shape == (batch_size, _ASR_D_MODEL, expected_t)
-    assert torch.equal(len1, len2)
-    assert torch.isfinite(out1).all()
-    # Different speaker predictions must change the fused output.
-    assert not torch.allclose(out1, out2)
+    restored = ParallelExpertEncoderPT.load_from_nemo(str(archive), strict=True).eval()
+    assert restored.asr_encoder_type == asr_encoder_type
+    assert set(restored.state_dict()) == set(source.state_dict())
+    for key, value in source.state_dict().items():
+        torch.testing.assert_close(restored.state_dict()[key], value)
 
 
 @pytest.mark.unit
-@pytest.mark.run_only_on('GPU')
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE GPU test requires CUDA")
-def test_pe_encoder_online_forward_on_gpu():
-    enc = (
-        build_toy_pe_encoder(
-            online_inference_length=10,
-            chunk_left_context=2,
-            chunk_right_context=2,
-            diar_fifo_len=10,
-            diar_spkcache_update_period=20,
-            diar_spkcache_len=20,
-        )
-        .eval()
-        .cuda()
+def test_legacy_three_expert_bundle_is_rejected(tmp_path):
+    archive = tmp_path / 'legacy.nemo'
+    legacy = OmegaConf.create(
+        {
+            'target': 'nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT',
+            'speech_expert_cfg': {'_target_': 'legacy.Speech'},
+            'speaker_expert_cfg': {'_target_': 'legacy.Speaker'},
+            'sound_expert_cfg': {'_target_': 'legacy.Sound'},
+            'sortformer_modules_cfg': {'_target_': 'legacy.Sortformer'},
+        }
     )
-    enc._suppress_online_pbar = True
-
-    batch_size, n_frames = 1, 320  # > online_inference_length * subsampling_factor (=80)
-    mels = torch.randn(batch_size, _MEL_FEATURES, n_frames, device="cuda", dtype=torch.float32)
-    length = torch.full((batch_size,), n_frames, dtype=torch.long, device="cuda")
-
-    with torch.no_grad():
-        outputs, encoded_len = enc(mels, length)
-
-    expected_t = int(encoded_len[0].item())
-    assert outputs.is_cuda
-    assert outputs.shape == (batch_size, _ASR_D_MODEL, expected_t)
-    assert expected_t > 0
-    assert torch.isfinite(outputs).all()
+    write_bundle(archive, legacy)
+    with pytest.raises(ValueError, match='Legacy three-expert'):
+        ParallelExpertEncoderPT.load_from_nemo(str(archive), strict=True)
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("merge_sound_expert_to_asr", [False, True])
-def test_pe_encoder_sequence_packed_matches_legacy_offline(merge_sound_expert_to_asr):
-    torch.manual_seed(0)
-    kwargs = {'merge_sound_expert_to_asr': merge_sound_expert_to_asr}
-    if not merge_sound_expert_to_asr:
-        kwargs['sound_ctc_head_cfg'] = toy_sound_ctc_head_cfg()
-    enc = build_toy_pe_encoder(**kwargs).eval()
-    mels = torch.randn(3, _MEL_FEATURES, 40)
-    lengths = torch.tensor([40, 23, 9])
-    # Stay safely away from the hard speaker threshold while exercising both states.
-    spk_targets = torch.zeros(3, 5, _N_SPK)
-    spk_targets[0, :, 0] = 1.0
-    spk_targets[1, :, 1] = 1.0
-
-    with torch.no_grad():
-        legacy, output_lengths = enc(mels, lengths, spk_targets=spk_targets)
-        packed = enc.forward_sequence_packed(mels, lengths, spk_targets=spk_targets)
-
-    restored = unpack_encoder_output(packed, total_length=legacy.shape[-1])
-    valid = torch.arange(legacy.shape[-1])[None, :] < output_lengths[:, None]
-    torch.testing.assert_close(restored[valid], legacy.transpose(1, 2)[valid], rtol=1e-5, atol=1e-6)
-    assert packed.total_tokens == int(output_lengths.sum())
-    assert packed.lengths.tolist() == output_lengths.tolist()
+@pytest.mark.parametrize(
+    ('target', 'expected'),
+    [
+        ('nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT', True),
+        ('ParallelExpertEncoderPT', True),
+        ('nemo.collections.asr.models.SomethingElse', False),
+    ],
+)
+def test_is_pe_nemo_uses_target(tmp_path, target, expected):
+    archive = tmp_path / 'bundle.nemo'
+    write_bundle(archive, OmegaConf.create({'target': target}))
+    assert ParallelExpertEncoderPT.is_pe_nemo(str(archive)) is expected
 
 
 @pytest.mark.unit
-def test_pe_encoder_sequence_packed_does_not_collide_with_head_packed_api():
-    enc = build_toy_pe_encoder().eval()
-
-    assert enc.supports_sequence_packed_output
-    assert hasattr(enc.pee, "forward_all_sequence_packed")
-    assert hasattr(enc.pee, "forward_packed")
-    assert not getattr(enc.pee, "supports_sequence_packed_output", False)
-
-
-@pytest.mark.unit
-def test_pe_encoder_sequence_packed_rejects_online_context():
-    enc = build_toy_pe_encoder().eval()
-    mels = torch.randn(1, _MEL_FEATURES, 16)
-    lengths = torch.tensor([16])
-
-    with enc.online_inference(), pytest.raises(RuntimeError, match="offline API"):
-        enc.forward_sequence_packed(mels, lengths)
-
-
-@pytest.mark.unit
-def test_pe_encoder_sequence_packed_adds_no_state_dict_keys():
-    enc = build_toy_pe_encoder().eval()
-    keys = set(enc.state_dict())
-    with torch.no_grad():
-        enc.forward_sequence_packed(torch.randn(2, _MEL_FEATURES, 24), torch.tensor([24, 11]))
-
-    assert set(enc.state_dict()) == keys
-
-
-@pytest.mark.unit
-@pytest.mark.run_only_on('GPU')
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE packed backward requires CUDA")
-def test_pe_encoder_sequence_packed_activation_checkpointing_backward_does_not_double_moe_stats():
-    torch.manual_seed(0)
-    enc = (
-        build_toy_pe_encoder(
-            freeze_speaker=True,
-            freeze_sound=True,
-            merge_sound_expert_to_asr=True,
+def test_save_to_nemo_guard_rails(tmp_path):
+    with pytest.raises(TypeError):
+        ParallelExpertEncoderPT.save_to_nemo(
+            nn.Linear(2, 2), str(tmp_path / 'out.nemo'), template_bundle_path=str(tmp_path / 'template.nemo')
         )
-        .cuda()
-        .train()
-    )
-    enc.set_activation_checkpointing(True)
-    speech = enc.pee.experts["speech"]
-    mels = torch.randn(2, _MEL_FEATURES, 32, device="cuda", requires_grad=True)
-    lengths = torch.tensor([32, 17], device="cuda")
-    spk_targets = torch.zeros(2, 4, _N_SPK, device="cuda")
-
-    packed = enc.forward_sequence_packed(mels, lengths, spk_targets=spk_targets)
-    counts_before = speech._cum_counts.clone()
-    tokens_before = speech._cum_tokens.clone()
-    packed.data.float().square().mean().backward()
-
-    assert mels.grad is not None
-    assert torch.isfinite(mels.grad).all()
-    torch.testing.assert_close(speech._cum_counts, counts_before)
-    torch.testing.assert_close(speech._cum_tokens, tokens_before)
-    assert int(tokens_before.sum()) == int(packed.lengths.sum()) * len(speech.moe_layer_indices)
+    fake_encoder = _PEE.__new__(_PEE)
+    with pytest.raises(FileNotFoundError):
+        ParallelExpertEncoderPT.save_to_nemo(
+            fake_encoder,
+            str(tmp_path / 'out.nemo'),
+            template_bundle_path=str(tmp_path / 'missing.nemo'),
+        )

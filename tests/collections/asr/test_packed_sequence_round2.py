@@ -12,14 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
-
 import pytest
 import torch
 
 from nemo.collections.asr.modules.moe_transformer_encoder import MoEFeedForward, MoETransformerEncoder
-from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, pack_encoder_output
-from tests.collections.asr.test_parallel_expert_encoder import _MEL_FEATURES, _N_SPK, build_toy_pe_encoder
+from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
 
 
 def test_packed_output_with_data_reuses_validated_metadata_and_preserves_gradients():
@@ -110,67 +107,3 @@ def test_moe_packed_auxiliary_loss_is_padding_neutral_while_legacy_contract_is_u
     assert packed_tokens == int(lengths.sum())
     assert torch.isfinite(legacy_auxiliary_loss)
     assert torch.isfinite(packed_auxiliary_loss)
-
-
-def test_pee_packed_can_return_raw_expert_outputs_without_changing_default():
-    torch.manual_seed(0)
-    encoder = build_toy_pe_encoder().eval()
-    mels = torch.randn(2, _MEL_FEATURES, 24)
-    lengths = torch.tensor([24, 11])
-    targets = torch.zeros(2, 3, _N_SPK)
-
-    with torch.no_grad():
-        default = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
-        fused, experts = encoder.forward_sequence_packed(
-            mels,
-            lengths,
-            spk_targets=targets,
-            return_experts=True,
-        )
-
-    assert isinstance(default, PackedEncoderActivations)
-    torch.testing.assert_close(fused.data, default.data)
-    assert set(experts) == {"speech", "sound", "speaker_preds"}
-    assert isinstance(experts["speech"], PackedEncoderActivations)
-    assert isinstance(experts["sound"], PackedEncoderActivations)
-    assert experts["speaker_preds"] is not None
-
-
-def test_pee_legacy_optional_expert_return_contract_is_unchanged():
-    encoder = build_toy_pe_encoder().eval()
-    mels = torch.randn(2, _MEL_FEATURES, 24)
-    lengths = torch.tensor([24, 11])
-    targets = torch.zeros(2, 3, _N_SPK)
-
-    with torch.no_grad():
-        default = encoder(mels, lengths, spk_targets=targets)
-        with_experts = encoder(mels, lengths, spk_targets=targets, return_experts=True)
-
-    assert len(default) == 2
-    assert len(with_experts) == 3
-    torch.testing.assert_close(with_experts[0], default[0])
-    assert torch.equal(with_experts[1], default[1])
-    assert set(with_experts[2]) == {"speech", "sound", "speaker_preds"}
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE sound-gradient parity requires CUDA")
-def test_pee_packed_matches_legacy_trainable_sound_gradients():
-    torch.manual_seed(0)
-    legacy_encoder = build_toy_pe_encoder(freeze_speaker=True, freeze_sound=False).cuda().eval()
-    packed_encoder = copy.deepcopy(legacy_encoder)
-    legacy_mels = torch.randn(2, _MEL_FEATURES, 32, device="cuda", requires_grad=True)
-    packed_mels = legacy_mels.detach().clone().requires_grad_()
-    lengths = torch.tensor([32, 17], device="cuda")
-    targets = torch.zeros(2, 4, _N_SPK, device="cuda")
-
-    legacy, output_lengths = legacy_encoder(legacy_mels, lengths, spk_targets=targets)
-    packed = packed_encoder.forward_sequence_packed(packed_mels, lengths, spk_targets=targets)
-    valid = torch.arange(legacy.shape[-1], device="cuda")[None, :] < output_lengths[:, None]
-    legacy.transpose(1, 2)[valid].float().square().mean().backward()
-    packed.data.float().square().mean().backward()
-
-    for name in ("sound_norm.weight", "pee.experts.sound.layers.0.attn.w_qkv.weight"):
-        legacy_grad = dict(legacy_encoder.named_parameters())[name].grad
-        packed_grad = dict(packed_encoder.named_parameters())[name].grad
-        assert legacy_grad is not None and packed_grad is not None
-        torch.testing.assert_close(packed_grad, legacy_grad, rtol=2e-3, atol=2e-4)

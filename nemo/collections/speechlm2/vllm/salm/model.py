@@ -159,9 +159,15 @@ class NeMoSpeechLMForConditionalGeneration(
         # inference over the full audio, so it bypasses the chunking helper.
         with torch.no_grad():
             if self._uses_pe_encoder:
-                audio_embs, audio_emb_lens = self.perception(
-                    input_signal=audio_signal, input_signal_length=audio_lengths
-                )
+                # Match native SALMAutomodel.generate: the embedded streaming
+                # Sortformer must retain its left context while PEE walks
+                # long-form audio window by window. Training deliberately
+                # stays outside this context because rank-local window counts
+                # would make distributed collective counts diverge.
+                with self.perception.encoder.online_inference():
+                    audio_embs, audio_emb_lens = self.perception(
+                        input_signal=audio_signal, input_signal_length=audio_lengths
+                    )
                 audio_embeds = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
             else:
                 audio_embeds = encode_audio_with_optional_chunking(

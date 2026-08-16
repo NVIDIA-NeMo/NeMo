@@ -862,7 +862,16 @@ class ParallelExpertEncoder(nn.Module):
 
         asr_chunks: List[torch.Tensor] = []
         diar_chunks: List[torch.Tensor] = []
-        encoded_len = torch.zeros_like(asr_length)
+        # The window loop uses the longest row to keep every batch tensor
+        # rectangular. Report each row's actual output length independently;
+        # adding the longest row's scalar core length to every row would expose
+        # padded frames as valid for shorter audios.
+        valid_feat_lengths = length.clamp(max=audio_signal.shape[-1])
+        encoded_len = torch.as_tensor(
+            [self._asr_output_frame_boundary(int(row_len)) for row_len in valid_feat_lengths.detach().cpu()],
+            dtype=asr_length.dtype,
+            device=asr_length.device,
+        )
         for chunk_index in tqdm(
             range(num_chunks),
             total=num_chunks,
@@ -884,7 +893,6 @@ class ParallelExpertEncoder(nn.Module):
             core_len = self._asr_output_frame_boundary(end) - self._asr_output_frame_boundary(start)
             core_len = max(0, min(core_len, encoded_context.shape[-1] - left_drop))
             asr_chunks.append(encoded_context[:, :, left_drop : left_drop + core_len])
-            encoded_len += core_len
 
             if run_streaming_diar:
                 previous_len = total_preds.shape[1]

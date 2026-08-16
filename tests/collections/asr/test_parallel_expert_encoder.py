@@ -585,6 +585,43 @@ def test_online_inference_runs_two_real_branches_with_conformer_io():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ('asr_encoder_type', 'asr_encoder_cfg'),
+    [
+        ('fastconformer', toy_asr_encoder_cfg),
+        ('transformer', toy_transformer_asr_encoder_cfg),
+    ],
+)
+def test_online_inference_matches_independent_valid_prefixes_for_unequal_audio(
+    asr_encoder_type, asr_encoder_cfg
+):
+    encoder = build_toy_pe_encoder(
+        asr_encoder_type=asr_encoder_type,
+        asr_encoder_cfg=asr_encoder_cfg(),
+        online_inference_length=10,
+        chunk_left_context=2,
+        chunk_right_context=2,
+        diar_fifo_len=10,
+        diar_spkcache_update_period=20,
+        diar_spkcache_len=20,
+    ).eval()
+    encoder._suppress_online_pbar = True
+    mels = torch.randn(2, _MEL_FEATURES, 321)
+    lengths = torch.tensor([321, 173])
+
+    with torch.no_grad(), encoder.online_inference():
+        batched_output, batched_lengths = encoder(mels, lengths)
+        first_output, first_length = encoder(mels[:1, :, :321], lengths[:1])
+        second_output, second_length = encoder(mels[1:2, :, :173], lengths[1:])
+
+    expected_lengths = torch.cat([first_length, second_length])
+    assert torch.equal(batched_lengths, expected_lengths)
+    assert batched_output.shape == (2, _ASR_D_MODEL, int(expected_lengths.max()))
+    torch.testing.assert_close(batched_output[0, :, : first_length[0]], first_output[0])
+    torch.testing.assert_close(batched_output[1, :, : second_length[0]], second_output[0])
+
+
+@pytest.mark.unit
 def test_transformer_online_inference_preserves_partial_feature_stack():
     encoder = build_toy_pe_encoder(
         asr_encoder_type='transformer',

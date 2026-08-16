@@ -313,6 +313,57 @@ class TestSpecialTokens:
 class TestAudioProcessing:
     """Tests for audio encoding with a tiny perception module."""
 
+    def test_pe_audio_processing_enables_streaming_context_and_restores_it(self):
+        import contextlib
+
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMAudioInputs
+        from nemo.collections.speechlm2.vllm.salm.model import (
+            NeMoSpeechLMForConditionalGeneration,
+        )
+
+        class _StreamingEncoder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.online_inference_enabled = False
+
+            @contextlib.contextmanager
+            def online_inference(self):
+                previous = self.online_inference_enabled
+                self.online_inference_enabled = True
+                try:
+                    yield
+                finally:
+                    self.online_inference_enabled = previous
+
+        class _Perception(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.anchor = torch.nn.Parameter(torch.ones(1))
+                self.encoder = _StreamingEncoder()
+                self.online_flags = []
+
+            def forward(self, input_signal, input_signal_length):
+                self.online_flags.append(self.encoder.online_inference_enabled)
+                return input_signal.unsqueeze(-1), input_signal_length
+
+        model = NeMoSpeechLMForConditionalGeneration.__new__(NeMoSpeechLMForConditionalGeneration)
+        torch.nn.Module.__init__(model)
+        model.perception = _Perception()
+        model._uses_pe_encoder = True
+        audio_input = NeMoSpeechLMAudioInputs(
+            audio_signal=torch.ones(1, 8),
+            audio_signal_length=torch.tensor([8], dtype=torch.long),
+        )
+
+        embeddings = model._process_audio(audio_input)
+
+        assert model.perception.online_flags == [True]
+        assert model.perception.encoder.online_inference_enabled is False
+        assert len(embeddings) == 1
+        assert embeddings[0].shape == (8, 1)
+
     @staticmethod
     def _make_pe_mount_modules(torch, encoder_d_model=1024, pe_d_model=2048):
         class _Encoder(torch.nn.Module):

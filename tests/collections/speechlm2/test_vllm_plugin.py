@@ -80,6 +80,8 @@ class TestNeMoSpeechLMConfig:
         assert cfg.audio_locator_tag is None
         assert cfg.prompt_format is None
         assert cfg.pretrained_weights is None
+        assert cfg.pe_encoder_path is None
+        assert cfg.pe_encoder_config is None
         assert cfg.llm_architectures == []
         assert cfg.get_text_config() is cfg.text_config
 
@@ -89,6 +91,13 @@ class TestNeMoSpeechLMConfig:
         assert cfg.text_config is not None
         assert hasattr(cfg.text_config, "hidden_size")
         assert cfg.get_text_config() is cfg.text_config
+
+    def test_preserves_explicit_phpee_export_schema(self):
+        pe_config = {"target": "ParallelExpertEncoderPT", "asr_chunk_size_seconds": 30.0}
+        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, pe_encoder_config=pe_config)
+
+        assert cfg.pe_encoder_path is None
+        assert cfg.pe_encoder_config == pe_config
 
     def test_hybrid_backbone_aliases_for_vllm(self):
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)

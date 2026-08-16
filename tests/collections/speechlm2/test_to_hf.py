@@ -20,10 +20,12 @@ to avoid any network or real-model dependencies.
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 from safetensors.torch import load_file
 
 _TO_HF_PATH = Path(__file__).parents[3] / "examples" / "speechlm2" / "to_hf.py"
@@ -168,6 +170,36 @@ def test_save_hf_checkpoint_accepts_bf16_export_dtype(tmp_path):
     assert root_cfg["dtype"] == "bfloat16"
     assert root_cfg["torch_dtype"] == "bfloat16"
     assert state_dict["weight"].dtype == torch.bfloat16
+
+
+def test_hf_export_config_embeds_portable_phpee_architecture():
+    original_cfg = {"pe_encoder_path": "/nrt/private/placeholderParallelExpertEncoder.nemo"}
+    pe_encoder = SimpleNamespace(
+        _bundle_config=OmegaConf.create({"target": "ParallelExpertEncoderPT", "asr_chunk_size_seconds": None}),
+        asr_normalize_type="per_feature",
+        asr_chunk_size_seconds=30.0,
+        diar_chunk_size_seconds=30.0,
+        frame_shift_seconds=0.01,
+        missing_rttm_target=-1.0,
+        speaker_activity_threshold=0.5,
+        spk_kernel_scale=1.0,
+    )
+    model = SimpleNamespace(cfg=original_cfg, perception=SimpleNamespace(encoder=pe_encoder))
+
+    exported = to_hf._hf_export_config(model, "bfloat16")
+
+    assert exported["pe_encoder_path"] is None
+    assert exported["pe_encoder_config"]["target"] == "ParallelExpertEncoderPT"
+    assert exported["pe_encoder_config"]["asr_chunk_size_seconds"] == 30.0
+    assert exported["pe_encoder_config"]["diar_chunk_size_seconds"] == 30.0
+    assert original_cfg == {"pe_encoder_path": "/nrt/private/placeholderParallelExpertEncoder.nemo"}
+
+    pe_encoder.asr_chunk_size_seconds = 60.0
+    model.cfg = exported
+    reexported = to_hf._hf_export_config(model, "bfloat16")
+    assert reexported["pe_encoder_path"] is None
+    assert reexported["pe_encoder_config"]["asr_chunk_size_seconds"] == 60.0
+    assert exported["pe_encoder_config"]["asr_chunk_size_seconds"] == 30.0
 
 
 # ──────────────────────────────────────────────────────────────────────

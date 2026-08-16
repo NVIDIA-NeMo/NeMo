@@ -104,3 +104,15 @@ def test_setup_parallel_expert_encoder_mounts_two_branch_bridge_and_disables_out
     assert pe_encoder.frame_shift_seconds == pytest.approx(0.01)
     assert pe_encoder.asr_encoder.sync_max_audio_length is False
     assert pe_encoder.diarization_model.encoder.sync_max_audio_length is False
+
+    model.cfg.pe_encoder_path = None
+    model.cfg.pe_encoder_config = {"target": "fake.ParallelExpertEncoderPT"}
+    model.cfg.pretrained_weights = False
+    model.perception.encoder = SimpleNamespace(d_model=32)
+    with patch.object(
+        pretrained.ParallelExpertEncoderPT, "from_inline_config", return_value=pe_encoder
+    ) as from_inline:
+        pretrained.setup_parallel_expert_encoder(model)
+
+    from_inline.assert_called_once_with(model.cfg.pe_encoder_config, map_location="cpu")
+    assert model.perception.encoder is pe_encoder

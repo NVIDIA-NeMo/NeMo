@@ -102,6 +102,31 @@ def _canonical_torch_dtype_name(dtype: str | torch.dtype) -> str:
 def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[str, Any]:
     """Build the exported root config without mutating the training config."""
     config = OmegaConf.to_container(model.cfg) if isinstance(model.cfg, DictConfig) else deepcopy(model.cfg)
+    pe_encoder_path = config.get("pe_encoder_path", None)
+    pe_encoder_config = config.get("pe_encoder_config", None)
+    if pe_encoder_path not in (None, "", False) or pe_encoder_config not in (None, {}, "", False):
+        pe_encoder = getattr(getattr(model, "perception", None), "encoder", None)
+        bundle_config = getattr(pe_encoder, "_bundle_config", None)
+        if bundle_config is None:
+            raise RuntimeError(
+                "Cannot export phPEE portably: the mounted perception encoder has no architecture bundle config."
+            )
+        bundle_config = OmegaConf.to_container(bundle_config, resolve=True)
+        # Persist runtime overrides rather than the initialization bundle's
+        # defaults. The consolidated root state dict supplies all weights.
+        for config_key, attr_name in (
+            ("asr_normalize_type", "asr_normalize_type"),
+            ("asr_chunk_size_seconds", "asr_chunk_size_seconds"),
+            ("diar_chunk_size_seconds", "diar_chunk_size_seconds"),
+            ("frame_shift_seconds", "frame_shift_seconds"),
+            ("missing_rttm_target", "missing_rttm_target"),
+            ("speaker_activity_threshold", "speaker_activity_threshold"),
+            ("spk_kernel_scale", "spk_kernel_scale"),
+        ):
+            if hasattr(pe_encoder, attr_name):
+                bundle_config[config_key] = getattr(pe_encoder, attr_name)
+        config["pe_encoder_config"] = bundle_config
+        config["pe_encoder_path"] = None
     dtype_name = _canonical_torch_dtype_name(dtype)
     config["dtype"] = dtype_name
     config["torch_dtype"] = dtype_name

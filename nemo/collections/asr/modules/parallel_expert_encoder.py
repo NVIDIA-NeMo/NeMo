@@ -181,6 +181,11 @@ class ParallelExpertEncoderPT(ModelPT):
             asr_chunk_size_seconds=self._cfg.get('asr_chunk_size_seconds', None),
             diar_chunk_size_seconds=self._cfg.get('diar_chunk_size_seconds', None),
         )
+        # Keep the architecture-only bundle config beside the inner module.
+        # SpeechLM HF export embeds this small config in config.json so the
+        # consolidated checkpoint can reconstruct phPEE without carrying a
+        # second, multi-GB copy of its initialization bundle.
+        self.encoder._bundle_config = _clone_config(self._cfg)
 
     @staticmethod
     def _validate_bundle_schema(cfg: DictConfig) -> None:
@@ -270,6 +275,21 @@ class ParallelExpertEncoderPT(ModelPT):
             strict=strict,
         )
         return bundle.encoder
+
+    @classmethod
+    def from_inline_config(
+        cls,
+        cfg: Union[DictConfig, dict],
+        *,
+        map_location: Union[str, torch.device] = 'cpu',
+    ) -> ParallelExpertEncoder:
+        """Construct phPEE architecture without loading standalone weights.
+
+        This is intended for consolidated SpeechLM checkpoints, whose root
+        state dict supplies every phPEE tensor after construction.
+        """
+        shell = cls(cfg=OmegaConf.create(cfg), trainer=None)
+        return shell.encoder.to(map_location)
 
     @classmethod
     def save_to_nemo(

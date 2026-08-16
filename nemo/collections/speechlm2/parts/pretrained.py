@@ -231,9 +231,13 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
             asr_sd = {("encoder_multilayer." + k if k.startswith("encoder.") else k): v for k, v in asr_sd.items()}
         model.perception.load_state_dict(asr_sd, strict=False)
 
-    if model.cfg.get("pe_encoder_path", None) not in (None, "", False):
+    pe_encoder_path = model.cfg.get("pe_encoder_path", None)
+    pe_encoder_config = model.cfg.get("pe_encoder_config", None)
+    if pe_encoder_path not in (None, "", False) and pe_encoder_config not in (None, {}, "", False):
+        raise ValueError("pe_encoder_path and pe_encoder_config are mutually exclusive.")
+    if pe_encoder_path not in (None, "", False) or pe_encoder_config not in (None, {}, "", False):
         if model.cfg.get("speaker_encoder", None) not in (None, "", False):
-            raise ValueError("pe_encoder_path and speaker_encoder are mutually exclusive.")
+            raise ValueError("phPEE (pe_encoder_path/pe_encoder_config) and speaker_encoder are mutually exclusive.")
         setup_parallel_expert_encoder(model)
     elif model.cfg.get("speaker_encoder", None) not in (None, "", False):
         setup_independent_speaker_encoder(model)
@@ -328,15 +332,20 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
     normalisation is disabled when the bundle is mounted.
     """
     pe_encoder_path = model.cfg.get("pe_encoder_path", None)
-    if pe_encoder_path in (None, "", False):
+    pe_encoder_config = model.cfg.get("pe_encoder_config", None)
+    has_path = pe_encoder_path not in (None, "", False)
+    has_config = pe_encoder_config not in (None, {}, "", False)
+    if not has_path and not has_config:
         return
+    if has_path and has_config:
+        raise ValueError("model.pe_encoder_path and model.pe_encoder_config are mutually exclusive.")
 
     if not (hasattr(model, "perception") and model.perception is not None):
         raise RuntimeError(
             f"model.pe_encoder_path='{pe_encoder_path}' is set but the model has no "
             "`perception` module to mount it onto. Call setup_speech_encoder() first."
         )
-    if not isinstance(pe_encoder_path, str) or not pe_encoder_path:
+    if has_path and (not isinstance(pe_encoder_path, str) or not pe_encoder_path):
         raise ValueError(
             "model.pe_encoder_path must be a local ParallelExpertEncoderPT .nemo bundle path or a "
             f"pretrained model id (HuggingFace '{{repo}}/{{name}}' or NGC alias), got {pe_encoder_path!r}."
@@ -349,17 +358,27 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         )
 
     # Validate local bundles immediately; resolve remote model identifiers in the loader.
-    if pe_encoder_path.endswith(".nemo") and Path(pe_encoder_path).is_file():
+    if has_path and pe_encoder_path.endswith(".nemo") and Path(pe_encoder_path).is_file():
         if not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
             raise ValueError(
                 f"model.pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle."
             )
 
-    pe_encoder = ParallelExpertEncoderPT.load_from_nemo(
-        pe_encoder_path,
-        map_location="cpu",
-        strict=True,
-    )
+    if has_config:
+        if model.cfg.get("pretrained_weights", True) is not False:
+            raise ValueError(
+                "model.pe_encoder_config is architecture-only and may only be used when "
+                "pretrained_weights=false; consolidated checkpoint weights must be loaded afterwards."
+            )
+        pe_encoder = ParallelExpertEncoderPT.from_inline_config(pe_encoder_config, map_location="cpu")
+        pe_encoder_source = "inline exported config"
+    else:
+        pe_encoder = ParallelExpertEncoderPT.load_from_nemo(
+            pe_encoder_path,
+            map_location="cpu",
+            strict=True,
+        )
+        pe_encoder_source = pe_encoder_path
 
     if (spk_kernel_scale := model.cfg.get("spk_kernel_scale", None)) is not None:
         pe_encoder.spk_kernel_scale = float(spk_kernel_scale)
@@ -449,7 +468,7 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         logging.warning(
             "Could not disable perception preprocessor featurizer.normalize while mounting "
             "ParallelExpertEncoder from %s.",
-            pe_encoder_path,
+            pe_encoder_source,
         )
     try:
         with open_dict(model.cfg):
@@ -467,7 +486,7 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         "frozen: asr=%s diar=%s, spk_kernel_scale=%g); "
         "ASR normalizes internally; streaming Sortformer receives raw mels; "
         "perception preprocessor normalization disabled (was %r).",
-        pe_encoder_path,
+        pe_encoder_source,
         pe_encoder.asr_encoder_type,
         int(pe_encoder.d_model),
         int(pe_encoder.n_spk),

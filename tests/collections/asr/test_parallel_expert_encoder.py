@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.util
 import io
 import tarfile
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -698,6 +701,48 @@ def test_strict_two_branch_bundle_loading(tmp_path, asr_encoder_type, asr_encode
     assert set(restored.state_dict()) == set(source.state_dict())
     for key, value in source.state_dict().items():
         torch.testing.assert_close(restored.state_dict()[key], value)
+
+
+@pytest.mark.unit
+def test_inline_config_reconstructs_architecture_without_standalone_weights():
+    config = bundle_config(asr_chunk_size_seconds=30.0, diar_chunk_size_seconds=45.0)
+
+    restored = ParallelExpertEncoderPT.from_inline_config(config).eval()
+
+    assert restored.asr_chunk_size_seconds == 30.0
+    assert restored.diar_chunk_size_seconds == 45.0
+    assert restored._bundle_config.target == config.target
+
+
+@pytest.mark.unit
+def test_exported_inline_config_round_trips_consolidated_weights():
+    to_hf_path = Path(__file__).parents[3] / 'examples' / 'speechlm2' / 'to_hf.py'
+    spec = importlib.util.spec_from_file_location('to_hf_for_pee_roundtrip', to_hf_path)
+    to_hf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(to_hf)
+
+    source = ParallelExpertEncoderPT(bundle_config()).encoder.eval()
+    source.asr_chunk_size_seconds = 30.0
+    source.diar_chunk_size_seconds = 45.0
+    root = SimpleNamespace(
+        cfg={'pe_encoder_path': '/nrt/private/placeholderParallelExpertEncoder.nemo'},
+        perception=SimpleNamespace(encoder=source),
+    )
+
+    exported = to_hf._hf_export_config(root, 'bfloat16')
+    restored = ParallelExpertEncoderPT.from_inline_config(exported['pe_encoder_config']).eval()
+    restored.load_state_dict(source.state_dict(), strict=True)
+
+    assert set(restored.state_dict()) == set(source.state_dict())
+    assert restored.asr_chunk_size_seconds == 30.0
+    assert restored.diar_chunk_size_seconds == 45.0
+    mels = torch.randn(1, _MEL_FEATURES, 161)
+    lengths = torch.tensor([161])
+    with torch.no_grad():
+        expected, expected_lengths = source(mels, lengths)
+        actual, actual_lengths = restored(mels, lengths)
+    torch.testing.assert_close(actual, expected)
+    assert torch.equal(actual_lengths, expected_lengths)
 
 
 @pytest.mark.unit

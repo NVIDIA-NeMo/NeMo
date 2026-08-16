@@ -468,18 +468,22 @@ class CodecHelper:
         prequantized_embedding: torch.Tensor,
         embedding_len: torch.Tensor,
     ) -> torch.Tensor:
-        """Apply each FSQ group's bounded compression and normalization, without rounding."""
+        """Map each FSQ group to its normalized pre-round domain."""
         quantizer_groups = self._independent_quantizer_groups()
         grouped_inputs = prequantized_embedding.chunk(self.codec_model.num_codebooks, dim=1)
         continuous_groups = []
         for group_input, quantizer_group in zip(grouped_inputs, quantizer_groups):
-            compress = getattr(quantizer_group, "compress", None)
-            num_levels = getattr(quantizer_group, "num_levels", None)
-            if compress is None or num_levels is None:
-                raise ValueError("Continuous acoustic embeddings require grouped finite scalar quantizers (FSQ).")
-            scale = (num_levels // 2).to(device=group_input.device, dtype=group_input.dtype)
-            compressed = compress(inputs=group_input.float(), input_len=embedding_len)
-            continuous_groups.append((compressed / scale).to(group_input.dtype))
+            if bool(getattr(quantizer_group, "symmetric_levels", False)):
+                bounded_group = group_input.float().clamp(-1.0, 1.0)
+            else:
+                compress = getattr(quantizer_group, "compress", None)
+                num_levels = getattr(quantizer_group, "num_levels", None)
+                if compress is None or num_levels is None:
+                    raise ValueError("Continuous acoustic embeddings require grouped finite scalar quantizers (FSQ).")
+                scale = (num_levels // 2).to(device=group_input.device, dtype=group_input.dtype)
+                compressed = compress(inputs=group_input.float(), input_len=embedding_len)
+                bounded_group = compressed / scale
+            continuous_groups.append(bounded_group.to(group_input.dtype))
         return torch.cat(continuous_groups, dim=1)
 
     def audio_to_embedding(self, audio, audio_len, sample_rate=None):
@@ -738,8 +742,12 @@ class CodecHelper:
         acoustic_indices = []
         for group_embedding, quantizer_group in zip(acoustic_groups, quantizer_groups):
             num_levels = quantizer_group.num_levels.to(device=group_embedding.device)
-            scale = (num_levels // 2).to(dtype=group_embedding.dtype)
-            nonnegative_codes = torch.round(group_embedding.float() * scale.float()) + scale.float()
+            if bool(getattr(quantizer_group, "symmetric_levels", False)):
+                scale = ((num_levels - 1) / 2).to(dtype=group_embedding.dtype)
+                nonnegative_codes = torch.round((group_embedding.float() + 1.0) * scale.float())
+            else:
+                scale = (num_levels // 2).to(dtype=group_embedding.dtype)
+                nonnegative_codes = torch.round(group_embedding.float() * scale.float()) + scale.float()
             nonnegative_codes = torch.maximum(nonnegative_codes, torch.zeros_like(nonnegative_codes))
             nonnegative_codes = torch.minimum(nonnegative_codes, (num_levels - 1).float())
             quantized_codes = quantizer_group.nonnegative_to_codes(nonnegative_codes)
@@ -771,6 +779,9 @@ class CodecHelper:
             acoustic_embedding.chunk(len(quantizer_groups), dim=1), quantizer_groups
         ):
             num_levels = quantizer_group.num_levels.to(device=group_embedding.device)
+            if bool(getattr(quantizer_group, "symmetric_levels", False)):
+                clipped_groups.append(group_embedding.clamp(-1.0, 1.0))
+                continue
             scale = (num_levels // 2).to(dtype=group_embedding.dtype)
             output_scale = ((num_levels - 1) / 2).to(dtype=group_embedding.dtype)
             output_scale = output_scale * (1 - quantizer_group.eps)

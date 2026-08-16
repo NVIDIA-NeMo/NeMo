@@ -24,7 +24,7 @@ from tests.collections.tts.models.test_audio_codec import create_codec_config
 pytestmark = pytest.mark.unit
 
 
-def _semantic_acoustic_codec():
+def _semantic_acoustic_codec(*, dithered_acoustic_fsq: bool = False):
     semantic_cfg = create_codec_config()
     semantic_cfg.vector_quantizer.params.num_groups = 1
     semantic_cfg.audio_encoder.params.out_dim = 5
@@ -33,6 +33,9 @@ def _semantic_acoustic_codec():
     codec_cfg = create_codec_config()
     codec_cfg.semantic_codec = semantic_cfg
     codec_cfg.audio_encoder.params.out_dim = 35
+    if dithered_acoustic_fsq:
+        codec_cfg.vector_quantizer.params.dithered_acoustic_fsq = True
+        codec_cfg.vector_quantizer.params.num_semantic_groups = 1
     return AudioCodecModel(cfg=codec_cfg).eval()
 
 
@@ -164,6 +167,38 @@ def test_codec_helper_quantizes_bounded_acoustic_fsq_values_without_recompressio
     assert clipped_embedding.min().item() == pytest.approx(-0.99925)
     assert clipped_codes.min() >= 0
     assert clipped_codes.max() < codec.codebook_size
+
+
+def test_codec_helper_uses_symmetric_dithered_acoustic_fsq_geometry():
+    codec = _semantic_acoustic_codec(dithered_acoustic_fsq=True)
+    helper = CodecHelper(codec)
+    embedding_lens = torch.tensor([2])
+    prequantized = torch.linspace(-1.5, 1.5, steps=80).reshape(1, 40, 2)
+
+    continuous = helper._continuous_fsq_embedding(prequantized, embedding_lens)
+    group_dim = codec.vector_quantizer.codebook_dim_per_group
+    semantic_group = codec.vector_quantizer.fsqs[0]
+    semantic_scale = (semantic_group.num_levels // 2).to(prequantized.dtype)
+    expected_semantic = (
+        semantic_group.compress(inputs=prequantized[:, :group_dim], input_len=embedding_lens) / semantic_scale
+    )
+    expected_acoustic = prequantized[:, group_dim:].clamp(-1.0, 1.0)
+    torch.testing.assert_close(continuous, torch.cat([expected_semantic, expected_acoustic], dim=1))
+
+    full_codes = codec.quantize(encoded=prequantized, encoded_len=embedding_lens)
+    acoustic_codes = helper.acoustic_embedding_to_codes(
+        continuous[:, group_dim:],
+        num_semantic_codebooks=1,
+        codes_len=embedding_lens,
+    )
+    torch.testing.assert_close(acoustic_codes, full_codes[:, 1:].long())
+
+    out_of_range = continuous[:, group_dim:].clone()
+    out_of_range[:, 0::2] = 2.0
+    out_of_range[:, 1::2] = -2.0
+    clipped = helper.clamp_acoustic_embedding(out_of_range, num_semantic_codebooks=1)
+    assert clipped.max().item() == 1.0
+    assert clipped.min().item() == -1.0
 
 
 def test_codec_helper_rejects_acoustic_token_quantization_for_hybrid_codec():

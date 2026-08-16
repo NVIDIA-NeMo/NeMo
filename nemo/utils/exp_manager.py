@@ -297,13 +297,15 @@ class TimingCallback(Callback):
     Logs execution time of train/val/test steps
     """
 
-    def __init__(self, log_tokens_per_sec: bool = False, timer_kwargs={}):
+    def __init__(self, log_tokens_per_sec: bool = False, timer_kwargs: Optional[dict] = None):
         """init for TimitCallback
 
         Args:
             log_tokens_per_sec (bool, optional): _description_. Defaults to False.
-            timer_kwargs (dict, optional): _description_. Defaults to {}.
+            timer_kwargs (dict, optional): _description_. Defaults to None.
         """
+        if timer_kwargs is None:
+            timer_kwargs = {}
         self.log_tokens_per_sec = log_tokens_per_sec
         self.timer = timers.NamedTimer(**timer_kwargs)
 
@@ -423,12 +425,14 @@ class DeltaTimingCallback(Callback):
     lightning logger used in the latter.
     """
 
-    def __init__(self, timer_kwargs={}):
+    def __init__(self, timer_kwargs: Optional[dict] = None):
         """init
 
         Args:
-            timer_kwargs (dict, optional): _description_. Defaults to {}.
+            timer_kwargs (dict, optional): _description_. Defaults to None.
         """
+        if timer_kwargs is None:
+            timer_kwargs = {}
         self._sync_cuda = timer_kwargs.get("sync_cuda", False)
         self.timers = defaultdict(defaultdict)
 

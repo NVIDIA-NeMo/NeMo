@@ -231,9 +231,7 @@ def test_salm_automodel_pad_token_override_preserves_eot_labels(monkeypatch):
     assert seen["pad_token"] == "<unk>"
     assert model.text_pad_id == 0
 
-    from nemo.collections.speechlm2.parts.packed_sequences import (
-        prepare_packed_llm_inputs,
-    )
+    from nemo.collections.speechlm2.parts.packed_sequences import prepare_packed_llm_inputs
 
     packed = prepare_packed_llm_inputs(
         input_ids=torch.tensor([[0, 10, 11, 10, 42, 11]]),

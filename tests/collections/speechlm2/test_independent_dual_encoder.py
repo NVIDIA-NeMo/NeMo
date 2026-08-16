@@ -1,3 +1,17 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import torch
 
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
@@ -39,18 +53,14 @@ def test_independent_dual_encoder_chunks_only_frozen_auxiliary_branch():
     lengths = torch.tensor([17, 10], dtype=torch.int64)
     packed_features = pack_encoder_output(features.transpose(1, 2), lengths)
     with torch.no_grad():
-        asr_reference = asr.forward_sequence_packed(
-            packed_features, packed_features.lengths
-        )
+        asr_reference = asr.forward_sequence_packed(packed_features, packed_features.lengths)
 
     auxiliary_calls = []
     auxiliary_forward = auxiliary.forward_sequence_packed
 
     def record_auxiliary_call(audio_signal, length, bypass_pre_encode=False, **kwargs):
         auxiliary_calls.append((length.detach().clone(), bypass_pre_encode))
-        return auxiliary_forward(
-            audio_signal, length, bypass_pre_encode=bypass_pre_encode, **kwargs
-        )
+        return auxiliary_forward(audio_signal, length, bypass_pre_encode=bypass_pre_encode, **kwargs)
 
     auxiliary.forward_sequence_packed = record_auxiliary_call
     output = dual.forward_sequence_packed(packed_features, packed_features.lengths)

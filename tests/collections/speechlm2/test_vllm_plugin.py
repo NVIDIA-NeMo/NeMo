@@ -450,9 +450,7 @@ class TestAudioProcessing:
 
     @staticmethod
     def _make_pe_processing_model(torch, *, fail_forward=False):
-        from nemo.collections.speechlm2.vllm.salm.model import (
-            NeMoSpeechLMForConditionalGeneration,
-        )
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
 
         class _Encoder(torch.nn.Module):
             def __init__(self):
@@ -821,9 +819,7 @@ class TestPluginRegistration:
         from vllm.model_executor.models.config import MODELS_CONFIG_MAP
 
         from nemo.collections.speechlm2.vllm.salm import register
-        from nemo.collections.speechlm2.vllm.salm.config_hook import (
-            NeMoSpeechLMForConditionalGenerationConfig,
-        )
+        from nemo.collections.speechlm2.vllm.salm.config_hook import NeMoSpeechLMForConditionalGenerationConfig
 
         monkeypatch.setattr(
             AutoConfig,
@@ -847,9 +843,7 @@ class TestPluginRegistration:
     def test_model_config_hook_sets_only_hybrid_auto_cache_dtype(
         self, is_hybrid, backbone_dtype, initial_dtype, expected_dtype
     ):
-        from nemo.collections.speechlm2.vllm.salm.config_hook import (
-            NeMoSpeechLMForConditionalGenerationConfig,
-        )
+        from nemo.collections.speechlm2.vllm.salm.config_hook import NeMoSpeechLMForConditionalGenerationConfig
 
         text_config = SimpleNamespace()
         if backbone_dtype is not None:

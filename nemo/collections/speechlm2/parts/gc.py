@@ -37,9 +37,7 @@ class GarbageCollectionManager:
         if self.gc_every_steps is None:
             return
 
-        from nemo_automodel.components.training.garbage_collection import (
-            GarbageCollection,
-        )
+        from nemo_automodel.components.training.garbage_collection import GarbageCollection
 
         self._collector = GarbageCollection(gc_every_steps=self.gc_every_steps)
         self._optimizer_step_count = 0

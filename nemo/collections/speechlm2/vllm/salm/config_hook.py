@@ -14,10 +14,7 @@
 
 """vLLM model-config updates for the composed SpeechLM architecture."""
 
-from vllm.model_executor.models.config import (
-    NemotronHForCausalLMConfig,
-    VerifyAndUpdateConfig,
-)
+from vllm.model_executor.models.config import NemotronHForCausalLMConfig, VerifyAndUpdateConfig
 
 
 class NeMoSpeechLMForConditionalGenerationConfig(VerifyAndUpdateConfig):

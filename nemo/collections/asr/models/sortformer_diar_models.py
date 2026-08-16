@@ -796,7 +796,14 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             )
         else:
             spkcache_fifo_chunk_pre_encode_embs = self.sortformer_modules.concat_embs(
-                [streaming_state.spkcache, streaming_state.fifo, chunk_pre_encode_embs], dim=1, device=self.device
+                [streaming_state.spkcache, streaming_state.fifo, chunk_pre_encode_embs],
+                dim=1,
+                # ``SortformerEncLabelModel`` can be nested inside another
+                # module (phPEE). In that case Lightning's cached ``device``
+                # property may remain at its construction device even after
+                # the parent moves all parameters. The current activations are
+                # authoritative and keep lengths/masks on the same device.
+                device=chunk_pre_encode_embs.device,
             )
             spkcache_fifo_chunk_pre_encode_lengths = (
                 streaming_state.spkcache.shape[1] + streaming_state.fifo.shape[1] + chunk_pre_encode_lengths

@@ -584,6 +584,31 @@ def test_online_inference_runs_two_real_branches_with_conformer_io():
     assert torch.equal(external_lengths, output_lengths)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='Test requires CUDA')
+def test_online_inference_uses_activation_device_after_nested_parent_move():
+    """A nested Lightning Sortformer must not retain its construction device."""
+    parent = nn.Module()
+    parent.encoder = build_toy_pe_encoder(
+        online_inference_length=10,
+        chunk_left_context=2,
+        chunk_right_context=2,
+        diar_fifo_len=10,
+        diar_spkcache_update_period=20,
+        diar_spkcache_len=20,
+    ).eval()
+    parent.encoder._suppress_online_pbar = True
+    parent.to('cuda')
+
+    mels = torch.randn(1, _MEL_FEATURES, 40, device='cuda')
+    lengths = torch.tensor([40], device='cuda')
+    with torch.no_grad(), parent.encoder.online_inference():
+        output, output_lengths = parent.encoder(mels, lengths)
+
+    assert output.device.type == 'cuda'
+    assert output_lengths.device.type == 'cuda'
+    assert torch.isfinite(output).all()
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ('asr_encoder_type', 'asr_encoder_cfg'),

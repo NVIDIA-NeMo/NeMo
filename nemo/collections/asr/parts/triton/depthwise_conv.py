@@ -501,10 +501,10 @@ def dw_conv2d(
     features: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor,
-    in_lengths: torch.Tensor | None = None,
-    out_lengths: torch.Tensor | None = None,
-    stride: int | tuple[int, int] = 2,
-    padding: int | tuple[int, int] = 2,
+    stride: int | tuple[int, int],
+    padding: int | tuple[int, int],
+    in_lengths: torch.Tensor,
+    out_lengths: torch.Tensor,
 ) -> torch.Tensor:
     """Channels-last depthwise conv2d with the bias and the length masking fused in.
 
@@ -515,12 +515,12 @@ def dw_conv2d(
         features: ``(batch, in_height, in_width, channels)``, channels-last.
         weight: ``(channels, 1, kernel_h, kernel_w)``.
         bias: ``(channels,)``.
-        in_lengths: ``(batch,)`` int32 valid input heights. ``None`` means full height.
-        out_lengths: ``(batch,)`` int32 valid output heights. ``None`` means full height.
-        stride: int or ``(stride_h, stride_w)``.
+        stride: int or ``(stride_h, stride_w)``, matching ``nn.Conv2d``.
         padding: int or ``(pad_h, pad_w)``, applied to the low edge of each axis. ``2`` with
             stride 2 and a 3x3 kernel is the causal ``(2, 1)`` padding, whose output extent is
             ``in // 2 + 1``.
+        in_lengths: ``(batch,)`` integer valid input heights.
+        out_lengths: ``(batch,)`` integer valid output heights.
 
     Returns:
         ``(batch, out_height, out_width, channels)``.
@@ -539,11 +539,6 @@ def dw_conv2d(
     # NeMo pads (kernel - 1, stride - 1); the trailing pad only affects the output extent
     out_height = (in_height + pad_h + (stride_h - 1) - kernel_h) // stride_h + 1
     out_width = (in_width + pad_w + (stride_w - 1) - kernel_w) // stride_w + 1
-
-    if in_lengths is None:
-        in_lengths = torch.full((batch_size,), in_height, device=features.device, dtype=torch.int32)
-    if out_lengths is None:
-        out_lengths = torch.full((batch_size,), out_height, device=features.device, dtype=torch.int32)
     geometry = (
         batch_size,
         channels,

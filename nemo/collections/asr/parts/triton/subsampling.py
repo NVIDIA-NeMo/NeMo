@@ -575,7 +575,7 @@ def fused_conv_relu_dw(
     depth_bias: torch.Tensor,
     left_padding: int,
     right_padding: int,
-    lengths: torch.Tensor | None = None,
+    lengths: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Fuse ``conv -> ReLU -> depthwise``, with the between-stage length masking folded in.
 
@@ -591,7 +591,7 @@ def fused_conv_relu_dw(
         depth_bias: depthwise convolution bias, ``(channels,)``.
         left_padding: padding applied to the low edge of both axes.
         right_padding: padding applied to the high edge; only affects the output extent.
-        lengths: ``(batch,)`` valid time steps. ``None`` means every utterance is full length.
+        lengths: ``(batch,)`` valid time steps.
 
     Returns:
         ``(output, out_lengths)`` where output is ``(batch, out_time, out_freq, channels)``
@@ -614,11 +614,8 @@ def fused_conv_relu_dw(
         _downsampled_length(middle_freq, pad_total),
         middle_freq,
     )
-    if lengths is None:
-        lengths = torch.full((batch_size,), mel_time, device=mel.device, dtype=torch.int32)
-    mel_lengths = lengths.to(torch.int32)
-    middle_lengths = _downsampled_length(mel_lengths, pad_total).to(torch.int32)
-    out_lengths = _downsampled_length(middle_lengths, pad_total).to(torch.int32)
+    middle_lengths = _downsampled_length(lengths, pad_total)
+    out_lengths = _downsampled_length(middle_lengths, pad_total)
     # Autocast only rewrites aten ops, never a Triton launch, so the cast is done by hand.
     dtype = torch.get_autocast_dtype("cuda") if torch.is_autocast_enabled() else mel.dtype
     with torch.autocast("cuda", enabled=False):
@@ -628,7 +625,7 @@ def fused_conv_relu_dw(
             conv_bias,
             depth_weight,
             depth_bias,
-            mel_lengths,
+            lengths,
             middle_lengths,
             out_lengths,
             left_padding,

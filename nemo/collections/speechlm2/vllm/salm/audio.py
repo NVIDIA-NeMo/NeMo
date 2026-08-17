@@ -126,20 +126,24 @@ def _maybe_mount_pe_encoder(
     if has_path and has_config:
         raise ValueError("pe_encoder_path and pe_encoder_config are mutually exclusive.")
     if not hasattr(perception, "encoder"):
-        raise RuntimeError("A phPEE encoder is configured but perception has no `encoder` attribute to replace.")
+        raise RuntimeError(
+            "A ParallelExpertEncoder is configured but perception has no `encoder` attribute to replace."
+        )
 
     from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
-
-    # Validate local bundles immediately; resolve remote identifiers in the loader.
-    is_local_nemo_file = has_path and (
-        isinstance(pe_encoder_path, str) and pe_encoder_path.endswith(".nemo") and os.path.isfile(pe_encoder_path)
-    )
-    if is_local_nemo_file and not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
-        raise ValueError(f"pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle.")
 
     if has_config:
         pe_encoder = ParallelExpertEncoderPT.from_inline_config(pe_encoder_config, map_location="cpu")
     else:
+        # Validate local bundles immediately; resolve remote identifiers in the loader.
+        is_local_nemo_file = (
+            isinstance(pe_encoder_path, str)
+            and pe_encoder_path.endswith(".nemo")
+            and os.path.isfile(pe_encoder_path)
+        )
+        if is_local_nemo_file and not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
+            raise ValueError(f"pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle.")
+
         pe_encoder = ParallelExpertEncoderPT.load_from_nemo(pe_encoder_path, map_location="cpu", strict=True)
 
     # The outgoing width is unconstrained; unchanged frontend and downstream

@@ -73,6 +73,7 @@ class EasyMagpieInputStream:
         self._segment_completions: asyncio.Queue[None] = asyncio.Queue()
         self._finished = False
         self._received_first_update = False
+        self._pending_first_tokens: list[int] = []
         self.observed_output_frames = 0
 
     @property
@@ -85,13 +86,22 @@ class EasyMagpieInputStream:
         if not token_ids:
             return
         normalized = [int(token_id) for token_id in token_ids]
-        if not self._received_first_update and len(normalized) < self.text_prefill_num:
-            raise ValueError(f"first input update must contain at least {self.text_prefill_num} text tokens")
+        if not self._received_first_update:
+            self._pending_first_tokens.extend(normalized)
+            if len(self._pending_first_tokens) < self.text_prefill_num:
+                return
+            normalized = self._pending_first_tokens
+            self._pending_first_tokens = []
         await self._input_queue.put(normalized)
         self._received_first_update = True
 
     async def finish(self) -> None:
         if not self._finished:
+            if self._pending_first_tokens:
+                raise ValueError(
+                    f"first input update must contain at least {self.text_prefill_num} text tokens; "
+                    f"received {len(self._pending_first_tokens)}"
+                )
             self._finished = True
             await self._input_queue.put(_DONE)
 
@@ -256,6 +266,7 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                 stream=True,
             )
             spec = adapter.build_streaming_spec(request)
+            text_encoder = spec.tokenizer.incremental_encoder()
             sampling_params_list = list(self._speech_service.engine_client.default_sampling_params_list)
             sampling_params_list = coerce_param_message_types(sampling_params_list, is_streaming=True)
             stage0_params = sampling_params_list[0]
@@ -325,15 +336,29 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                 msg_type = msg.get("type")
                 if msg_type == "input.tokens":
                     tokens = msg.get("tokens")
+                    text_vocab_size = int(spec.tokenizer.text_vocab_size)
                     if (
                         not isinstance(tokens, list)
                         or not tokens
                         or len(tokens) > _MAX_TOKEN_CHUNK_SIZE
-                        or any(not isinstance(token, int) or token < 0 for token in tokens)
+                        or any(
+                            isinstance(token, bool)
+                            or not isinstance(token, int)
+                            or token < 0
+                            or token >= text_vocab_size
+                            for token in tokens
+                        )
                     ):
                         await self._send_error(
                             websocket,
-                            f"input.tokens requires 1-{_MAX_TOKEN_CHUNK_SIZE} non-negative integer token IDs.",
+                            f"input.tokens requires 1-{_MAX_TOKEN_CHUNK_SIZE} integer token IDs in "
+                            f"[0, {text_vocab_size}).",
+                        )
+                        continue
+                    if not text_encoder.clean:
+                        await self._send_error(
+                            websocket,
+                            "input.tokens cannot be used while an input.text marker or IPA span is incomplete.",
                         )
                         continue
                     await input_stream.put_tokens(tokens)
@@ -343,12 +368,16 @@ class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
                     if not isinstance(text, str):
                         await self._send_error(websocket, "input.text requires a string value")
                         continue
-                    tokens = spec.tokenizer.encode(text, add_special_tokens=False)
+                    tokens = text_encoder.push(text)
+                    text_parts.append(text)
                     if tokens:
                         await input_stream.put_tokens(tokens)
                         input_token_count += len(tokens)
-                        text_parts.append(text)
                 elif msg_type == "input.done":
+                    tokens = text_encoder.finish()
+                    if tokens:
+                        await input_stream.put_tokens(tokens)
+                        input_token_count += len(tokens)
                     if input_token_count == 0:
                         await self._send_error(websocket, "No text or token input was provided.")
                         return

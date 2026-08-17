@@ -71,7 +71,7 @@ def test_train_uses_compatible_dataset_factory(monkeypatch, tmp_path):
 
     class FakeTrainer:
         def __init__(self, **kwargs):
-            pass
+            self.callbacks = []
 
         def init_module(self):
             return nullcontext()

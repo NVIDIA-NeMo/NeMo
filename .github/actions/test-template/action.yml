@@ -56,6 +56,14 @@ inputs:
     description: "Directory under tests/ containing the test scripts"
     required: false
     default: "functional_tests"
+  download-artifact-name:
+    description: "Optional workflow artifact to place in the test checkout"
+    required: false
+    default: ""
+  download-artifact-path:
+    description: "Destination path relative to the test checkout"
+    required: false
+    default: ".ci-artifacts"
 runs:
   using: "composite"
   steps:
@@ -91,6 +99,14 @@ runs:
         DIR: ${{ github.run_id }}
       with:
         path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
+
+    - name: Download input artifact
+      if: ${{ inputs.download-artifact-name != '' }}
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ inputs.download-artifact-name }}
+        path: >-
+          ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo/${{ inputs.download-artifact-path }}
 
     - name: Start container
       shell: bash

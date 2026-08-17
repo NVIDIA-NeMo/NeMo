@@ -283,6 +283,8 @@ def prepare_packed_llm_inputs(
         cp_size=cp_size,
         tp_size=tp_size,
     )
+    num_tokens = packed["seq_lens"].sum()
+    num_examples = torch.tensor(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
 
     if cp_mesh is not None:
         packed = _shard_packed_for_cp(packed, cp_mesh)
@@ -291,13 +293,15 @@ def prepare_packed_llm_inputs(
         "input_embeds": packed["inputs_embeds"],
         "attention_mask": None,
         "target_ids": packed["labels"],
+        "num_tokens": num_tokens,
+        "num_examples": num_examples,
         "llm_kwargs": {
             "qkv_format": "thd",
             # Match Automodel's standard THD contract (``thd_utils.process_input_for_thd``
             # and ``cp_utils._shard_thd_chunk_for_te``): emit only ``cu_seqlens`` (the
             # padded cumsum) and a single ``max_seqlen``. Passing ``cu_seqlens_padded``
             # too would activate the ``pad_between_seqs=True`` branch in
-            # ``Automodel/.../attention/utils.py``, which routes TE down a different
+            # ``nemo_automodel/.../attention/utils.py``, which routes TE down a different
             # attention path. Passing pre-split ``max_seqlen_q`` / ``max_seqlen_kv``
             # gets them silently dropped by the preprocessor.
             "cu_seqlens": packed["cu_seqlens"],

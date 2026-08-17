@@ -30,6 +30,12 @@ from nemo.collections.asr.inference.utils.text_segment import Word
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
 
+# An unterminated language tag, e.g. "<mt-MT" or "<sl-", left when the stream ends before the model
+# finishes emitting the tag. Complete tags are removed earlier at token level; these never form a
+# matchable token sequence, so they are dropped from the text instead. Anchored at the end of the
+# string, since the tag is always the last thing a stream emits.
+INCOMPLETE_LANG_TAG = re.compile(r"\s*<[^\s<>]{0,10}\s*$")
+
 
 class StreamingTextProcessor:
     """
@@ -285,6 +291,8 @@ class StreamingTextProcessor:
             attr_name = "itn_words" if state.options.enable_itn else "pnc_words"
             words = getattr(state, attr_name)
             for word in words:
+                if INCOMPLETE_LANG_TAG.fullmatch(word.text.strip()):
+                    continue  # the whole word is an unterminated language tag
                 state.final_segments.append(word.copy())
                 state.final_transcript += word.text + self.sep
             state.final_transcript = state.final_transcript.rstrip(self.sep)
@@ -292,6 +300,8 @@ class StreamingTextProcessor:
         # Generate final transcript for segment boundary states
         for state in segment_boundary_states:
             for segment in state.segments:
-                state.final_segments.append(segment.copy())
+                segment = segment.copy()
+                segment.text = INCOMPLETE_LANG_TAG.sub("", segment.text)
+                state.final_segments.append(segment)
                 state.final_transcript += segment.text + self.sep
             state.final_transcript = state.final_transcript.rstrip(self.sep)

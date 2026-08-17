@@ -426,10 +426,9 @@ class ConvSubsampling(torch.nn.Module):
         # Preconditions of the kernels: they implement `dw_striding`'s exact layout,
         # [conv, act] + (sampling_num - 1) x [dw, pw, act]. A factor of 2 stops after [conv, act],
         # leaving no depthwise to fuse. The flag sits on the sequential, which owns that loop.
-        self.use_triton = use_triton if use_triton is not None else TRITON_AVAILABLE
-        self.conv.fuse_triton = (
-            self.use_triton and subsampling == 'dw_striding' and self.conv2d_subsampling and self._sampling_num >= 2
-        )
+        if use_triton is None:
+            use_triton = TRITON_AVAILABLE
+        self.conv.fuse_triton = use_triton and subsampling == 'dw_striding' and self._sampling_num >= 2
 
     def get_sampling_frames(self):
         return [1, self.subsampling_factor]
@@ -715,7 +714,7 @@ class MaskedConvSequential(nn.Sequential):
     def forward(self, x, lengths):
         # Convert input (batch, time, features) to conv format
         x = x.unsqueeze(1)  # (batch, 1, time, features)
-        current_lengths = lengths.clone().float()
+        current_lengths = lengths
 
         # Triton cannot be traced through, so export always takes the PyTorch path.
         if (
@@ -768,7 +767,16 @@ class MaskedConvSequential(nn.Sequential):
         trailing pointwise and activation write into the tail, and `forward` masks that.
         """
         conv0, first_depthwise = self[0], self[2]
-        x = _fused_head(x, conv0, first_depthwise, current_lengths)
+        # conv -> ReLU -> depthwise in one kernel, so the intermediate is never written to memory.
+        x, _ = fused_conv_relu_dw(
+            x,
+            conv0.weight,
+            conv0.bias,
+            first_depthwise.weight,
+            first_depthwise.bias,
+            *_layer_padding(conv0),
+            current_lengths,
+        )
         for conv in (conv0, first_depthwise):
             current_lengths = calculate_conv_output_size(
                 current_lengths, conv.kernel_size[0], conv.stride[0], _layer_padding(conv)
@@ -780,7 +788,15 @@ class MaskedConvSequential(nn.Sequential):
                 next_lengths = calculate_conv_output_size(
                     current_lengths, layer.kernel_size[0], layer.stride[0], _layer_padding(layer)
                 )
-                x = _fused_depthwise(layer, x, current_lengths, next_lengths)
+                x = dw_conv2d(
+                    x,
+                    layer.weight,
+                    layer.bias,
+                    layer.stride,
+                    _layer_padding(layer)[0],
+                    current_lengths,
+                    next_lengths,
+                )
                 current_lengths = next_lengths
             elif _is_pointwise(layer):
                 x = _pointwise(layer, x)
@@ -816,35 +832,6 @@ def _is_depthwise(layer):
 def _is_pointwise(layer):
     """A 1x1 convolution over all channels, which is a contraction over the channel axis alone."""
     return isinstance(layer, nn.Conv2d) and layer.groups == 1 and layer.kernel_size == (1, 1)
-
-
-def _fused_head(x, conv, depthwise, lengths):
-    """conv -> ReLU -> depthwise in one kernel, so the intermediate is never written to memory."""
-    left_padding, right_padding = _layer_padding(conv)
-    out, _ = fused_conv_relu_dw(
-        x,
-        conv.weight,
-        conv.bias,
-        depthwise.weight,
-        depthwise.bias,
-        left_padding,
-        right_padding,
-        lengths=lengths.to(torch.int32),
-    )
-    return out
-
-
-def _fused_depthwise(layer, x, lengths, next_lengths):
-    """A depthwise convolution with the bias and both length masks folded into the kernel."""
-    return dw_conv2d(
-        x,
-        layer.weight,
-        layer.bias,
-        lengths.to(torch.int32),
-        next_lengths.to(torch.int32),
-        stride=layer.stride[0],
-        padding=_layer_padding(layer)[0],
-    )
 
 
 def _pointwise(layer, x):

@@ -152,6 +152,75 @@ class TestNeMoSpeechLMConfig:
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
         assert cfg.is_hybrid is expected_is_hybrid
 
+    def test_derives_hr5c_mtp_contract_from_backbone(self, monkeypatch):
+        """Legacy compute_mtp exports should derive the exact *E physical head."""
+
+        def from_pretrained(model_name: str, trust_remote_code: bool = True):
+            return SimpleNamespace(
+                architectures=["NemotronHForCausalLM"],
+                hidden_size=2048,
+                vocab_size=131072,
+                num_hidden_layers=4,
+                num_key_value_heads=2,
+                layer_norm_epsilon=1e-5,
+                num_nextn_predict_layers=1,
+                mtp_hybrid_override_pattern=None,
+                mtp_layers_block_type=["attention", "moe"],
+            )
+
+        monkeypatch.setattr(_config_module.AutoConfig, "from_pretrained", from_pretrained)
+
+        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, compute_mtp=True, mtp=None)
+
+        assert cfg.mtp == {
+            "enabled": True,
+            "num_nextn_predict_layers": 1,
+            "use_repeated_layer": False,
+            "hybrid_override_pattern": "*E",
+        }
+        assert cfg.mtp_hybrid_override_pattern == "*E"
+
+    def test_compute_mtp_false_does_not_enable_backbone_head(self, monkeypatch):
+        """A backbone MTP head must not opt an export into speculative decoding."""
+
+        def from_pretrained(model_name: str, trust_remote_code: bool = True):
+            return SimpleNamespace(
+                architectures=["NemotronHForCausalLM"],
+                hidden_size=2048,
+                vocab_size=131072,
+                num_hidden_layers=4,
+                num_key_value_heads=2,
+                layer_norm_epsilon=1e-5,
+                num_nextn_predict_layers=1,
+                mtp_layers_block_type=["attention", "moe"],
+            )
+
+        monkeypatch.setattr(_config_module.AutoConfig, "from_pretrained", from_pretrained)
+
+        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, compute_mtp=False)
+
+        assert cfg.mtp is None
+
+    def test_unsupported_mtp_topology_fails_closed(self, monkeypatch):
+        """vLLM 0.23 cannot instantiate Mamba or MLP MTP sublayers."""
+
+        def from_pretrained(model_name: str, trust_remote_code: bool = True):
+            return SimpleNamespace(
+                architectures=["NemotronHForCausalLM"],
+                hidden_size=2048,
+                vocab_size=131072,
+                num_hidden_layers=4,
+                num_key_value_heads=2,
+                layer_norm_epsilon=1e-5,
+                num_nextn_predict_layers=1,
+                mtp_layers_block_type=["mamba", "moe"],
+            )
+
+        monkeypatch.setattr(_config_module.AutoConfig, "from_pretrained", from_pretrained)
+
+        with pytest.raises(ValueError, match="does not support block type 'mamba'"):
+            NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, compute_mtp=True)
+
     def test_hybrid_backbone_does_not_set_layer_types_shim(self):
         """Hybrid backbones must NOT have layer_types overridden -- the runtime
         is_hybrid escape hatch only fires when every layer is 'attention'."""
@@ -1012,7 +1081,7 @@ class TestMTPPlugin:
 
         hf_cfg = self._HFConfigLike(
             model_type="nemo_speechlm",
-            mtp={"num_nextn_predict_layers": 1, "use_repeated_layer": True},
+            mtp={"enabled": True, "num_nextn_predict_layers": 1, "use_repeated_layer": True},
         )
         result = SpeculativeConfig.hf_config_override(hf_cfg)
 
@@ -1033,7 +1102,7 @@ class TestMTPPlugin:
 
         hf_cfg = self._HFConfigLike(
             model_type="nemo_speechlm",
-            mtp={"num_nextn_predict_layers": 4, "use_repeated_layer": True},
+            mtp={"enabled": True, "num_nextn_predict_layers": 4, "use_repeated_layer": True},
         )
         result = SpeculativeConfig.hf_config_override(hf_cfg)
 
@@ -1057,7 +1126,9 @@ class TestMTPPlugin:
         monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_recording_orig))
         register()
 
-        hf_cfg = self._HFConfigLike(model_type="nemo_speechlm", mtp={"num_nextn_predict_layers": 0})
+        hf_cfg = self._HFConfigLike(
+            model_type="nemo_speechlm", mtp={"enabled": False, "num_nextn_predict_layers": 1}
+        )
         SpeculativeConfig.hf_config_override(hf_cfg)
 
         assert len(original_calls) == 1
@@ -1074,7 +1145,7 @@ class TestMTPPlugin:
 
         hf_cfg = self._HFConfigLike(
             model_type="nemo_speechlm",
-            mtp={"num_nextn_predict_layers": 3, "use_repeated_layer": False},
+            mtp={"enabled": True, "num_nextn_predict_layers": 3, "use_repeated_layer": False},
         )
         with pytest.raises(ValueError, match="use_repeated_layer"):
             SpeculativeConfig.hf_config_override(hf_cfg)
@@ -1203,9 +1274,13 @@ class TestMTPPlugin:
         """mtp_hybrid_override_pattern should read hybrid_override_pattern from mtp config dict."""
         cfg = NeMoSpeechLMConfig(
             **_DEFAULT_CONFIG_KWARGS,
-            mtp={"num_nextn_predict_layers": 1, "hybrid_override_pattern": "M*M"},
+            mtp={
+                "enabled": True,
+                "num_nextn_predict_layers": 1,
+                "hybrid_override_pattern": "*E",
+            },
         )
-        assert cfg.mtp_hybrid_override_pattern == "M*M"
+        assert cfg.mtp_hybrid_override_pattern == "*E"
 
     @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
     def test_mtp_hybrid_override_pattern_default_all_attention(self):

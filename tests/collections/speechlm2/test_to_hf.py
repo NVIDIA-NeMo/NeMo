@@ -140,6 +140,33 @@ class _FakeExportModel:
     llm = type("_FakeLLM", (), {"config": _FakeLLMConfig()})()
 
 
+class _FakeMTPBackboneConfig(_FakeLLMConfig):
+    num_nextn_predict_layers = 1
+    mtp_hybrid_override_pattern = None
+    mtp_layers_block_type = ["attention", "moe"]
+
+
+class _FakeMTPExportModel:
+    cfg = {
+        "pretrained_llm": "fake-model",
+        "pretrained_asr": "fake-asr",
+        "pretrained_weights": False,
+        "compute_mtp": True,
+        "mtp": None,
+        "dtype": "bf16",
+        "torch_dtype": "bf16",
+        "audio_locator_tag": AUDIO_TOKEN,
+    }
+    llm = type(
+        "_FakeMTPLLM",
+        (),
+        {
+            "config": _FakeMTPBackboneConfig(),
+            "mtp_config": SimpleNamespace(num_layers=1, use_repeated_layer=False),
+        },
+    )()
+
+
 def test_save_hf_checkpoint_writes_llm_backbone_config(tmp_path):
     cfg = to_hf.HfExportConfig(
         class_path="fake.Class",
@@ -234,6 +261,27 @@ def test_hf_export_config_embeds_portable_phpee_architecture():
     assert reexported["pe_encoder_path"] is None
     assert reexported["pe_encoder_config"]["asr_chunk_size_seconds"] == 60.0
     assert exported["pe_encoder_config"]["asr_chunk_size_seconds"] == 30.0
+
+
+def test_save_hf_checkpoint_writes_explicit_mtp_contract(tmp_path):
+    """Nemotron 3.5 list-form topology should export as vLLM's *E pattern."""
+    cfg = to_hf.HfExportConfig(
+        class_path="fake.Class",
+        ckpt_path="fake.ckpt",
+        ckpt_config="fake.yaml",
+        output_dir=str(tmp_path),
+        dtype="bfloat16",
+    )
+
+    to_hf.save_hf_checkpoint(_FakeMTPExportModel(), {"weight": torch.zeros(1)}, cfg)
+
+    root_cfg = json.loads((tmp_path / "config.json").read_text())
+    assert root_cfg["mtp"] == {
+        "enabled": True,
+        "num_nextn_predict_layers": 1,
+        "use_repeated_layer": False,
+        "hybrid_override_pattern": "*E",
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────

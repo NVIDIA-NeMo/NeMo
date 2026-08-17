@@ -44,9 +44,115 @@ _AUDIO_PLACEHOLDER = "<|audio|>"
 # special tokens and TensorCore-friendly alignment.
 _SPEECHLM_EMBED_EXTRA_ROWS = 10
 
+_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL = {
+    "attention": "*",
+    "moe": "E",
+}
+
 
 def _is_hybrid_backend(architectures: list[str]) -> bool:
     return bool(set(architectures) & _HYBRID_ARCHITECTURES)
+
+
+def _mtp_pattern_from_backbone_config(text_config) -> str | None:
+    """Return the vLLM Nemotron-H MTP pattern encoded by a backbone config.
+
+    Nemotron 3.5 exports the physical MTP topology in one of two forms:
+    ``mtp_hybrid_override_pattern`` (symbol string) or
+    ``mtp_layers_block_type`` (list of block names). vLLM 0.23 supports only
+    attention (``*``) and MoE (``E``) MTP sublayers, so unsupported topology
+    must fail before model construction rather than load the wrong draft head.
+    """
+    pattern = getattr(text_config, "mtp_hybrid_override_pattern", None)
+    if pattern:
+        unsupported = sorted(set(pattern) - set(_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL.values()))
+        if unsupported:
+            raise ValueError(
+                f"vLLM Nemotron-H MTP does not support pattern symbols {unsupported!r} "
+                f"in mtp_hybrid_override_pattern={pattern!r}; supported symbols are '*' and 'E'."
+            )
+        return pattern
+
+    block_types = getattr(text_config, "mtp_layers_block_type", None)
+    if not block_types:
+        return None
+    try:
+        return "".join(_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL[block_type] for block_type in block_types)
+    except KeyError as error:
+        raise ValueError(
+            f"vLLM Nemotron-H MTP does not support block type {error.args[0]!r} in "
+            f"mtp_layers_block_type={list(block_types)!r}; supported block types are "
+            f"{sorted(_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL)!r}."
+        ) from error
+
+
+def _resolve_speechlm_mtp_config(
+    *,
+    mtp: dict | None,
+    compute_mtp: bool,
+    text_config,
+    num_nextn_predict_layers: int | None = None,
+    use_repeated_layer: bool | None = None,
+) -> dict | None:
+    """Normalize the SpeechLM MTP contract consumed by the vLLM plugin.
+
+    New exports carry an explicit root ``mtp`` dictionary. Older SpeechLM
+    exports, including the first Nemotron 3.5 Lightning checkpoints, only
+    carry ``compute_mtp`` at the root and keep MTP topology in the saved
+    backbone config. Derive the missing dictionary for those checkpoints so
+    they do not need to be re-exported.
+    """
+    explicit_mtp = dict(mtp) if isinstance(mtp, dict) else None
+    if explicit_mtp is not None:
+        enabled = bool(explicit_mtp.get("enabled", True))
+    else:
+        enabled = bool(compute_mtp)
+
+    if not enabled:
+        return None
+
+    if num_nextn_predict_layers is None:
+        if explicit_mtp is not None and "num_nextn_predict_layers" in explicit_mtp:
+            num_nextn_predict_layers = explicit_mtp["num_nextn_predict_layers"]
+        else:
+            num_nextn_predict_layers = getattr(text_config, "num_nextn_predict_layers", 0)
+    num_nextn_predict_layers = int(num_nextn_predict_layers or 0)
+    if num_nextn_predict_layers <= 0:
+        raise ValueError(
+            "SpeechLM MTP is enabled but num_nextn_predict_layers is not positive in either "
+            "the root mtp config or the backbone config."
+        )
+
+    explicit_pattern = explicit_mtp.get("hybrid_override_pattern") if explicit_mtp is not None else None
+    backbone_pattern = _mtp_pattern_from_backbone_config(text_config)
+    if explicit_pattern and backbone_pattern and explicit_pattern != backbone_pattern:
+        raise ValueError(
+            f"Root mtp.hybrid_override_pattern={explicit_pattern!r} disagrees with "
+            f"backbone MTP topology {backbone_pattern!r}."
+        )
+    pattern = explicit_pattern or backbone_pattern
+    if not pattern:
+        raise ValueError(
+            "SpeechLM MTP is enabled but neither mtp.hybrid_override_pattern nor the backbone's "
+            "mtp_hybrid_override_pattern/mtp_layers_block_type declares the physical MTP topology."
+        )
+    # Validate explicit patterns as well as backbone-derived patterns.
+    unsupported = sorted(set(pattern) - set(_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL.values()))
+    if unsupported:
+        raise ValueError(
+            f"vLLM Nemotron-H MTP does not support pattern symbols {unsupported!r} "
+            f"in hybrid_override_pattern={pattern!r}; supported symbols are '*' and 'E'."
+        )
+
+    if use_repeated_layer is None:
+        use_repeated_layer = bool(explicit_mtp.get("use_repeated_layer", False)) if explicit_mtp else False
+
+    return {
+        "enabled": True,
+        "num_nextn_predict_layers": num_nextn_predict_layers,
+        "use_repeated_layer": bool(use_repeated_layer),
+        "hybrid_override_pattern": pattern,
+    }
 
 
 class NeMoSpeechLMConfig(PretrainedConfig):
@@ -152,6 +258,16 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.pe_encoder_path = pe_encoder_path
         self.pe_encoder_config = pe_encoder_config
 
+        # Backward compatibility for early Nemotron 3.5 SpeechLM exports:
+        # they carry ``compute_mtp`` at the root and the MTP topology only in
+        # llm_backbone/config.json. Normalize that into the explicit contract
+        # used by the vLLM speculative-config hook.
+        self.mtp = _resolve_speechlm_mtp_config(
+            mtp=self.__dict__.get("mtp"),
+            compute_mtp=bool(self.__dict__.get("compute_mtp", False)),
+            text_config=self.text_config,
+        )
+
         raw_archs = getattr(self.text_config, "architectures", [])
         if len(raw_archs) != 1:
             raise ValueError(
@@ -204,7 +320,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         """Hybrid layer pattern for MTP heads, consumed by NemotronHMultiTokenPredictor.
 
         Reads from the ``mtp.hybrid_override_pattern`` field in config.json.
-        '*' means all-attention; 'M' means all-Mamba2.
+        ``*`` means attention and ``E`` means MoE.
         """
         mtp_cfg = self.__dict__.get("mtp") or {}
         return mtp_cfg.get("hybrid_override_pattern", "*") if isinstance(mtp_cfg, dict) else "*"

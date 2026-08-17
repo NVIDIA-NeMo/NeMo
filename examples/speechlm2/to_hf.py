@@ -24,6 +24,7 @@ from omegaconf import DictConfig, OmegaConf
 from safetensors.torch import save_file
 
 from nemo.collections.speechlm2.parts.hf_hub import LLM_BACKBONE_DIR
+from nemo.collections.speechlm2.vllm.salm.config import _resolve_speechlm_mtp_config
 from nemo.core.classes.common import safe_instantiate
 from nemo.core.config import hydra_runner
 from nemo.utils.dtype import str_to_dtype
@@ -130,6 +131,18 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
     dtype_name = _canonical_torch_dtype_name(dtype)
     config["dtype"] = dtype_name
     config["torch_dtype"] = dtype_name
+
+    llm = getattr(model, "llm", None)
+    text_config = getattr(llm, "config", None)
+    if text_config is not None and bool(config.get("compute_mtp", False)):
+        runtime_mtp_config = getattr(llm, "mtp_config", None)
+        config["mtp"] = _resolve_speechlm_mtp_config(
+            mtp=config.get("mtp"),
+            compute_mtp=True,
+            text_config=text_config,
+            num_nextn_predict_layers=getattr(runtime_mtp_config, "num_layers", None),
+            use_repeated_layer=getattr(runtime_mtp_config, "use_repeated_layer", None),
+        )
     return config
 
 

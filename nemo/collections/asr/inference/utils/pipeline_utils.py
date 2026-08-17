@@ -336,29 +336,75 @@ def filter_token_triples(
     return filtered_tokens, filtered_timesteps, filtered_confidences
 
 
+def filter_token_sequences(
+    tokens: list[int], timesteps: list[int], confidences: list[float], sequences: tuple[tuple[int, ...], ...]
+) -> tuple[list[int], list[int], list[float]]:
+    """
+    Remove contiguous token sub-sequences from aligned (tokens, timesteps, confidences) lists.
+    Used for language tags that are spelled out from sub-word pieces (e.g. "<mt-MT>") instead of
+    existing as a single vocabulary token, which ``filter_token_triples`` cannot match.
+    Args:
+        tokens: (list[int]) Token ids.
+        timesteps: (list[int]) Timesteps aligned with tokens.
+        confidences: (list[float]) Confidences aligned with tokens.
+        sequences: (tuple[tuple[int, ...], ...]) Token id sequences to remove, longest first.
+    Returns:
+        (tuple[list[int], list[int], list[float]]) Filtered aligned lists.
+    """
+    if not sequences or not tokens:
+        return tokens, timesteps, confidences
+
+    keep = [True] * len(tokens)
+    i = 0
+    while i < len(tokens):
+        for sequence in sequences:
+            end = i + len(sequence)
+            if tuple(tokens[i:end]) == sequence:
+                keep[i:end] = [False] * len(sequence)
+                i = end
+                break
+        else:
+            i += 1
+
+    if all(keep):
+        return tokens, timesteps, confidences
+    return (
+        [t for t, k in zip(tokens, keep) if k],
+        [t for t, k in zip(timesteps, keep) if k],
+        [c for c, k in zip(confidences, keep) if k],
+    )
+
+
 def filter_tokens_from_greedy_output(
-    output: dict, labels: list[int], token_ids_to_remove: set[int], blank_id: int
+    output: dict,
+    labels: list[int],
+    token_ids_to_remove: set[int],
+    blank_id: int,
+    token_sequences_to_remove: tuple[tuple[int, ...], ...] = (),
 ) -> tuple[dict, list[int]]:
     """
-    Remove the given token ids (e.g. language tags emitted by multilingual models in "auto" mode)
-    from a greedy-decoder chunk output, keeping tokens/timesteps/confidences aligned.
-    The removed tokens are also replaced with blanks in the label buffer so that
-    they are not counted as speech during EOU detection.
+    Remove language tags emitted by multilingual models from a greedy-decoder chunk output,
+    keeping tokens/timesteps/confidences aligned.
+    Single-token tags are also replaced with blanks in the label buffer so that they are not
+    counted as speech during EOU detection. Multi-token tags are only dropped from the output,
+    since their pieces are ordinary tokens that also occur in normal text.
     Args:
         output: (dict) Greedy decoder output with "tokens", "timesteps", "confidences",
             "last_token" and "last_token_idx" keys.
         labels: (list[int]) Current labels (including blanks) aligned with the chunk frames.
         token_ids_to_remove: (set[int]) Token ids to filter out.
         blank_id: (int) Blank token id used in the label buffer.
+        token_sequences_to_remove: (tuple[tuple[int, ...], ...]) Token id sequences to filter out.
     Returns:
         (tuple[dict, list[int]]) Filtered output and labels.
     """
-    if not token_ids_to_remove or not output["tokens"]:
+    if not output["tokens"] or not (token_ids_to_remove or token_sequences_to_remove):
         return output, labels
 
     tokens, timesteps, confidences = filter_token_triples(
         output["tokens"], output["timesteps"], output["confidences"], token_ids_to_remove
     )
+    tokens, timesteps, confidences = filter_token_sequences(tokens, timesteps, confidences, token_sequences_to_remove)
     labels = [blank_id if label in token_ids_to_remove else label for label in labels]
     output = dict(output)
     output["tokens"], output["timesteps"], output["confidences"] = tokens, timesteps, confidences

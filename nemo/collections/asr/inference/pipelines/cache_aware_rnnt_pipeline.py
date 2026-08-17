@@ -45,6 +45,7 @@ from nemo.collections.asr.inference.utils.per_stream_biasing import (
 from nemo.collections.asr.inference.utils.pipeline_utils import (
     check_existance_of_required_attributes,
     drop_trailing_features,
+    filter_token_sequences,
     filter_token_triples,
     filter_tokens_from_greedy_output,
     get_confidence_utils,
@@ -123,6 +124,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             logging.info(f"Multilingual ASR model: conditioning on language '{self.default_language_code}'.")
         else:
             self.default_language_code = None
+        self.language_token_sequences = self._build_language_token_sequences()
 
         self.sample_rate = cfg.streaming.sample_rate
         self.asr_output_granularity = cfg.asr_output_granularity
@@ -368,6 +370,9 @@ class CacheAwareRNNTPipeline(BasePipeline):
             state.tokens, state.timesteps, state.confidences = filter_token_triples(
                 state.tokens, state.timesteps, state.confidences, self.language_token_ids
             )
+            state.tokens, state.timesteps, state.confidences = filter_token_sequences(
+                state.tokens, state.timesteps, state.confidences, self.language_token_sequences
+            )
             state.last_token = state.tokens[-1] if state.tokens else None
             state.last_token_idx = state.timesteps[-1] if state.timesteps else None
 
@@ -397,7 +402,7 @@ class CacheAwareRNNTPipeline(BasePipeline):
             # Drop language tags (e.g. <en-US>) so they are excluded from the transcript
             # and are not counted as speech for EOU detection.
             cur_output, cur_labels = filter_tokens_from_greedy_output(
-                cur_output, cur_labels, self.language_token_ids, self.blank_id
+                cur_output, cur_labels, self.language_token_ids, self.blank_id, self.language_token_sequences
             )
 
         # cur labels contains blank tokens as well, it is needed for EOU detection
@@ -613,6 +618,31 @@ class CacheAwareRNNTPipeline(BasePipeline):
             pad_last_frame=True,
         )
         return request_generator
+
+    def _build_language_token_sequences(self) -> tuple[tuple[int, ...], ...]:
+        """
+        Token id sequences for language tags that are not single vocabulary tokens.
+
+        Locales such as ``mt-MT`` and ``sl-SI`` have no dedicated vocabulary token, so the model
+        spells the tag out from sub-word pieces and ``language_token_ids`` cannot match it.
+        Returns:
+            (tuple[tuple[int, ...], ...]) Token id sequences, longest first.
+        """
+        if not self.prompt_enabled or not self.strip_lang_tags:
+            return ()
+
+        vocabulary = set(self.vocabulary)
+        sequences = set()
+        for language_code in self._prompt_config["prompt_dict"]:
+            tag = f"<{language_code}>"
+            if tag in vocabulary:
+                continue  # already covered by `language_token_ids`
+            token_ids = self.tokenizer.text_to_ids(tag)
+            if len(token_ids) > 1:
+                sequences.add(tuple(token_ids))
+                # the leading SentencePiece underscore is absent when the tag is not space-preceded
+                sequences.add(tuple(token_ids[1:]))
+        return tuple(sorted(sequences, key=len, reverse=True))
 
     def _lang_tag_filtering_enabled(self) -> bool:
         """

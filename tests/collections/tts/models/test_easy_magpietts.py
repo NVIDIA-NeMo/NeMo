@@ -275,6 +275,7 @@ def test_training_mode_and_inference_parameters():
             "temperature": 0.25,
             "topk": 7,
             "cfg_scale": 1.5,
+            "flow_cfg_scale": 1.3,
             "unknown_key": "ignored",
         }
     )
@@ -283,6 +284,7 @@ def test_training_mode_and_inference_parameters():
         temperature=0.25,
         topk=7,
         cfg_scale=1.5,
+        flow_cfg_scale=1.3,
     )
 
 
@@ -606,6 +608,59 @@ def test_process_batch_with_one_shot_flow_local_predictor():
     assert output.context_audio_codes.shape[1] == semantic_channels
 
 
+def test_process_batch_with_transformer_flow_matching_head():
+    _seed_everything()
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_estimator_type": "transformer",
+                "frame_stacking_factor": 2,
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 1,
+                "local_flow_matching_transformer_n_heads": 4,
+                "local_flow_matching_transformer_ffn_multiplier": 2.0,
+                "local_flow_matching_time_embedding_dim": 8,
+                "local_flow_matching_transformer_condition_dropout": 0.0,
+                "local_transformer_loss_scale": 0.5,
+                "acoustic_aux_loss_scale": 0.1,
+            }
+        )
+    )
+    batch = _toy_batch(model)
+    audio_embedding = torch.randn(
+        batch["audio_codes"].size(0),
+        model.acoustic_codec_embedding_dim,
+        batch["audio_codes"].size(2),
+    )
+    context_audio_embedding = torch.randn(
+        batch["context_audio_codes"].size(0),
+        model.acoustic_codec_embedding_dim,
+        batch["context_audio_codes"].size(2),
+    )
+
+    output = model.process_batch(
+        text=batch["text"],
+        text_lens=batch["text_lens"],
+        context_text_tokens=batch["context_text_tokens"],
+        context_text_tokens_lens=batch["context_text_tokens_lens"],
+        audio_codes=batch["audio_codes"][:, : model.num_semantic_codebooks],
+        audio_codes_lens=batch["audio_codes_lens"],
+        context_audio_codes=batch["context_audio_codes"][:, : model.num_semantic_codebooks],
+        context_audio_codes_lens=batch["context_audio_codes_lens"],
+        context_audio_embedding=context_audio_embedding,
+        audio_embedding=audio_embedding,
+        audio_embedding_lens=batch["audio_codes_lens"],
+        mode="val",
+        training_mode=model.training_modes[0],
+        agent_mask=batch["agent_mask"],
+    )
+
+    assert torch.isfinite(output.loss)
+    assert torch.isfinite(output.local_transformer_loss)
+    assert model.local_predictor.requires_semantic_codes
+
+
 def test_one_shot_flow_allocates_only_semantic_token_heads():
     model = _make_easy_magpie_model(
         tiny_easy_magpie_cfg(
@@ -630,6 +685,22 @@ def test_one_shot_flow_allocates_only_semantic_token_heads():
         model.flow_acoustic_in_projection.bias,
         torch.zeros_like(model.flow_acoustic_in_projection.bias),
     )
+
+
+def test_one_shot_acoustic_feedback_projection_can_use_random_initialization():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "oneshot_zero_init_acoustic_feedback_projection": False,
+            }
+        )
+    )
+
+    assert torch.count_nonzero(model.flow_acoustic_in_projection.weight) > 0
 
 
 def test_one_shot_flow_can_quantize_acoustic_feedback_into_full_codec_tokens():
@@ -1272,10 +1343,11 @@ def test_flow_matching_sampling_uses_separate_cfg_conditions():
             topk=20,
             use_cfg=True,
             cfg_scale=2.5,
+            flow_cfg_scale=1.3,
         )
 
     predict_kwargs = predict_mock.call_args.kwargs
-    assert predict_kwargs["cfg_scale"] == 2.5
+    assert predict_kwargs["cfg_scale"] == 1.3
     conditional = predict_kwargs["condition"]
     unconditional = predict_kwargs["unconditional_condition"]
     semantic_start = model.oneshot_condition_projection_dim

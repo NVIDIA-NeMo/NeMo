@@ -31,6 +31,8 @@ from nemo.collections.tts.modules.magpietts_oneshot import OneShotLocalPredictor
 
 EULER_SOLVER = "euler"
 MIDPOINT_SOLVER = "midpoint"
+POINTWISE_ESTIMATOR = "pointwise"
+TRANSFORMER_ESTIMATOR = "transformer"
 
 
 class SinusoidalTimeEmbedding(nn.Module):
@@ -139,6 +141,12 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
         inference_steps: int = 8,
         solver: str = MIDPOINT_SOLVER,
         num_noise_samples: int = 1,
+        estimator_type: str = POINTWISE_ESTIMATOR,
+        semantic_vocab_size: int | None = None,
+        semantic_channels: int | None = None,
+        transformer_n_heads: int = 12,
+        transformer_ffn_multiplier: float = 4.0,
+        transformer_condition_dropout: float = 0.1,
     ):
         super().__init__(acoustic_channels=acoustic_channels)
         if inference_steps < 1:
@@ -150,18 +158,54 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
             raise ValueError(
                 f"Unsupported flow-matching solver {solver!r}; expected {EULER_SOLVER!r} or {MIDPOINT_SOLVER!r}."
             )
+        estimator_type = estimator_type.lower()
+        if estimator_type not in (POINTWISE_ESTIMATOR, TRANSFORMER_ESTIMATOR):
+            raise ValueError(
+                f"Unsupported flow-matching estimator {estimator_type!r}; expected "
+                f"{POINTWISE_ESTIMATOR!r} or {TRANSFORMER_ESTIMATOR!r}."
+            )
 
         self.inference_steps = inference_steps
         self.solver = solver
         self.num_noise_samples = num_noise_samples
-        self.estimator = PointwiseFlowMatchingEstimator(
-            acoustic_channels=acoustic_channels,
-            condition_channels=condition_channels,
-            hidden_channels=hidden_channels,
-            n_layers=n_layers,
-            dropout=dropout,
-            time_embedding_dim=time_embedding_dim,
-        )
+        self.estimator_type = estimator_type
+        self.requires_semantic_codes = estimator_type == TRANSFORMER_ESTIMATOR
+        if self.requires_semantic_codes:
+            if semantic_vocab_size is None or semantic_channels is None:
+                raise ValueError("The transformer estimator requires semantic_vocab_size and semantic_channels.")
+            from nemo.collections.tts.modules.magpietts_flow_matching_transformer import (
+                EasyMagpieFlowMatchingTransformerEstimator,
+            )
+
+            self.estimator = EasyMagpieFlowMatchingTransformerEstimator(
+                acoustic_channels=acoustic_channels,
+                condition_channels=condition_channels,
+                semantic_vocab_size=semantic_vocab_size,
+                semantic_channels=semantic_channels,
+                hidden_channels=hidden_channels,
+                n_layers=n_layers,
+                n_heads=transformer_n_heads,
+                dropout=dropout,
+                time_embedding_dim=time_embedding_dim,
+                ffn_multiplier=transformer_ffn_multiplier,
+                condition_dropout=transformer_condition_dropout,
+            )
+        else:
+            self.estimator = PointwiseFlowMatchingEstimator(
+                acoustic_channels=acoustic_channels,
+                condition_channels=condition_channels,
+                hidden_channels=hidden_channels,
+                n_layers=n_layers,
+                dropout=dropout,
+                time_embedding_dim=time_embedding_dim,
+            )
+
+    def _estimate_velocity(self, state, condition, semantic_codes, time, mask):
+        if self.requires_semantic_codes:
+            if semantic_codes is None:
+                raise ValueError("The transformer flow-matching estimator requires semantic_codes.")
+            return self.estimator(state, condition, semantic_codes, time, mask)
+        return self.estimator(state, condition, time, mask)
 
     def _mask(
         self,
@@ -206,13 +250,14 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
         condition: torch.Tensor,
         lengths: torch.Tensor,
         frame_mask: torch.Tensor | None,
+        semantic_codes: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         mask = self._mask(acoustic_embedding, condition, lengths, frame_mask)
         target = acoustic_embedding * mask
         noise = torch.randn_like(target) * mask
         time = torch.rand(target.size(0), device=target.device)
         state, target_velocity = self.sample_path(target, noise, time)
-        predicted_velocity = self.estimator(state, condition * mask, time, mask)
+        predicted_velocity = self._estimate_velocity(state, condition * mask, semantic_codes, time, mask)
         squared_error = (predicted_velocity.float() - target_velocity.float()).square() * mask.float()
         return squared_error, mask, state, target_velocity, predicted_velocity
 
@@ -222,15 +267,20 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
         condition: torch.Tensor,
         lengths: torch.Tensor,
         frame_mask: torch.Tensor | None = None,
+        semantic_codes: torch.Tensor | None = None,
     ) -> torch.Tensor:
         num_noise_samples = self.num_noise_samples if self.training else 1
         if num_noise_samples > 1:
             acoustic_embedding = acoustic_embedding.repeat_interleave(num_noise_samples, dim=0)
             condition = condition.repeat_interleave(num_noise_samples, dim=0)
             lengths = lengths.repeat_interleave(num_noise_samples, dim=0)
+            if semantic_codes is not None:
+                semantic_codes = semantic_codes.repeat_interleave(num_noise_samples, dim=0)
             if frame_mask is not None:
                 frame_mask = frame_mask.repeat_interleave(num_noise_samples, dim=0)
-        squared_error, mask, _, _, _ = self._loss_tensors(acoustic_embedding, condition, lengths, frame_mask)
+        squared_error, mask, _, _, _ = self._loss_tensors(
+            acoustic_embedding, condition, lengths, frame_mask, semantic_codes
+        )
         denominator = (mask.float().sum() * self.acoustic_channels).clamp_min(1.0)
         return squared_error.sum() / denominator
 
@@ -241,9 +291,10 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
         condition: torch.Tensor,
         lengths: torch.Tensor,
         frame_mask: torch.Tensor | None = None,
+        semantic_codes: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         squared_error, mask, state, target_velocity, predicted_velocity = self._loss_tensors(
-            acoustic_embedding, condition, lengths, frame_mask
+            acoustic_embedding, condition, lengths, frame_mask, semantic_codes
         )
         float_mask = mask.float()
         valid_frames = float_mask.sum(dim=(1, 2))
@@ -279,14 +330,21 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
         condition: torch.Tensor,
         time: torch.Tensor,
         mask: torch.Tensor,
+        semantic_codes: torch.Tensor | None,
         unconditional_condition: torch.Tensor | None,
         cfg_scale: float,
     ) -> torch.Tensor:
-        conditional_velocity = self.estimator(state, condition, time, mask)
+        conditional_velocity = self._estimate_velocity(state, condition, semantic_codes, time, mask)
         if unconditional_condition is None or cfg_scale == 1.0:
             return conditional_velocity
 
-        unconditional_velocity = self.estimator(state, unconditional_condition, time, mask)
+        unconditional_velocity = self._estimate_velocity(
+            state,
+            unconditional_condition,
+            semantic_codes,
+            time,
+            mask,
+        )
         return cfg_scale * conditional_velocity + (1.0 - cfg_scale) * unconditional_velocity
 
     @torch.no_grad()
@@ -295,6 +353,7 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
         condition: torch.Tensor,
         lengths: torch.Tensor,
         noise_scale: float = 1.0,
+        semantic_codes: torch.Tensor | None = None,
         unconditional_condition: torch.Tensor | None = None,
         cfg_scale: float = 1.0,
     ) -> torch.Tensor:
@@ -322,7 +381,9 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
         for step in range(self.inference_steps):
             start_time = step * step_size
             time = torch.full((state.size(0),), start_time, device=state.device)
-            velocity = self._guided_velocity(state, condition, time, mask, unconditional_condition, cfg_scale)
+            velocity = self._guided_velocity(
+                state, condition, time, mask, semantic_codes, unconditional_condition, cfg_scale
+            )
             if self.solver == EULER_SOLVER:
                 state = state + step_size * velocity
             else:
@@ -333,6 +394,7 @@ class OneShotLocalFlowMatching(OneShotLocalPredictor):
                     condition,
                     midpoint_time,
                     mask,
+                    semantic_codes,
                     unconditional_condition,
                     cfg_scale,
                 )

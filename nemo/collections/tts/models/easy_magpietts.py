@@ -1571,6 +1571,12 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 rounding_mode='floor',
             )
             target_steps = acoustic_embedding_stacked.size(2)
+            predictor_loss_kwargs = {}
+            if getattr(self.local_predictor, "requires_semantic_codes", False):
+                predictor_loss_kwargs["semantic_codes"] = self.stack_codec_tokens(
+                    semantic_codes,
+                    self.frame_stacking_factor,
+                )[:, :, :target_steps]
             flow_condition = self.project_oneshot_condition(
                 pred_embeddings[:, :target_steps].transpose(1, 2),
                 semantic_embedding_stacked,
@@ -1597,6 +1603,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 flow_condition,
                 flow_lens,
                 frame_mask=flow_frame_mask,
+                **predictor_loss_kwargs,
             )
             if (
                 mode == "train"
@@ -1608,6 +1615,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                     flow_condition,
                     flow_lens,
                     frame_mask=flow_frame_mask,
+                    **predictor_loss_kwargs,
                 )
 
         if local_transformer_loss is not None:
@@ -1674,9 +1682,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         self.log(f'{mode}/local_transformer_loss', loss, prog_bar=True, sync_dist=True)
         if self.local_transformer_type.is_oneshot:
             loss_name = (
-                'diffusion_loss'
-                if self.local_transformer_type == LocalTransformerType.DIFFUSION
-                else 'flow_loss'
+                'diffusion_loss' if self.local_transformer_type == LocalTransformerType.DIFFUSION else 'flow_loss'
             )
             self.log(f'{mode}/{loss_name}', loss, prog_bar=False, sync_dist=True)
 
@@ -2232,14 +2238,15 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
         if self.run_val_inference:
             infer_output = self.infer_batch(
                 batch,
-                max_decoder_steps=330,
-                temperature=0.7,
-                topk=80,
+                max_decoder_steps=self.cfg.get('inference_max_decoder_steps_in_val', 330),
+                temperature=self.cfg.get('inference_temperature_in_val', 0.7),
+                topk=self.cfg.get('inference_topk_in_val', 80),
                 use_local_transformer_for_inference=(
                     (self.local_transformer_type == LocalTransformerType.AR or self.local_transformer_type.is_oneshot)
                 ),
                 use_cfg=self.cfg.get('inference_use_cfg_in_val', True),
-                cfg_scale=2.5,
+                cfg_scale=self.cfg.get('inference_cfg_scale_in_val', 2.5),
+                flow_cfg_scale=self.cfg.get('inference_flow_cfg_scale_in_val'),
             )
 
             # Get audio output directory

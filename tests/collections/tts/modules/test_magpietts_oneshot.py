@@ -78,6 +78,29 @@ def test_flow_matching_implements_oneshot_predictor_contract():
     assert predictor.num_noise_samples == 4
 
 
+def test_factory_constructs_transformer_flow_matching_estimator():
+    predictor = create_oneshot_local_predictor(
+        "flow_matching",
+        acoustic_channels=12,
+        condition_channels=20,
+        semantic_vocab_size=32,
+        semantic_channels=1,
+        cfg={
+            "local_flow_matching_estimator_type": "transformer",
+            "local_flow_matching_hidden_dim": 16,
+            "local_flow_matching_n_layers": 3,
+            "local_flow_matching_transformer_n_heads": 4,
+            "local_flow_matching_transformer_ffn_multiplier": 2.0,
+            "local_flow_matching_time_embedding_dim": 8,
+        },
+    )
+
+    assert isinstance(predictor, OneShotLocalFlowMatching)
+    assert predictor.requires_semantic_codes
+    assert predictor.estimator.transformer.n_layers == 3
+    assert predictor.estimator.hidden_channels == 16
+
+
 def test_diffusion_implements_oneshot_predictor_contract():
     predictor = create_oneshot_local_predictor(
         "diffusion",

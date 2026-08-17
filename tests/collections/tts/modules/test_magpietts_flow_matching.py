@@ -230,3 +230,39 @@ def test_flow_matching_diagnostics_are_finite_and_select_worst_sample():
     assert diagnostics["valid_frames"].item() == 4
     assert diagnostics["target_abs_max"] > diagnostics["condition_abs_max"]
     assert all(torch.isfinite(value) for value in diagnostics.values())
+
+
+def test_transformer_flow_matching_uses_semantic_tokens_and_backpropagates():
+    predictor = _make_predictor(
+        estimator_type="transformer",
+        semantic_vocab_size=32,
+        semantic_channels=1,
+        transformer_n_heads=4,
+        transformer_ffn_multiplier=2.0,
+        transformer_condition_dropout=0.0,
+    )
+    acoustic = torch.randn(2, 12, 5)
+    condition = torch.randn(2, 20, 5, requires_grad=True)
+    semantic_codes = torch.randint(0, 32, (2, 1, 5))
+    lengths = torch.tensor([5, 3])
+
+    loss = predictor.compute_loss(acoustic, condition, lengths, semantic_codes=semantic_codes)
+    loss.backward()
+
+    assert predictor.requires_semantic_codes
+    assert torch.isfinite(loss)
+    assert condition.grad is not None
+    assert predictor.estimator.semantic_embeddings[0].weight.grad is not None
+    assert predictor.estimator.output_projection.weight.grad is not None
+
+    predictor.eval()
+    prediction = predictor.predict(
+        condition.detach(),
+        lengths,
+        semantic_codes=semantic_codes,
+        unconditional_condition=torch.zeros_like(condition),
+        cfg_scale=1.3,
+    )
+    assert prediction.shape == acoustic.shape
+    assert torch.isfinite(prediction).all()
+    assert torch.count_nonzero(prediction[1, :, 3:]) == 0

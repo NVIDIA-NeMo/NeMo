@@ -90,6 +90,7 @@ class StreamingConfig:
         training_mode: The training mode being used for inference.
         use_cfg: Whether classifier-free guidance is enabled.
         cfg_scale: CFG scale factor.
+        flow_cfg_scale: CFG scale for the flow-matching head.
         use_local_transformer: Whether to use local transformer for inference.
         temperature: Sampling temperature.
         topk: Top-k sampling parameter.
@@ -103,6 +104,7 @@ class StreamingConfig:
     training_mode: TrainingMode
     use_cfg: bool
     cfg_scale: float
+    flow_cfg_scale: float
     use_local_transformer: bool
     temperature: float
     topk: int
@@ -202,12 +204,14 @@ class EasyModelInferenceParameters:
         temperature: Sampling temperature.
         topk: Number of top-probability tokens to consider in sampling.
         cfg_scale: Scale factor for classifier-free guidance.
+        flow_cfg_scale: Optional separate guidance scale for the flow-matching head.
     """
 
     max_decoder_steps: int = 300
     temperature: float = 0.7
     topk: int = 80
     cfg_scale: float = 2.5
+    flow_cfg_scale: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> 'EasyModelInferenceParameters':
@@ -417,6 +421,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         self._codec_helper = CodecHelper(self._codec_model, self._codec_converter)
 
         self.local_transformer_type = LocalTransformerType(cfg.get('local_transformer_type', 'none').lower())
+        self.flow_matching_estimator_type = str(cfg.get('local_flow_matching_estimator_type', 'pointwise')).lower()
+        self.flow_matching_uses_semantic_tokens = (
+            self.local_transformer_type == LocalTransformerType.FLOW_MATCHING
+            and self.flow_matching_estimator_type == 'transformer'
+        )
         self.oneshot_quantize_acoustic_feedback = bool(cfg.get('oneshot_quantize_acoustic_feedback', False))
         if self.oneshot_quantize_acoustic_feedback and not self.local_transformer_type.is_oneshot:
             raise ValueError("oneshot_quantize_acoustic_feedback requires a one-shot local predictor.")
@@ -739,45 +748,52 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 self.acoustic_history_mask_embedding = nn.Parameter(torch.zeros(1, 1, cfg.embedding_dim))
             # This path has no counterpart in the pretrained discrete model. Start it as an
             # exact no-op so loading the pretrained backbone does not inject a random residual.
-            nn.init.zeros_(self.flow_acoustic_in_projection.weight)
-            nn.init.zeros_(self.flow_acoustic_in_projection.bias)
+            if bool(cfg.get("oneshot_zero_init_acoustic_feedback_projection", True)):
+                nn.init.zeros_(self.flow_acoustic_in_projection.weight)
+                nn.init.zeros_(self.flow_acoustic_in_projection.bias)
             predictor_hidden_dim = {
                 LocalTransformerType.FLOW: int(cfg.get("local_flow_hidden_dim", 1536)),
                 LocalTransformerType.FLOW_MATCHING: int(cfg.get("local_flow_matching_hidden_dim", 1536)),
                 LocalTransformerType.DIFFUSION: int(cfg.get("local_diffusion_hidden_dim", 1536)),
             }[self.local_transformer_type]
-            # Each branch gets half of the predictor width so their concatenation
-            # naturally matches the head's hidden dimension (768 + 768 -> 1536).
-            self.oneshot_condition_projection_dim = int(
-                cfg.get("oneshot_condition_projection_dim", predictor_hidden_dim // 2)
-            )
-            if self.oneshot_condition_projection_dim < 1:
-                raise ValueError(
-                    "oneshot_condition_projection_dim must be positive, "
-                    f"got {self.oneshot_condition_projection_dim}."
+            if self.flow_matching_uses_semantic_tokens:
+                self.oneshot_condition_projection_dim = cfg.hidden_dim
+                self.flow_hidden_condition_projection = nn.Identity()
+                self.flow_semantic_condition_projection = nn.Identity()
+                condition_channels = cfg.hidden_dim
+            else:
+                # Each branch gets half of the predictor width so their concatenation
+                # naturally matches the head's hidden dimension (768 + 768 -> 1536).
+                self.oneshot_condition_projection_dim = int(
+                    cfg.get("oneshot_condition_projection_dim", predictor_hidden_dim // 2)
                 )
-            self.flow_hidden_condition_projection = nn.Conv1d(
-                cfg.hidden_dim,
-                self.oneshot_condition_projection_dim,
-                kernel_size=1,
-            )
-            self.flow_semantic_condition_projection = nn.Conv1d(
-                stacked_semantic_dim,
-                self.oneshot_condition_projection_dim,
-                kernel_size=1,
-            )
-            if cfg.hidden_dim == self.oneshot_condition_projection_dim:
-                with torch.no_grad():
-                    self.flow_hidden_condition_projection.weight.zero_()
-                    self.flow_hidden_condition_projection.bias.zero_()
-                    self.flow_hidden_condition_projection.weight[:, :, 0].copy_(
-                        torch.eye(
-                            cfg.hidden_dim,
-                            device=self.flow_hidden_condition_projection.weight.device,
-                            dtype=self.flow_hidden_condition_projection.weight.dtype,
-                        )
+                if self.oneshot_condition_projection_dim < 1:
+                    raise ValueError(
+                        "oneshot_condition_projection_dim must be positive, "
+                        f"got {self.oneshot_condition_projection_dim}."
                     )
-            condition_channels = 2 * self.oneshot_condition_projection_dim
+                self.flow_hidden_condition_projection = nn.Conv1d(
+                    cfg.hidden_dim,
+                    self.oneshot_condition_projection_dim,
+                    kernel_size=1,
+                )
+                self.flow_semantic_condition_projection = nn.Conv1d(
+                    stacked_semantic_dim,
+                    self.oneshot_condition_projection_dim,
+                    kernel_size=1,
+                )
+                if cfg.hidden_dim == self.oneshot_condition_projection_dim:
+                    with torch.no_grad():
+                        self.flow_hidden_condition_projection.weight.zero_()
+                        self.flow_hidden_condition_projection.bias.zero_()
+                        self.flow_hidden_condition_projection.weight[:, :, 0].copy_(
+                            torch.eye(
+                                cfg.hidden_dim,
+                                device=self.flow_hidden_condition_projection.weight.device,
+                                dtype=self.flow_hidden_condition_projection.weight.dtype,
+                            )
+                        )
+                condition_channels = 2 * self.oneshot_condition_projection_dim
             self.acoustic_aux_projection = (
                 nn.Conv1d(condition_channels, stacked_acoustic_dim, kernel_size=1)
                 if self.acoustic_aux_loss_scale > 0.0
@@ -789,14 +805,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 acoustic_channels=stacked_acoustic_dim,
                 condition_channels=condition_channels,
                 cfg=cfg,
+                semantic_vocab_size=self.codebook_size,
+                semantic_channels=self.num_semantic_codebooks * self.frame_stacking_factor,
             )
             logging.info(
-                "One-shot local predictor: %s; semantic=%d -> %d, hidden=%d -> %d, condition=%d",
+                "One-shot local predictor: %s; estimator=%s, hidden=%d, condition=%d",
                 type(self.local_predictor).__name__,
-                stacked_semantic_dim,
-                self.oneshot_condition_projection_dim,
+                self.flow_matching_estimator_type,
                 cfg.hidden_dim,
-                self.oneshot_condition_projection_dim,
                 condition_channels,
             )
 
@@ -1231,7 +1247,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         hidden_state: torch.Tensor,
         semantic_embedding: torch.Tensor,
     ) -> torch.Tensor:
-        """Project backbone and semantic features to equal widths before concatenation."""
+        """Build the configured one-shot predictor condition."""
         if not self.local_transformer_type.is_oneshot:
             raise RuntimeError("project_oneshot_condition is only valid for one-shot predictors.")
         expected_semantic_channels = self.semantic_codec_embedding_dim * self.frame_stacking_factor
@@ -1245,6 +1261,8 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         if hidden_state.size(0) != semantic_embedding.size(0) or hidden_state.size(2) != semantic_embedding.size(2):
             raise ValueError("Hidden and semantic conditions must have matching batch and time dimensions.")
 
+        if self.flow_matching_uses_semantic_tokens:
+            return hidden_state
         hidden_condition = self.flow_hidden_condition_projection(hidden_state)
         semantic_condition = self.flow_semantic_condition_projection(semantic_embedding.to(hidden_condition.dtype))
         return torch.cat([hidden_condition, semantic_condition], dim=1)
@@ -1985,6 +2003,20 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         return embeddings.permute(0, 1, 3, 2).reshape(batch_size, embedding_dim * stacking_factor, stacked_frames)
 
     @staticmethod
+    def stack_codec_tokens(tokens: torch.Tensor, stacking_factor: int) -> torch.Tensor:
+        """Stack semantic token frames into channels without adding special tokens."""
+        if stacking_factor == 1:
+            return tokens
+
+        batch_size, num_channels, num_frames = tokens.shape
+        pad_frames = (-num_frames) % stacking_factor
+        if pad_frames:
+            tokens = torch.nn.functional.pad(tokens, (0, pad_frames), value=0)
+        stacked_frames = tokens.size(2) // stacking_factor
+        tokens = tokens.view(batch_size, num_channels, stacked_frames, stacking_factor)
+        return tokens.permute(0, 1, 3, 2).reshape(batch_size, num_channels * stacking_factor, stacked_frames)
+
+    @staticmethod
     def unstack_codec_embeddings(
         embeddings: torch.Tensor,
         stacking_factor: int,
@@ -2102,6 +2134,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         topk: int,
         use_cfg: bool,
         cfg_scale: float,
+        flow_cfg_scale: Optional[float] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample semantic tokens and a continuous acoustic state in one flow pass."""
         semantic_channels = self.num_semantic_codebooks * self.frame_stacking_factor
@@ -2129,6 +2162,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         )
         semantic_embedding = self._codec_helper.semantic_codes_to_embedding(safe_semantic_codes, codes_len)
         stacked_semantic_embedding = self.stack_codec_embeddings(semantic_embedding, self.frame_stacking_factor)
+        stacked_semantic_codes = self.stack_codec_tokens(safe_semantic_codes, self.frame_stacking_factor)
 
         hidden = last_hidden[:, -1, :]
         unconditional_condition = None
@@ -2136,10 +2170,13 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             conditional_hidden, unconditional_hidden = hidden.chunk(2, dim=0)
             if self.local_transformer_type == LocalTransformerType.FLOW_MATCHING:
                 hidden = conditional_hidden
-                unconditional_condition = self.project_oneshot_condition(
-                    unconditional_hidden.unsqueeze(-1),
-                    stacked_semantic_embedding,
-                )
+                if self.flow_matching_uses_semantic_tokens:
+                    unconditional_condition = torch.zeros_like(conditional_hidden).unsqueeze(-1)
+                else:
+                    unconditional_condition = self.project_oneshot_condition(
+                        unconditional_hidden.unsqueeze(-1),
+                        stacked_semantic_embedding,
+                    )
             else:
                 hidden = cfg_scale * conditional_hidden + (1.0 - cfg_scale) * unconditional_hidden
         condition = self.project_oneshot_condition(
@@ -2153,8 +2190,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         )
         if self.local_transformer_type == LocalTransformerType.FLOW_MATCHING:
             predict_kwargs.update(
+                semantic_codes=(stacked_semantic_codes if self.flow_matching_uses_semantic_tokens else None),
                 unconditional_condition=unconditional_condition,
-                cfg_scale=cfg_scale,
+                cfg_scale=cfg_scale if flow_cfg_scale is None else flow_cfg_scale,
             )
         stacked_acoustic_embedding = self.local_predictor.predict(**predict_kwargs)
         acoustic_embedding = self.unstack_codec_embeddings(
@@ -2182,6 +2220,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         use_local_transformer_for_inference: bool,
         use_cfg: bool,
         cfg_scale: float,
+        flow_cfg_scale: Optional[float] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Sample audio codes from logits using either local transformer or parallel sampling.
@@ -2212,6 +2251,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                     topk=topk,
                     use_cfg=use_cfg,
                     cfg_scale=cfg_scale,
+                    flow_cfg_scale=flow_cfg_scale,
                 )
             else:
                 raise ValueError(
@@ -2242,6 +2282,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         inference_mode: Optional[str] = None,
         use_cfg: bool = False,
         cfg_scale: float = 1.0,
+        flow_cfg_scale: Optional[float] = None,
         use_local_transformer: bool = False,
         temperature: float = 0.7,
         topk: int = 80,
@@ -2397,6 +2438,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 training_mode=selected_training_mode,
                 use_cfg=use_cfg,
                 cfg_scale=cfg_scale,
+                flow_cfg_scale=cfg_scale if flow_cfg_scale is None else flow_cfg_scale,
                 use_local_transformer=use_local_transformer,
                 temperature=temperature,
                 topk=topk,
@@ -3041,6 +3083,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             use_local_transformer_for_inference=state.config.use_local_transformer,
             use_cfg=state.config.use_cfg,
             cfg_scale=state.config.cfg_scale,
+            flow_cfg_scale=state.config.flow_cfg_scale,
         )
 
         return audio_codes_next, all_codes_next_argmax, acoustic_embedding_next
@@ -3232,6 +3275,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         topk: int = 80,
         use_cfg: bool = False,
         cfg_scale: float = 1.0,
+        flow_cfg_scale: Optional[float] = None,
         use_local_transformer_for_inference: bool = False,
         phoneme_input_type: str = 'pred',
         phoneme_sampling_method: str = 'argmax',
@@ -3422,6 +3466,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 gt_audio_input_embeddings=gt_audio_input_embeddings,
                 use_cfg=use_cfg,
                 cfg_scale=cfg_scale,
+                flow_cfg_scale=flow_cfg_scale,
                 use_local_transformer=use_local_transformer_for_inference,
                 temperature=temperature,
                 topk=topk,
@@ -3573,6 +3618,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         context_audio_duration: float = 5.0,
         use_cfg: bool = True,
         cfg_scale: float = 2.5,
+        flow_cfg_scale: Optional[float] = None,
         use_local_transformer: Optional[bool] = None,  # Defaults to True for AR or one-shot flow
         temperature: float = 0.7,
         topk: int = 80,
@@ -3683,6 +3729,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 topk=topk,
                 use_cfg=use_cfg,
                 cfg_scale=cfg_scale,
+                flow_cfg_scale=flow_cfg_scale,
                 use_local_transformer_for_inference=use_local_transformer,
                 phoneme_input_type=phoneme_input_type,
                 phoneme_sampling_method='argmax',

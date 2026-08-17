@@ -82,6 +82,8 @@ def create_oneshot_local_predictor(
     acoustic_channels: int,
     condition_channels: int,
     cfg,
+    semantic_vocab_size: int | None = None,
+    semantic_channels: int | None = None,
 ) -> OneShotLocalPredictor:
     """Construct the configured one-shot predictor behind the common interface."""
     predictor_type = str(predictor_type).lower()
@@ -119,6 +121,12 @@ def create_oneshot_local_predictor(
             inference_steps=int(cfg.get("local_flow_matching_inference_steps", 8)),
             solver=str(cfg.get("local_flow_matching_solver", "midpoint")),
             num_noise_samples=int(cfg.get("local_flow_matching_train_num_noise_samples", 1)),
+            estimator_type=str(cfg.get("local_flow_matching_estimator_type", "pointwise")),
+            semantic_vocab_size=semantic_vocab_size,
+            semantic_channels=semantic_channels,
+            transformer_n_heads=int(cfg.get("local_flow_matching_transformer_n_heads", 12)),
+            transformer_ffn_multiplier=float(cfg.get("local_flow_matching_transformer_ffn_multiplier", 4.0)),
+            transformer_condition_dropout=float(cfg.get("local_flow_matching_transformer_condition_dropout", 0.1)),
         )
 
     if predictor_type == DIFFUSION:

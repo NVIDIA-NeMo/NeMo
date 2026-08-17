@@ -25,24 +25,6 @@ import librosa
 import numpy as np
 from numba import njit
 
-_SAMPLE_RATE = 16000
-_RES_TYPE = "soxr_hq"
-_FRAME_SHIFT_MS = 20.0
-_FRAME_LENGTH_MS = 64.0
-_FMIN = 55.0
-_FMAX = 450.0
-_PYIN_N_THRESHOLDS = 24
-_PYIN_BETA_PARAMETERS = (2.0, 18.0)
-_PYIN_BOLTZMANN_PARAMETER = 2.0
-_PYIN_RESOLUTION = 0.25
-_PYIN_MAX_TRANSITION_RATE = 12.0
-_PYIN_SWITCH_PROB = 0.01
-_PYIN_NO_TROUGH_PROB = 0.01
-_MAX_DTW_FRAMES = 1000
-_DTW_BAND_RATIO = 0.05
-_F0_NAN_PENALTY = 6.0
-_MIN_VOICED_FRAMES = 5
-
 
 @dataclass(frozen=True)
 class ProsodyDistanceResult:
@@ -117,6 +99,24 @@ def compute_prosody_distances(
     gt_audio_path: str,
     pred_audio_path: str,
     text: Any,
+    *,
+    sample_rate: int = 16000,
+    res_type: str = "soxr_hq",
+    frame_shift_ms: float = 20.0,
+    frame_length_ms: float = 64.0,
+    fmin: float = 55.0,
+    fmax: float = 450.0,
+    pyin_n_thresholds: int = 24,
+    pyin_beta_parameters: tuple[float, float] = (2.0, 18.0),
+    pyin_boltzmann_parameter: float = 2.0,
+    pyin_resolution: float = 0.25,
+    pyin_max_transition_rate: float = 12.0,
+    pyin_switch_prob: float = 0.01,
+    pyin_no_trough_prob: float = 0.01,
+    max_dtw_frames: int = 1000,
+    dtw_band_ratio: float = 0.05,
+    f0_nan_penalty: float = 6.0,
+    min_voiced_frames: int = 5,
 ) -> ProsodyDistanceResult:
     """Compute acoustic prosody distances between reference and generated audio.
 
@@ -124,33 +124,63 @@ def compute_prosody_distances(
         gt_audio_path: Ground-truth/reference audio path.
         pred_audio_path: Generated/predicted audio path.
         text: Reference text used for character-per-second speech rate.
+        sample_rate: Audio sampling rate used before computing prosody features.
+        res_type: Librosa resampling type.
+        frame_shift_ms: Hop size in milliseconds.
+        frame_length_ms: Analysis frame length in milliseconds.
+        fmin: Minimum F0 in Hz for PYIN.
+        fmax: Maximum F0 in Hz for PYIN.
+        pyin_n_thresholds: Number of PYIN thresholds.
+        pyin_beta_parameters: PYIN beta-distribution parameters.
+        pyin_boltzmann_parameter: PYIN Boltzmann parameter.
+        pyin_resolution: PYIN pitch-bin resolution in semitones.
+        pyin_max_transition_rate: PYIN maximum pitch-transition rate.
+        pyin_switch_prob: PYIN voiced/unvoiced switch probability.
+        pyin_no_trough_prob: PYIN no-trough probability.
+        max_dtw_frames: Maximum frame count before downsampling DTW inputs.
+        dtw_band_ratio: Sakoe-Chiba band radius as a ratio of the longest sequence.
+        f0_nan_penalty: DTW cost for a voiced/unvoiced mismatch.
+        min_voiced_frames: Minimum voiced frames required to compute pitch distance.
 
     Returns:
         ProsodyDistanceResult with pitch, intensity, and speech-rate distances.
     """
-    gt_audio, sr, gt_duration = _load_audio(gt_audio_path)
-    pred_audio, _, pred_duration = _load_audio(pred_audio_path)
+    gt_audio, sr, gt_duration = _load_audio(gt_audio_path, sample_rate=sample_rate, res_type=res_type)
+    pred_audio, _, pred_duration = _load_audio(pred_audio_path, sample_rate=sample_rate, res_type=res_type)
 
-    hop_length, frame_length = _frame_params(sr)
+    hop_length, frame_length = _frame_params(sr, frame_shift_ms=frame_shift_ms, frame_length_ms=frame_length_ms)
     gt_log_energy = _compute_log_energy(gt_audio, frame_length=frame_length, hop_length=hop_length)
     pred_log_energy = _compute_log_energy(pred_audio, frame_length=frame_length, hop_length=hop_length)
 
-    gt_f0 = _compute_f0(gt_audio, sr=sr, frame_length=frame_length, hop_length=hop_length)
-    pred_f0 = _compute_f0(pred_audio, sr=sr, frame_length=frame_length, hop_length=hop_length)
+    pyin_kwargs = {
+        "fmin": fmin,
+        "fmax": fmax,
+        "n_thresholds": pyin_n_thresholds,
+        "beta_parameters": pyin_beta_parameters,
+        "boltzmann_parameter": pyin_boltzmann_parameter,
+        "resolution": pyin_resolution,
+        "max_transition_rate": pyin_max_transition_rate,
+        "switch_prob": pyin_switch_prob,
+        "no_trough_prob": pyin_no_trough_prob,
+    }
+    gt_f0 = _compute_f0(gt_audio, sr=sr, frame_length=frame_length, hop_length=hop_length, pyin_kwargs=pyin_kwargs)
+    pred_f0 = _compute_f0(pred_audio, sr=sr, frame_length=frame_length, hop_length=hop_length, pyin_kwargs=pyin_kwargs)
 
     pitch_distance = float("nan")
-    if np.isfinite(gt_f0).sum() >= _MIN_VOICED_FRAMES and np.isfinite(pred_f0).sum() >= _MIN_VOICED_FRAMES:
+    if np.isfinite(gt_f0).sum() >= min_voiced_frames and np.isfinite(pred_f0).sum() >= min_voiced_frames:
         gt_pitch, pred_pitch = _prepare_f0_for_metric(gt_f0, pred_f0)
         pitch_distance = _dtw_distance_1d(
-            _maybe_reduce_for_dtw(gt_pitch),
-            _maybe_reduce_for_dtw(pred_pitch),
-            nan_penalty=_F0_NAN_PENALTY,
+            _maybe_reduce_for_dtw(gt_pitch, max_dtw_frames=max_dtw_frames),
+            _maybe_reduce_for_dtw(pred_pitch, max_dtw_frames=max_dtw_frames),
+            nan_penalty=f0_nan_penalty,
+            band_ratio=dtw_band_ratio,
         )
 
     intensity_distance = _dtw_distance_1d(
-        _maybe_reduce_for_dtw(_zscore(gt_log_energy)),
-        _maybe_reduce_for_dtw(_zscore(pred_log_energy)),
+        _maybe_reduce_for_dtw(_zscore(gt_log_energy), max_dtw_frames=max_dtw_frames),
+        _maybe_reduce_for_dtw(_zscore(pred_log_energy), max_dtw_frames=max_dtw_frames),
         nan_penalty=0.0,
+        band_ratio=dtw_band_ratio,
     )
 
     gt_char_count = _char_count(text)
@@ -165,22 +195,22 @@ def compute_prosody_distances(
     )
 
 
-def _load_audio(path: str) -> tuple[np.ndarray, int, float]:
+def _load_audio(path: str, sample_rate: int, res_type: str) -> tuple[np.ndarray, int, float]:
     if not path:
         raise FileNotFoundError("empty audio filepath")
     if not os.path.exists(path):
         raise FileNotFoundError(path)
 
-    audio, sr = librosa.load(path, sr=_SAMPLE_RATE, mono=True, res_type=_RES_TYPE)
+    audio, sr = librosa.load(path, sr=sample_rate, mono=True, res_type=res_type)
     audio = np.asarray(audio, dtype=np.float32)
     if audio.size == 0:
         raise ValueError(f"empty audio after loading: {path}")
     return audio, int(sr), float(audio.shape[0] / sr)
 
 
-def _frame_params(sr: int) -> tuple[int, int]:
-    hop_length = max(1, int(round(sr * _FRAME_SHIFT_MS / 1000.0)))
-    frame_length = max(hop_length * 2, int(round(sr * _FRAME_LENGTH_MS / 1000.0)))
+def _frame_params(sr: int, frame_shift_ms: float, frame_length_ms: float) -> tuple[int, int]:
+    hop_length = max(1, int(round(sr * frame_shift_ms / 1000.0)))
+    frame_length = max(hop_length * 2, int(round(sr * frame_length_ms / 1000.0)))
     return hop_length, frame_length
 
 
@@ -189,24 +219,22 @@ def _compute_log_energy(audio: np.ndarray, frame_length: int, hop_length: int) -
     return np.log(np.maximum(np.asarray(rms, dtype=np.float64), 1.0e-10))
 
 
-def _compute_f0(audio: np.ndarray, sr: int, frame_length: int, hop_length: int) -> np.ndarray:
+def _compute_f0(
+    audio: np.ndarray,
+    sr: int,
+    frame_length: int,
+    hop_length: int,
+    pyin_kwargs: dict[str, Any],
+) -> np.ndarray:
     f0, voiced_flag, _ = librosa.pyin(
         y=np.asarray(audio, dtype=np.float64),
         sr=sr,
-        fmin=_FMIN,
-        fmax=_FMAX,
         frame_length=frame_length,
         hop_length=hop_length,
         center=True,
         pad_mode="constant",
-        n_thresholds=_PYIN_N_THRESHOLDS,
-        beta_parameters=_PYIN_BETA_PARAMETERS,
-        boltzmann_parameter=_PYIN_BOLTZMANN_PARAMETER,
-        resolution=_PYIN_RESOLUTION,
-        max_transition_rate=_PYIN_MAX_TRANSITION_RATE,
-        switch_prob=_PYIN_SWITCH_PROB,
-        no_trough_prob=_PYIN_NO_TROUGH_PROB,
         fill_na=np.nan,
+        **pyin_kwargs,
     )
     f0 = np.asarray(f0, dtype=np.float64)
     if voiced_flag is None:
@@ -224,7 +252,7 @@ def _prepare_f0_for_metric(gt_f0_hz: np.ndarray, pred_f0_hz: np.ndarray) -> tupl
     return _hz_to_semitones(gt_f0_hz, gt_median), _hz_to_semitones(pred_f0_hz, gt_median)
 
 
-def _dtw_distance_1d(x: np.ndarray, y: np.ndarray, nan_penalty: float) -> float:
+def _dtw_distance_1d(x: np.ndarray, y: np.ndarray, nan_penalty: float, band_ratio: float) -> float:
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     if x.ndim != 1 or y.ndim != 1:
@@ -232,7 +260,7 @@ def _dtw_distance_1d(x: np.ndarray, y: np.ndarray, nan_penalty: float) -> float:
     if len(x) == 0 or len(y) == 0:
         return float("nan")
 
-    band_radius = max(abs(len(x) - len(y)), int(math.ceil(_DTW_BAND_RATIO * max(len(x), len(y)))))
+    band_radius = max(abs(len(x) - len(y)), int(math.ceil(band_ratio * max(len(x), len(y)))))
     return _safe_float(_dtw_distance_1d_numba(x, y, float(nan_penalty), int(band_radius)))
 
 
@@ -261,11 +289,11 @@ def _zscore(values: np.ndarray, eps: float = 1.0e-8) -> np.ndarray:
     return out
 
 
-def _maybe_reduce_for_dtw(values: np.ndarray) -> np.ndarray:
+def _maybe_reduce_for_dtw(values: np.ndarray, max_dtw_frames: int) -> np.ndarray:
     values = np.asarray(values, dtype=np.float64)
-    if len(values) <= _MAX_DTW_FRAMES:
+    if len(values) <= max_dtw_frames:
         return values
-    return _resample_1d_preserve_nans(values, _MAX_DTW_FRAMES)
+    return _resample_1d_preserve_nans(values, max_dtw_frames)
 
 
 def _resample_1d_preserve_nans(values: np.ndarray, target_len: int) -> np.ndarray:

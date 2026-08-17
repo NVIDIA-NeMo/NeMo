@@ -16,9 +16,13 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn import LayerNorm
 
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
+from nemo.collections.asr.parts.triton.depthwise_conv import dw_conv2d
+from nemo.collections.asr.parts.triton.subsampling import fused_conv_relu_dw
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE
 from nemo.utils import logging
 
 
@@ -126,6 +130,7 @@ class ConvSubsampling(torch.nn.Module):
         subsampling_conv_chunking_factor=1,
         activation=nn.ReLU(),
         is_causal=False,
+        use_triton: bool | None = None,
     ):
         super(ConvSubsampling, self).__init__()
         self._subsampling = subsampling
@@ -418,6 +423,14 @@ class ConvSubsampling(torch.nn.Module):
 
         self.conv = MaskedConvSequential(*layers)
 
+        # Preconditions of the kernels: they implement `dw_striding`'s exact layout,
+        # [conv, act] + (sampling_num - 1) x [dw, pw, act]. A factor of 2 stops after [conv, act],
+        # leaving no depthwise to fuse. The flag sits on the sequential, which owns that loop.
+        self.use_triton = use_triton if use_triton is not None else TRITON_AVAILABLE
+        self.conv.fuse_triton = (
+            self.use_triton and subsampling == 'dw_striding' and self.conv2d_subsampling and self._sampling_num >= 2
+        )
+
     def get_sampling_frames(self):
         return [1, self.subsampling_factor]
 
@@ -695,10 +708,30 @@ def calculate_conv_output_size(input_size: torch.Tensor, kernel_size: int, strid
 
 
 class MaskedConvSequential(nn.Sequential):
+    # Set by ConvSubsampling when the stack is `dw_striding` and Triton is usable. Off by default,
+    # so every other subsampling type walks the plain PyTorch path.
+    fuse_triton = False
+
     def forward(self, x, lengths):
         # Convert input (batch, time, features) to conv format
         x = x.unsqueeze(1)  # (batch, 1, time, features)
         current_lengths = lengths.clone().float()
+
+        # Triton cannot be traced through, so export always takes the PyTorch path.
+        if (
+            self.fuse_triton
+            and x.is_cuda
+            and not (torch.jit.is_scripting() or torch.jit.is_tracing() or torch.onnx.is_in_onnx_export())
+        ):
+            x, current_lengths, mask = self._forward_fused(x, current_lengths)
+        else:
+            x, current_lengths, mask = self._forward_torch(x, current_lengths)
+
+        # Final masking
+        x = apply_channel_mask(x, mask)
+        return x, current_lengths.long()
+
+    def _forward_torch(self, x, current_lengths):
         mask = self._create_mask(x, current_lengths.long())
 
         # Process through each layer with mask propagation
@@ -711,21 +744,113 @@ class MaskedConvSequential(nn.Sequential):
 
             # Update lengths for stride operations with proper padding
             if hasattr(layer, 'stride') and layer.stride != (1, 1):
-                if hasattr(layer, "_left_padding"):
-                    padding = (layer._left_padding, layer._right_padding)  # CausalConv2D
-                else:
-                    padding = layer.padding
                 current_lengths = calculate_conv_output_size(
-                    current_lengths, layer.kernel_size[0], layer.stride[0], padding
+                    current_lengths, layer.kernel_size[0], layer.stride[0], _layer_padding(layer)
                 )
                 mask = self._create_mask(x, current_lengths.long())
 
-        # Final masking
-        x = apply_channel_mask(x, mask)
-        return x, current_lengths.long()
+        return x, current_lengths, mask
+
+    def _forward_fused(self, x, current_lengths):
+        """`_forward_torch` with conv0 and every depthwise replaced by Triton kernels.
+
+        Runs only on a `dw_striding` stack: conv0, activation, then a (depthwise, pointwise,
+        activation) triple per remaining subsampling step. One kernel covers the first three
+        layers, so the loop starts past them; only its depthwise layers stride, so the rest
+        leave the lengths untouched.
+
+        Everything runs channels-last, `(batch, time, freq, channels)`: that is what both kernels
+        read and write, and the pointwise is a contraction over the channel axis either way. One
+        permute at the end restores the `(batch, channels, time, freq)` the caller expects.
+
+        Nothing is masked between layers: each kernel reads zeros past its input length and
+        stores zeros past its output length, so a mask here could not change any value. Only the
+        trailing pointwise and activation write into the tail, and `forward` masks that.
+        """
+        conv0, first_depthwise = self[0], self[2]
+        x = _fused_head(x, conv0, first_depthwise, current_lengths)
+        for conv in (conv0, first_depthwise):
+            current_lengths = calculate_conv_output_size(
+                current_lengths, conv.kernel_size[0], conv.stride[0], _layer_padding(conv)
+            )
+
+        for layer in self[3:]:
+            if _is_depthwise(layer):
+                # The kernel masks its own output, so it needs the lengths that mask is built from.
+                next_lengths = calculate_conv_output_size(
+                    current_lengths, layer.kernel_size[0], layer.stride[0], _layer_padding(layer)
+                )
+                x = _fused_depthwise(layer, x, current_lengths, next_lengths)
+                current_lengths = next_lengths
+            elif _is_pointwise(layer):
+                x = _pointwise(layer, x)
+            else:
+                x = layer(x)
+
+        x = x.permute(0, 3, 1, 2)
+        return x, current_lengths, self._create_mask(x, current_lengths.long())
 
     def _create_mask(self, tensor, lengths):
         """Create mask matching tensor dimensions."""
         batch_size, channels, time, features = tensor.shape
         time_mask = torch.arange(time, device=tensor.device).expand(batch_size, time) < lengths.unsqueeze(1)
         return time_mask.unsqueeze(-1).expand(batch_size, time, features).to(tensor.dtype)
+
+
+def _layer_padding(layer):
+    """The (left, right) padding of a convolution.
+
+    CausalConv2D pads asymmetrically and keeps the two halves on private attributes; nn.Conv2d
+    keeps a symmetric pair on `.padding`.
+    """
+    if hasattr(layer, "_left_padding"):
+        return layer._left_padding, layer._right_padding
+    return layer.padding
+
+
+def _is_depthwise(layer):
+    """A depthwise convolution: one group per channel, which is what the Triton kernel expects."""
+    return isinstance(layer, nn.Conv2d) and layer.groups > 1
+
+
+def _is_pointwise(layer):
+    """A 1x1 convolution over all channels, which is a contraction over the channel axis alone."""
+    return isinstance(layer, nn.Conv2d) and layer.groups == 1 and layer.kernel_size == (1, 1)
+
+
+def _fused_head(x, conv, depthwise, lengths):
+    """conv -> ReLU -> depthwise in one kernel, so the intermediate is never written to memory."""
+    left_padding, right_padding = _layer_padding(conv)
+    out, _ = fused_conv_relu_dw(
+        x,
+        conv.weight,
+        conv.bias,
+        depthwise.weight,
+        depthwise.bias,
+        left_padding,
+        right_padding,
+        lengths=lengths.to(torch.int32),
+    )
+    return out
+
+
+def _fused_depthwise(layer, x, lengths, next_lengths):
+    """A depthwise convolution with the bias and both length masks folded into the kernel."""
+    return dw_conv2d(
+        x,
+        layer.weight,
+        layer.bias,
+        lengths.to(torch.int32),
+        next_lengths.to(torch.int32),
+        stride=layer.stride[0],
+        padding=_layer_padding(layer)[0],
+    )
+
+
+def _pointwise(layer, x):
+    """A 1x1 convolution over the channel axis of a channels-last tensor.
+
+    Contracting `(out, in, 1, 1)` against the last axis is the same computation on the same
+    parameter as the module's own forward, so weights and gradients are unaffected.
+    """
+    return F.linear(x, layer.weight.view(layer.out_channels, layer.in_channels), layer.bias)

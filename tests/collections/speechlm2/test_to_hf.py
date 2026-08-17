@@ -20,10 +20,12 @@ to avoid any network or real-model dependencies.
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 from safetensors.torch import load_file
 
 _TO_HF_PATH = Path(__file__).parents[3] / "examples" / "speechlm2" / "to_hf.py"
@@ -54,13 +56,19 @@ class _FakeTokenizer:
         split_chat_template=False,
         tokenizer_class="Qwen2Tokenizer",
         eos_token_id=42,
+        pad_token=None,
     ):
         self._vocab = {tok: i for i, tok in enumerate(vocab_tokens)}
         self._chat_template = chat_template
         self._split_chat_template = split_chat_template
         self._tokenizer_class = tokenizer_class
         self.eos_token_id = eos_token_id
+        self.pad_token = pad_token
         self.add_special_tokens_calls = []
+
+    @property
+    def pad_token_id(self):
+        return self._vocab.get(self.pad_token)
 
     def get_vocab(self):
         return dict(self._vocab)
@@ -81,6 +89,8 @@ class _FakeTokenizer:
             "tokenizer_class": self._tokenizer_class,
             "extra_special_tokens": [AUDIO_TOKEN],
         }
+        if self.pad_token is not None:
+            tok_cfg["pad_token"] = self.pad_token
         if self._split_chat_template:
             (output_dir / "chat_template.jinja").write_text(self._chat_template)
         else:
@@ -170,6 +180,62 @@ def test_save_hf_checkpoint_accepts_bf16_export_dtype(tmp_path):
     assert state_dict["weight"].dtype == torch.bfloat16
 
 
+def test_save_hf_checkpoint_preserves_adapter_forced_fp32_tensors(tmp_path):
+    class _Adapter:
+        @staticmethod
+        def forced_hf_dtype_mapping(state_dict):
+            return {"mamba_state": "F32"}
+
+    model = _FakeExportModel()
+    model.llm = SimpleNamespace(config=_FakeLLMConfig(), state_dict_adapter=_Adapter())
+    cfg = to_hf.HfExportConfig(
+        class_path="fake.Class",
+        ckpt_path="fake.ckpt",
+        ckpt_config="fake.yaml",
+        output_dir=str(tmp_path),
+        dtype="bfloat16",
+    )
+    to_hf.save_hf_checkpoint(
+        model,
+        {"mamba_state": torch.ones(1), "ordinary_weight": torch.ones(1)},
+        cfg,
+    )
+    exported = load_file(tmp_path / "model.safetensors")
+
+    assert exported["mamba_state"].dtype == torch.float32
+    assert exported["ordinary_weight"].dtype == torch.bfloat16
+
+
+def test_hf_export_config_embeds_portable_phpee_architecture():
+    original_cfg = {"pe_encoder_path": "/nrt/private/placeholderParallelExpertEncoder.nemo"}
+    pe_encoder = SimpleNamespace(
+        _bundle_config=OmegaConf.create({"target": "ParallelExpertEncoderPT", "asr_chunk_size_seconds": None}),
+        asr_normalize_type="per_feature",
+        asr_chunk_size_seconds=30.0,
+        diar_chunk_size_seconds=30.0,
+        frame_shift_seconds=0.01,
+        missing_rttm_target=-1.0,
+        speaker_activity_threshold=0.5,
+        spk_kernel_scale=1.0,
+    )
+    model = SimpleNamespace(cfg=original_cfg, perception=SimpleNamespace(encoder=pe_encoder))
+
+    exported = to_hf._hf_export_config(model, "bfloat16")
+
+    assert exported["pe_encoder_path"] is None
+    assert exported["pe_encoder_config"]["target"] == "ParallelExpertEncoderPT"
+    assert exported["pe_encoder_config"]["asr_chunk_size_seconds"] == 30.0
+    assert exported["pe_encoder_config"]["diar_chunk_size_seconds"] == 30.0
+    assert original_cfg == {"pe_encoder_path": "/nrt/private/placeholderParallelExpertEncoder.nemo"}
+
+    pe_encoder.asr_chunk_size_seconds = 60.0
+    model.cfg = exported
+    reexported = to_hf._hf_export_config(model, "bfloat16")
+    assert reexported["pe_encoder_path"] is None
+    assert reexported["pe_encoder_config"]["asr_chunk_size_seconds"] == 60.0
+    assert exported["pe_encoder_config"]["asr_chunk_size_seconds"] == 30.0
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Error paths (no mocking required — checks run before any HF calls)
 # ──────────────────────────────────────────────────────────────────────
@@ -190,16 +256,21 @@ def test_prepare_for_vllm_missing_audio_locator_tag(tmp_path):
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _run_prepare(tmp_path, fake_tok, arch="NeMoSpeechLMForConditionalGeneration", llm_arch="Qwen2ForCausalLM"):
+def _run_prepare(
+    tmp_path,
+    fake_tok,
+    arch="NeMoSpeechLMForConditionalGeneration",
+    llm_arch="Qwen2ForCausalLM",
+    model_cfg=None,
+):
     output_dir = _seed_output_dir(tmp_path, llm_arch=llm_arch)
     with (
         patch.object(to_hf, "_detect_vllm_architecture", return_value=arch),
         patch("transformers.AutoTokenizer.from_pretrained", return_value=fake_tok),
     ):
-        to_hf.prepare_for_vllm(
-            str(output_dir),
-            {"pretrained_llm": "fake-model", "audio_locator_tag": AUDIO_TOKEN},
-        )
+        cfg = {"pretrained_llm": "fake-model", "audio_locator_tag": AUDIO_TOKEN}
+        cfg.update(model_cfg or {})
+        to_hf.prepare_for_vllm(str(output_dir), cfg)
     return output_dir
 
 
@@ -258,3 +329,17 @@ def test_prepare_for_vllm_generation_config(tmp_path):
     output_dir = _run_prepare(tmp_path, _FakeTokenizer(eos_token_id=99))
     gen_cfg = json.loads((output_dir / "generation_config.json").read_text())
     assert gen_cfg == {"eos_token_id": [99]}
+
+
+def test_prepare_for_vllm_preserves_model_pad_and_eos_contract(tmp_path):
+    fake_tok = _FakeTokenizer(vocab_tokens=["<unk>", "<|im_end|>"], eos_token_id=1, pad_token="<|im_end|>")
+    output_dir = _run_prepare(tmp_path, fake_tok, model_cfg={"pad_token": "<unk>"})
+
+    cfg = json.loads((output_dir / "config.json").read_text())
+    tok_cfg = json.loads((output_dir / "tokenizer_config.json").read_text())
+    gen_cfg = json.loads((output_dir / "generation_config.json").read_text())
+    assert fake_tok.pad_token == "<unk>"
+    assert tok_cfg["pad_token"] == "<unk>"
+    assert cfg["pad_token_id"] == 0
+    assert cfg["eos_token_id"] == [1]
+    assert gen_cfg == {"eos_token_id": [1], "pad_token_id": 0}

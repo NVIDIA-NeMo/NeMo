@@ -112,6 +112,17 @@ def test_pe_encoder_ignores_generic_chunk_size_for_placeholder_estimation() -> N
     assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, 15.0) == 438
 
 
+def test_embedded_pe_encoder_ignores_generic_chunk_size_for_placeholder_estimation() -> None:
+    config = SimpleNamespace(
+        pe_encoder_path=None,
+        pe_encoder_config={"target": "ParallelExpertEncoderPT"},
+        encoder_chunk_size_seconds=15.0,
+    )
+    info = SimpleNamespace(get_hf_config=lambda: config)
+
+    assert NeMoSpeechLMProcessingInfo._get_encoder_chunk_size_seconds(info) is None
+
+
 def test_standard_encoder_keeps_generic_chunk_size() -> None:
     config = SimpleNamespace(pe_encoder_path=None, encoder_chunk_size_seconds=15.0)
     info = SimpleNamespace(get_hf_config=lambda: config)

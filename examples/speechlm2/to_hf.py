@@ -102,6 +102,31 @@ def _canonical_torch_dtype_name(dtype: str | torch.dtype) -> str:
 def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[str, Any]:
     """Build the exported root config without mutating the training config."""
     config = OmegaConf.to_container(model.cfg) if isinstance(model.cfg, DictConfig) else deepcopy(model.cfg)
+    pe_encoder_path = config.get("pe_encoder_path", None)
+    pe_encoder_config = config.get("pe_encoder_config", None)
+    if pe_encoder_path not in (None, "", False) or pe_encoder_config not in (None, {}, "", False):
+        pe_encoder = getattr(getattr(model, "perception", None), "encoder", None)
+        bundle_config = getattr(pe_encoder, "_bundle_config", None)
+        if bundle_config is None:
+            raise RuntimeError(
+                "Cannot export phPEE portably: the mounted perception encoder has no architecture bundle config."
+            )
+        bundle_config = OmegaConf.to_container(bundle_config, resolve=True)
+        # Persist runtime overrides rather than the initialization bundle's
+        # defaults. The consolidated root state dict supplies all weights.
+        for config_key, attr_name in (
+            ("asr_normalize_type", "asr_normalize_type"),
+            ("asr_chunk_size_seconds", "asr_chunk_size_seconds"),
+            ("diar_chunk_size_seconds", "diar_chunk_size_seconds"),
+            ("frame_shift_seconds", "frame_shift_seconds"),
+            ("missing_rttm_target", "missing_rttm_target"),
+            ("speaker_activity_threshold", "speaker_activity_threshold"),
+            ("spk_kernel_scale", "spk_kernel_scale"),
+        ):
+            if hasattr(pe_encoder, attr_name):
+                bundle_config[config_key] = getattr(pe_encoder, attr_name)
+        config["pe_encoder_config"] = bundle_config
+        config["pe_encoder_path"] = None
     dtype_name = _canonical_torch_dtype_name(dtype)
     config["dtype"] = dtype_name
     config["torch_dtype"] = dtype_name
@@ -114,7 +139,14 @@ def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportCo
     output_dir.mkdir(parents=True, exist_ok=True)
 
     target_dtype = str_to_dtype(cfg.dtype)
-    state_dict = {k: v.to(target_dtype) for k, v in state_dict.items()}
+    forced_dtypes = {}
+    state_dict_adapter = getattr(getattr(model, "llm", None), "state_dict_adapter", None)
+    if callable(getattr(state_dict_adapter, "forced_hf_dtype_mapping", None)):
+        forced_dtypes = state_dict_adapter.forced_hf_dtype_mapping(state_dict)
+    state_dict = {
+        key: value.to(torch.float32 if forced_dtypes.get(key) == "F32" else target_dtype)
+        for key, value in state_dict.items()
+    }
 
     save_file(state_dict, output_dir / "model.safetensors")
 
@@ -216,6 +248,11 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     tok = AutoTokenizer.from_pretrained(pretrained_llm, trust_remote_code=True)
     if audio_token not in tok.get_vocab():
         tok.add_special_tokens({"additional_special_tokens": [audio_token]})
+    pad_token = model_cfg.get("pad_token", None)
+    if pad_token:
+        if pad_token not in tok.get_vocab():
+            raise ValueError(f"model pad_token={pad_token!r} is absent from the exported tokenizer vocabulary.")
+        tok.pad_token = pad_token
     tok.save_pretrained(str(output_dir))
     # Newer transformers splits long chat_template into a separate
     # ``chat_template.jinja`` file; inline it back and drop the file.
@@ -235,9 +272,22 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     tok_cfg["tokenizer_class"] = "PreTrainedTokenizerFast"
     tok_cfg_path.write_text(json.dumps(tok_cfg, indent=2) + "\n")
 
-    # 4. Minimal generation_config.json (EOS only; sampling params belong on
+    # Preserve the model's training-time padding contract explicitly. Loading
+    # the backbone tokenizer alone can silently restore its serving default
+    # (for Nemotron 3.5, EOS) even when SALM trained with <unk> as PAD.
+    config = json.loads(config_path.read_text())
+    if tok.pad_token_id is not None:
+        config["pad_token_id"] = tok.pad_token_id
+    if tok.eos_token_id is not None:
+        config["eos_token_id"] = [tok.eos_token_id]
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+
+    # 4. Minimal generation_config.json (token termination/padding only;
+    #    sampling params belong on
     #    the server, not baked into the checkpoint).
     gen_cfg = {"eos_token_id": [tok.eos_token_id]}
+    if tok.pad_token_id is not None:
+        gen_cfg["pad_token_id"] = tok.pad_token_id
     (output_dir / "generation_config.json").write_text(json.dumps(gen_cfg, indent=2) + "\n")
 
 

@@ -77,6 +77,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         pretrained_weights: bool | None = None,
         lora: dict | None = None,
         encoder_chunk_size_seconds: float | None = None,
+        pe_encoder_path: str | None = None,
+        pe_encoder_config: dict | None = None,
         **kwargs,
     ):
         required_fields = {
@@ -90,6 +92,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             perception is None
             and lora is None
             and encoder_chunk_size_seconds is None
+            and pe_encoder_path is None
+            and pe_encoder_config is None
             and not kwargs
             and all(value is None for value in required_fields.values())
         )
@@ -115,6 +119,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             self.pretrained_weights = None
             self.lora = None
             self.encoder_chunk_size_seconds = None
+            self.pe_encoder_path = None
+            self.pe_encoder_config = None
             return
 
         for name, value in required_fields.items():
@@ -143,6 +149,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.encoder_chunk_size_seconds = encoder_chunk_size_seconds
 
         self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+        self.pe_encoder_path = pe_encoder_path
+        self.pe_encoder_config = pe_encoder_config
 
         raw_archs = getattr(self.text_config, "architectures", [])
         if len(raw_archs) != 1:
@@ -234,6 +242,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             "lora",
             "is_hybrid",
             "encoder_chunk_size_seconds",
+            "pe_encoder_path",
+            "pe_encoder_config",
         ):
             raise AttributeError(name)
         alias = self._ATTR_ALIASES.get(name, name) if self.is_hybrid else name

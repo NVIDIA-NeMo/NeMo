@@ -129,8 +129,16 @@ def register():
 
     from vllm.model_executor.models.config import MODELS_CONFIG_MAP
 
-    from nemo.collections.speechlm2.vllm.salm.config_hook import NeMoSpeechLMForConditionalGenerationConfig
+    from nemo.collections.speechlm2.vllm.salm.config_hook import (
+        NeMoSpeechLMForConditionalGenerationConfig,
+    )
 
     MODELS_CONFIG_MAP["NeMoSpeechLMForConditionalGeneration"] = NeMoSpeechLMForConditionalGenerationConfig
 
     _patch_vllm_for_nemo_speechlm_mtp()
+
+    from nemo.collections.speechlm2.vllm.salm.runtime_compat import (
+        install_prompt_contract,
+    )
+
+    install_prompt_contract()

@@ -81,6 +81,8 @@ class TestNeMoSpeechLMConfig:
         assert cfg.audio_locator_tag is None
         assert cfg.prompt_format is None
         assert cfg.pretrained_weights is None
+        assert cfg.pe_encoder_path is None
+        assert cfg.pe_encoder_config is None
         assert cfg.llm_architectures == []
         assert cfg.get_text_config() is cfg.text_config
 
@@ -90,6 +92,13 @@ class TestNeMoSpeechLMConfig:
         assert cfg.text_config is not None
         assert hasattr(cfg.text_config, "hidden_size")
         assert cfg.get_text_config() is cfg.text_config
+
+    def test_preserves_explicit_phpee_export_schema(self):
+        pe_config = {"target": "ParallelExpertEncoderPT", "asr_chunk_size_seconds": 30.0}
+        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, pe_encoder_config=pe_config)
+
+        assert cfg.pe_encoder_path is None
+        assert cfg.pe_encoder_config == pe_config
 
     def test_hybrid_backbone_aliases_for_vllm(self):
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
@@ -536,6 +545,45 @@ class TestAudioProcessing:
         assert _maybe_mount_pe_encoder(perception, "nvidia/ParallelExpertEncoder") is True
         assert perception.encoder is pe_encoder
         assert perception.preprocessor.featurizer.normalize is None
+
+    def test_pe_mount_supports_self_contained_embedded_config(self, monkeypatch):
+        import torch
+
+        from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
+        from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_pe_encoder
+
+        perception, pe_encoder = self._make_pe_mount_modules(torch)
+        pe_config = {"target": "ParallelExpertEncoderPT", "asr_chunk_size_seconds": 30.0}
+        from_inline_calls = []
+
+        def from_inline_config(config, *, map_location):
+            from_inline_calls.append((config, map_location))
+            return pe_encoder
+
+        monkeypatch.setattr(ParallelExpertEncoderPT, "from_inline_config", from_inline_config)
+        monkeypatch.setattr(
+            ParallelExpertEncoderPT,
+            "load_from_nemo",
+            lambda *args, **kwargs: pytest.fail("embedded exports must not reload a .nemo bundle"),
+        )
+
+        assert _maybe_mount_pe_encoder(perception, None, pe_config) is True
+        assert from_inline_calls == [(pe_config, "cpu")]
+        assert perception.encoder is pe_encoder
+
+    def test_pe_mount_rejects_ambiguous_path_and_embedded_config(self):
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_pe_encoder
+
+        perception, _ = self._make_pe_mount_modules(torch)
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            _maybe_mount_pe_encoder(
+                perception,
+                "nvidia/ParallelExpertEncoder",
+                {"target": "ParallelExpertEncoderPT"},
+            )
 
     @pytest.mark.parametrize(
         "mismatch, expected_error",

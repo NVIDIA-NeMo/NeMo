@@ -109,27 +109,38 @@ def _load_nemo_perception(perception_cfg: dict) -> nn.Module:
     return perception
 
 
-def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) -> bool:
+def _maybe_mount_pe_encoder(
+    perception: nn.Module,
+    pe_encoder_path: str | None,
+    pe_encoder_config: dict | None = None,
+) -> bool:
     """Mount a configured perception encoder from a local bundle or model identifier.
 
     Remote identifiers are resolved through the model cache; invalid local bundles
     fail before the encoder is replaced.
     """
-    if pe_encoder_path in (None, "", False):
+    has_path = pe_encoder_path not in (None, "", False)
+    has_config = pe_encoder_config not in (None, {}, "", False)
+    if not has_path and not has_config:
         return False
+    if has_path and has_config:
+        raise ValueError("pe_encoder_path and pe_encoder_config are mutually exclusive.")
     if not hasattr(perception, "encoder"):
-        raise RuntimeError("pe_encoder_path is set but perception has no `encoder` attribute to replace.")
+        raise RuntimeError("A phPEE encoder is configured but perception has no `encoder` attribute to replace.")
 
     from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
 
     # Validate local bundles immediately; resolve remote identifiers in the loader.
-    is_local_nemo_file = (
+    is_local_nemo_file = has_path and (
         isinstance(pe_encoder_path, str) and pe_encoder_path.endswith(".nemo") and os.path.isfile(pe_encoder_path)
     )
     if is_local_nemo_file and not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
         raise ValueError(f"pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle.")
 
-    pe_encoder = ParallelExpertEncoderPT.load_from_nemo(pe_encoder_path, map_location="cpu", strict=True)
+    if has_config:
+        pe_encoder = ParallelExpertEncoderPT.from_inline_config(pe_encoder_config, map_location="cpu")
+    else:
+        pe_encoder = ParallelExpertEncoderPT.load_from_nemo(pe_encoder_path, map_location="cpu", strict=True)
 
     # The outgoing width is unconstrained; unchanged frontend and downstream
     # components must match the replacement encoder.
@@ -229,7 +240,10 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         ``None`` means the encoder runs once over the full audio.
         """
         config = self.get_hf_config()
-        if getattr(config, "pe_encoder_path", None) not in (None, "", False):
+        if (
+            getattr(config, "pe_encoder_path", None) not in (None, "", False)
+            or getattr(config, "pe_encoder_config", None) not in (None, {}, "", False)
+        ):
             return None
         return getattr(config, "encoder_chunk_size_seconds", None)
 

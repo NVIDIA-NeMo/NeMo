@@ -36,6 +36,7 @@ Public surface used by the rest of the package:
 import os
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Annotated, Literal
 
 import torch
@@ -198,6 +199,103 @@ def _maybe_mount_pe_encoder(
 
     perception.encoder = pe_encoder
     perception.eval()
+    return True
+
+
+def _maybe_mount_independent_speaker_encoder(
+    perception: nn.Module,
+    speaker_encoder_cfg: Mapping | None,
+    encoder_chunk_size_seconds: float | None = None,
+) -> bool:
+    """Reconstruct an exported independent ASR + speaker encoder pair.
+
+    Current HR5b exports retain a small architecture descriptor in the
+    speaker_encoder field and refer to the immutable speaker-encoder artifact
+    used at training time. The checkpoint's own perception.encoder tensors
+    subsequently replace both branches through vLLM's normal weight loader.
+    """
+
+    if speaker_encoder_cfg in (None, {}, "", False):
+        return False
+    if not isinstance(speaker_encoder_cfg, Mapping):
+        raise TypeError(
+            "speaker_encoder must be a mapping with path/chunk settings; "
+            f"got {type(speaker_encoder_cfg).__name__}."
+        )
+    if encoder_chunk_size_seconds is not None:
+        raise ValueError(
+            "Independent per-encoder chunking requires encoder_chunk_size_seconds=null; "
+            "use speaker_encoder.asr_chunk_size_seconds and chunk_size_seconds."
+        )
+    if not hasattr(perception, "encoder"):
+        raise RuntimeError("speaker_encoder is set but perception has no encoder to wrap.")
+
+    from omegaconf import OmegaConf
+    from safetensors.torch import load_file
+
+    from nemo.collections.speechlm2.modules.perception import IdentityConnector, IndependentDualEncoder
+
+    artifact = Path(str(speaker_encoder_cfg.get("path", "")))
+    config_path = artifact / "model_config.yaml"
+    weights_path = artifact / "model.safetensors"
+    if not artifact.is_dir() or not config_path.is_file() or not weights_path.is_file():
+        raise FileNotFoundError(
+            "speaker_encoder.path must contain model_config.yaml and model.safetensors; "
+            f"got {artifact}."
+        )
+    if not isinstance(getattr(perception, "modality_adapter", None), IdentityConnector):
+        raise TypeError("IndependentDualEncoder requires IdentityConnector.")
+    if getattr(perception, "rote", None) is not None:
+        raise ValueError("IndependentDualEncoder requires rote=null.")
+    if "encoder_multilayer" in perception._modules:
+        raise ValueError("IndependentDualEncoder does not support multi-layer perception adapters.")
+
+    speaker_config = OmegaConf.load(config_path)
+    speaker = perception.from_config_dict(speaker_config)
+    state = load_file(str(weights_path), device="cpu")
+    speaker.load_state_dict(state, strict=True)
+
+    ref_param = next(perception.encoder.parameters(), None)
+    if ref_param is not None:
+        speaker = speaker.to(device=ref_param.device, dtype=ref_param.dtype)
+
+    featurizer = perception.preprocessor.featurizer
+    frame_shift_seconds = featurizer.hop_length / featurizer.sample_rate
+    dual = IndependentDualEncoder(
+        perception.encoder,
+        speaker,
+        frame_shift_seconds=frame_shift_seconds,
+        asr_chunk_size_seconds=speaker_encoder_cfg.get("asr_chunk_size_seconds", None),
+        auxiliary_chunk_size_seconds=speaker_encoder_cfg.get("chunk_size_seconds", None),
+        freeze_auxiliary=speaker_encoder_cfg.get("frozen", True),
+    )
+
+    old_proj = getattr(perception, "proj", None)
+    if not isinstance(old_proj, torch.nn.Linear):
+        raise TypeError(
+            "IndependentDualEncoder currently requires perception.proj to be nn.Linear; "
+            f"got {type(old_proj).__name__}."
+        )
+    perception.encoder = dual
+    perception.proj = torch.nn.Linear(
+        dual.d_model,
+        old_proj.out_features,
+        bias=old_proj.bias is not None,
+        device=old_proj.weight.device,
+        dtype=old_proj.weight.dtype,
+    )
+    perception.eval()
+    logging.info(
+        "Mounted independent speaker encoder from %s beside ASR encoder "
+        "(widths: ASR=%d speaker=%d combined=%d; chunks: ASR=%s speaker=%s seconds; frozen=%s).",
+        artifact,
+        IndependentDualEncoder._encoder_width(dual.asr_encoder),
+        IndependentDualEncoder._encoder_width(dual.auxiliary_encoder),
+        dual.d_model,
+        dual.asr_chunk_size_seconds,
+        dual.auxiliary_chunk_size_seconds,
+        dual.freeze_auxiliary,
+    )
     return True
 
 

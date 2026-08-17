@@ -83,6 +83,7 @@ class TestNeMoSpeechLMConfig:
         assert cfg.pretrained_weights is None
         assert cfg.pe_encoder_path is None
         assert cfg.pe_encoder_config is None
+        assert cfg.speaker_encoder is None
         assert cfg.llm_architectures == []
         assert cfg.get_text_config() is cfg.text_config
 
@@ -99,6 +100,26 @@ class TestNeMoSpeechLMConfig:
 
         assert cfg.pe_encoder_path is None
         assert cfg.pe_encoder_config == pe_config
+
+    def test_preserves_independent_speaker_encoder_export_schema(self):
+        speaker_config = {
+            "path": "/models/speaker-transformer",
+            "frozen": True,
+            "chunk_size_seconds": 120.0,
+            "asr_chunk_size_seconds": None,
+        }
+        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, speaker_encoder=speaker_config)
+
+        assert cfg.speaker_encoder == speaker_config
+        assert cfg.encoder_chunk_size_seconds is None
+
+    def test_rejects_phpee_and_independent_speaker_encoder_together(self):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            NeMoSpeechLMConfig(
+                **_DEFAULT_CONFIG_KWARGS,
+                pe_encoder_config={"target": "ParallelExpertEncoderPT"},
+                speaker_encoder={"path": "/models/speaker-transformer"},
+            )
 
     def test_hybrid_backbone_aliases_for_vllm(self):
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
@@ -566,6 +587,80 @@ class TestAudioProcessing:
         model.perception = _Perception()
         model._uses_pe_encoder = True
         return model
+
+    def test_independent_speaker_encoder_mount_reconstructs_dual_encoder(self, monkeypatch, tmp_path):
+        import torch
+
+        from nemo.collections.speechlm2.modules.perception import IdentityConnector, IndependentDualEncoder
+        from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_independent_speaker_encoder
+
+        class _Encoder(torch.nn.Module):
+            supports_sequence_packed_output = True
+
+            def __init__(self, width):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.ones(1))
+                self._feat_in = 4
+                self._feat_out = width
+                self.subsampling_factor = 2
+
+            def forward_sequence_packed(self, audio_signal, length, **kwargs):
+                return audio_signal
+
+        artifact = tmp_path / "speaker"
+        artifact.mkdir()
+        (artifact / "model_config.yaml").write_text("{}")
+        (artifact / "model.safetensors").touch()
+
+        asr = _Encoder(3)
+        speaker = _Encoder(5)
+        perception = torch.nn.Module()
+        perception.encoder = asr
+        perception.modality_adapter = IdentityConnector()
+        perception.rote = None
+        perception.preprocessor = SimpleNamespace(
+            featurizer=SimpleNamespace(hop_length=160, sample_rate=16000)
+        )
+        perception.proj = torch.nn.Linear(3, 7)
+        perception.from_config_dict = lambda config: speaker
+
+        monkeypatch.setattr("safetensors.torch.load_file", lambda *args, **kwargs: speaker.state_dict())
+
+        mounted = _maybe_mount_independent_speaker_encoder(
+            perception,
+            {
+                "path": str(artifact),
+                "frozen": True,
+                "chunk_size_seconds": 120.0,
+                "asr_chunk_size_seconds": None,
+            },
+        )
+
+        assert mounted is True
+        assert isinstance(perception.encoder, IndependentDualEncoder)
+        assert perception.encoder.asr_encoder is asr
+        assert perception.encoder.auxiliary_encoder is speaker
+        assert perception.encoder.d_model == 8
+        assert perception.encoder.asr_chunk_size_seconds is None
+        assert perception.encoder.auxiliary_chunk_size_seconds == 120.0
+        assert perception.encoder.freeze_auxiliary is True
+        assert all(not parameter.requires_grad for parameter in speaker.parameters())
+        assert perception.proj.in_features == 8
+        assert perception.proj.out_features == 7
+
+    def test_independent_speaker_encoder_mount_fails_closed_on_global_chunking(self):
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_independent_speaker_encoder
+
+        perception = torch.nn.Module()
+        perception.encoder = torch.nn.Identity()
+        with pytest.raises(ValueError, match="encoder_chunk_size_seconds=null"):
+            _maybe_mount_independent_speaker_encoder(
+                perception,
+                {"path": "/models/speaker-transformer"},
+                encoder_chunk_size_seconds=30.0,
+            )
 
     def test_pe_processing_enters_and_exits_online_inference(self):
         import torch

@@ -57,6 +57,7 @@ from nemo.collections.speechlm2.vllm.salm.audio import (
     NeMoSpeechLMMultiModalProcessor,
     NeMoSpeechLMProcessingInfo,
     _load_nemo_perception,
+    _maybe_mount_independent_speaker_encoder,
     _maybe_mount_pe_encoder,
 )
 from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend, make_backend
@@ -105,11 +106,31 @@ class NeMoSpeechLMForConditionalGeneration(
 
         with self._mark_tower_model(vllm_config, {"audio"}):
             self.perception = _load_nemo_perception(config.perception)
-            self._uses_pe_encoder = _maybe_mount_pe_encoder(
-                self.perception,
-                getattr(config, "pe_encoder_path", None),
-                getattr(config, "pe_encoder_config", None),
+            pe_encoder_path = getattr(config, "pe_encoder_path", None)
+            pe_encoder_config = getattr(config, "pe_encoder_config", None)
+            speaker_encoder = getattr(config, "speaker_encoder", None)
+            has_pe_encoder = pe_encoder_path not in (None, "", False) or pe_encoder_config not in (
+                None,
+                {},
+                "",
+                False,
             )
+            has_speaker_encoder = speaker_encoder not in (None, {}, "", False)
+            if has_pe_encoder and has_speaker_encoder:
+                raise ValueError("phPEE and speaker_encoder are mutually exclusive.")
+            if has_speaker_encoder:
+                _maybe_mount_independent_speaker_encoder(
+                    self.perception,
+                    speaker_encoder,
+                    self.encoder_chunk_size_seconds,
+                )
+                self._uses_pe_encoder = False
+            else:
+                self._uses_pe_encoder = _maybe_mount_pe_encoder(
+                    self.perception,
+                    pe_encoder_path,
+                    pe_encoder_config,
+                )
 
         self.make_empty_intermediate_tensors = self.language_model.make_empty_intermediate_tensors
 

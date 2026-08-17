@@ -199,14 +199,21 @@ class TestExpManager:
         log_dir = exp_manager(
             test_trainer,
             {
+                "version": "run",
                 "create_tensorboard_logger": False,
                 "create_checkpoint_callback": False,
                 "exp_dir": str(tmp_path),
                 "create_wandb_logger": True,
-                "wandb_logger_kwargs": {"name": "", "project": "", "offline": True},
+                "wandb_logger_kwargs": {
+                    "name": "codec-run",
+                    "project": "codec",
+                    "id": "unique-codec-run",
+                    "offline": True,
+                },
             },
         )
         assert isinstance(test_trainer.logger, pl.loggers.WandbLogger)
+        assert test_trainer.logger.version == "unique-codec-run"
 
     @pytest.mark.unit
     def test_trainer_neptune_logger(self, tmp_path):

@@ -38,12 +38,17 @@ def reference_model_config(cfg: DictConfig) -> DictConfig:
         model_cfg.disc_start_epoch = cfg.disc_start_epoch
         model_cfg.mmd_loss_start_epoch = cfg.mmd_loss_start_epoch
 
-        # The embedded semantic model is a submodule here; it must not construct
-        # the original standalone model's historical train/validation loaders.
-        with open_dict(model_cfg.semantic_codec):
-            model_cfg.semantic_codec.train_ds = None
-            model_cfg.semantic_codec.validation_ds = None
-            model_cfg.semantic_codec.log_config = None
+        if cfg.hybrid_codec.get("use_semantic_codec", True):
+            # The embedded semantic model is a submodule here; it must not construct
+            # the original standalone model's historical train/validation loaders.
+            with open_dict(model_cfg.semantic_codec):
+                model_cfg.semantic_codec.train_ds = None
+                model_cfg.semantic_codec.validation_ds = None
+                model_cfg.semantic_codec.log_config = None
+        else:
+            # Keep acoustic-only .nemo artifacts free of the unused semantic model configuration.
+            model_cfg.semantic_codec = None
+            model_cfg.semantic_codec_path = None
 
         if cfg.reconstruction_only:
             # A fast local smoke test does not need adversarial, SLM, or legacy MMD losses.

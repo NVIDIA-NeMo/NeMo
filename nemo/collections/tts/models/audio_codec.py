@@ -91,6 +91,9 @@ class AudioCodecModel(ModelPT):
 
         super().__init__(cfg=cfg, trainer=trainer)
         self.hybrid_codec_enabled = cfg.get("hybrid_codec") is not None
+        self.hybrid_semantic_codec_enabled = self.hybrid_codec_enabled and cfg.hybrid_codec.get(
+            "use_semantic_codec", True
+        )
 
         # Number of samples of input in each audio frame that is encoded
         self.samples_per_frame = cfg.samples_per_frame
@@ -140,10 +143,11 @@ class AudioCodecModel(ModelPT):
 
         # If 'semantic_codec_path' is provided, the semantic codec will be initialized from the provided path.
         # It will then be registered as a submodule and automatically loaded from the 'semantic_codec' field
-        if cfg.get("semantic_codec"):
+        load_semantic_codec = not self.hybrid_codec_enabled or self.hybrid_semantic_codec_enabled
+        if load_semantic_codec and cfg.get("semantic_codec"):
             semantic_codec_cfg = cfg.get("semantic_codec")
             semantic_codec = AudioCodecModel(cfg=semantic_codec_cfg)
-        elif cfg.get("semantic_codec_path"):
+        elif load_semantic_codec and cfg.get("semantic_codec_path"):
             semantic_codec_path = cfg.get("semantic_codec_path")
             semantic_codec = AudioCodecModel.restore_from(semantic_codec_path)
         else:
@@ -279,11 +283,16 @@ class AudioCodecModel(ModelPT):
 
     def _setup_hybrid_codec(self, cfg: DictConfig) -> None:
         """Set up the additive semantic-code plus variational-residual bottleneck."""
-        if self.semantic_codec is None or self.semantic_codec.vector_quantizer is None:
+        if self.hybrid_semantic_codec_enabled and (
+            self.semantic_codec is None or self.semantic_codec.vector_quantizer is None
+        ):
             raise ValueError("`hybrid_codec` requires a semantic codec with a vector quantizer.")
 
         hybrid_cfg = cfg.hybrid_codec
         self.residual_dropout_rate = hybrid_cfg.get("residual_dropout_rate", 0.5)
+        if not self.hybrid_semantic_codec_enabled and self.residual_dropout_rate:
+            logging.warning("Residual dropout is disabled because the hybrid codec has no semantic path.")
+            self.residual_dropout_rate = 0.0
         self.kl_loss_scale = hybrid_cfg.get("kl_loss_scale", 1.0)
         self.mean_loss_scale = hybrid_cfg.get("mean_loss_scale", 0.0)
         self.vae_std = hybrid_cfg.get("vae_std")
@@ -298,12 +307,16 @@ class AudioCodecModel(ModelPT):
         if self.vae_std is None and self.mean_loss_scale:
             raise ValueError("`mean_loss_scale` is only supported when fixed `vae_std` is configured.")
 
-        self.semantic_dim = self.semantic_codec.vector_quantizer.codebook_dim
+        self.semantic_dim = (
+            self.semantic_codec.vector_quantizer.codebook_dim if self.hybrid_semantic_codec_enabled else 0
+        )
         self.encoder_dim = self._module_config_value(cfg.audio_encoder, "out_dim")
         self.decoder_dim = self._module_config_value(cfg.audio_decoder, "input_dim")
         self.continuous_dim = hybrid_cfg.get("continuous_dim", self.encoder_dim)
 
-        self.semantic_to_decoder = torch.nn.Conv1d(self.semantic_dim, self.decoder_dim, kernel_size=1)
+        self.semantic_to_decoder = None
+        if self.hybrid_semantic_codec_enabled:
+            self.semantic_to_decoder = torch.nn.Conv1d(self.semantic_dim, self.decoder_dim, kernel_size=1)
         self.residual_mu = torch.nn.Conv1d(self.encoder_dim, self.continuous_dim, kernel_size=1)
         self.residual_logvar = None
         if self.vae_std is None:
@@ -314,7 +327,7 @@ class AudioCodecModel(ModelPT):
 
         # With the reference 6-D semantic + 72-D spectral layout, initialize the additive
         # projections to exactly reproduce the previous 78-D concatenated decoder input.
-        preserves_reference_layout = (
+        preserves_reference_layout = self.hybrid_semantic_codec_enabled and (
             self.continuous_dim == self.encoder_dim and self.decoder_dim == self.semantic_dim + self.continuous_dim
         )
         if preserves_reference_layout:
@@ -331,8 +344,9 @@ class AudioCodecModel(ModelPT):
                 self.residual_to_decoder.weight[self.semantic_dim :, :, 0] = torch.eye(self.continuous_dim)
 
         logging.info(
-            "Hybrid codec enabled: semantic_dim=%d, continuous_dim=%d, decoder_dim=%d, residual_dropout=%.3f, "
-            "vae_std=%s, mean_loss_scale=%g",
+            "Hybrid codec enabled: semantic_codec=%s, semantic_dim=%d, continuous_dim=%d, decoder_dim=%d, "
+            "residual_dropout=%.3f, vae_std=%s, mean_loss_scale=%g",
+            self.hybrid_semantic_codec_enabled,
             self.semantic_dim,
             self.continuous_dim,
             self.decoder_dim,
@@ -348,6 +362,8 @@ class AudioCodecModel(ModelPT):
     @property
     def num_codebooks(self):
         if self.hybrid_codec_enabled:
+            if not self.hybrid_semantic_codec_enabled:
+                raise ValueError("This acoustic-only hybrid codec does not have a vector quantizer.")
             return self.semantic_codec.vector_quantizer.num_codebooks
 
         if self.vector_quantizer is None:
@@ -358,6 +374,8 @@ class AudioCodecModel(ModelPT):
     @property
     def codebook_size(self):
         if self.hybrid_codec_enabled:
+            if not self.hybrid_semantic_codec_enabled:
+                raise ValueError("This acoustic-only hybrid codec does not have a vector quantizer.")
             return self.semantic_codec.vector_quantizer.codebook_size
 
         if self.vector_quantizer is None:
@@ -437,24 +455,32 @@ class AudioCodecModel(ModelPT):
         if self.encoder_noise is not None:
             encoded = self.encoder_noise(encoded)
 
-        # ``train()`` propagates to child modules, so restore eval mode explicitly.
-        self.semantic_codec.eval()
-        with torch.no_grad():
-            semantic_encoded, semantic_len = self.semantic_codec.encode_audio(
-                audio=audio, audio_len=audio_len, sample_rate=sample_rate
-            )
-            with default_precision(torch.float32):
-                semantic_output = self.semantic_codec.vector_quantizer(inputs=semantic_encoded, input_len=semantic_len)
-            semantic_codes, semantic_tokens = semantic_output[:2]
+        if self.hybrid_semantic_codec_enabled:
+            # ``train()`` propagates to child modules, so restore eval mode explicitly.
+            self.semantic_codec.eval()
+            with torch.no_grad():
+                semantic_encoded, semantic_len = self.semantic_codec.encode_audio(
+                    audio=audio, audio_len=audio_len, sample_rate=sample_rate
+                )
+                with default_precision(torch.float32):
+                    semantic_output = self.semantic_codec.vector_quantizer(
+                        inputs=semantic_encoded, input_len=semantic_len
+                    )
+                semantic_codes, semantic_tokens = semantic_output[:2]
 
-        if not torch.equal(encoded_len, semantic_len):
-            raise RuntimeError(
-                "Spectral and semantic encoders produced different frame lengths: "
-                f"spectral={encoded_len.tolist()}, semantic={semantic_len.tolist()}."
-            )
+            if not torch.equal(encoded_len, semantic_len):
+                raise RuntimeError(
+                    "Spectral and semantic encoders produced different frame lengths: "
+                    f"spectral={encoded_len.tolist()}, semantic={semantic_len.tolist()}."
+                )
 
-        semantic_codes = semantic_codes.to(encoded.dtype)
-        semantic_embedding = self.semantic_to_decoder(semantic_codes)
+            semantic_codes = semantic_codes.to(encoded.dtype)
+            semantic_embedding = self.semantic_to_decoder(semantic_codes)
+        else:
+            semantic_tokens = torch.empty(
+                0, audio.shape[0], encoded.shape[-1], device=encoded.device, dtype=torch.long
+            )
+            semantic_embedding = encoded.new_zeros(audio.shape[0], self.decoder_dim, encoded.shape[-1])
 
         residual_mu = self.residual_mu(encoded)
         mean_loss = residual_mu.new_zeros(())
@@ -477,7 +503,10 @@ class AudioCodecModel(ModelPT):
                     audio.shape[0], device=residual_mu.device, dtype=residual_mu.dtype
                 )
                 residual = residual_mu + noise_scale[:, None, None] * torch.randn_like(residual_mu)
-            residual_enabled = torch.rand(audio.shape[0], device=audio.device) >= self.residual_dropout_rate
+            if self.hybrid_semantic_codec_enabled:
+                residual_enabled = torch.rand(audio.shape[0], device=audio.device) >= self.residual_dropout_rate
+            else:
+                residual_enabled = torch.ones(audio.shape[0], device=audio.device, dtype=torch.bool)
         else:
             residual = residual_mu
             residual_enabled = torch.ones(audio.shape[0], device=audio.device, dtype=torch.bool)
@@ -708,21 +737,27 @@ class AudioCodecModel(ModelPT):
         if not self.hybrid_codec_enabled:
             raise RuntimeError("Hybrid decoding requested for a codec without `hybrid_codec` config.")
 
-        semantic_tokens = rearrange(tokens, 'B C T -> C B T')
-        with default_precision(torch.float32):
-            semantic_codes = self.semantic_codec.vector_quantizer.decode(indices=semantic_tokens, input_len=tokens_len)
-        semantic_embedding = self.semantic_to_decoder(semantic_codes.to(self.dtype))
-
-        if residual is None:
-            decoder_inputs = semantic_embedding
+        if self.hybrid_semantic_codec_enabled:
+            semantic_tokens = rearrange(tokens, 'B C T -> C B T')
+            with default_precision(torch.float32):
+                semantic_codes = self.semantic_codec.vector_quantizer.decode(
+                    indices=semantic_tokens, input_len=tokens_len
+                )
+            decoder_inputs = self.semantic_to_decoder(semantic_codes.to(self.dtype))
         else:
+            if residual is None:
+                raise ValueError("Acoustic-only hybrid decoding requires a continuous residual.")
+            decoder_inputs = None
+
+        if residual is not None:
             if residual.shape[1] != self.continuous_dim or residual.shape[2] != tokens.shape[2]:
                 raise ValueError(
                     "Residual shape must be [batch, continuous_dim, frames], got "
                     f"{tuple(residual.shape)} for continuous_dim={self.continuous_dim} "
                     f"and token frames={tokens.shape[2]}."
                 )
-            decoder_inputs = semantic_embedding + self.residual_to_decoder(residual.to(self.dtype))
+            residual_embedding = self.residual_to_decoder(residual.to(self.dtype))
+            decoder_inputs = residual_embedding if decoder_inputs is None else decoder_inputs + residual_embedding
 
         return self.decode_audio(inputs=decoder_inputs, input_len=tokens_len)
 
@@ -1232,7 +1267,9 @@ class AudioCodecModel(ModelPT):
         se_params = self.speaker_encoder.parameters() if self.use_scl_loss else []
         if self.hybrid_codec_enabled:
             vq_params = []
-            hybrid_modules = [self.semantic_to_decoder, self.residual_mu, self.residual_to_decoder]
+            hybrid_modules = [self.residual_mu, self.residual_to_decoder]
+            if self.semantic_to_decoder is not None:
+                hybrid_modules.append(self.semantic_to_decoder)
             if self.residual_logvar is not None:
                 hybrid_modules.append(self.residual_logvar)
             hybrid_params = itertools.chain.from_iterable(module.parameters() for module in hybrid_modules)

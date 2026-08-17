@@ -33,6 +33,8 @@ wandb_name: ${name}-${max_steps}-steps
 wandb_entity: null
 
 hybrid_codec:
+  # Disable this explicitly for a continuous acoustic-only codec with no semantic model or codebook.
+  use_semantic_codec: true
   # 72 preserves the reference spectral path without an extra bottleneck.
   continuous_dim: 72
   residual_dropout_rate: 0.5
@@ -111,6 +113,7 @@ exp_manager:
   wandb_logger_kwargs:
     project: ${wandb_project}
     name: ${wandb_name}
+    id: ${wandb_name}
     entity: ${wandb_entity}
     log_model: false
   resume_if_exists: false

@@ -1241,6 +1241,8 @@ def configure_loggers(
     if create_wandb_logger:
         if wandb_kwargs is None:
             wandb_kwargs = {}
+        else:
+            wandb_kwargs = dict(wandb_kwargs)
         if "name" not in wandb_kwargs and "project" not in wandb_kwargs:
             raise ValueError("name and project are required for wandb_logger")
 
@@ -1248,7 +1250,8 @@ def configure_loggers(
         if wandb_kwargs.get('save_dir', None) is None:
             wandb_kwargs['save_dir'] = exp_dir
         os.makedirs(wandb_kwargs['save_dir'], exist_ok=True)
-        wandb_logger = WandbLogger(version=version, **wandb_kwargs)
+        wandb_run_id = wandb_kwargs.pop("id", None) or version
+        wandb_logger = WandbLogger(version=wandb_run_id, **wandb_kwargs)
 
         logger_list.append(wandb_logger)
         logging.info("WandBLogger has been set up")

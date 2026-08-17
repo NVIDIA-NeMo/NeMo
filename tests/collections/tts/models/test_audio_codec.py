@@ -95,7 +95,9 @@ def acoustic_codec_model():
     return acoustic_codec_model
 
 
-def create_hybrid_codec_model(vae_std=None, residual_dropout_rate=1.0, mean_loss_scale=0.0):
+def create_hybrid_codec_model(
+    vae_std=None, residual_dropout_rate=1.0, mean_loss_scale=0.0, use_semantic_codec=True, continuous_dim=35
+):
     semantic_model_cfg = create_codec_config()
     semantic_model_cfg.vector_quantizer.params.num_groups = 1
     semantic_model_cfg.audio_encoder.params.out_dim = 5
@@ -105,7 +107,8 @@ def create_hybrid_codec_model(vae_std=None, residual_dropout_rate=1.0, mean_loss
     hybrid_model_cfg.semantic_codec = semantic_model_cfg
     hybrid_model_cfg.audio_encoder.params.out_dim = 35
     hybrid_model_cfg.hybrid_codec = {
-        'continuous_dim': 35,
+        'use_semantic_codec': use_semantic_codec,
+        'continuous_dim': continuous_dim,
         'residual_dropout_rate': residual_dropout_rate,
         'kl_loss_scale': 0.1,
         'mean_loss_scale': mean_loss_scale,
@@ -256,6 +259,59 @@ class TestAudioCodecModel:
         assert not any(key.startswith("residual_logvar.") for key in hybrid_codec_model.state_dict())
         assert torch.allclose(hybrid.decoder_inputs[0, 5:], hybrid.residual_mu[0] + vae_std)
         assert torch.allclose(hybrid.decoder_inputs[1, 5:], hybrid.residual_mu[1] + vae_std)
+
+    @pytest.mark.unit
+    def test_hybrid_codec_acoustic_only_fixed_variance(self):
+        hybrid_codec_model = create_hybrid_codec_model(
+            vae_std=0.625,
+            residual_dropout_rate=1.0,
+            mean_loss_scale=0.1,
+            use_semantic_codec=False,
+            continuous_dim=128,
+        )
+        audio = torch.randn(size=(2, 12000))
+        audio_len = torch.tensor([12000, 10000])
+
+        hybrid_codec_model.train()
+        hybrid = hybrid_codec_model._encode_hybrid(
+            audio=audio,
+            audio_len=audio_len,
+            sample_rate=hybrid_codec_model.sample_rate,
+        )
+
+        assert hybrid_codec_model.semantic_codec is None
+        assert hybrid_codec_model.semantic_to_decoder is None
+        assert hybrid_codec_model.semantic_dim == 0
+        assert hybrid_codec_model.continuous_dim == 128
+        assert hybrid_codec_model.residual_dropout_rate == 0.0
+        assert hybrid_codec_model.residual_logvar is None
+        assert hybrid.semantic_tokens.shape == (0, audio.shape[0], hybrid.encoded_len.max())
+        assert hybrid.residual_mu.shape == (audio.shape[0], 128, hybrid.encoded_len.max())
+        assert torch.count_nonzero(hybrid.semantic_embedding) == 0
+        assert hybrid.residual_enabled.all()
+        assert torch.isfinite(hybrid.mean_loss)
+        assert not any(key.startswith("semantic_codec.") for key in hybrid_codec_model.state_dict())
+        assert not any(key.startswith("semantic_to_decoder.") for key in hybrid_codec_model.state_dict())
+        with pytest.raises(ValueError, match="does not have a vector quantizer"):
+            _ = hybrid_codec_model.num_codebooks
+
+        optimizer = hybrid_codec_model.configure_optimizers()
+        optimizer_params = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
+        acoustic_modules = (hybrid_codec_model.residual_mu, hybrid_codec_model.residual_to_decoder)
+        assert all(
+            id(parameter) in optimizer_params for module in acoustic_modules for parameter in module.parameters()
+        )
+
+        hybrid_codec_model.eval()
+        tokens, residual_mu, _, tokens_len = hybrid_codec_model.encode_hybrid(
+            audio=audio, audio_len=audio_len, sample_rate=hybrid_codec_model.sample_rate
+        )
+        output_audio, output_audio_len = hybrid_codec_model.decode_hybrid(
+            tokens=tokens, tokens_len=tokens_len, residual=residual_mu
+        )
+        assert tokens.shape[1] == 0
+        assert output_audio.shape[0] == audio.shape[0]
+        assert output_audio.shape[1] == output_audio_len.max()
 
     @pytest.mark.unit
     def test_hybrid_codec_mean_loss_is_opt_in_and_fixed_variance_only(self):

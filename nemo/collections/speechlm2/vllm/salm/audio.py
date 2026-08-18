@@ -33,7 +33,6 @@ Public surface used by the rest of the package:
   registry binds to the registered model class.
 """
 
-import os
 import re
 from collections.abc import Mapping
 from typing import Annotated, Literal

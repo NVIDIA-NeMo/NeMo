@@ -611,9 +611,7 @@ class ParallelExpertEncoderPT(ModelPT):
             )
 
         # New bundles use an unambiguous module path; schema dispatch still accepts historical targets.
-        template_cfg.target = (
-            'nemo.collections.asr.modules.parallel_expert_encoder_ggemm.ParallelExpertEncoderPT'
-        )
+        template_cfg.target = 'nemo.collections.asr.modules.parallel_expert_encoder_ggemm.ParallelExpertEncoderPT'
 
         # Fresh PT shell from the template cfg to reuse NeMo's save_to; swap in encoder.
         shell = cls(cfg=template_cfg, trainer=None)

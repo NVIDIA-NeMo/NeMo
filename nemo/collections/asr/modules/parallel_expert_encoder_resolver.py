@@ -32,9 +32,7 @@ from omegaconf import DictConfig, OmegaConf
 ParallelExpertEncoderKind = Literal["two_branch", "ggemm"]
 
 _TWO_BRANCH_KEYS = frozenset(("asr_encoder_cfg", "diarization_model_cfg"))
-_GGEMM_KEYS = frozenset(
-    ("speech_expert_cfg", "speaker_expert_cfg", "sound_expert_cfg", "sortformer_modules_cfg")
-)
+_GGEMM_KEYS = frozenset(("speech_expert_cfg", "speaker_expert_cfg", "sound_expert_cfg", "sortformer_modules_cfg"))
 
 
 def classify_parallel_expert_encoder_config(config: Mapping) -> ParallelExpertEncoderKind:
@@ -71,9 +69,7 @@ def read_parallel_expert_encoder_bundle_config(nemo_path: str) -> DictConfig:
                 if member.isfile() and os.path.basename(member.name) == "model_config.yaml"
             ]
             if len(members) != 1:
-                raise ValueError(
-                    f"{nemo_path!r} must contain exactly one model_config.yaml; found {len(members)}."
-                )
+                raise ValueError(f"{nemo_path!r} must contain exactly one model_config.yaml; found {len(members)}.")
             stream = archive.extractfile(members[0])
             if stream is None:
                 raise ValueError(f"Could not read model_config.yaml from {nemo_path!r}.")

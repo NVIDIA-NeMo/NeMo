@@ -39,18 +39,14 @@ def test_independent_dual_encoder_chunks_only_frozen_auxiliary_branch():
     lengths = torch.tensor([17, 10], dtype=torch.int64)
     packed_features = pack_encoder_output(features.transpose(1, 2), lengths)
     with torch.no_grad():
-        asr_reference = asr.forward_sequence_packed(
-            packed_features, packed_features.lengths
-        )
+        asr_reference = asr.forward_sequence_packed(packed_features, packed_features.lengths)
 
     auxiliary_calls = []
     auxiliary_forward = auxiliary.forward_sequence_packed
 
     def record_auxiliary_call(audio_signal, length, bypass_pre_encode=False, **kwargs):
         auxiliary_calls.append((length.detach().clone(), bypass_pre_encode))
-        return auxiliary_forward(
-            audio_signal, length, bypass_pre_encode=bypass_pre_encode, **kwargs
-        )
+        return auxiliary_forward(audio_signal, length, bypass_pre_encode=bypass_pre_encode, **kwargs)
 
     auxiliary.forward_sequence_packed = record_auxiliary_call
     output = dual.forward_sequence_packed(packed_features, packed_features.lengths)

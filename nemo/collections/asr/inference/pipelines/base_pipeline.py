@@ -73,10 +73,6 @@ class TranscribeStepOutput:
     # Current step transcript/translation is the transcript/translation generated from the current frame
     current_step_transcript: str = ""
     current_step_translation: str = ""
-    # Partial translation as of the previous step, before this step's translate_step() ran.
-    # Consumers (e.g. incremental output adapters) use this to diff against partial_translation
-    # and compute what was added/removed since the last step.
-    previous_partial_translation: str = ""
 
     @classmethod
     def from_state(cls, state: StreamingState, request: Request, sep: str = ' ') -> 'TranscribeStepOutput':
@@ -108,7 +104,6 @@ class TranscribeStepOutput:
             final_segments=final_segments,
             partial_transcript=state.partial_transcript,
             current_step_transcript=state.current_step_transcript,
-            previous_partial_translation=state.previous_translation_info[0],
         )
 
     def __str__(self) -> str:
@@ -217,7 +212,6 @@ class BasePipeline(PipelineInterface):
             partial = step_output.partial_transcript
             if not (final.strip() or partial.strip()):
                 # No new transcript to translate this step: keep the previous partial translation
-                step_output.previous_partial_translation = state.previous_translation_info[0]
                 step_output.partial_translation = state.previous_translation_info[0]
                 continue
 
@@ -248,8 +242,6 @@ class BasePipeline(PipelineInterface):
         for (state, step_output), translation, new_prefix, prev_prefix, is_final in zip(
             states_to_translate, translations, new_prefixes, current_prefixes, final_transcript_mask
         ):
-            step_output.previous_partial_translation = state.previous_translation_info[0]
-
             if is_final:
                 step_output.final_translation = translation
                 step_output.partial_translation = ""

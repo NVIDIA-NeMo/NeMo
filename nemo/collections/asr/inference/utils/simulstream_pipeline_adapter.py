@@ -374,13 +374,10 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
             IncrementalOutput: Simulstream format with generated/deleted token lists.
         """
         if self.pipeline.nmt_enabled:
-            prev_partial = step_output.previous_partial_translation
-            if step_output.final_translation:
-                current_partial = step_output.final_translation
-            elif step_output.partial_translation:
-                current_partial = step_output.partial_translation
-            else:
-                current_partial = ""
+            is_final = bool(step_output.final_transcript)
+            prev_partial = self._prev_partial_translation
+            current_partial = step_output.final_translation if is_final else step_output.partial_translation
+            self._prev_partial_translation = "" if is_final else current_partial
         else:
             prev_partial = previous_transcript
             current_partial = self._final_transcript_acc + self._last_partial_transcript
@@ -438,6 +435,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         self._final_translation_acc = ""
         self._last_partial_transcript = ""
         self._last_partial_translation = ""
+        self._prev_partial_translation = ""
 
     def _write_prediction_manifest_line(self, pred_text: str, pred_translation: str) -> None:
         """Write one NeMo-style manifest line with model predictions, and accumulate WER inputs."""

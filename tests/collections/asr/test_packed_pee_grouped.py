@@ -20,7 +20,7 @@ import torch
 import nemo.collections.asr.modules.ggemm_transformer_encoder as ggemm_module
 import nemo.collections.asr.modules.transformer_encoder as transformer_module
 from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, pack_encoder_output
-from tests.collections.asr.test_parallel_expert_encoder import (
+from tests.collections.asr.test_parallel_expert_encoder_ggemm import (
     _MEL_FEATURES,
     _N_SPK,
     build_toy_pe_encoder,

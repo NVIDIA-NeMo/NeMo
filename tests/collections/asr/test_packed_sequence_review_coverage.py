@@ -20,14 +20,14 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from nemo.collections.asr.modules.parallel_expert_encoder import (
+from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import (
     ParallelExpertEncoderPT,
     _validate_packed_expert_lengths,
 )
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, unpack_encoder_output
 from tests.collections.asr.test_packed_transformer_encoder import _make_moe_encoder
-from tests.collections.asr.test_parallel_expert_encoder import (
+from tests.collections.asr.test_parallel_expert_encoder_ggemm import (
     _MEL_FEATURES,
     _N_SPK,
     build_toy_pe_encoder,
@@ -81,7 +81,7 @@ def test_synthetic_legacy_shaped_pee_nemo_archive_loads_strictly_and_enables_pac
     source = build_toy_pe_encoder().eval()
     cfg = OmegaConf.create(
         {
-            "target": "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT",
+            "target": "nemo.collections.asr.modules.parallel_expert_encoder_ggemm.ParallelExpertEncoderPT",
             "speech_expert_cfg": toy_speech_expert_cfg(),
             "speaker_expert_cfg": toy_speaker_expert_cfg(),
             "sound_expert_cfg": toy_sound_expert_cfg(),

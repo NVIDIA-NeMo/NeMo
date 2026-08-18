@@ -86,6 +86,7 @@ _TTS_PREFIXES = (
 # gathers at index ``vocab_size - top_k``, which is out of bounds for a width-1
 # logits tensor (device-side "scatter gather index out of bounds" assert).
 _BACKBONE_VOCAB_SIZE = 2
+_PHONEME_TEXT_TOKENIZER_FILE = "phoneme_text_tokenizer/tokenizer.json"
 
 # Nemotron-H backbone config fields forwarded into the flat vLLM ``config.json``.
 # Names match the HF/vLLM Nemotron-H config (and the NeMo ``NemotronHConfig``).
@@ -195,12 +196,15 @@ def precompute_text_embeddings(model, batch_size: int) -> torch.Tensor:
     """
     device = next(model.parameters()).device
 
-    # Vocabulary size of the subword id space (decoder text-embedding table when
-    # present; otherwise the CAS-only id range). Multiturn checkpoints append an
-    # interruption token after CFG_UNK, so cfg_unk_token_id is not always last.
-    if getattr(model, "text_embedding", None) is not None:
+    # New checkpoints expose the complete text id space explicitly. This is
+    # required for CAS-only pronunciation-control checkpoints whose appended IPA
+    # ids extend beyond CFG_UNK/interruption even though text_embedding is absent.
+    if getattr(model, "text_vocab_size", None) is not None:
+        vocab_size = int(model.text_vocab_size)
+    elif getattr(model, "text_embedding", None) is not None:
         vocab_size = model.text_embedding.num_embeddings
     else:
+        # Legacy CAS-only checkpoints end at the last ordinary text special id.
         last_special_id = max(
             int(model.cfg_unk_token_id),
             int(getattr(model, "interruption_token_id", model.cfg_unk_token_id)),
@@ -306,9 +310,10 @@ def validate_model_config(model) -> None:
         )
 
     local_transformer_type = str(cfg.get("local_transformer_type", "none"))
-    if local_transformer_type != "ar":
+    if local_transformer_type not in {"ar", "autoregressive"}:
         raise ValueError(
-            "The serving code currently requires local_transformer_type='ar'; extend EasyMagpieCodePredictor "
+            "The serving code currently requires local_transformer_type='autoregressive'; "
+            "extend EasyMagpieCodePredictor "
             f"to support '{local_transformer_type}'."
         )
 
@@ -361,6 +366,23 @@ def build_config(model, vocab_size: int, torch_dtype: str) -> dict:
     config["num_audio_codebooks"] = int(model.num_audio_codebooks)
     config["codebook_size"] = int(model.codebook_size)
     config["frame_stacking_factor"] = int(model.frame_stacking_factor)
+
+    enable_phoneme_text_input = bool(getattr(model, "enable_phoneme_text_input", False))
+    config["enable_phoneme_text_input"] = enable_phoneme_text_input
+    if enable_phoneme_text_input:
+        text_phoneme_token_offset = int(model.text_phoneme_token_offset)
+        text_phoneme_vocab_size = int(model.text_phoneme_vocab_size)
+        if text_phoneme_token_offset + text_phoneme_vocab_size != vocab_size:
+            raise ValueError(
+                "Pronunciation-control text vocabulary must be a trailing contiguous range: "
+                f"offset={text_phoneme_token_offset}, size={text_phoneme_vocab_size}, "
+                f"text_vocab_size={vocab_size}."
+            )
+        config["text_phoneme_token_offset"] = text_phoneme_token_offset
+        config["text_phoneme_vocab_size"] = text_phoneme_vocab_size
+        config["phoneme_text_bop_marker"] = str(model.phoneme_text_bop_marker)
+        config["phoneme_text_eop_marker"] = str(model.phoneme_text_eop_marker)
+        config["text_phoneme_tokenizer_file"] = _PHONEME_TEXT_TOKENIZER_FILE
 
     has_phoneme = getattr(model, "phoneme_tokenizer", None) is not None
     config["phoneme_stacking_factor"] = int(getattr(model, "phoneme_stacking_factor", 0)) if has_phoneme else 0
@@ -466,6 +488,31 @@ def save_text_tokenizer(model, outdir: str, override: str | None) -> None:
     AutoTokenizer.from_pretrained(pretrained, trust_remote_code=True).save_pretrained(outdir)
 
 
+def save_phoneme_text_tokenizer(model, outdir: str) -> None:
+    """Export the IPA BPE used by marked target-text spans when enabled."""
+    if not bool(getattr(model, "enable_phoneme_text_input", False)):
+        return
+
+    phoneme_tokenizer = getattr(model, "phoneme_tokenizer", None)
+    raw_tokenizer = getattr(phoneme_tokenizer, "_tokenizer", None)
+    if raw_tokenizer is None:
+        raise ValueError("Pronunciation-control conversion requires an IPABPETokenizer with a raw tokenizer.")
+
+    raw_vocab_size = len(raw_tokenizer.get_vocab())
+    text_phoneme_vocab_size = int(model.text_phoneme_vocab_size)
+    if raw_vocab_size + 3 != text_phoneme_vocab_size:
+        raise ValueError(
+            "IPA tokenizer vocabulary does not match the pronunciation-control text range: "
+            f"raw tokenizer size={raw_vocab_size}, reserved special tokens=3, "
+            f"text range size={text_phoneme_vocab_size}."
+        )
+
+    output_path = os.path.join(outdir, _PHONEME_TEXT_TOKENIZER_FILE)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    raw_tokenizer.save(output_path)
+    logging.info("Saved pronunciation-control IPA tokenizer to %s", output_path)
+
+
 def convert(args) -> None:
     from nemo.collections.tts.modules.magpietts_inference.utils import ModelLoadConfig, load_easy_magpie_model
 
@@ -514,6 +561,7 @@ def convert(args) -> None:
 
     # ── 4. text tokenizer ────────────────────────────────────────────────
     save_text_tokenizer(model, args.outdir, args.text_tokenizer)
+    save_phoneme_text_tokenizer(model, args.outdir)
 
     # ── 5. optional speaker embedding ────────────────────────────────────
     if args.context_audio is not None:

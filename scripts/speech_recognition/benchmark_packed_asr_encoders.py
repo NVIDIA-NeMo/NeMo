@@ -43,7 +43,7 @@ import torch
 from omegaconf import DictConfig
 
 from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerEncoder
-from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder
+from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import ParallelExpertEncoder
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 
 
@@ -309,7 +309,7 @@ def _source_provenance():
     source_paths = (
         "nemo/collections/asr/modules/ggemm_transformer_encoder.py",
         "nemo/collections/asr/modules/moe_transformer_encoder.py",
-        "nemo/collections/asr/modules/parallel_expert_encoder.py",
+        "nemo/collections/asr/modules/parallel_expert_encoder_ggemm.py",
         "nemo/collections/asr/modules/transformer_encoder.py",
         "nemo/collections/asr/parts/packed_sequence.py",
         "nemo/collections/speechlm2/models/salm_automodel.py",

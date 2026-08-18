@@ -1104,6 +1104,7 @@ def _make_archive_member_cut(
     duration: float,
     offset: float = 0.0,
     sampling_rate: int = 16000,
+    source_type: str | None = None,
 ) -> Cut:
     """
     Build a Cut backed by an archive-member ``AudioSource`` (no tar file opened).
@@ -1118,7 +1119,7 @@ def _make_archive_member_cut(
     ``_make_cut_id``.
     """
     audio_path = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
-    source_type = "url" if is_valid_url(tar_path) else "file"
+    source_type = source_type or ("url" if is_valid_url(tar_path) else "file")
     recording_duration = offset + duration if offset > 0 else duration
     recording = Recording(
         id=audio_filename,
@@ -1507,6 +1508,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                             duration=turn.get('duration'),
                             offset=turn.get('offset', 0.0),
                             sampling_rate=turn.get('sampling_rate', 16000),
+                            source_type='url',
                         )
                         cut = cut.with_id(self._make_cut_id(cut, turn))
                     else:
@@ -1910,6 +1912,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                             duration=turn.get('duration'),
                             offset=turn.get('offset', 0.0),
                             sampling_rate=turn.get('sampling_rate', 16000),
+                            source_type='url',
                         )
                         cut = cut.with_id(self._make_cut_id(cut, turn))
                     else:

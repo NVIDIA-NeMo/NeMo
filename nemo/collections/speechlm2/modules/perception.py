@@ -20,9 +20,6 @@ from torch import nn
 from transformers import BertConfig
 from transformers.models.bert.modeling_bert import BertEncoder
 
-from nemo.collections.asr.models import ASRModel
-from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
-from nemo.collections.asr.parts.mixins import TranscribeConfig
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
     pack_encoder_output,
@@ -90,7 +87,11 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         else:
             self.spec_augmentation = None
         self.modality_adapter = self.from_config_dict(cfg.modality_adapter)
-        if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
+        if isinstance(
+            self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)
+        ):
+            from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
+
             self.encoder_multilayer = ConformerMultiLayerFeatureExtractor(
                 encoder,
                 layer_idx_list=cfg.modality_adapter.target_layer_ids,
@@ -520,6 +521,7 @@ class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
         return self.asr.preprocessor
 
     def __init__(self, cfg: DictConfig, pretrained_asr: str):
+        from nemo.collections.asr.models import ASRModel
         from nemo.collections.speechlm2.parts.pretrained import load_pretrained_nemo
 
         super().__init__()
@@ -533,7 +535,11 @@ class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
         if 'spec_augment' in cfg and cfg.spec_augment is not None:
             self.spec_augmentation = self.from_config_dict(cfg.spec_augment)
         self.modality_adapter = self.from_config_dict(cfg.modality_adapter)
-        if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
+        if isinstance(
+            self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)
+        ):
+            from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
+
             self.encoder_multilayer = ConformerMultiLayerFeatureExtractor(
                 self.asr.encoder,
                 layer_idx_list=cfg.modality_adapter.target_layer_ids,
@@ -598,6 +604,8 @@ class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
         return encoded, encoded_len
 
     def transcribe_encoded(self, encoded, encoded_len):
+        from nemo.collections.asr.parts.mixins import TranscribeConfig
+
         if isinstance(encoded, list):
             encoded = encoded[-1]
             encoded_len = encoded_len[-1]

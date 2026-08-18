@@ -359,6 +359,19 @@ def test_prompt_format_src_tgt_2d(src_tgt_example, tokenizer):
     assert tokenizer.ids_to_text(ex.answer_ids) == "elpmaxe na"
 
 
+def test_t5nmt_raises_on_missing_context(tokenizer):
+    cut = dummy_cut(0, duration=1.0)
+    assert not hasattr(cut, "context")
+    assert not hasattr(cut, "default_context")
+    with pytest.raises(RuntimeError) as exc_info:
+        from nemo.collections.common.prompts.t5nmt import T5NMTPromptFormatter, t5nmt
+
+        t5nmt(cut, T5NMTPromptFormatter(tokenizer))
+
+    msg = str(exc_info.value)
+    assert msg == f"Missing context/default_context custom field in cut: {cut}"
+
+
 def test_prompt_format_nemo_sft(nemo_sft_example, tokenizer):
     dl = get_lhotse_dataloader_from_config(
         {

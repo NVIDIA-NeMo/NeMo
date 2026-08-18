@@ -264,6 +264,15 @@ class SALMMultiSpeakerProcessor:
         speaker_activities = self._build_speaker_activities(batch["conversations"])
         if not speaker_activities:
             return
+        # The shared collator pads variable-length rows with zeros. Preserve
+        # the all--1 sentinel across that padding: PEE detects missing-RTTM
+        # rows over the whole padded tensor, so a single padded zero would
+        # otherwise make a short no-RTTM row look like an explicit
+        # (all-silent) RTTM target and bypass its embedded Sortformer.
+        missing_rttm_rows = torch.tensor(
+            [bool(torch.all(activity == -1.0)) for activity in speaker_activities],
+            dtype=torch.bool,
+        )
         targets, target_length = collate_speaker_activity_targets(
             speaker_activities,
             batch["audio_lens"],
@@ -272,6 +281,7 @@ class SALMMultiSpeakerProcessor:
             num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
             dtype=(batch["audios"] if "audios" in batch else batch["packed_audio_samples"]).dtype,
         )
+        targets[missing_rttm_rows] = -1.0
         batch["spk_targets"] = targets
         batch["spk_target_length"] = target_length
 

@@ -72,7 +72,7 @@ concurrency:
 jobs:
   pre-flight:
     if: github.event_name != 'workflow_dispatch'
-    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_cicd_preflight.yml@c1a0837f362a1a696e647238ab1cf916b2a7cf4a # v1.8.6
+    uses: NVIDIA-NeMo/FW-CI-templates/.github/workflows/_cicd_preflight.yml@cf5acebace78c7c339bc1f804357a991336f1c4d # v1.8.10
 
   release:
     needs: [pre-flight]

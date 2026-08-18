@@ -37,6 +37,7 @@ from easymagpie_vllm_omni.backbone_patches import (
 )
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from easymagpie_vllm_omni.local_transformer import EasyMagpieCodePredictor
+from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
 from torch import nn
 from vllm.compilation.backends import set_model_tag
 from vllm.config import CUDAGraphMode, VllmConfig
@@ -894,16 +895,9 @@ class EasyMagpieTTSForConditionalGeneration(
             self.code_predictor.top_k = int(top_k)
 
     def _get_text_tokenizer(self):
-        """Lazily load the context-text tokenizer from the model directory.
-
-        The converted checkpoint ships a HuggingFace ``AutoTokenizer`` (the
-        model's text-conditioning tokenizer) alongside its weights, so we load it
-        on first use from ``model_path``.
-        """
+        """Lazily load target/context tokenization from the model directory."""
         if self._text_tokenizer is None:
-            from transformers import AutoTokenizer
-
-            self._text_tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+            self._text_tokenizer = EasyMagpieTextTokenizer.from_pretrained(self.model_path)
         return self._text_tokenizer
 
     def _encode_context_text(self, context_text: str, device: torch.device) -> torch.Tensor:
@@ -914,7 +908,7 @@ class EasyMagpieTTSForConditionalGeneration(
         table directly.
         """
         tok = self._get_text_tokenizer()
-        ids = tok.encode(context_text)
+        ids = tok.encode_context(context_text)
         return torch.tensor(ids, device=device, dtype=torch.long)
 
     def _encode_text_stream(self, text: str) -> list[int]:

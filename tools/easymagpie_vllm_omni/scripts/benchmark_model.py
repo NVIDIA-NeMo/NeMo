@@ -178,21 +178,21 @@ def _load_model_meta(
     import torch
     from easymagpie_vllm_omni.config import EasyMagpieOmniArch
     from easymagpie_vllm_omni.easymagpie import EasyMagpieTTSForConditionalGeneration
-    from transformers import AutoTokenizer
+    from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
 
     model_path = Path(model_dir)
     config = json.loads((model_path / "config.json").read_text())
     arch = EasyMagpieOmniArch.from_hf_config(type("Cfg", (), config))
 
     use_id = not (use_spkr_emb or lim_prefill is not None)
-    tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+    tokenizer = EasyMagpieTextTokenizer.from_pretrained(model_dir)
 
     if use_id:
         speaker_embedding = None
         prompt_len = EasyMagpieTTSForConditionalGeneration.get_prompt_len(
             speaker_id,
             model_dir,
-            tokenize=lambda t: tokenizer.encode(t),
+            tokenize=tokenizer.encode_context,
         )
     else:
         emb_path = model_path / "speaker_embeddings" / f"{speaker_id}.pt"
@@ -206,7 +206,7 @@ def _load_model_meta(
             logger.info("Limiting speaker-embedding prefill: %d -> %d frames", orig_frames, speaker_embedding.shape[0])
         prompt_len = EasyMagpieTTSForConditionalGeneration.estimate_prompt_len(
             speaker_embedding,
-            tokenize=lambda t: tokenizer.encode(t),
+            tokenize=tokenizer.encode_context,
             context_text=CONTEXT_TEXT,
             has_task_embedding=arch.num_task_embeddings > 0,
         )

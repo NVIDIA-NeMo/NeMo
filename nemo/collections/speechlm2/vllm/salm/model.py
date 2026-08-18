@@ -49,7 +49,7 @@ from vllm.model_executor.models.utils import AutoWeightsLoader, init_vllm_regist
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.sequence import IntermediateTensors
 
-from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder
+from nemo.collections.asr.modules.parallel_expert_encoder_resolver import is_parallel_expert_encoder
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
 from nemo.collections.speechlm2.vllm.salm.audio import (
     _SAMPLING_RATE,
@@ -108,7 +108,7 @@ class NeMoSpeechLMForConditionalGeneration(
             self.perception = _load_nemo_perception(config.perception)
             _maybe_mount_pe_encoder(self.perception, getattr(config, "pe_encoder_path", None))
 
-        self._uses_pe_encoder = isinstance(getattr(self.perception, "encoder", None), ParallelExpertEncoder)
+        self._uses_pe_encoder = is_parallel_expert_encoder(getattr(self.perception, "encoder", None))
 
         self.make_empty_intermediate_tensors = self.language_model.make_empty_intermediate_tensors
 

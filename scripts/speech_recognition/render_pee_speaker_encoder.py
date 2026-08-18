@@ -13,7 +13,7 @@ from pathlib import Path
 from omegaconf import OmegaConf
 from safetensors.torch import save_file
 
-from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
+from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import ParallelExpertEncoderPT
 
 
 def sha256(path: Path) -> str:

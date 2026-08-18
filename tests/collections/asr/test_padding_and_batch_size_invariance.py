@@ -70,9 +70,8 @@ def test_canary_encoder_invariant_to_padding(deterministic_rng, length):
         subsampling_factor=8,
         subsampling_conv_channels=256,
         causal_downsampling=True,
-        # Hooks below check each convolution separately, so each must run as its own module. The
-        # fused path runs every one of them as a kernel or a linear instead, so nothing is
-        # captured and the loop over the hooks asserts nothing.
+        # The hooks below record the output of each convolution module; the fused path runs
+        # those convolutions as Triton kernels, which have no module to hook.
         use_triton=False,
         reduction=None,
         reduction_factor=1,
@@ -123,7 +122,6 @@ def test_canary_encoder_invariant_to_padding(deterministic_rng, length):
     inner1 = activation.copy()
     h2, h2l = encoder.pre_encode(mels2.transpose(1, 2), mels2l)
     inner2 = activation
-    # An empty capture makes the loop below vacuous and silently asserts nothing.
     assert inner1, "no convolution activations were captured"
     for k in inner1:
         torch.testing.assert_close(inner1[k], inner2[k][:, :, : inner1[k].shape[2]], atol=5e-5, rtol=0)

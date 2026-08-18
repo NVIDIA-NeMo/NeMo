@@ -83,10 +83,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             Should be power of 2, 1 (auto-chunking, default), or -1 (no chunking)
         subsampling_conv_channels (int): the size of the convolutions in the subsampling module
             Defaults to -1 which would set it to d_model.
-        use_triton (bool, Optional): use the fused Triton subsampling kernels when the input is on
-            CUDA and subsampling is 'dw_striding'. Defaults to None, which enables them whenever
-            Triton is installed. Set False to force the PyTorch implementation. Weights and
-            checkpoints are identical either way; export always uses the PyTorch path.
+        use_triton (bool, Optional): use the fused Triton subsampling kernels, for CUDA input with
+            'dw_striding' subsampling. Defaults to None, enabling them whenever Triton is
+            installed. Export always uses the PyTorch path.
         reduction (str, Optional): the method of reduction, choices=['pooling', 'striding']. If no value
             is passed, then no reduction is performed and the models runs with the original 4x subsampling.
         reduction_position (int, Optional): the index of the layer to apply reduction. If -1, apply reduction

@@ -12,35 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Channels-last depthwise conv2d with fused bias and NeMo length masking, in Triton.
+"""Channels-last depthwise conv2d with fused bias and per-sample length masking.
 
-Each output position reads a KERNEL_H x KERNEL_W window of the input. Writing the window's taps
-as (kh, kw), the input position a tap reads is
+Each output position reads a KERNEL_H x KERNEL_W window. With taps (kh, kw):
 
     in_y = y * STRIDE_H - PAD_H + kh
     in_x = x * STRIDE_W - PAD_W + kw
 
-and the output is that window weighted and summed, plus the bias:
-
     out[n, y, x, c] = bias[c] + sum over (kh, kw) of  weight[c, kh, kw] * input[n, in_y, in_x, c]
 
-The channel index `c` is the same on all three tensors: there is no sum over channels, which is
-exactly what makes the convolution depthwise.
+Input and output are NHWC. ``weight`` keeps nn.Conv2d's own ``(channels, 1, KERNEL_H, KERNEL_W)``
+layout which the kernels index as ``(channels, taps)`` with ``tap = kh * KERNEL_W + kw``.
 
-The geometry is compile-time configurable, so this is a general NHWC depthwise conv2d. NeMo's
-``dw_striding`` uses it as the second depthwise (3x3, stride 2, causal padding 2), where height
-is the time axis and width the frequency axis.
+Kernel size, stride and padding are compile-time constants, and the start and end edges pad
+independently, so this covers any depthwise geometry ``nn.Conv2d`` expresses.
 
-That independence sets the tiling: channels go on the lanes and output positions on the rows of
-a 2D tile, so every load is a run of CHANNEL_BLOCK consecutive channels -- fully coalesced, with
-the taps of neighbouring outputs hitting the same cache lines.
+A program computes POSITION_BLOCK windows at once, CHANNEL_BLOCK channels wide. A *position* is
+the output pixel a window produces, its (batch, y, x) flattened onto one axis as
+``batch * height * width + y * width + x``; the tile is [POSITION_BLOCK, CHANNEL_BLOCK], windows
+down the rows and channels across the columns.
 
-Both fused pieces ride on masks the kernel already computes: the bias is added in registers
-before the store, and ``in_lengths``/``out_lengths`` fold into the same load and store masks
-that keep reads in bounds. Neither costs a pass over memory.
+The loop runs over taps, not over windows. At each tap every window in the tile picks up one
+term:
 
-The weight-gradient kernel covers all taps in one program so ``grad`` is loaded once and reused
-across them, rather than once per tap.
+    acc += weight[tap] * the input pixel each window reads through that tap
+
+``weight[tap]`` is a single value per channel, shared by all POSITION_BLOCK windows; the pixel it
+multiplies differs per window, because the windows sit STRIDE_H and STRIDE_W apart. The tile holds
+finished outputs once every tap has been applied.
+
+Windows overlap whenever KERNEL_H exceeds STRIDE_H, so pixels read for one window are reread by
+its neighbour, and keeping a block of windows in flight turns those rereads into cache hits.
+Channels being contiguous in NHWC makes each row of the tile a single wide load.
+
+The bias is added to the tile before the store, and ``in_lengths``/``out_lengths`` enter the load
+and store masks that already bound the reads.
 """
 
 from __future__ import annotations
@@ -54,11 +60,6 @@ if TRITON_AVAILABLE:
     import triton
     import triton.language as tl
 
-    # The autotune keys below exclude the time extent on purpose. A batch is padded to its longest
-    # utterance, so that extent takes essentially arbitrary values and each unseen one triggers a
-    # full sweep -- seconds of tuning for a kernel that runs in tens of microseconds. The winning
-    # tile is set by the channel count and the frequency extent, both fixed for a model; time only
-    # scales the grid, so one config carries the whole range.
     def _forward_configs():
         return [
             triton.Config({"POSITION_BLOCK": positions, "CHANNEL_BLOCK": channels}, num_warps=warps)
@@ -68,8 +69,8 @@ if TRITON_AVAILABLE:
         ]
 
     def _weight_grad_configs():
-        # Wider tiles than the forward: the accumulator is [TAPS_PADDED, CHANNEL_BLOCK], with no
-        # position axis, so it stays small enough to leave register room for them.
+        # The accumulator is [TAPS_PADDED, CHANNEL_BLOCK]; positions are reduced inside the
+        # loop, so POSITION_BLOCK only sets how many output positions each iteration reads.
         return [
             triton.Config(
                 {"POSITION_BLOCK": positions, "CHANNEL_BLOCK": channels, "TILE_SPLITS": splits}, num_warps=warps
@@ -82,8 +83,7 @@ if TRITON_AVAILABLE:
 
     @triton.jit
     def _decode_position(position, extent_y, extent_x):
-        """Flat position -> (batch, y, x). One flat axis keeps the block 2D and the tiling
-        independent of how skewed the spatial extents are."""
+        """Split a flat position back into (batch, y, x)."""
         per_image = extent_y * extent_x
         return position // per_image, (position % per_image) // extent_x, position % extent_x
 
@@ -112,8 +112,8 @@ if TRITON_AVAILABLE:
         PAD_H: tl.constexpr,
         PAD_W: tl.constexpr,
     ):
-        """The input each output position reads through tap (kh, kw); zero outside the image and
-        past ``valid_height`` (NeMo masks every stage's input)."""
+        """The input each output position reads through tap (kh, kw); zero at out of bounds and past
+        ``valid_height``."""
         in_y = out_y * STRIDE_H - PAD_H + kh
         in_x = out_x * STRIDE_W - PAD_W + kw
         valid = (
@@ -183,7 +183,7 @@ if TRITON_AVAILABLE:
                     PAD_W,
                 )
 
-        # NeMo stores zeros past each utterance rather than leaving the tail unwritten
+        # zeros are stored past each sample's valid height
         total = tl.where((out_y < valid_out_height)[:, None], total, 0.0)
         tl.store(
             output_ptr + (position * channels)[:, None] + channel[None, :],
@@ -215,11 +215,11 @@ if TRITON_AVAILABLE:
         POSITION_BLOCK: tl.constexpr,
         CHANNEL_BLOCK: tl.constexpr,
     ):
-        """Input gradient as a GATHER, not a scatter, so the big tensor needs no atomics.
+        """Gradient with respect to the input.
 
-        ``y*STRIDE_H - PAD_H + kh == in_y`` has a solution only when ``in_y + PAD_H - kh`` is
-        divisible by STRIDE_H, so each input position is reached by at most
-        ceil(KERNEL_H/STRIDE_H) x ceil(KERNEL_W/STRIDE_W) outputs -- 2x2 at 3x3 stride 2.
+        Each input pixel fed several outputs in the forward pass, so its gradient is the sum of
+        what comes back from each, weighted by the tap that carried it. A program owns a block of
+        input pixels and walks the taps, accumulating those contributions.
         """
         position = tl.program_id(0) * POSITION_BLOCK + tl.arange(0, POSITION_BLOCK)
         channel = tl.program_id(1) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
@@ -287,12 +287,12 @@ if TRITON_AVAILABLE:
         CHANNEL_BLOCK: tl.constexpr,
         TILE_SPLITS: tl.constexpr,
     ):
-        """Weight and bias gradients: a reduction over every output position.
+        """Weight and bias gradients, summed over every output position.
 
-        One program covers all taps, so ``grad`` is loaded once and reused across them. Triton
-        cannot assign into a block, so the per-tap accumulators are selected with a one-hot
-        ``tl.where`` over a [TAPS_PADDED, CHANNEL_BLOCK] tile. Positions are reduced inside the
-        loop, keeping that tile free of a position axis.
+        One program handles all KERNEL_H x KERNEL_W taps for a block of channels, so each
+        ``grad`` value it loads is used by all of them. Triton cannot index into a block with a
+        runtime value, so the per-tap accumulators share one [TAPS_PADDED, CHANNEL_BLOCK] tile
+        and each tap is picked out with a one-hot ``tl.where``.
         """
         channel = tl.program_id(0) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
         channel_mask = channel < channels
@@ -341,7 +341,7 @@ if TRITON_AVAILABLE:
                     )
                     grad_weight_total += tl.where((tap_index == kh * KERNEL_W + kw)[:, None], tap_total[None, :], 0.0)
 
-        # grad_weight is (TAPS, channels) so each atomic row is a contiguous channel run
+        # grad_weight is (TAPS, channels), so each atomic row is a contiguous channel run
         tl.atomic_add(
             grad_weight_ptr + tap_index[:, None] * channels + channel[None, :],
             grad_weight_total,
@@ -502,23 +502,23 @@ def dw_conv2d(
     weight: torch.Tensor,
     bias: torch.Tensor,
     stride: int | tuple[int, int],
-    padding: int | tuple[int, int],
+    pad_start: int | tuple[int, int],
+    pad_end: int | tuple[int, int],
     in_lengths: torch.Tensor,
     out_lengths: torch.Tensor,
 ) -> torch.Tensor:
     """Channels-last depthwise conv2d with the bias and the length masking fused in.
 
     ``in_lengths``/``out_lengths`` fold into the load and store masks that already exist for
-    bounds. Height is the masked axis -- time, in the subsampling stack.
+    bounds. Height is the masked axis.
 
     Args:
         features: ``(batch, in_height, in_width, channels)``, channels-last.
         weight: ``(channels, 1, kernel_h, kernel_w)``.
         bias: ``(channels,)``.
-        stride: int or ``(stride_h, stride_w)``, matching ``nn.Conv2d``.
-        padding: int or ``(pad_h, pad_w)``, applied to the low edge of each axis. ``2`` with
-            stride 2 and a 3x3 kernel is the causal ``(2, 1)`` padding, whose output extent is
-            ``in // 2 + 1``.
+        stride: int or ``(stride_h, stride_w)``.
+        pad_start: int or ``(pad_h, pad_w)``, padding at the start of each axis.
+        pad_end: int or ``(pad_h, pad_w)``, padding at the end.
         in_lengths: ``(batch,)`` integer valid input heights.
         out_lengths: ``(batch,)`` integer valid output heights.
 
@@ -535,10 +535,10 @@ def dw_conv2d(
     batch_size, in_height, in_width, channels = features.shape
     kernel_h, kernel_w = weight.shape[2], weight.shape[3]
     stride_h, stride_w = (stride, stride) if isinstance(stride, int) else stride
-    pad_h, pad_w = (padding, padding) if isinstance(padding, int) else padding
-    # NeMo pads (kernel - 1, stride - 1); the trailing pad only affects the output extent
-    out_height = (in_height + pad_h + (stride_h - 1) - kernel_h) // stride_h + 1
-    out_width = (in_width + pad_w + (stride_w - 1) - kernel_w) // stride_w + 1
+    pad_h, pad_w = (pad_start, pad_start) if isinstance(pad_start, int) else pad_start
+    end_h, end_w = (pad_end, pad_end) if isinstance(pad_end, int) else pad_end
+    out_height = (in_height + pad_h + end_h - kernel_h) // stride_h + 1
+    out_width = (in_width + pad_w + end_w - kernel_w) // stride_w + 1
     geometry = (
         batch_size,
         channels,

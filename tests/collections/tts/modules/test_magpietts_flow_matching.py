@@ -246,6 +246,15 @@ def test_transformer_flow_matching_uses_semantic_tokens_and_backpropagates():
     semantic_codes = torch.randint(0, 32, (2, 1, 5))
     lengths = torch.tensor([5, 3])
 
+    torch.testing.assert_close(
+        predictor.estimator.output_projection.weight,
+        torch.zeros_like(predictor.estimator.output_projection.weight),
+    )
+    torch.testing.assert_close(
+        predictor.estimator.output_projection.bias,
+        torch.zeros_like(predictor.estimator.output_projection.bias),
+    )
+
     loss = predictor.compute_loss(acoustic, condition, lengths, semantic_codes=semantic_codes)
     loss.backward()
 

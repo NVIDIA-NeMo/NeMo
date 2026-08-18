@@ -746,10 +746,33 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             self.semantic_history_mask_embedding = nn.Parameter(torch.zeros(1, 1, cfg.embedding_dim))
             if self.oneshot_quantize_acoustic_feedback:
                 self.acoustic_history_mask_embedding = nn.Parameter(torch.zeros(1, 1, cfg.embedding_dim))
-            # This path has no counterpart in the pretrained discrete model. Start it as an
-            # exact no-op so loading the pretrained backbone does not inject a random residual.
-            if bool(cfg.get("oneshot_zero_init_acoustic_feedback_projection", True)):
+            zero_init_acoustic_feedback = bool(cfg.get("oneshot_zero_init_acoustic_feedback_projection", True))
+            acoustic_feedback_init_std = cfg.get("oneshot_acoustic_feedback_projection_init_std")
+            if acoustic_feedback_init_std is not None:
+                acoustic_feedback_init_std = float(acoustic_feedback_init_std)
+                if acoustic_feedback_init_std < 0.0:
+                    raise ValueError(
+                        "oneshot_acoustic_feedback_projection_init_std must be non-negative, "
+                        f"got {acoustic_feedback_init_std}."
+                    )
+            if zero_init_acoustic_feedback and acoustic_feedback_init_std is not None:
+                raise ValueError(
+                    "oneshot_zero_init_acoustic_feedback_projection and "
+                    "oneshot_acoustic_feedback_projection_init_std are mutually exclusive."
+                )
+
+            # This path has no counterpart in the pretrained discrete model. Zero initialization
+            # keeps it an exact no-op; a configured normal initialization allows a small, nonzero
+            # acoustic-history signal without using nn.Linear's much larger default scale.
+            if zero_init_acoustic_feedback:
                 nn.init.zeros_(self.flow_acoustic_in_projection.weight)
+                nn.init.zeros_(self.flow_acoustic_in_projection.bias)
+            elif acoustic_feedback_init_std is not None:
+                nn.init.normal_(
+                    self.flow_acoustic_in_projection.weight,
+                    mean=0.0,
+                    std=acoustic_feedback_init_std,
+                )
                 nn.init.zeros_(self.flow_acoustic_in_projection.bias)
             predictor_hidden_dim = {
                 LocalTransformerType.FLOW: int(cfg.get("local_flow_hidden_dim", 1536)),

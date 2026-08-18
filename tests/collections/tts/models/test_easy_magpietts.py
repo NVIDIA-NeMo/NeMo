@@ -703,6 +703,30 @@ def test_one_shot_acoustic_feedback_projection_can_use_random_initialization():
     assert torch.count_nonzero(model.flow_acoustic_in_projection.weight) > 0
 
 
+def test_one_shot_acoustic_feedback_projection_can_use_small_normal_initialization():
+    init_std = 0.01
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "oneshot_zero_init_acoustic_feedback_projection": False,
+                "oneshot_acoustic_feedback_projection_init_std": init_std,
+            }
+        )
+    )
+
+    weight = model.flow_acoustic_in_projection.weight
+    assert torch.count_nonzero(weight) > 0
+    torch.testing.assert_close(weight.std(), weight.new_tensor(init_std), rtol=0.25, atol=0.0)
+    torch.testing.assert_close(
+        model.flow_acoustic_in_projection.bias,
+        torch.zeros_like(model.flow_acoustic_in_projection.bias),
+    )
+
+
 def test_one_shot_flow_can_quantize_acoustic_feedback_into_full_codec_tokens():
     model = _make_easy_magpie_model(
         tiny_easy_magpie_cfg(

@@ -106,6 +106,11 @@ class EasyMagpieFlowMatchingTransformerEstimator(nn.Module):
             use_learnable_pos_emb=True,
         )
         self.output_projection = nn.Linear(hidden_channels, acoustic_channels)
+        # Match the pointwise estimator: begin with a zero velocity field and let
+        # the final projection learn a stable readout before gradients reach the
+        # randomly initialized transformer stack.
+        nn.init.zeros_(self.output_projection.weight)
+        nn.init.zeros_(self.output_projection.bias)
 
     def _embed_semantic_codes(self, semantic_codes: torch.Tensor) -> torch.Tensor:
         embeddings = [

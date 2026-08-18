@@ -428,6 +428,38 @@ class TestASRModulesBasicTests:
         torch.testing.assert_close(actual.data, expected.data, rtol=1e-5, atol=2e-6)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("normalize_type", ["per_feature", "all_features"])
+    def test_normalize_packed_batch_uses_fp32_for_low_precision_inputs(self, normalize_type):
+        lengths = torch.tensor([4096, 3073])
+        total_tokens = int(lengths.sum())
+        feature_ids = torch.arange(8, dtype=torch.float32).unsqueeze(0)
+        token_ids = torch.arange(total_tokens, dtype=torch.float32).unsqueeze(1)
+        data = (64.0 + feature_ids + torch.sin(token_ids * 0.013 + feature_ids) * 3.0).to(torch.bfloat16)
+        cu_seqlens = torch.cat([lengths.new_zeros(1, dtype=torch.int32), lengths.cumsum(0, dtype=torch.int32)])
+        packed = PackedEncoderActivations(
+            data,
+            lengths,
+            cu_seqlens,
+            int(lengths.max()),
+            padding_value=-3.0,
+            padded_length=int(lengths.max()),
+        )
+        reference = PackedEncoderActivations(
+            data.float(),
+            lengths,
+            cu_seqlens,
+            int(lengths.max()),
+            padding_value=-3.0,
+            padded_length=int(lengths.max()),
+        )
+
+        actual = normalize_packed_batch(packed, normalize_type)
+        expected = normalize_packed_batch(reference, normalize_type)
+
+        assert actual.data.dtype == torch.bfloat16
+        torch.testing.assert_close(actual.data, expected.data.to(torch.bfloat16), rtol=0.0, atol=0.0)
+
+    @pytest.mark.unit
     def test_FilterbankFeatures_packed_narrowband_uses_configured_rng(self):
         featurizer = FilterbankFeatures(
             nfilt=8,

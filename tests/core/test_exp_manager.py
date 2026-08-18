@@ -15,10 +15,11 @@ import json
 import math
 import re
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import lightning.pytorch as pl
 import pytest
@@ -28,6 +29,7 @@ from lightning.pytorch.loops import _TrainingEpochLoop
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
+from nemo.collections.common.callbacks import EMA
 from nemo.constants import NEMO_ENV_VARNAME_VERSION
 from nemo.core.classes import ModelPT
 from nemo.utils.app_state import AppState
@@ -1333,3 +1335,71 @@ class TestCheckResumeObjectStoreRankGuard:
                 dirpath=str(checkpoint_dir),
             )
         assert trainer.ckpt_path == str(checkpoint_dir / "model--last.ckpt")
+
+
+class TestNeMoModelCheckpointSaveWithEMA:
+    """`_save_checkpoint` must stay consistent between its EMA and non-EMA branches."""
+
+    @staticmethod
+    def _checkpoint_callback():
+        checkpoint_callback = NeMoModelCheckpoint.__new__(NeMoModelCheckpoint)
+        checkpoint_callback.save_last_n_optim_states = 1
+        checkpoint_callback.async_save = False
+        checkpoint_callback.save_weights_only = False
+        checkpoint_callback.verbose = False
+        return checkpoint_callback
+
+    def _save(self, with_ema, filepath):
+        checkpoint_callback = self._checkpoint_callback()
+        trainer = MagicMock()
+        saved = []
+        dropped = {}
+
+        ema_callback = None
+        if with_ema:
+            ema_callback = EMA.__new__(EMA)
+            ema_callback.save_original_optimizer_state = lambda _trainer: nullcontext()
+            ema_callback.save_ema_model = lambda _trainer: nullcontext()
+
+        def _drop(_trainer, path, storage_options):
+            dropped["filepath"] = path
+            dropped["storage_options"] = storage_options
+
+        with (
+            patch.object(NeMoModelCheckpoint, 'set_checkpoint_unfinished_marker'),
+            patch.object(NeMoModelCheckpoint, 'remove_checkpoint_unfinished_marker'),
+            patch.object(NeMoModelCheckpoint, '_ema_callback', return_value=ema_callback),
+            patch.object(NeMoModelCheckpoint, '_drop_optimizer_states', side_effect=_drop),
+            patch(
+                'lightning.pytorch.callbacks.ModelCheckpoint._save_checkpoint',
+                side_effect=lambda _trainer, path: saved.append(path),
+            ),
+        ):
+            checkpoint_callback._save_checkpoint(trainer, filepath)
+        return saved, dropped, trainer
+
+    @pytest.mark.unit
+    def test_drops_optimizer_states_when_ema_is_enabled(self):
+        """Regression: `storage_options` was only bound in the non-EMA branch, so this raised
+        `UnboundLocalError`."""
+        filepath = "/exp/checkpoints/model--step=100--last.ckpt"
+        saved, dropped, _ = self._save(with_ema=True, filepath=filepath)
+
+        # the EMA copy is still written next to the checkpoint
+        assert saved == [filepath, "/exp/checkpoints/model--step=100--last-EMA.ckpt"]
+        # counter-control: the rebound EMA path must not leak into _drop_optimizer_states, which
+        # reloads `filepath` into the running model
+        assert dropped["filepath"] == filepath
+        assert dropped["storage_options"] is None
+
+    @pytest.mark.unit
+    def test_drops_optimizer_states_without_ema(self):
+        """Positive control: the non-EMA branch was always correct and must stay unchanged."""
+        filepath = "/exp/checkpoints/model--step=100--last.ckpt"
+        saved, dropped, trainer = self._save(with_ema=False, filepath=filepath)
+
+        # the non-EMA branch saves through `trainer.save_checkpoint`, and no EMA copy is written
+        assert saved == []
+        assert trainer.save_checkpoint.call_args.args[0] == filepath
+        assert dropped["filepath"] == filepath
+        assert dropped["storage_options"] is None

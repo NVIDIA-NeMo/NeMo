@@ -349,37 +349,75 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
             return None
         return getattr(config, "encoder_chunk_size_seconds", None)
 
-    @staticmethod
-    def _estimate_audio_tokens_single_pass(audio_length_samples: int) -> int:
-        """Predict the encoder's output frame count for one perception forward.
+    def _get_audio_token_estimator_config(self) -> Mapping[str, object] | None:
+        """Return the exact training-time audio length arithmetic, when exported."""
+        config = getattr(self.get_hf_config(), "audio_token_estimator", None)
+        if config is not None and not isinstance(config, Mapping):
+            raise TypeError("audio_token_estimator in config.json must be a mapping")
+        return config
 
-        Mirrors the FastConformer preprocessing chain used by
-        ``AudioPerceptionModule``: STFT (n_fft=512, hop_length=160) followed
-        by 3x Conv(kernel=3, stride=2) subsampling. Implemented as pure
-        Python integer math instead of calling NeMo's ``calc_length`` so
-        the scheduler hotpath avoids ~90x tensor-op overhead (measured
-        0.18 us vs 16 us per call). If the encoder's downsampling stack
-        ever changes upstream, the unit test at
-        ``tests/collections/speechlm2/test_vllm_audio_token_estimator.py``
-        compares this function against ``calc_length`` on a canonical set
-        of lengths and will fail, forcing a rewrite here.
-        """
-        n_fft = 512
-        hop_length = 160
-        stft_pad = n_fft // 2
-        fbank_len = (audio_length_samples + 2 * stft_pad - n_fft) // hop_length
-        kernel, stride, repeat = 3, 2, 3
-        add_pad = 1 + 1 - kernel
-        length = float(fbank_len)
-        for _ in range(repeat):
-            length = (length + add_pad) / stride + 1.0
-        return max(1, int(length))
+    @staticmethod
+    def _estimate_audio_tokens_single_pass(
+        audio_length_samples: int,
+        estimator_config: Mapping[str, object] | None = None,
+    ) -> int:
+        """Predict one encoder forward output length using exported training arithmetic."""
+        if estimator_config is None:
+            preprocessor: Mapping[str, object] = {
+                "n_fft": 512,
+                "hop_length": 160,
+                "stft_pad_amount": 256,
+            }
+            raw_subsampling: object = {
+                "type": "conv",
+                "kernel_size": 3,
+                "stride": 2,
+                "padding": 1,
+                "repeat": 3,
+                "ceil_mode": False,
+            }
+        else:
+            raw_preprocessor = estimator_config.get("preprocessor")
+            if not isinstance(raw_preprocessor, Mapping):
+                raise TypeError("audio_token_estimator.preprocessor must be a mapping")
+            preprocessor = raw_preprocessor
+            raw_subsampling = estimator_config.get("subsampling")
+
+        stages = [raw_subsampling] if isinstance(raw_subsampling, Mapping) else raw_subsampling
+        if not isinstance(stages, (list, tuple)):
+            raise TypeError("audio_token_estimator.subsampling must be a mapping or list")
+
+        n_fft = int(preprocessor["n_fft"])
+        hop_length = int(preprocessor["hop_length"])
+        stft_pad = int(preprocessor["stft_pad_amount"])
+        length = (int(audio_length_samples) + 2 * stft_pad - n_fft) // hop_length
+        for stage in stages:
+            if not isinstance(stage, Mapping):
+                raise TypeError("Each audio_token_estimator.subsampling stage must be a mapping")
+            stage_type = stage.get("type", "conv")
+            if stage_type == "feature_stacking":
+                factor = int(stage["factor"])
+                length = (length + factor - 1) // factor
+            elif stage_type == "conv":
+                kernel = int(stage["kernel_size"])
+                stride = int(stage["stride"])
+                padding = int(stage["padding"])
+                repeat = int(stage.get("repeat", 1))
+                ceil_mode = bool(stage.get("ceil_mode", False))
+                for _ in range(repeat):
+                    numerator = length + 2 * padding - kernel
+                    quotient = -(-numerator // stride) if ceil_mode else numerator // stride
+                    length = quotient + 1
+            else:
+                raise ValueError(f"Unsupported audio_token_estimator subsampling type: {stage_type!r}")
+        return max(1, length)
 
     @classmethod
     def _estimate_audio_tokens(
         cls,
         audio_length_samples: int,
         chunk_size_seconds: float | None = None,
+        estimator_config: Mapping[str, object] | None = None,
     ) -> int:
         """Predict the encoder's total output frame count for an audio of N samples.
 
@@ -389,14 +427,17 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         tail-folding rule) and sums the per-chunk frame counts so the
         placeholder count matches what the model emits at forward time.
         """
+        if estimator_config is not None and "chunk_size_seconds" in estimator_config:
+            configured_chunk_size = estimator_config.get("chunk_size_seconds")
+            chunk_size_seconds = None if configured_chunk_size is None else float(configured_chunk_size)
         if chunk_size_seconds is None or audio_length_samples <= 0:
-            return cls._estimate_audio_tokens_single_pass(audio_length_samples)
+            return cls._estimate_audio_tokens_single_pass(audio_length_samples, estimator_config)
         if chunk_size_seconds <= 0.0:
             raise ValueError("encoder_chunk_size_seconds must be positive when set.")
         chunk_size_samples = max(1, int(round(chunk_size_seconds * _SAMPLING_RATE)))
         chunk_size_samples = max(chunk_size_samples, _MIN_CHUNK_SIZE_SAMPLES)
         if audio_length_samples <= chunk_size_samples:
-            return cls._estimate_audio_tokens_single_pass(audio_length_samples)
+            return cls._estimate_audio_tokens_single_pass(audio_length_samples, estimator_config)
 
         spans: list[tuple[int, int]] = []
         for begin in range(0, audio_length_samples, chunk_size_samples):
@@ -406,10 +447,15 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
             spans[-2] = (spans[-2][0], spans[-1][1])
             spans.pop()
 
-        return sum(cls._estimate_audio_tokens_single_pass(end - begin) for begin, end in spans)
+        return sum(cls._estimate_audio_tokens_single_pass(end - begin, estimator_config) for begin, end in spans)
 
     @classmethod
-    def _samples_for_audio_tokens(cls, target_tokens: int, chunk_size_seconds: float | None = None) -> int:
+    def _samples_for_audio_tokens(
+        cls,
+        target_tokens: int,
+        chunk_size_seconds: float | None = None,
+        estimator_config: Mapping[str, object] | None = None,
+    ) -> int:
         """Return the smallest sample count estimated to produce ``target_tokens``.
 
         vLLM sizes the multimodal encoder cache from dummy inputs.  The SALM
@@ -422,10 +468,10 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         target_tokens = max(1, int(target_tokens))
         max_samples = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
         lo, hi = 1, min(_SAMPLING_RATE, max_samples)
-        while hi < max_samples and cls._estimate_audio_tokens(hi, chunk_size_seconds) < target_tokens:
+        while hi < max_samples and cls._estimate_audio_tokens(hi, chunk_size_seconds, estimator_config) < target_tokens:
             hi = min(hi * 2, max_samples)
 
-        hi_tokens = cls._estimate_audio_tokens(hi, chunk_size_seconds)
+        hi_tokens = cls._estimate_audio_tokens(hi, chunk_size_seconds, estimator_config)
         if hi_tokens < target_tokens:
             raise ValueError(
                 f"Cannot produce {target_tokens} audio tokens within the "
@@ -435,7 +481,7 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
 
         while lo < hi:
             mid = (lo + hi) // 2
-            if cls._estimate_audio_tokens(mid, chunk_size_seconds) >= target_tokens:
+            if cls._estimate_audio_tokens(mid, chunk_size_seconds, estimator_config) >= target_tokens:
                 hi = mid
             else:
                 lo = mid + 1
@@ -473,10 +519,11 @@ class NeMoSpeechLMMultiModalProcessor(
     ) -> list[PromptUpdate]:
         audios = mm_items.get_items("audio", AudioProcessorItems)
         chunk_size_seconds = self.info._get_encoder_chunk_size_seconds()
+        estimator_config = self.info._get_audio_token_estimator_config()
 
         def get_replacement(item_idx: int):
             audio = audios.get(item_idx)
-            n_tokens = self.info._estimate_audio_tokens(audio.shape[-1], chunk_size_seconds)
+            n_tokens = self.info._estimate_audio_tokens(audio.shape[-1], chunk_size_seconds, estimator_config)
             repl_full = _AUDIO_PLACEHOLDER * n_tokens
             return PromptUpdateDetails.select_text(repl_full, _AUDIO_PLACEHOLDER)
 
@@ -502,6 +549,7 @@ class NeMoSpeechLMMultiModalProcessor(
 
         if audios:
             chunk_size_seconds = self.info._get_encoder_chunk_size_seconds()
+            estimator_config = self.info._get_audio_token_estimator_config()
             audio_list: list[torch.Tensor] = []
             audio_lengths: list[int] = []
             parts = re.split(f"({re.escape(_AUDIO_PLACEHOLDER)})", prompt)
@@ -521,7 +569,7 @@ class NeMoSpeechLMMultiModalProcessor(
                 )
                 if audio_tensor.dim() > 1:
                     audio_tensor = audio_tensor.squeeze()
-                n_tokens = self.info._estimate_audio_tokens(audio_tensor.shape[-1], chunk_size_seconds)
+                n_tokens = self.info._estimate_audio_tokens(audio_tensor.shape[-1], chunk_size_seconds, estimator_config)
                 parts[i] = _AUDIO_PLACEHOLDER * n_tokens
                 audio_list.append(audio_tensor)
                 audio_lengths.append(audio_tensor.shape[-1])
@@ -553,17 +601,20 @@ class NeMoSpeechLMDummyInputsBuilder(
         requested_audio_len = getattr(audio_options, "length", None)
         if requested_audio_len:
             chunk_size_seconds = self.info._get_encoder_chunk_size_seconds()
+            estimator_config = self.info._get_audio_token_estimator_config()
             if seq_len > _DUMMY_AUDIO_TEXT_TOKEN_RESERVE:
                 max_audio_tokens = seq_len - _DUMMY_AUDIO_TEXT_TOKEN_RESERVE
                 max_audio_len = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
                 max_supported_audio_tokens = NeMoSpeechLMProcessingInfo._estimate_audio_tokens(
                     max_audio_len,
                     chunk_size_seconds,
+                    estimator_config,
                 )
                 if max_audio_tokens < max_supported_audio_tokens:
                     max_audio_len = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(
                         max_audio_tokens,
                         chunk_size_seconds,
+                        estimator_config,
                     )
             else:
                 max_audio_len = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)

@@ -300,19 +300,19 @@ Context-biasing candidates obtained by CTC-WS are also filtered by the scores wi
 
 Scheme of the CTC-WS method:
 
-.. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.22.0/asset-post-v1.22.0-ctcws_scheme_1.png
+.. image:: https://github.com/NVIDIA-NeMo/Speech/releases/download/v1.22.0/asset-post-v1.22.0-ctcws_scheme_1.png
     :align: center
     :alt: CTC-WS scheme
     :width: 80%
 
 High-level overview of the context-biasing words replacement with CTC-WS method:
 
-.. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.22.0/asset-post-v1.22.0-ctcws_scheme_2.png
+.. image:: https://github.com/NVIDIA-NeMo/Speech/releases/download/v1.22.0/asset-post-v1.22.0-ctcws_scheme_2.png
     :align: center
     :alt: CTC-WS high level overview
     :width: 80%
 
-More details about CTC-WS context-biasing can be found in the `tutorial <https://github.com/NVIDIA/NeMo/tree/main/tutorials/asr/ASR_Context_Biasing.ipynb>`__.
+More details about CTC-WS context-biasing can be found in the `tutorial <https://github.com/NVIDIA-NeMo/Speech/tree/main/tutorials/asr/ASR_Context_Biasing.ipynb>`__.
 
 To use CTC-WS context-biasing, you need to create a context-biasing text file that contains words/phrases to be boosted, with its transcriptions (spellings) separated by underscore.
 Multiple transcriptions can be useful for abbreviations ("gpu" -> "g p u"), compound words ("nvlink" -> "nv link"), 

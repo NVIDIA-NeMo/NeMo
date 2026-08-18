@@ -326,6 +326,11 @@ def main(cfg: HfExportConfig) -> None:
 
     full_cfg = OmegaConf.to_container(OmegaConf.load(cfg.ckpt_config), resolve=True)
     model_cfg = full_cfg["model"]
+    audio_token_estimator = full_cfg.get("data", {}).get("train_ds", {}).get("audio_token_estimator")
+    if audio_token_estimator is not None:
+        # The vLLM prompt processor must reserve exactly as many audio
+        # placeholders as the checkpoint's encoder emits.
+        model_cfg["audio_token_estimator"] = audio_token_estimator
     model_cfg["torch_dtype"] = _canonical_torch_dtype_name(cfg.dtype)
     cls = import_class_by_path(cfg.class_path)
 

@@ -33,6 +33,7 @@ import torch
 pytest.importorskip("vllm")
 
 from nemo.collections.asr.parts.submodules.subsampling import calc_length
+from nemo.collections.common.data.lhotse.audio_token_estimator import AudioTokenEstimator
 from nemo.collections.speechlm2.vllm.salm.audio import (
     _DUMMY_AUDIO_MAX_DURATION_S,
     _MIN_CHUNK_SIZE_SAMPLES,
@@ -167,3 +168,39 @@ def test_samples_for_audio_tokens_rejects_unreachable_target() -> None:
 
     with pytest.raises(ValueError, match="Cannot produce"):
         NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(max_tokens + 1)
+
+
+_FEATURE_STACKING_CONFIG = {
+    "preprocessor": {"n_fft": 512, "hop_length": 160, "stft_pad_amount": 256},
+    "subsampling": {"type": "feature_stacking", "factor": 8},
+    "chunk_size_seconds": None,
+}
+
+
+@pytest.mark.parametrize("samples", [1, 1_600, 16_000, 123_457, 480_000])
+def test_exported_feature_stacking_estimator_matches_training(samples: int) -> None:
+    reference = AudioTokenEstimator.from_config(_FEATURE_STACKING_CONFIG, sample_rate=_SAMPLING_RATE)
+    assert reference is not None
+    assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(
+        samples, estimator_config=_FEATURE_STACKING_CONFIG
+    ) == reference.estimate_samples(samples)
+
+
+def test_exported_feature_stacking_estimator_matches_training_with_chunking() -> None:
+    config = {**_FEATURE_STACKING_CONFIG, "chunk_size_seconds": 30.0}
+    reference = AudioTokenEstimator.from_config(config, sample_rate=_SAMPLING_RATE)
+    assert reference is not None
+    samples = 31 * _SAMPLING_RATE
+    assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(
+        samples, estimator_config=config
+    ) == reference.estimate_samples(samples)
+
+
+def test_feature_stacking_inverse_returns_minimum_sample_count() -> None:
+    config = {**_FEATURE_STACKING_CONFIG, "chunk_size_seconds": 30.0}
+    target_tokens = 388
+    samples = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(
+        target_tokens, estimator_config=config
+    )
+    assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, estimator_config=config) >= target_tokens
+    assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples - 1, estimator_config=config) < target_tokens

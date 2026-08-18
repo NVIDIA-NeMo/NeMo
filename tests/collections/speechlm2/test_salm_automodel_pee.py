@@ -33,22 +33,19 @@ from nemo.collections.common.data.lhotse.text_adapters import AudioTurn, TextTur
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.speechlm2.data import SALMDataset
-from nemo.collections.speechlm2.data.salm_dataset import (
-    MultiSpeakerConfig,
-    SALMMultiSpeakerProcessor,
-)
+from nemo.collections.speechlm2.data.salm_dataset import MultiSpeakerConfig, SALMMultiSpeakerProcessor
 from nemo.collections.speechlm2.models import SALMAutomodel
-
-# Reuse the shared toy encoder and dimensions so both suites use one fixture.
-from tests.collections.asr.test_parallel_expert_encoder_two_branch import (
-    build_toy_pe_encoder as build_toy_two_branch_encoder,
-)
 from tests.collections.asr.test_parallel_expert_encoder import (
     _ASR_D_MODEL,
     _MEL_FEATURES,
     _N_SPK,
     _SUBSAMPLING_FACTOR,
     build_toy_pe_encoder,
+)
+
+# Reuse the shared toy encoder and dimensions so both suites use one fixture.
+from tests.collections.asr.test_parallel_expert_encoder_two_branch import (
+    build_toy_pe_encoder as build_toy_two_branch_encoder,
 )
 
 # SALMAutomodel.configure_model() pulls in the (gitignored) nemo_automodel package,

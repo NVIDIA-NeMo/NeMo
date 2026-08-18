@@ -234,8 +234,6 @@ def test_exported_feature_stacking_estimator_matches_training_with_chunking() ->
 def test_feature_stacking_inverse_returns_minimum_sample_count() -> None:
     config = {**_FEATURE_STACKING_CONFIG, "chunk_size_seconds": 30.0}
     target_tokens = 388
-    samples = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(
-        target_tokens, estimator_config=config
-    )
+    samples = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(target_tokens, estimator_config=config)
     assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, estimator_config=config) >= target_tokens
     assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples - 1, estimator_config=config) < target_tokens

@@ -430,9 +430,7 @@ class ParallelExpertEncoder(nn.Module):
         if self.frame_shift_seconds <= 0:
             raise ValueError(f'frame_shift_seconds must be positive, got {frame_shift_seconds}.')
         self.asr_chunk_size_seconds = self._validate_chunk_size('asr_chunk_size_seconds', asr_chunk_size_seconds)
-        self.diar_chunk_size_seconds = self._validate_chunk_size(
-            'diar_chunk_size_seconds', diar_chunk_size_seconds
-        )
+        self.diar_chunk_size_seconds = self._validate_chunk_size('diar_chunk_size_seconds', diar_chunk_size_seconds)
 
         self.online_inference_length = int(online_inference_length)
         self.online_inference_enabled = False
@@ -553,9 +551,7 @@ class ParallelExpertEncoder(nn.Module):
         )
 
     @staticmethod
-    def _match_packed_module_io(
-        packed: PackedEncoderActivations, module: nn.Module
-    ) -> PackedEncoderActivations:
+    def _match_packed_module_io(packed: PackedEncoderActivations, module: nn.Module) -> PackedEncoderActivations:
         parameter = next(module.parameters(), None)
         if parameter is None:
             return packed
@@ -740,9 +736,7 @@ class ParallelExpertEncoder(nn.Module):
             diarization_preds=diarization_preds,
         )
 
-    def _run_diarization_packed(
-        self, features: PackedEncoderActivations
-    ) -> PackedEncoderActivations:
+    def _run_diarization_packed(self, features: PackedEncoderActivations) -> PackedEncoderActivations:
         """Run the frozen streaming-trained Sortformer on raw, unnormalised mels."""
         features = self._match_packed_module_io(features, self.diarization_model.encoder)
         with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_diar):

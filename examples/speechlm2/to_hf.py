@@ -73,9 +73,7 @@ def _adapt_strategy_for_conversion_world(strategy_cfg: dict, world_size: int) ->
 
     conversion_dp_size = world_size // non_dp_size
     replicate_size = int(strategy_cfg.get("dp_replicate_size") or 1)
-    if replicate_size > 1 and (
-        conversion_dp_size % replicate_size != 0 or replicate_size >= conversion_dp_size
-    ):
+    if replicate_size > 1 and (conversion_dp_size % replicate_size != 0 or replicate_size >= conversion_dp_size):
         strategy_cfg["dp_replicate_size"] = 1
     return strategy_cfg
 

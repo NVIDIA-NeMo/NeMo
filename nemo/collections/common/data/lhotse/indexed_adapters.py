@@ -446,9 +446,7 @@ class PackedTarMemberReader:
             try:
                 info = tarfile.TarInfo.frombuf(header, tarfile.ENCODING, "surrogateescape")
             except tarfile.TarError as ex:
-                raise type(ex)(
-                    f"{ex} — reading packed tar header at {position} in {location.path}"
-                ) from ex
+                raise type(ex)(f"{ex} — reading packed tar header at {position} in {location.path}") from ex
             data_position = position + _TAR_BLOCK_SIZE
             if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME):
                 data = read_packed_range(
@@ -466,8 +464,7 @@ class PackedTarMemberReader:
                 return pax_headers.get("path") or long_name or info.name
             position = data_position + (-(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE)
         raise EOFError(
-            f"No regular tar member in packed range [{location.start}, {location.end}) "
-            f"in {location.path}"
+            f"No regular tar member in packed range [{location.start}, {location.end}) " f"in {location.path}"
         )
 
     def _name_index_for_shard(self, shard_index: int) -> dict[str, int]:

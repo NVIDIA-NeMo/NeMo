@@ -87,9 +87,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
         else:
             self.spec_augmentation = None
         self.modality_adapter = self.from_config_dict(cfg.modality_adapter)
-        if isinstance(
-            self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)
-        ):
+        if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
             from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
 
             self.encoder_multilayer = ConformerMultiLayerFeatureExtractor(
@@ -535,9 +533,7 @@ class AudioTranscriptionPerceptionModule(NeuralModule, Exportable):
         if 'spec_augment' in cfg and cfg.spec_augment is not None:
             self.spec_augmentation = self.from_config_dict(cfg.spec_augment)
         self.modality_adapter = self.from_config_dict(cfg.modality_adapter)
-        if isinstance(
-            self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)
-        ):
+        if isinstance(self.modality_adapter, (QformerConnector, MultiLayerProjectionConnector)):
             from nemo.collections.asr.modules.conformer_encoder import ConformerMultiLayerFeatureExtractor
 
             self.encoder_multilayer = ConformerMultiLayerFeatureExtractor(

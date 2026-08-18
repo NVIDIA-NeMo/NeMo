@@ -255,8 +255,7 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
     weights_path = artifact / "model.safetensors"
     if not artifact.is_dir() or not config_path.is_file() or not weights_path.is_file():
         raise FileNotFoundError(
-            "model.speaker_encoder.path must contain model_config.yaml and model.safetensors; "
-            f"got {artifact}."
+            "model.speaker_encoder.path must contain model_config.yaml and model.safetensors; " f"got {artifact}."
         )
     if model.cfg.get("encoder_chunk_size_seconds", None) is not None:
         raise ValueError(
@@ -274,8 +273,7 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
     speaker.load_state_dict(state, strict=True)
 
     frame_shift_seconds = (
-        model.perception.preprocessor.featurizer.hop_length
-        / model.perception.preprocessor.featurizer.sample_rate
+        model.perception.preprocessor.featurizer.hop_length / model.perception.preprocessor.featurizer.sample_rate
     )
     dual = IndependentDualEncoder(
         model.perception.encoder,

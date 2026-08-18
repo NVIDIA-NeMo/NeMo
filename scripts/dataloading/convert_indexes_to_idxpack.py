@@ -49,7 +49,6 @@ import click
 from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, write_index_pack
 from lhotse.indexing import index_file_path
 from omegaconf import DictConfig, ListConfig, OmegaConf
-
 from scripts.dataloading.build_indexes import (
     _NO_INDEX_TYPES,
     _TRANSFORM_TYPES,
@@ -165,9 +164,7 @@ def _read_raw_tar_sentinel(idx_path: Path) -> tuple[int, os.stat_result]:
 def _repair_local_native_tar_sidecar(path: str, repair_root) -> Path:
     if _is_remote_path(path):
         raise ValueError(f"Refusing to repair non-local native tar source: {path}")
-    from nemo.collections.common.data.lhotse.indexed_adapters import (
-        create_tar_index as create_nemo_tar_index,
-    )
+    from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 
     repair_idx = _resolve_local_sidecar(path, repair_root)
     repair_idx.parent.mkdir(parents=True, exist_ok=True)
@@ -180,9 +177,7 @@ def _repair_local_native_tar_sidecar(path: str, repair_root) -> Path:
             f"but source {path} is {source_size} bytes."
         )
     if Path(path).stat().st_mtime_ns > index_stat.st_mtime_ns:
-        raise ValueError(
-            f"Source {path} changed while rebuilding private sidecar {repair_idx}."
-        )
+        raise ValueError(f"Source {path} changed while rebuilding private sidecar {repair_idx}.")
     logging.info(
         "Rebuilt stale local native-tar sidecar privately: source=%s bytes=%d sidecar=%s",
         path,
@@ -212,8 +207,7 @@ def _verify_trailing_zero_padding(path: str, start: int, source_size: int) -> No
             chunk = stream.read(min(1024 * 1024, remaining))
             if not chunk:
                 raise ValueError(
-                    f"Short read while verifying trailing padding for {path}: "
-                    f"{remaining} bytes remain"
+                    f"Short read while verifying trailing padding for {path}: " f"{remaining} bytes remain"
                 )
             if any(chunk):
                 raise ValueError(
@@ -263,9 +257,7 @@ def _validate_native_tar_sidecar(
                 )
         if not accepted_padding:
             if not _is_remote_path(path) and repair_stale_local_sidecars_root is not None:
-                idx_path = _repair_local_native_tar_sidecar(
-                    path, repair_stale_local_sidecars_root
-                )
+                idx_path = _repair_local_native_tar_sidecar(path, repair_stale_local_sidecars_root)
                 sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
             else:
                 raise ValueError(
@@ -277,13 +269,10 @@ def _validate_native_tar_sidecar(
         source_stat = Path(path).stat()
         if source_stat.st_mtime_ns > index_stat.st_mtime_ns and source_size_override is None:
             if repair_stale_local_sidecars_root is not None:
-                idx_path = _repair_local_native_tar_sidecar(
-                    path, repair_stale_local_sidecars_root
-                )
+                idx_path = _repair_local_native_tar_sidecar(path, repair_stale_local_sidecars_root)
             else:
                 raise ValueError(
-                    f"Source {path} is newer than native tar index {idx_path}. "
-                    f"{_REBUILD_TAR_INDEXES_HINT}"
+                    f"Source {path} is newer than native tar index {idx_path}. " f"{_REBUILD_TAR_INDEXES_HINT}"
                 )
     return idx_path, source_size_override
 

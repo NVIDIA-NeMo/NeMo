@@ -138,9 +138,7 @@ def _maybe_mount_pe_encoder(
     else:
         # Validate local bundles immediately; resolve remote identifiers in the loader.
         is_local_nemo_file = (
-            isinstance(pe_encoder_path, str)
-            and pe_encoder_path.endswith(".nemo")
-            and os.path.isfile(pe_encoder_path)
+            isinstance(pe_encoder_path, str) and pe_encoder_path.endswith(".nemo") and os.path.isfile(pe_encoder_path)
         )
         if is_local_nemo_file and not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
             raise ValueError(f"pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle.")
@@ -219,8 +217,7 @@ def _maybe_mount_independent_speaker_encoder(
         return False
     if not isinstance(speaker_encoder_cfg, Mapping):
         raise TypeError(
-            "speaker_encoder must be a mapping with path/chunk settings; "
-            f"got {type(speaker_encoder_cfg).__name__}."
+            "speaker_encoder must be a mapping with path/chunk settings; " f"got {type(speaker_encoder_cfg).__name__}."
         )
     if encoder_chunk_size_seconds is not None:
         raise ValueError(
@@ -240,8 +237,7 @@ def _maybe_mount_independent_speaker_encoder(
     weights_path = artifact / "model.safetensors"
     if not artifact.is_dir() or not config_path.is_file() or not weights_path.is_file():
         raise FileNotFoundError(
-            "speaker_encoder.path must contain model_config.yaml and model.safetensors; "
-            f"got {artifact}."
+            "speaker_encoder.path must contain model_config.yaml and model.safetensors; " f"got {artifact}."
         )
     if not isinstance(getattr(perception, "modality_adapter", None), IdentityConnector):
         raise TypeError("IndependentDualEncoder requires IdentityConnector.")
@@ -342,10 +338,9 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         ``None`` means the encoder runs once over the full audio.
         """
         config = self.get_hf_config()
-        if (
-            getattr(config, "pe_encoder_path", None) not in (None, "", False)
-            or getattr(config, "pe_encoder_config", None) not in (None, {}, "", False)
-        ):
+        if getattr(config, "pe_encoder_path", None) not in (None, "", False) or getattr(
+            config, "pe_encoder_config", None
+        ) not in (None, {}, "", False):
             return None
         return getattr(config, "encoder_chunk_size_seconds", None)
 
@@ -468,7 +463,9 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         target_tokens = max(1, int(target_tokens))
         max_samples = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
         lo, hi = 1, min(_SAMPLING_RATE, max_samples)
-        while hi < max_samples and cls._estimate_audio_tokens(hi, chunk_size_seconds, estimator_config) < target_tokens:
+        while (
+            hi < max_samples and cls._estimate_audio_tokens(hi, chunk_size_seconds, estimator_config) < target_tokens
+        ):
             hi = min(hi * 2, max_samples)
 
         hi_tokens = cls._estimate_audio_tokens(hi, chunk_size_seconds, estimator_config)
@@ -569,7 +566,9 @@ class NeMoSpeechLMMultiModalProcessor(
                 )
                 if audio_tensor.dim() > 1:
                     audio_tensor = audio_tensor.squeeze()
-                n_tokens = self.info._estimate_audio_tokens(audio_tensor.shape[-1], chunk_size_seconds, estimator_config)
+                n_tokens = self.info._estimate_audio_tokens(
+                    audio_tensor.shape[-1], chunk_size_seconds, estimator_config
+                )
                 parts[i] = _AUDIO_PLACEHOLDER * n_tokens
                 audio_list.append(audio_tensor)
                 audio_lengths.append(audio_tensor.shape[-1])

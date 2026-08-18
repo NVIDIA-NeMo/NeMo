@@ -278,9 +278,9 @@ def speaker_timeline_cost_batch(
         frame_positions = np.flatnonzero(activity[:, speaker_idx])
         if frame_positions.size:
             activity_present[speaker_idx] = True
-            activity_quantiles[speaker_idx] = np.quantile(
-                frame_positions, _ALIGNMENT_TIMELINE_QUANTILES
-            ).astype(np.float32) / np.float32(frame_denominator)
+            activity_quantiles[speaker_idx] = np.quantile(frame_positions, _ALIGNMENT_TIMELINE_QUANTILES).astype(
+                np.float32
+            ) / np.float32(frame_denominator)
 
     pair_cost = np.abs(text_quantiles[:, np.newaxis, :] - activity_quantiles[np.newaxis, :, :]).mean(axis=2)
     pair_cost[~text_present, :] = 0.0

@@ -652,9 +652,7 @@ def test_online_inference_uses_activation_device_after_nested_parent_move():
         ('transformer', toy_transformer_asr_encoder_cfg),
     ],
 )
-def test_online_inference_matches_independent_valid_prefixes_for_unequal_audio(
-    asr_encoder_type, asr_encoder_cfg
-):
+def test_online_inference_matches_independent_valid_prefixes_for_unequal_audio(asr_encoder_type, asr_encoder_cfg):
     encoder = build_toy_pe_encoder(
         asr_encoder_type=asr_encoder_type,
         asr_encoder_cfg=asr_encoder_cfg(),

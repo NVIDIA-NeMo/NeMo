@@ -61,6 +61,25 @@ def load_checkpoint(model: torch.nn.Module, checkpoint_path: str) -> None:
         model.load_state_dict(ckpt_data["state_dict"])
 
 
+def _adapt_strategy_for_conversion_world(strategy_cfg: dict, world_size: int) -> dict:
+    """Make an HSDP training mesh valid for the smaller conversion world."""
+    strategy_cfg = deepcopy(strategy_cfg)
+    tp_size = int(strategy_cfg.get("tp_size") or 1)
+    cp_size = int(strategy_cfg.get("cp_size") or 1)
+    pp_size = int(strategy_cfg.get("pp_size") or 1)
+    non_dp_size = tp_size * cp_size * pp_size
+    if world_size % non_dp_size != 0:
+        return strategy_cfg
+
+    conversion_dp_size = world_size // non_dp_size
+    replicate_size = int(strategy_cfg.get("dp_replicate_size") or 1)
+    if replicate_size > 1 and (
+        conversion_dp_size % replicate_size != 0 or replicate_size >= conversion_dp_size
+    ):
+        strategy_cfg["dp_replicate_size"] = 1
+    return strategy_cfg
+
+
 def setup_distributed_from_config(strategy_cfg: dict) -> Any:
     """Initialize torch.distributed and create a device mesh from a Hydra strategy config.
 
@@ -76,6 +95,7 @@ def setup_distributed_from_config(strategy_cfg: dict) -> Any:
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
 
+    strategy_cfg = _adapt_strategy_for_conversion_world(strategy_cfg, dist.get_world_size())
     strategy = safe_instantiate(strategy_cfg)
     _resolve_automodel_configs(strategy)
     strategy.create_device_mesh()

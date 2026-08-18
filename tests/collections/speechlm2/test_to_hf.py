@@ -391,3 +391,15 @@ def test_prepare_for_vllm_preserves_model_pad_and_eos_contract(tmp_path):
     assert cfg["pad_token_id"] == 0
     assert cfg["eos_token_id"] == [1]
     assert gen_cfg == {"eos_token_id": [1], "pad_token_id": 0}
+def test_adapt_strategy_collapses_incompatible_hsdp_replicate_axis() -> None:
+    original = {"dp_size": None, "dp_replicate_size": 16, "tp_size": 1, "pp_size": 1, "cp_size": 1, "ep_size": 8}
+    adapted = to_hf._adapt_strategy_for_conversion_world(original, world_size=8)
+    assert adapted["dp_replicate_size"] == 1
+    assert adapted["ep_size"] == 8
+    assert original["dp_replicate_size"] == 16
+
+
+def test_adapt_strategy_preserves_compatible_hsdp_replicate_axis() -> None:
+    original = {"dp_size": None, "dp_replicate_size": 2, "tp_size": 1, "pp_size": 1, "cp_size": 1}
+    adapted = to_hf._adapt_strategy_for_conversion_world(original, world_size=8)
+    assert adapted["dp_replicate_size"] == 2

@@ -970,7 +970,10 @@ class AdapterModelPTMixin(AdapterModuleMixin):
             name = [name]
 
         if name is None:
-            name = list(config.keys())
+            # Restore exactly the adapters that this file contains. `config` is the *source model's*
+            # entire adapter config, which is a superset of the file whenever `save_adapters` was
+            # called with an explicit `name`, so it cannot be used to derive the list to restore.
+            name = list(state_dict.keys())
 
         # For all module:adapter names (note, for global modules, we ignore the module: part)
         for module_adapter_name in name:

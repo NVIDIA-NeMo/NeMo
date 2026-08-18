@@ -48,3 +48,6 @@ __all__ = [
     'SALMWithAsrDecoder',
     'NemotronVoiceChat',
 ]
+
+if _VLLM_ONLY:
+    __all__ = []

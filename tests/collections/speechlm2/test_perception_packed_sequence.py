@@ -20,7 +20,7 @@ from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerE
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import unpack_encoder_output
 from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule, IdentityConnector
-from tests.collections.asr.test_parallel_expert_encoder import build_toy_pe_encoder
+from tests.collections.asr.test_parallel_expert_encoder_ggemm import build_toy_pe_encoder
 
 
 class _FeaturePassthrough(torch.nn.Module):

@@ -17,9 +17,28 @@ import os
 __all__ = []
 if os.getenv("NEMO_SPEECHLM2_VLLM_ONLY") == "1":
     from nemo.collections.asr.modules.audio_preprocessing import AudioToMelSpectrogramPreprocessor
+    from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+    from nemo.collections.asr.modules.conv_asr import ConvASRDecoder
+    from nemo.collections.asr.modules.ggemm_transformer_encoder import GGEMMTransformerEncoder
+    from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerEncoder
+    from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder
+    from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import (
+        GGEMMParallelExpertEncoder,
+        GGEMMParallelExpertEncoderPT,
+    )
     from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 
-    __all__ = ['AudioToMelSpectrogramPreprocessor', 'TransformerEncoder']
+    __all__ = [
+        'AudioToMelSpectrogramPreprocessor',
+        'ConformerEncoder',
+        'ConvASRDecoder',
+        'GGEMMTransformerEncoder',
+        'GGEMMParallelExpertEncoder',
+        'GGEMMParallelExpertEncoderPT',
+        'MoETransformerEncoder',
+        'ParallelExpertEncoder',
+        'TransformerEncoder',
+    ]
 else:
     from nemo.collections.asr.modules.audio_preprocessing import (  # noqa: F401
         AudioToMelSpectrogramPreprocessor,
@@ -49,6 +68,10 @@ else:
     from nemo.collections.asr.modules.lstm_decoder import LSTMDecoder  # noqa: F401
     from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerEncoder  # noqa: F401
     from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder  # noqa: F401
+    from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import (  # noqa: F401
+        GGEMMParallelExpertEncoder,
+        GGEMMParallelExpertEncoderPT,
+    )
     from nemo.collections.asr.modules.rnn_encoder import RNNEncoder  # noqa: F401
     from nemo.collections.asr.modules.rnnt import (  # noqa: F401
         RNNTDecoder,
@@ -77,6 +100,8 @@ else:
         'ConformerEncoderAdapter',
         'ConformerMultiLayerFeatureExtractor',
         'GGEMMTransformerEncoder',
+        'GGEMMParallelExpertEncoder',
+        'GGEMMParallelExpertEncoderPT',
         'MoETransformerEncoder',
         'ParallelExpertEncoder',
         'ConvASRDecoder',

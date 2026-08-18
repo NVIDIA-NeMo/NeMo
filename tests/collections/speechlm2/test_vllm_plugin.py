@@ -21,6 +21,10 @@ weights.
 
 import contextlib
 import importlib.util
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -42,6 +46,58 @@ _DEFAULT_CONFIG_KWARGS = {
     "prompt_format": "nemotron-nano-v3",
     "pretrained_weights": True,
 }
+
+
+def test_serving_only_asr_exports_grouped_encoder_dependencies():
+    repo_root = Path(__file__).parents[3]
+    env = os.environ.copy()
+    env["NEMO_SPEECHLM2_VLLM_ONLY"] = "1"
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(repo_root), env.get("PYTHONPATH"))))
+    code = """
+from omegaconf import OmegaConf
+from nemo.collections.asr.models import SortformerEncLabelModel
+from nemo.collections.asr.modules import (
+    ConvASRDecoder,
+    GGEMMTransformerEncoder,
+    MoETransformerEncoder,
+    TransformerEncoder,
+)
+from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import (
+    ParallelExpertEncoder,
+    ParallelExpertEncoderPT,
+)
+
+cfg = OmegaConf.load(
+    "examples/speaker_tasks/diarization/conf/neural_diarizer/streaming_sortformer_diarizer_4spk-v2.yaml"
+)
+cfg.model.spec_augment = {
+    "_target_": "nemo.collections.asr.modules.SpectrogramAugmentation",
+    "freq_masks": 2,
+    "time_masks": 2,
+    "freq_width": 10,
+    "time_width": 0.05,
+}
+model = SortformerEncLabelModel(cfg.model).eval()
+for name in ("train_ds", "validation_ds", "test_ds", "spec_augment", "augmentor"):
+    assert model.cfg.get(name) is None
+try:
+    model.setup_training_data({})
+except RuntimeError as error:
+    assert "serving-only mode" in str(error)
+else:
+    raise AssertionError("training data setup did not fail in serving-only mode")
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=repo_root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
@@ -83,6 +139,7 @@ class TestNeMoSpeechLMConfig:
         assert cfg.pretrained_weights is None
         assert cfg.pe_encoder_path is None
         assert cfg.pe_encoder_config is None
+        assert cfg.pe_encoder_type is None
         assert cfg.speaker_encoder is None
         assert cfg.llm_architectures == []
         assert cfg.get_text_config() is cfg.text_config
@@ -96,10 +153,13 @@ class TestNeMoSpeechLMConfig:
 
     def test_preserves_explicit_phpee_export_schema(self):
         pe_config = {"target": "ParallelExpertEncoderPT", "asr_chunk_size_seconds": 30.0}
-        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, pe_encoder_config=pe_config)
+        cfg = NeMoSpeechLMConfig(
+            **_DEFAULT_CONFIG_KWARGS, pe_encoder_config=pe_config, pe_encoder_type="two_branch"
+        )
 
         assert cfg.pe_encoder_path is None
         assert cfg.pe_encoder_config == pe_config
+        assert cfg.pe_encoder_type == "two_branch"
 
     def test_preserves_independent_speaker_encoder_export_schema(self):
         speaker_config = {
@@ -697,6 +757,27 @@ class TestAudioProcessing:
         assert model.perception.encoder.context_exits == 1
         assert model.perception.encoder.online_inference_enabled is False
 
+    def test_pe_perception_weight_loading_requires_exact_architecture(self):
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
+
+        class _Perception(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.encoder = torch.nn.Linear(2, 2)
+
+        model = object.__new__(NeMoSpeechLMForConditionalGeneration)
+        torch.nn.Module.__init__(model)
+        model.perception = _Perception()
+        model._uses_pe_encoder = True
+
+        with pytest.raises(RuntimeError, match="does not exactly match"):
+            model._load_perception_weights({})
+
+        model._uses_pe_encoder = False
+        assert model._load_perception_weights({}) == set()
+
     def test_pe_mount_allows_replacing_canary_encoder_with_wider_pee(self, monkeypatch):
         import torch
 
@@ -739,7 +820,7 @@ class TestAudioProcessing:
     def test_pe_mount_constructs_ggemm_encoder_from_inline_config(self, monkeypatch):
         import torch
 
-        from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
+        from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import ParallelExpertEncoderPT
         from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_pe_encoder
 
         perception, pe_encoder = self._make_pe_mount_modules(torch)
@@ -770,7 +851,7 @@ class TestAudioProcessing:
                 "/tmp/pee.nemo",
                 {"asr_encoder_cfg": {}, "diarization_model_cfg": {}},
             )
-        with pytest.raises(ValueError, match="does not match a supported"):
+        with pytest.raises(ValueError, match="must describe exactly one architecture"):
             _maybe_mount_pe_encoder(perception, None, {"unknown": "schema"})
 
     @pytest.mark.parametrize(
@@ -836,7 +917,10 @@ class TestAudioProcessing:
         from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMDummyInputsBuilder
 
         builder = object.__new__(NeMoSpeechLMDummyInputsBuilder)
-        builder.info = SimpleNamespace(_get_encoder_chunk_size_seconds=lambda: None)
+        builder.info = SimpleNamespace(
+            _get_encoder_chunk_size_seconds=lambda: None,
+            _get_audio_token_estimator_config=lambda: None,
+        )
         monkeypatch.setattr(
             builder,
             "_get_dummy_audios",
@@ -861,7 +945,10 @@ class TestAudioProcessing:
         target_audio_tokens = 4
         max_audio_len = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(target_audio_tokens)
         builder = object.__new__(NeMoSpeechLMDummyInputsBuilder)
-        builder.info = SimpleNamespace(_get_encoder_chunk_size_seconds=lambda: None)
+        builder.info = SimpleNamespace(
+            _get_encoder_chunk_size_seconds=lambda: None,
+            _get_audio_token_estimator_config=lambda: None,
+        )
         monkeypatch.setattr(
             builder,
             "_get_dummy_audios",
@@ -885,7 +972,10 @@ class TestAudioProcessing:
 
         max_audio_len = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
         builder = object.__new__(NeMoSpeechLMDummyInputsBuilder)
-        builder.info = SimpleNamespace(_get_encoder_chunk_size_seconds=lambda: None)
+        builder.info = SimpleNamespace(
+            _get_encoder_chunk_size_seconds=lambda: None,
+            _get_audio_token_estimator_config=lambda: None,
+        )
         monkeypatch.setattr(
             builder,
             "_get_dummy_audios",
@@ -906,8 +996,9 @@ class TestAudioProcessing:
         processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
         processor.info = SimpleNamespace(
             get_tokenizer=_FakeTokenizer,
-            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None: 2,
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None, estimator_config=None: 2,
             _get_encoder_chunk_size_seconds=lambda: None,
+            _get_audio_token_estimator_config=lambda: None,
         )
 
         with pytest.raises(ValueError, match="placeholders"):
@@ -926,8 +1017,9 @@ class TestAudioProcessing:
         processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
         processor.info = SimpleNamespace(
             get_tokenizer=_FakeTokenizer,
-            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None: 2,
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None, estimator_config=None: 2,
             _get_encoder_chunk_size_seconds=lambda: None,
+            _get_audio_token_estimator_config=lambda: None,
         )
 
         result = processor._call_hf_processor(

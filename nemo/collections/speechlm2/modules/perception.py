@@ -324,6 +324,7 @@ class IndependentDualEncoder(nn.Module):
         self.asr_chunk_size_seconds = asr_chunk_size_seconds
         self.auxiliary_chunk_size_seconds = auxiliary_chunk_size_seconds
         self.freeze_auxiliary = bool(freeze_auxiliary)
+        self.auxiliary_encoder_config = None
 
         if self.frame_shift_seconds <= 0:
             raise ValueError(f"frame_shift_seconds must be positive, got {frame_shift_seconds!r}.")

@@ -45,6 +45,7 @@ from nemo.collections.tts.modules.magpietts_modules import (
     add_special_tokens,
 )
 from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
+from nemo.collections.tts.parts.utils.tts_dataset_utils import tokenize_text_with_phoneme_spans
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
@@ -360,23 +361,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         )
 
         base_num_tokens = len(self.tokenizer.tokens)
-
-        # Assign standard special tokens sequentially
-        self.bos_id = base_num_tokens
-        self.eos_id = base_num_tokens + 1
-        self.cfg_unk_token_id = base_num_tokens + 2
-        special_tokens_added = 3
-
-        # Conditionally add the interruption token
-        if cfg.get("use_multiturn_dataset", False):
-            self.interruption_token_id = base_num_tokens + special_tokens_added
-            special_tokens_added += 1
-
-        # Calculate the final total vocabulary size
-        num_tokens = base_num_tokens + special_tokens_added
-
         self.pad_id = self.tokenizer.pad
-
         self.phoneme_tokenizer = None
         if cfg.get('phoneme_tokenizer', None) is not None:
             self.phoneme_tokenizer = safe_instantiate(cfg.phoneme_tokenizer)
@@ -390,15 +375,39 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # replace the predicted timestep with UNK to reduce error propagation.
             self.phoneme_confidence_unk_threshold = cfg.get('phoneme_confidence_unk_threshold', 0.0)
 
+        self.enable_phoneme_text_input = cfg.get('enable_phoneme_text_input', False)
+        self.partial_phoneme_text_prob = cfg.get('partial_phoneme_text_prob', 0.0)
+        self.partial_phoneme_portion_min = cfg.get('partial_phoneme_portion_min', 0.25)
+        self.partial_phoneme_portion_max = cfg.get('partial_phoneme_portion_max', 0.75)
+        self.phoneme_text_bop_marker = cfg.get('phoneme_text_bop_marker', '<bop>')
+        self.phoneme_text_eop_marker = cfg.get('phoneme_text_eop_marker', '<eop>')
+        if (
+            not self.phoneme_text_bop_marker
+            or not self.phoneme_text_eop_marker
+            or self.phoneme_text_bop_marker == self.phoneme_text_eop_marker
+        ):
+            raise ValueError("Pronunciation-control markers must be non-empty and distinct.")
+        self.bos_id = base_num_tokens
+        self.eos_id = base_num_tokens + 1
+        self.cfg_unk_token_id = base_num_tokens + 2
+        next_special_token_id = base_num_tokens + 3
+        if cfg.get("use_multiturn_dataset", False):
+            self.interruption_token_id = next_special_token_id
+            next_special_token_id += 1
+
+        self.text_phoneme_token_offset = None
+        self.text_phoneme_vocab_size = 0
+        if self.enable_phoneme_text_input:
+            if self.phoneme_tokenizer is None:
+                raise ValueError("`phoneme_tokenizer` is required when `enable_phoneme_text_input=True`.")
+            self.text_phoneme_token_offset = next_special_token_id
+            self.text_phoneme_vocab_size = self.phoneme_tokenizer.vocab_size
+
+        self.text_vocab_size = next_special_token_id + self.text_phoneme_vocab_size
+
         self.pad_context_text_to_max_duration = False
         self.add_language_to_context_text = cfg.get('add_language_to_context_text', False)
         self.ignore_phoneme_languages = cfg.get('ignore_phoneme_languages', [])
-        # During training, this is the probability of replacing transcript text with G2P output
-        # before tokenization. It is disabled for validation/inference by the dataset setup.
-        self.phoneme_as_text_prob = cfg.get('phoneme_as_text_prob', 0.0)
-        # Optional per-language Hydra configs for G2P modules used by pronunciation control when phoneme_as_text_prob
-        # samples the G2P-text path. Used only when phoneme_as_text_prob > 0.0.
-        self.pronunciation_control_g2p = cfg.get('pronunciation_control_g2p', None)
 
         super().__init__(cfg=cfg, trainer=trainer)
 
@@ -538,7 +547,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             self.text_embedding = None
             self.decoder.set_input_embeddings(None)
         else:
-            self.text_embedding = nn.Embedding(num_tokens, cfg.embedding_dim)
+            self.text_embedding = nn.Embedding(self.text_vocab_size, cfg.embedding_dim)
             self.decoder.set_input_embeddings(self.text_embedding)
 
         # Task embedding for multi-mode training
@@ -565,6 +574,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 '<EOS>': self.eos_id,
                 '<CFG_UNK>': self.cfg_unk_token_id,
             }
+            if self.enable_phoneme_text_input:
+                for phoneme_token_id in range(self.text_phoneme_vocab_size):
+                    special_vocab[f'<TEXT_PHONEME_{phoneme_token_id}>'] = (
+                        self.text_phoneme_token_offset + phoneme_token_id
+                    )
             if cfg.get("use_multiturn_dataset", False):
                 special_vocab["<INTERRUPTION>"] = self.interruption_token_id
 
@@ -2644,7 +2658,16 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 f"Available tokenizers: {list(self.tokenizer.tokenizers.keys())}"
             )
 
-        text_tokens = self.tokenizer.encode(transcript, tokenizer_name=main_tokenizer_name) + [self.eos_id]
+        text_tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=self.tokenizer,
+            text_str=transcript,
+            tokenizer_name=main_tokenizer_name,
+            enable_phoneme_text_input=self.enable_phoneme_text_input,
+            phoneme_tokenizer=self.phoneme_tokenizer,
+            text_phoneme_token_offset=self.text_phoneme_token_offset,
+            bop_marker=self.phoneme_text_bop_marker,
+            eop_marker=self.phoneme_text_eop_marker,
+        ) + [self.eos_id]
         text = torch.tensor([text_tokens], dtype=torch.long, device=device)
         text_lens = torch.tensor([len(text_tokens)], dtype=torch.long, device=device)
 

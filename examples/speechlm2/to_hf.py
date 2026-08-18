@@ -128,7 +128,7 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
         bundle_config = getattr(pe_encoder, "_bundle_config", None)
         if bundle_config is None:
             raise RuntimeError(
-                "Cannot export phPEE portably: the mounted perception encoder has no architecture bundle config."
+                "Cannot export ParallelExpertEncoder portably: the mounted perception encoder has no architecture bundle config."
             )
         bundle_config = OmegaConf.to_container(bundle_config, resolve=True)
         # Persist runtime overrides rather than the initialization bundle's
@@ -141,22 +141,43 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
             ("missing_rttm_target", "missing_rttm_target"),
             ("speaker_activity_threshold", "speaker_activity_threshold"),
             ("spk_kernel_scale", "spk_kernel_scale"),
+            ("align_diarization_output_resolution", "align_diarization_output_resolution"),
         ):
             if hasattr(pe_encoder, attr_name):
                 bundle_config[config_key] = getattr(pe_encoder, attr_name)
         config["pe_encoder_config"] = bundle_config
         config["pe_encoder_path"] = None
+
+    speaker_encoder_cfg = config.get("speaker_encoder", None)
+    if speaker_encoder_cfg not in (None, {}, "", False):
+        dual = getattr(getattr(model, "perception", None), "encoder", None)
+        auxiliary_encoder_config = getattr(dual, "auxiliary_encoder_config", None)
+        if auxiliary_encoder_config is None:
+            raise RuntimeError(
+                "Cannot export IndependentDualEncoder portably: the mounted auxiliary encoder "
+                "has no inline architecture config."
+            )
+        config["speaker_encoder"] = {
+            "encoder_config": deepcopy(auxiliary_encoder_config),
+            "frozen": bool(getattr(dual, "freeze_auxiliary", True)),
+            "chunk_size_seconds": getattr(dual, "auxiliary_chunk_size_seconds", None),
+            "asr_chunk_size_seconds": getattr(dual, "asr_chunk_size_seconds", None),
+        }
     dtype_name = _canonical_torch_dtype_name(dtype)
     config["dtype"] = dtype_name
     config["torch_dtype"] = dtype_name
 
     llm = getattr(model, "llm", None)
     text_config = getattr(llm, "config", None)
-    if text_config is not None and bool(config.get("compute_mtp", False)):
+    explicit_mtp = config.get("mtp")
+    mtp_enabled = bool(config.get("compute_mtp", False)) or (
+        isinstance(explicit_mtp, dict) and bool(explicit_mtp.get("enabled", True))
+    )
+    if text_config is not None and mtp_enabled:
         runtime_mtp_config = getattr(llm, "mtp_config", None)
         config["mtp"] = _resolve_speechlm_mtp_config(
-            mtp=config.get("mtp"),
-            compute_mtp=True,
+            mtp=explicit_mtp,
+            compute_mtp=bool(config.get("compute_mtp", False)),
             text_config=text_config,
             num_nextn_predict_layers=getattr(runtime_mtp_config, "num_layers", None),
             use_repeated_layer=getattr(runtime_mtp_config, "use_repeated_layer", None),

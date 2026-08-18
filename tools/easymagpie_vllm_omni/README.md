@@ -72,14 +72,20 @@ APIs are available:
 - `WS /v1/audio/speech/stream` with incremental text/token updates and
   asynchronous PCM audio output.
 
+Converted checkpoints with `enable_phoneme_text_input=true` accept inline IPA
+spans such as `Turn <bop>lɛft<eop> here`. The markers are syntax only: ordinary
+segments use the exported text tokenizer, while span contents use the bundled
+IPA tokenizer and the checkpoint's reserved text-token range.
+
 For delayed-stream checkpoints, the adapter folds the known text-led positions
 into the causal prefill. The current `phoneme_delay=3`, `speech_delay=5` model
 therefore prefills four target positions: text-only positions 0–2 and position
 3 with the known phoneme BOS input. Whole-text HTTP requests satisfy this
-automatically. For incremental WebSocket input, the first `input.text` or
-`input.tokens` update must tokenize to at least `phoneme_delay + 1` tokens
-(four for this checkpoint); a shorter first update returns an error. Later
-updates may contain any supported chunk size.
+automatically. Incremental WebSocket input buffers initial updates until at
+least `phoneme_delay + 1` tokens are available. Marker strings and IPA spans may
+cross `input.text` messages. An unclosed IPA span is rejected at `input.done`;
+`input.tokens` remains an exact tokenization bypass and is accepted only when
+there is no incomplete text marker or IPA span.
 
 Query the HTTP endpoint from any OpenAI-compatible client:
 

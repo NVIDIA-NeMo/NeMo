@@ -24,7 +24,7 @@ import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
 
-import nemo.collections.asr.modules.parallel_expert_encoder_two_branch as pee_module
+import nemo.collections.asr.modules.parallel_expert_encoder as pee_module
 from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.modules.parallel_expert_encoder_two_branch import (
@@ -396,6 +396,48 @@ def test_speaker_threshold_and_kernel_scale_are_preserved():
 
 
 @pytest.mark.unit
+def test_high_resolution_diarization_is_pooled_to_asr_grid():
+    diarization_config = toy_diarization_model_cfg()
+    diarization_config.high_resolution = True
+    diarization_config.output_subsampling_factor = 1
+    encoder = build_toy_pe_encoder(
+        diarization_model_cfg=diarization_config,
+        align_diarization_output_resolution=True,
+    ).eval()
+    lengths = torch.tensor([80, 53])
+    mels = torch.randn(2, _MEL_FEATURES, 80)
+    packed_input = pack_encoder_output(mels.transpose(1, 2), lengths)
+
+    with torch.no_grad():
+        padded = encoder._run_diarization(mels, lengths)
+        packed = encoder._run_diarization_packed(packed_input)
+        asr = encoder._run_asr_packed(packed_input)
+
+    assert torch.equal(packed.lengths, asr.lengths)
+    assert padded.shape[1] == asr.max_seqlen
+    restored = unpack_encoder_output(packed, total_length=padded.shape[1])
+    valid = torch.arange(padded.shape[1])[None, :] < packed.lengths[:, None]
+    torch.testing.assert_close(restored[valid], padded[valid], rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.unit
+def test_packed_diarization_supports_optional_post_encoder():
+    diarization_config = toy_packed_diarization_model_cfg()
+    diarization_config.transformer_encoder = None
+    encoder = build_toy_pe_encoder(diarization_model_cfg=diarization_config).eval()
+    lengths = torch.tensor([80, 53])
+    mels = torch.randn(2, _MEL_FEATURES, 80)
+
+    with torch.no_grad():
+        predictions = encoder._run_diarization_packed(
+            pack_encoder_output(mels.transpose(1, 2), lengths)
+        )
+
+    assert predictions.lengths.tolist() == [10, 7]
+    assert torch.isfinite(predictions.data).all()
+
+
+@pytest.mark.unit
 def test_packed_fallback_matches_padded_forward_for_dense_and_packed_inputs():
     torch.manual_seed(0)
     encoder = build_toy_pe_encoder().eval()
@@ -588,8 +630,8 @@ def test_online_inference_runs_two_real_branches_with_conformer_io():
 
 
 @pytest.mark.unit
-def test_online_inference_passes_feature_first_mels_to_sortformer(monkeypatch):
-    """FeatureStacking owns the (B, D, T) -> (B, T, D) transpose."""
+def test_online_inference_passes_time_major_mels_to_sortformer(monkeypatch):
+    """Sortformer owns any pre-encoder-specific layout conversion."""
     encoder = build_toy_pe_encoder(
         diarization_model_cfg=toy_packed_diarization_model_cfg(),
         online_inference_length=10,
@@ -606,7 +648,7 @@ def test_online_inference_passes_feature_first_mels_to_sortformer(monkeypatch):
     def checked_forward_streaming_step(**kwargs):
         processed_signal = kwargs['processed_signal']
         observed_shapes.append(tuple(processed_signal.shape))
-        assert processed_signal.shape[1] == _MEL_FEATURES
+        assert processed_signal.shape[2] == _MEL_FEATURES
         return original(**kwargs)
 
     monkeypatch.setattr(encoder.diarization_model, 'forward_streaming_step', checked_forward_streaming_step)

@@ -7,6 +7,7 @@ asr:
   device_id: 0                                                          # GPU device ID
   compute_dtype: bfloat16                                               # Compute precision: 'bfloat16' for Ampere+, 'float16' for older GPUs, or 'float32'               
   use_amp: false                                                         # Enable Automatic Mixed Precision
+  use_cuda_graphs: false                                                 # Enable CUDA graphs for cache-aware encoder streaming steps; requires use_amp=false
   decoding:
     strategy: "greedy_batch"
     preserve_alignments: false

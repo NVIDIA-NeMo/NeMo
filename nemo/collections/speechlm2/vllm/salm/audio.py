@@ -33,7 +33,6 @@ Public surface used by the rest of the package:
   registry binds to the registered model class.
 """
 
-import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -114,6 +113,7 @@ def _maybe_mount_pe_encoder(
     perception: nn.Module,
     pe_encoder_path: str | None,
     pe_encoder_config: dict | None = None,
+    pe_encoder_type: str | None = None,
 ) -> bool:
     """Mount a configured perception encoder from a local bundle or model identifier.
 
@@ -131,19 +131,18 @@ def _maybe_mount_pe_encoder(
             "A ParallelExpertEncoder is configured but perception has no `encoder` attribute to replace."
         )
 
-    from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
+    from nemo.collections.asr.modules.parallel_expert_encoder_resolver import resolve_parallel_expert_encoder_pt
 
     if has_config:
-        pe_encoder = ParallelExpertEncoderPT.from_inline_config(pe_encoder_config, map_location="cpu")
+        encoder_class = resolve_parallel_expert_encoder_pt(config=pe_encoder_config)
+        pe_encoder = encoder_class.from_inline_config(pe_encoder_config, map_location="cpu")
     else:
-        # Validate local bundles immediately; resolve remote identifiers in the loader.
-        is_local_nemo_file = (
-            isinstance(pe_encoder_path, str) and pe_encoder_path.endswith(".nemo") and os.path.isfile(pe_encoder_path)
+        encoder_class = resolve_parallel_expert_encoder_pt(
+            pe_encoder_path, architecture=pe_encoder_type
         )
-        if is_local_nemo_file and not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
-            raise ValueError(f"pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle.")
-
-        pe_encoder = ParallelExpertEncoderPT.load_from_nemo(pe_encoder_path, map_location="cpu", strict=True)
+        pe_encoder = encoder_class.load_from_nemo(
+            pe_encoder_path, map_location="cpu", strict=True
+        )
 
     # The outgoing width is unconstrained; unchanged frontend and downstream
     # components must match the replacement encoder.
@@ -207,9 +206,9 @@ def _maybe_mount_independent_speaker_encoder(
 ) -> bool:
     """Reconstruct an exported independent ASR + speaker encoder pair.
 
-    Current dual-encoder exports retain a small architecture descriptor in the
-    speaker_encoder field and refer to the immutable speaker-encoder artifact
-    used at training time. The checkpoint's own perception.encoder tensors
+    Current dual-encoder exports retain the auxiliary architecture inline in the
+    speaker_encoder field. Older exports may still refer to an external artifact.
+    The checkpoint's own perception.encoder tensors
     subsequently replace both branches through vLLM's normal weight loader.
     """
 
@@ -217,7 +216,7 @@ def _maybe_mount_independent_speaker_encoder(
         return False
     if not isinstance(speaker_encoder_cfg, Mapping):
         raise TypeError(
-            "speaker_encoder must be a mapping with path/chunk settings; " f"got {type(speaker_encoder_cfg).__name__}."
+            "speaker_encoder must be a mapping with encoder architecture and chunk settings; " f"got {type(speaker_encoder_cfg).__name__}."
         )
     if encoder_chunk_size_seconds is not None:
         raise ValueError(
@@ -228,17 +227,20 @@ def _maybe_mount_independent_speaker_encoder(
         raise RuntimeError("speaker_encoder is set but perception has no encoder to wrap.")
 
     from omegaconf import OmegaConf
-    from safetensors.torch import load_file
 
     from nemo.collections.speechlm2.modules.perception import IdentityConnector, IndependentDualEncoder
 
-    artifact = Path(str(speaker_encoder_cfg.get("path", "")))
-    config_path = artifact / "model_config.yaml"
-    weights_path = artifact / "model.safetensors"
-    if not artifact.is_dir() or not config_path.is_file() or not weights_path.is_file():
-        raise FileNotFoundError(
-            "speaker_encoder.path must contain model_config.yaml and model.safetensors; " f"got {artifact}."
-        )
+    encoder_config = speaker_encoder_cfg.get("encoder_config", None)
+    artifact = None
+    if encoder_config in (None, {}, "", False):
+        artifact = Path(str(speaker_encoder_cfg.get("path", "")))
+        config_path = artifact / "model_config.yaml"
+        weights_path = artifact / "model.safetensors"
+        if not artifact.is_dir() or not config_path.is_file() or not weights_path.is_file():
+            raise FileNotFoundError(
+                "speaker_encoder must contain encoder_config, or path must contain "
+                f"model_config.yaml and model.safetensors; got {artifact}."
+            )
     if not isinstance(getattr(perception, "modality_adapter", None), IdentityConnector):
         raise TypeError("IndependentDualEncoder requires IdentityConnector.")
     if getattr(perception, "rote", None) is not None:
@@ -246,10 +248,18 @@ def _maybe_mount_independent_speaker_encoder(
     if "encoder_multilayer" in perception._modules:
         raise ValueError("IndependentDualEncoder does not support multi-layer perception adapters.")
 
-    speaker_config = OmegaConf.load(config_path)
-    speaker = perception.from_config_dict(speaker_config)
-    state = load_file(str(weights_path), device="cpu")
-    speaker.load_state_dict(state, strict=True)
+    if encoder_config not in (None, {}, "", False):
+        speaker_config = OmegaConf.create(encoder_config)
+        speaker = perception.from_config_dict(speaker_config)
+        source = "inline encoder_config"
+    else:
+        from safetensors.torch import load_file
+
+        speaker_config = OmegaConf.load(config_path)
+        speaker = perception.from_config_dict(speaker_config)
+        state = load_file(str(weights_path), device="cpu")
+        speaker.load_state_dict(state, strict=True)
+        source = str(artifact)
 
     ref_param = next(perception.encoder.parameters(), None)
     if ref_param is not None:
@@ -284,7 +294,7 @@ def _maybe_mount_independent_speaker_encoder(
     logging.info(
         "Mounted independent speaker encoder from %s beside ASR encoder "
         "(widths: ASR=%d speaker=%d combined=%d; chunks: ASR=%s speaker=%s seconds; frozen=%s).",
-        artifact,
+        source,
         IndependentDualEncoder._encoder_width(dual.asr_encoder),
         IndependentDualEncoder._encoder_width(dual.auxiliary_encoder),
         dual.d_model,

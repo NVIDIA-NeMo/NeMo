@@ -185,6 +185,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         encoder_chunk_size_seconds: float | None = None,
         pe_encoder_path: str | None = None,
         pe_encoder_config: dict | None = None,
+        pe_encoder_type: str | None = None,
         speaker_encoder: dict | None = None,
         **kwargs,
     ):
@@ -201,6 +202,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             and encoder_chunk_size_seconds is None
             and pe_encoder_path is None
             and pe_encoder_config is None
+            and pe_encoder_type is None
             and speaker_encoder is None
             and not kwargs
             and all(value is None for value in required_fields.values())
@@ -229,6 +231,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             self.encoder_chunk_size_seconds = None
             self.pe_encoder_path = None
             self.pe_encoder_config = None
+            self.pe_encoder_type = None
             self.speaker_encoder = None
             return
 
@@ -255,7 +258,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             False,
         )
         if has_pe_encoder and speaker_encoder not in (None, {}, "", False):
-            raise ValueError("phPEE and speaker_encoder are mutually exclusive.")
+            raise ValueError("ParallelExpertEncoder and speaker_encoder are mutually exclusive.")
         self.perception = perception or {}
         self.pretrained_llm = pretrained_llm
         self.pretrained_asr = pretrained_asr
@@ -268,6 +271,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
         self.pe_encoder_path = pe_encoder_path
         self.pe_encoder_config = pe_encoder_config
+        self.pe_encoder_type = pe_encoder_type
         self.speaker_encoder = speaker_encoder
 
         # Backward compatibility for early Nemotron 3.5 SpeechLM exports:
@@ -372,6 +376,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             "encoder_chunk_size_seconds",
             "pe_encoder_path",
             "pe_encoder_config",
+            "pe_encoder_type",
             "speaker_encoder",
         ):
             raise AttributeError(name)

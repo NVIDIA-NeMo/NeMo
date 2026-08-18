@@ -167,6 +167,20 @@ class _FakeMTPExportModel:
     )()
 
 
+class _FakeExplicitMTPExportModel:
+    cfg = {
+        **_FakeMTPExportModel.cfg,
+        "compute_mtp": False,
+        "mtp": {
+            "enabled": True,
+            "num_nextn_predict_layers": 1,
+            "use_repeated_layer": False,
+            "hybrid_override_pattern": "*E",
+        },
+    }
+    llm = _FakeMTPExportModel.llm
+
+
 def test_save_hf_checkpoint_writes_llm_backbone_config(tmp_path):
     cfg = to_hf.HfExportConfig(
         class_path="fake.Class",
@@ -263,6 +277,32 @@ def test_hf_export_config_embeds_portable_phpee_architecture():
     assert exported["pe_encoder_config"]["asr_chunk_size_seconds"] == 30.0
 
 
+def test_hf_export_config_embeds_portable_independent_dual_architecture():
+    original_cfg = {
+        "speaker_encoder": {"path": "/models/speaker-transformer", "frozen": True},
+    }
+    dual = SimpleNamespace(
+        auxiliary_encoder_config={"_target_": "example.SpeakerEncoder", "d_model": 512},
+        freeze_auxiliary=True,
+        auxiliary_chunk_size_seconds=120.0,
+        asr_chunk_size_seconds=None,
+    )
+    model = SimpleNamespace(cfg=original_cfg, perception=SimpleNamespace(encoder=dual))
+
+    exported = to_hf._hf_export_config(model, "bfloat16")
+
+    assert exported["speaker_encoder"] == {
+        "encoder_config": {"_target_": "example.SpeakerEncoder", "d_model": 512},
+        "frozen": True,
+        "chunk_size_seconds": 120.0,
+        "asr_chunk_size_seconds": None,
+    }
+    assert "path" not in exported["speaker_encoder"]
+    assert original_cfg == {
+        "speaker_encoder": {"path": "/models/speaker-transformer", "frozen": True}
+    }
+
+
 def test_save_hf_checkpoint_writes_explicit_mtp_contract(tmp_path):
     """Nemotron 3.5 list-form topology should export as vLLM's *E pattern."""
     cfg = to_hf.HfExportConfig(
@@ -282,6 +322,21 @@ def test_save_hf_checkpoint_writes_explicit_mtp_contract(tmp_path):
         "use_repeated_layer": False,
         "hybrid_override_pattern": "*E",
     }
+
+
+def test_save_hf_checkpoint_preserves_explicit_mtp_contract_without_compute_flag(tmp_path):
+    cfg = to_hf.HfExportConfig(
+        class_path="fake.Class",
+        ckpt_path="fake.ckpt",
+        ckpt_config="fake.yaml",
+        output_dir=str(tmp_path),
+        dtype="bfloat16",
+    )
+
+    to_hf.save_hf_checkpoint(_FakeExplicitMTPExportModel(), {"weight": torch.zeros(1)}, cfg)
+
+    root_cfg = json.loads((tmp_path / "config.json").read_text())
+    assert root_cfg["mtp"] == _FakeExplicitMTPExportModel.cfg["mtp"]
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -67,6 +67,13 @@ _AUDIO_INPUT_DTYPE = torch.float32
 _PERCEPTION_DTYPE = torch.bfloat16
 
 
+def _is_parallel_expert_encoder(module: nn.Module) -> bool:
+    """Recognize the shared speaker-aware encoder contract without importing ASR at plugin import time."""
+    return bool(getattr(module, "supports_external_speaker_targets", False)) and callable(
+        getattr(module, "online_inference", None)
+    )
+
+
 @MULTIMODAL_REGISTRY.register_processor(
     NeMoSpeechLMMultiModalProcessor,
     info=NeMoSpeechLMProcessingInfo,
@@ -117,7 +124,7 @@ class NeMoSpeechLMForConditionalGeneration(
             )
             has_speaker_encoder = speaker_encoder not in (None, {}, "", False)
             if has_pe_encoder and has_speaker_encoder:
-                raise ValueError("phPEE and speaker_encoder are mutually exclusive.")
+                raise ValueError("ParallelExpertEncoder and speaker_encoder are mutually exclusive.")
             if has_speaker_encoder:
                 _maybe_mount_independent_speaker_encoder(
                     self.perception,
@@ -126,10 +133,14 @@ class NeMoSpeechLMForConditionalGeneration(
                 )
                 self._uses_pe_encoder = False
             else:
-                self._uses_pe_encoder = _maybe_mount_pe_encoder(
+                _maybe_mount_pe_encoder(
                     self.perception,
                     pe_encoder_path,
                     pe_encoder_config,
+                    getattr(config, "pe_encoder_type", None),
+                )
+                self._uses_pe_encoder = _is_parallel_expert_encoder(
+                    getattr(self.perception, "encoder", None)
                 )
 
         self.make_empty_intermediate_tensors = self.language_model.make_empty_intermediate_tensors
@@ -231,7 +242,21 @@ class NeMoSpeechLMForConditionalGeneration(
 
     def _load_perception_weights(self, perception_weights: dict[str, torch.Tensor]) -> set[str]:
         self.perception = self.perception.to(_PERCEPTION_DTYPE)
-        self.perception.load_state_dict(perception_weights, strict=False)
+        incompatible = self.perception.load_state_dict(perception_weights, strict=False)
+
+        from nemo.collections.speechlm2.modules.perception import IndependentDualEncoder
+
+        requires_exact_architecture = isinstance(
+            getattr(self.perception, "encoder", None), IndependentDualEncoder
+        ) or self._uses_pe_encoder
+        if requires_exact_architecture:
+            missing = [name for name in incompatible.missing_keys if not name.endswith("._extra_state")]
+            unexpected = [name for name in incompatible.unexpected_keys if not name.endswith("._extra_state")]
+            if missing or unexpected:
+                raise RuntimeError(
+                    "Speech encoder checkpoint does not exactly match its exported architecture: "
+                    f"missing={missing}, unexpected={unexpected}."
+                )
         return {"perception." + k for k in perception_weights}
 
     @staticmethod

@@ -834,10 +834,22 @@ def test_legacy_three_expert_bundle_is_rejected(tmp_path):
         ('nemo.collections.asr.models.SomethingElse', False),
     ],
 )
-def test_is_pe_nemo_uses_target(tmp_path, target, expected):
+def test_is_pe_nemo_uses_target_and_two_branch_schema(tmp_path, target, expected):
     archive = tmp_path / 'bundle.nemo'
-    write_bundle(archive, OmegaConf.create({'target': target}))
+    config = bundle_config()
+    config.target = target
+    write_bundle(archive, config)
     assert ParallelExpertEncoderPT.is_pe_nemo(str(archive)) is expected
+
+
+@pytest.mark.unit
+def test_training_loader_dispatches_two_branch_bundle_by_schema(tmp_path):
+    from nemo.collections.speechlm2.parts.pretrained import _resolve_parallel_expert_encoder_class
+
+    archive = tmp_path / 'bundle.nemo'
+    write_bundle(archive, bundle_config())
+
+    assert _resolve_parallel_expert_encoder_class(str(archive)) is ParallelExpertEncoderPT
 
 
 @pytest.mark.unit

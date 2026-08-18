@@ -317,6 +317,28 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
     )
 
 
+def _resolve_parallel_expert_encoder_class(model_path_or_name: str):
+    """Choose the legacy or two-branch PE loader for a local bundle.
+
+    Historical two-branch archives used the same class basename as legacy
+    three-expert archives, so the target field alone is ambiguous. Inspect the
+    self-contained bundle schema before selecting the concrete loader. Remote
+    model identifiers retain the legacy resolution path.
+    """
+    if not (model_path_or_name.endswith(".nemo") and Path(model_path_or_name).is_file()):
+        return ParallelExpertEncoderPT
+
+    from nemo.collections.asr.modules.parallel_expert_encoder_two_branch import (
+        ParallelExpertEncoderPT as TwoBranchParallelExpertEncoderPT,
+    )
+
+    if TwoBranchParallelExpertEncoderPT.is_pe_nemo(model_path_or_name):
+        return TwoBranchParallelExpertEncoderPT
+    if ParallelExpertEncoderPT.is_pe_nemo(model_path_or_name):
+        return ParallelExpertEncoderPT
+    raise ValueError(f"{model_path_or_name!r} is not a supported ParallelExpertEncoderPT .nemo bundle.")
+
+
 def setup_parallel_expert_encoder(model: torch.nn.Module):
     """Mount the external perception encoder from ``model.pe_encoder_path``.
 
@@ -350,14 +372,8 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
             "feature extractors) need a separate implementation."
         )
 
-    # Validate local bundles immediately; resolve remote model identifiers in the loader.
-    if pe_encoder_path.endswith(".nemo") and Path(pe_encoder_path).is_file():
-        if not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
-            raise ValueError(
-                f"model.pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle."
-            )
-
-    pe_encoder = ParallelExpertEncoderPT.load_from_nemo(
+    encoder_class = _resolve_parallel_expert_encoder_class(pe_encoder_path)
+    pe_encoder = encoder_class.load_from_nemo(
         pe_encoder_path,
         map_location="cpu",
         strict=True,

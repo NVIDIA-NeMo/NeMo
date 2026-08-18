@@ -214,9 +214,9 @@ class ParallelExpertEncoderPT(ModelPT):
     def setup_validation_data(self, val_data_config: Union[DictConfig, dict]):
         pass
 
-    @staticmethod
-    def is_pe_nemo(nemo_path: str) -> bool:
-        """Return whether a local archive targets ``ParallelExpertEncoderPT``."""
+    @classmethod
+    def is_pe_nemo(cls, nemo_path: str) -> bool:
+        """Return whether a local archive contains the two-branch PE schema."""
         if not (isinstance(nemo_path, str) and nemo_path.endswith('.nemo') and os.path.isfile(nemo_path)):
             return False
         try:
@@ -228,7 +228,13 @@ class ParallelExpertEncoderPT(ModelPT):
                     if stream is None:
                         return False
                     cfg = OmegaConf.create(stream.read().decode('utf-8'))
-                    return str(cfg.get('target', '')).endswith('ParallelExpertEncoderPT')
+                    if not str(cfg.get('target', '')).endswith('ParallelExpertEncoderPT'):
+                        return False
+                    try:
+                        cls._validate_bundle_schema(cfg)
+                    except (TypeError, ValueError):
+                        return False
+                    return True
         except (tarfile.TarError, OSError) as error:
             logging.warning('[ParallelExpertEncoder] Could not inspect %s: %s', nemo_path, error)
             return False
@@ -248,9 +254,9 @@ class ParallelExpertEncoderPT(ModelPT):
             and model_path_or_name.endswith('.nemo')
             and os.path.isfile(model_path_or_name)
         ):
-            if not cls.is_pe_nemo(model_path_or_name):
-                raise ValueError(f"{model_path_or_name!r} is not a ParallelExpertEncoderPT .nemo bundle.")
             cfg, state = _read_bundle_members(model_path_or_name)
+            if not str(cfg.get('target', '')).endswith('ParallelExpertEncoderPT'):
+                raise ValueError(f"{model_path_or_name!r} is not a ParallelExpertEncoderPT .nemo bundle.")
             cls._validate_bundle_schema(cfg)
             shell = cls(cfg=cfg, trainer=None)
             prefix = 'encoder.'

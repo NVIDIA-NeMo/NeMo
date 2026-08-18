@@ -169,10 +169,13 @@ if TRITON_AVAILABLE:
         TIME_ROWS: tl.constexpr,
         CHANNEL_BLOCK: tl.constexpr,
     ):
-        batch = tl.program_id(0)
+        # CUDA caps the three grid axes at 2**31 - 1, 65535 and 65535. Only the tile count grows
+        # with audio length, so it takes the first; channel tiles and batch stay far below 65535.
+        tile = tl.program_id(0)
+        batch = tl.program_id(2)
         freq_tiles = tl.cdiv(out_freq, NUM_BINS)
-        first_out_row = (tl.program_id(2) // freq_tiles) * TIME_ROWS
-        bin0_col = (tl.program_id(2) % freq_tiles) * NUM_BINS
+        first_out_row = (tile // freq_tiles) * TIME_ROWS
+        bin0_col = (tile % freq_tiles) * NUM_BINS
         channel = tl.program_id(1) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
         channel_mask = channel < channels
 
@@ -442,9 +445,9 @@ class _FusedSubsampling(torch.autograd.Function):
 
         def grid(meta):
             return (
-                batch_size,
-                triton.cdiv(channels, meta["CHANNEL_BLOCK"]),
                 triton.cdiv(out_time, meta["TIME_ROWS"]) * triton.cdiv(out_freq, NUM_BINS),
+                triton.cdiv(channels, meta["CHANNEL_BLOCK"]),
+                batch_size,
             )
 
         _forward_kernel[grid](

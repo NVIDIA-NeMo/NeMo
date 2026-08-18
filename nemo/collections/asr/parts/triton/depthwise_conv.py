@@ -367,15 +367,11 @@ class _DepthwiseConv2d(torch.autograd.Function):
             pad_h,
             pad_w,
         ) = geometry
-        if autocast_dtype is not None:
-            features = features.to(autocast_dtype)
-            weight = weight.to(autocast_dtype)
-            bias = bias.to(autocast_dtype)
-        features = features.contiguous()
+        dtype = features.dtype if autocast_dtype is None else autocast_dtype
+        features_cast = features.contiguous().to(dtype)
+        weight_cast, bias_cast = weight.to(dtype), bias.to(dtype)
         num_output_positions = batch_size * out_height * out_width
-        output = torch.empty(
-            (batch_size, out_height, out_width, channels), device=features.device, dtype=features.dtype
-        )
+        output = torch.empty((batch_size, out_height, out_width, channels), device=features.device, dtype=dtype)
 
         def grid(meta):
             return (
@@ -384,9 +380,9 @@ class _DepthwiseConv2d(torch.autograd.Function):
             )
 
         _forward_kernel[grid](
-            features,
-            weight,
-            bias,
+            features_cast,
+            weight_cast,
+            bias_cast,
             output,
             in_lengths,
             out_lengths,
@@ -404,7 +400,7 @@ class _DepthwiseConv2d(torch.autograd.Function):
             PAD_W=pad_w,
             TAPS=kernel_h * kernel_w,
         )
-        ctx.save_for_backward(features, weight, in_lengths, out_lengths)
+        ctx.save_for_backward(features_cast, weight_cast, in_lengths, out_lengths)
         ctx.geometry = geometry
         ctx.param_dtypes = (weight.dtype, bias.dtype)
         return output

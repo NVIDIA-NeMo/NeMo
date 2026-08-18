@@ -41,7 +41,7 @@ def fp32_reference():
     torch.backends.cuda.matmul.allow_tf32 = matmul
 
 
-def _build(factor=8, causal=False, use_triton=None, device="cuda", dtype=torch.float32):
+def _build(factor=8, causal=False, use_triton=None, device="cuda", dtype=torch.float32, activation=None):
     torch.manual_seed(0)
     module = ConvSubsampling(
         subsampling='dw_striding',
@@ -49,6 +49,7 @@ def _build(factor=8, causal=False, use_triton=None, device="cuda", dtype=torch.f
         feat_in=FEAT_IN,
         feat_out=FEAT_OUT,
         conv_channels=CONV_CHANNELS,
+        activation=torch.nn.ReLU() if activation is None else activation,
         is_causal=causal,
         use_triton=use_triton,
     )
@@ -115,6 +116,13 @@ def test_triton_subsampling_matches_pytorch(fp32_reference, factor, causal, ragg
 )
 def test_fast_path_eligibility(factor, use_triton, eligible):
     assert bool(_build(factor=factor, use_triton=use_triton).conv.fuse_triton) is eligible
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+def test_fast_path_requires_relu():
+    """The kernels apply ReLU, so any other activation keeps the whole stack on PyTorch."""
+    assert not _build(activation=torch.nn.GELU()).conv.fuse_triton
 
 
 @pytest.mark.unit
@@ -206,6 +214,23 @@ def test_triton_subsampling_backward_matches_pytorch(fp32_reference, causal):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+def test_input_that_requires_a_gradient_takes_the_pytorch_path():
+    """The fused kernel returns no input gradient, so an input that needs one bypasses it.
+
+    SSL pretraining with a trainable mask embedding in the spectrogram is the caller that does.
+    """
+    module = _build()
+    assert module.conv.fuse_triton
+    x, lengths = _inputs(batch=2, time=520)
+    x.requires_grad_()
+
+    module(x, lengths)[0].sum().backward()
+
+    assert x.grad is not None and torch.isfinite(x.grad).all()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 def test_triton_subsampling_is_invariant_to_padding_and_batch_size(fp32_reference):
     """Valid frames do not depend on how much padding shares the batch, nor on batch size.
 
@@ -253,6 +278,24 @@ def test_falls_back_when_triton_is_unavailable(monkeypatch):
     out, out_lengths = module(x, lengths)
     assert out.shape[0] == 2 and out.shape[2] == FEAT_OUT
     assert out_lengths.shape == (2,)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+@pytest.mark.parametrize("dynamo", [False, True])
+def test_export_takes_the_pytorch_path(tmp_path, dynamo):
+    """Both exporters trace on tensors a Triton launch cannot read."""
+    onnx = pytest.importorskip("onnx")
+    module = _build().eval()
+    assert module.conv.fuse_triton
+    x, lengths = _inputs(batch=2, time=264)
+    path = str(tmp_path / "subsampling.onnx")
+
+    torch.onnx.export(module, (x, lengths), path, dynamo=dynamo)
+
+    # The five convolutions of the PyTorch stack; the fused path launches kernels instead.
+    convolutions = [node for node in onnx.load(path).graph.node if node.op_type == "Conv"]
+    assert len(convolutions) == 5
 
 
 @pytest.mark.unit

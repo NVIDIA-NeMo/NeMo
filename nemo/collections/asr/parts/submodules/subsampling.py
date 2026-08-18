@@ -424,10 +424,13 @@ class ConvSubsampling(torch.nn.Module):
         self.conv = MaskedConvSequential(*layers)
 
         # The kernels implement `dw_striding`'s layout, [conv, act] + (sampling_num - 1) x
-        # [dw, pw, act]; a factor of 2 stops after [conv, act], leaving no depthwise to fuse.
+        # [dw, pw, act], with ReLU baked in; a factor of 2 stops after [conv, act], leaving no
+        # depthwise to fuse.
         if use_triton is None:
             use_triton = TRITON_AVAILABLE
-        self.conv.fuse_triton = use_triton and subsampling == 'dw_striding' and self._sampling_num >= 2
+        self.conv.fuse_triton = (
+            use_triton and subsampling == 'dw_striding' and self._sampling_num >= 2 and isinstance(activation, nn.ReLU)
+        )
 
     def get_sampling_frames(self):
         return [1, self.subsampling_factor]
@@ -714,11 +717,13 @@ class MaskedConvSequential(nn.Sequential):
         x = x.unsqueeze(1)  # (batch, 1, time, features)
         current_lengths = lengths
 
-        # Triton cannot be traced through, so export always takes the PyTorch path.
+        # Tracing and export cannot capture a Triton launch, and the fused kernel returns no
+        # input gradient.
         if (
             self.fuse_triton
             and x.is_cuda
-            and not (torch.jit.is_scripting() or torch.jit.is_tracing() or torch.onnx.is_in_onnx_export())
+            and not x.requires_grad
+            and not (torch.jit.is_tracing() or torch.compiler.is_exporting())
         ):
             x, current_lengths, mask = self._forward_fused(x, current_lengths)
         else:

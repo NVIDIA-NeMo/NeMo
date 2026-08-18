@@ -264,8 +264,11 @@ class LLMTranslator:
         translations = []
         for tgt_prefix, output in zip(prefixes, outputs):
             output_text = output.outputs[0].text
-            output_text = self.prompt_template.extract(output_text)
-            translations.append(f"{tgt_prefix} {output_text.strip()}")
+            output_text = self.prompt_template.extract(output_text).strip()
+            if tgt_prefix:
+                translations.append(f"{tgt_prefix} {output_text}")
+            else:
+                translations.append(output_text)
         return translations
 
     def translate(

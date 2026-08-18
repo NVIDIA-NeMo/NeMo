@@ -77,18 +77,21 @@ def manifest_to_audio_definition(manifest_path: str, output_path: str) -> tuple[
     transcripts = []
 
     with open(manifest_path, 'r', encoding='utf-8') as f:
-        for line in f:
+        for line_num, line in enumerate(f, 1):
             if not line.strip():
                 continue
             data = json.loads(line.strip())
 
             audio_path = data['audio_filepath']
+            if not audio_path:
+                raise ValueError(
+                    f"Empty or missing 'audio_filepath' on line {line_num} of manifest: {manifest_path}"
+                )
             duration = data.get('duration', 0.0)
             audio_defs.append({'wav': audio_path, 'offset': 0.0, 'duration': float(duration) if duration else 0.0})
 
             transcripts.append(data.get('text', ''))
-            # Prefer 'target_text', falling back to 'answer' (common NeMo AST manifest field).
-            references.append(data.get('target_text', data.get('answer', '')))
+            references.append(data.get('answer', ''))
 
     output_dir = Path(output_path)
     output_dir.mkdir(parents=True, exist_ok=True)

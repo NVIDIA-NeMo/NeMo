@@ -2,6 +2,7 @@
 # ASR Configuration
 # ================================
 asr:
+  # model_name: nvidia/parakeet-unified-en-0.6b  # Pre-trained RNNT/hybrid model from NGC/HuggingFace or local .nemo file path
   model_name: nvidia/parakeet-tdt-0.6b-v2      # Pre-trained RNNT/hybrid model from NGC/HuggingFace or local .nemo file path
   device: cuda                                 # Device for inference: 'cuda' or 'cpu'
   device_id: 0                                 # GPU device ID

@@ -572,14 +572,6 @@ class LazyNeMoTarredIterator(IteratorNode):
                     "rebuild without --native-tar-paths-only or enable "
                     "USE_AIS_GET_BATCH."
                 )
-            for shard_index in range(self._packed_manifest_collection.sequence_count):
-                manifest_len = self._packed_manifest_collection.shard_length(shard_index)
-                tar_len = self._packed_tar_collection.shard_length(shard_index)
-                if manifest_len != tar_len:
-                    raise ValueError(
-                        "Packed manifest/tar length mismatch in shard "
-                        f"{shard_index}: manifest={manifest_len}, tar={tar_len}"
-                    )
             self._packed_tar_reader = PackedTarMemberReader(self._packed_tar_collection, max_open_files=max_open_files)
         self._iter_state = PartitionedIndexedIterator()
         self._packed_indexed = True
@@ -922,17 +914,18 @@ class LazyNeMoTarredIterator(IteratorNode):
         tar_path = self._packed_tar_path(location.shard_index)
         if self.use_ais_get_batch:
             return self._build_indexed_url_cut(data, manifest_path, tar_path)
-        member_name, audio_bytes = self._packed_tar_reader.read_shard(location.shard_index, location.local_index)
         expected_name = self._audio_member_name_from_entry(data)
-        if member_name != expected_name:
-            message = (
-                f"Packed manifest/tar positional mismatch at global index {idx}: "
-                f"manifest expects {expected_name!r}, tar contains {member_name!r}"
-            )
+        try:
+            member_name, audio_bytes = self._packed_tar_reader.get_shard(location.shard_index, expected_name)
+        except KeyError:
             if self.skip_missing_manifest_entries:
-                logging.warning(message)
                 return None
-            raise ValueError(message)
+            raise
+        if member_name != expected_name:
+            raise ValueError(
+                f"Packed tar name index returned {member_name!r} for requested {expected_name!r} "
+                f"at global index {idx}"
+            )
         return self._build_indexed_cut(data, audio_bytes, manifest_path, tar_path)
 
     def _decode_cut_at(self, idx: int) -> Cut | None:

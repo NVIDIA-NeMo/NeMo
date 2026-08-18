@@ -16,6 +16,7 @@ import os
 import re
 import struct
 import tarfile
+from collections import OrderedDict
 from io import BytesIO
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -347,6 +348,8 @@ def _read_tar_member(f):
     By parsing individual headers via ``TarInfo.frombuf`` we can seek to an
     arbitrary byte offset and read just the members we need in O(1).
     """
+    pax_headers: dict[str, str] = {}
+    long_name: str | None = None
     while True:
         header_buf = f.read(_TAR_BLOCK_SIZE)
         if len(header_buf) < _TAR_BLOCK_SIZE or header_buf == _TAR_ZERO_BLOCK:
@@ -358,9 +361,42 @@ def _read_tar_member(f):
         remainder = info.size % _TAR_BLOCK_SIZE
         if remainder:
             f.seek(_TAR_BLOCK_SIZE - remainder, 1)
+        if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE):
+            pax_headers.update(_parse_pax_headers(data))
+            continue
+        if info.type == tarfile.GNUTYPE_LONGNAME:
+            long_name = data.rstrip(b"\0\n").decode(tarfile.ENCODING, "surrogateescape")
+            continue
         if info.type not in (tarfile.REGTYPE, tarfile.AREGTYPE):
             continue
-        return info.name, data
+        name = pax_headers.get("path") or long_name or info.name
+        return name, data
+
+
+def _parse_pax_headers(data: bytes) -> dict[str, str]:
+    """Parse POSIX.1-2001 PAX length-prefixed key/value records."""
+    headers = {}
+    position = 0
+    while position < len(data):
+        space = data.find(b" ", position)
+        if space < 0:
+            raise tarfile.ReadError("Malformed PAX header: missing record length separator")
+        try:
+            length = int(data[position:space])
+        except ValueError as ex:
+            raise tarfile.ReadError("Malformed PAX header record length") from ex
+        end = position + length
+        if length <= 0 or end > len(data):
+            raise tarfile.ReadError("Malformed PAX header record bounds")
+        record = data[space + 1 : end]
+        if record.endswith(b"\n"):
+            record = record[:-1]
+        key, separator, value = record.partition(b"=")
+        if not separator:
+            raise tarfile.ReadError("Malformed PAX header key/value record")
+        headers[key.decode("utf-8", "surrogateescape")] = value.decode("utf-8", "surrogateescape")
+        position = end
+    return headers
 
 
 class PackedTarMemberReader:
@@ -371,6 +407,7 @@ class PackedTarMemberReader:
             raise ValueError(f"Expected a nemo_tar collection, got {collection.kind!r}")
         self.collection = collection
         self.max_open_files = max_open_files
+        self._shard_name_indexes: OrderedDict[int, dict[str, int]] = OrderedDict()
 
     def __len__(self) -> int:
         return len(self.collection)
@@ -388,6 +425,79 @@ class PackedTarMemberReader:
         """Read one member by its paired manifest shard/local position."""
         location = self.collection.locate_in_shard(shard_index, local_index)
         return self._read_location(location, (shard_index, local_index))
+
+    def _member_name(self, location) -> str:
+        """Read only tar headers at one packed offset and return the regular member name."""
+        from lhotse.packed_lazy import read_packed_range
+
+        position = location.start
+        pax_headers: dict[str, str] = {}
+        long_name: str | None = None
+        while position + _TAR_BLOCK_SIZE <= location.end:
+            header = read_packed_range(
+                self.collection.pack,
+                location.path,
+                position,
+                position + _TAR_BLOCK_SIZE,
+                max_open_files=self.max_open_files,
+            )
+            if header == _TAR_ZERO_BLOCK:
+                break
+            try:
+                info = tarfile.TarInfo.frombuf(header, tarfile.ENCODING, "surrogateescape")
+            except tarfile.TarError as ex:
+                raise type(ex)(
+                    f"{ex} — reading packed tar header at {position} in {location.path}"
+                ) from ex
+            data_position = position + _TAR_BLOCK_SIZE
+            if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME):
+                data = read_packed_range(
+                    self.collection.pack,
+                    location.path,
+                    data_position,
+                    data_position + info.size,
+                    max_open_files=self.max_open_files,
+                )
+                if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE):
+                    pax_headers.update(_parse_pax_headers(data))
+                else:
+                    long_name = data.rstrip(b"\0\n").decode(tarfile.ENCODING, "surrogateescape")
+            elif info.type in (tarfile.REGTYPE, tarfile.AREGTYPE):
+                return pax_headers.get("path") or long_name or info.name
+            position = data_position + (-(-info.size // _TAR_BLOCK_SIZE) * _TAR_BLOCK_SIZE)
+        raise EOFError(
+            f"No regular tar member in packed range [{location.start}, {location.end}) "
+            f"in {location.path}"
+        )
+
+    def _name_index_for_shard(self, shard_index: int) -> dict[str, int]:
+        try:
+            index = self._shard_name_indexes.pop(shard_index)
+        except KeyError:
+            index = {}
+            for local_index in range(self.collection.shard_length(shard_index)):
+                location = self.collection.locate_in_shard(shard_index, local_index)
+                name = self._member_name(location)
+                if name in index:
+                    raise ValueError(
+                        f"Duplicate tar member name {name!r} in {location.path}; "
+                        "name-keyed packed access is ambiguous"
+                    )
+                index[name] = local_index
+        self._shard_name_indexes[shard_index] = index
+        while len(self._shard_name_indexes) > self.max_open_files:
+            self._shard_name_indexes.popitem(last=False)
+        return index
+
+    def get_shard(self, shard_index: int, name: str) -> tuple[str, bytes]:
+        """Read a member by name from one shard, supporting filtered manifests."""
+        index = self._name_index_for_shard(shard_index)
+        try:
+            local_index = index[name]
+        except KeyError as ex:
+            path = self.collection.path_for_shard(shard_index)
+            raise KeyError(f"Tar {path} has no member named {name!r}.") from ex
+        return self.read_shard(shard_index, local_index)
 
     def _read_location(self, location, idx) -> tuple[str, bytes]:
         from lhotse.packed_lazy import read_packed_range

@@ -581,16 +581,22 @@ def test_converter_rejects_misaligned_native_shards(tmp_path):
     assert "not positionally aligned" in str(result.exception)
 
 
-def test_local_packed_native_tar_validates_lengths_per_shard(tmp_path, monkeypatch):
+def test_local_packed_native_tar_supports_filtered_subsets(tmp_path, monkeypatch):
     manifest_paths = []
     tar_paths = []
-    for shard, (manifest_count, tar_count) in enumerate(((1, 2), (2, 1))):
+    long_prefix = "people-speech-" + "x" * 110
+    tar_names = [
+        [f"{long_prefix}-0.wav", f"{long_prefix}-1.wav"],
+        ["sample-1-0.wav", "sample-1-1.wav", "sample-1-2.wav"],
+    ]
+    manifest_names = [tar_names[0][1:], tar_names[1][1:]]
+    for shard, (manifest_count, tar_count) in enumerate(((1, 2), (2, 3))):
         manifest = tmp_path / f"manifest_{shard}.jsonl"
         manifest.write_text(
             "".join(
                 json.dumps(
                     {
-                        "audio_filepath": f"sample-{shard}-{idx}.wav",
+                        "audio_filepath": manifest_names[shard][idx],
                         "duration": 1.0,
                         "text": "text",
                     }
@@ -603,7 +609,7 @@ def test_local_packed_native_tar_validates_lengths_per_shard(tmp_path, monkeypat
         with tarfile.open(tar_path, "w") as archive:
             for idx in range(tar_count):
                 payload = b"audio"
-                info = tarfile.TarInfo(f"sample-{shard}-{idx}.wav")
+                info = tarfile.TarInfo(tar_names[shard][idx])
                 info.size = len(payload)
                 archive.addfile(info, io.BytesIO(payload))
         create_jsonl_index(manifest)
@@ -633,13 +639,16 @@ def test_local_packed_native_tar_validates_lengths_per_shard(tmp_path, monkeypat
     )
     monkeypatch.delenv("USE_AIS_GET_BATCH", raising=False)
 
-    with pytest.raises(ValueError, match="length mismatch in shard 0"):
-        LazyNeMoTarredIterator(
-            manifest_spec,
-            tar_spec,
-            indexed=True,
-            index_pack=pack_path,
-        )
+    iterator = LazyNeMoTarredIterator(
+        manifest_spec,
+        tar_spec,
+        indexed=True,
+        index_pack=pack_path,
+    )
+    assert iterator._packed_tar_reader.get_shard(0, tar_names[0][1]) == (tar_names[0][1], b"audio")
+    assert iterator._packed_tar_reader.get_shard(1, "sample-1-2.wav") == ("sample-1-2.wav", b"audio")
+    with pytest.raises(KeyError, match="no member named"):
+        iterator._packed_tar_reader.get_shard(0, "missing.wav")
 
 
 def test_share_gpt_jsonl_uses_pack(tmp_path, monkeypatch):

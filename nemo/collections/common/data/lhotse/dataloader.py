@@ -1014,7 +1014,7 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
                 rir_recordings=RecordingSet.from_file(config.rir_path) if config.rir_path is not None else None,
                 p=config.rir_prob,
                 # ``ReverbWithImpulseResponse`` takes a pre-built ``random.Random`` rather than a
-                # ``seed`` argument, so resolve ``shard_seed`` here to give every rank/worker its
+                # ``seed`` argument, so resolve ``shard_seed`` here to give every rank its
                 # own RIR randomness. This mirrors what the sibling augmentations above and below
                 # do internally with ``seed=config.shard_seed``. Using ``config.seed`` would make
                 # every rank draw the same impulse responses, because it is resolved to a fixed

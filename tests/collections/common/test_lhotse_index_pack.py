@@ -88,6 +88,79 @@ def test_converter_rejects_native_tar_sentinel_mismatch(tmp_path):
     assert "build_indexes.py --force" in result.output
 
 
+def test_converter_repairs_stale_local_tar_in_private_overlay(tmp_path):
+    tar_path, idx_path, input_cfg = _make_native_tar_dataset(tmp_path)
+    with idx_path.open("r+b") as stream:
+        stream.seek(-8, io.SEEK_END)
+        stream.write(struct.pack("<Q", tar_path.stat().st_size + 512))
+    shared_sidecar_bytes = idx_path.read_bytes()
+
+    repair_root = tmp_path / "private-repairs"
+    output = tmp_path / "dataset.idxpack"
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            "--repair-stale-local-native-tar-sidecars-root",
+            str(repair_root),
+            str(input_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert idx_path.read_bytes() == shared_sidecar_bytes
+    repair_idx = converter._resolve_local_sidecar(str(tar_path), repair_root)
+    assert struct.unpack("<Q", repair_idx.read_bytes()[-8:])[0] == tar_path.stat().st_size
+    with IndexPack(output) as pack:
+        key = index_pack_collection_key("tar", "nemo_tar", str(tar_path))
+        assert pack.collection(key).locate(0).end == tar_path.stat().st_size
+
+
+def test_converter_accepts_verified_trailing_zero_tar_padding(tmp_path):
+    tar_path, idx_path, input_cfg = _make_native_tar_dataset(tmp_path)
+    original_sentinel = struct.unpack("<Q", idx_path.read_bytes()[-8:])[0]
+    with tar_path.open("ab") as stream:
+        stream.write(bytes(10240))
+
+    output = tmp_path / "dataset.idxpack"
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(output),
+            "--accept-trailing-zero-tar-padding",
+            str(input_cfg),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert struct.unpack("<Q", idx_path.read_bytes()[-8:])[0] == original_sentinel
+    with IndexPack(output) as pack:
+        key = index_pack_collection_key("tar", "nemo_tar", str(tar_path))
+        collection = pack.collection(key)
+        assert collection.locate(0).end == tar_path.stat().st_size
+
+
+def test_converter_rejects_nonzero_trailing_tar_data(tmp_path):
+    tar_path, _, input_cfg = _make_native_tar_dataset(tmp_path)
+    with tar_path.open("ab") as stream:
+        stream.write(bytes(10239) + b"x")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--output",
+            str(tmp_path / "dataset.idxpack"),
+            "--accept-trailing-zero-tar-padding",
+            str(input_cfg),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "non-zero data" in result.output
+
+
 def test_converter_validates_remote_native_tar_sentinel(tmp_path, monkeypatch):
     tar_path, local_idx, _ = _make_native_tar_dataset(tmp_path)
     remote_path = "ais://bucket/audio.tar"

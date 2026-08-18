@@ -423,9 +423,8 @@ class ConvSubsampling(torch.nn.Module):
 
         self.conv = MaskedConvSequential(*layers)
 
-        # Preconditions of the kernels: they implement `dw_striding`'s exact layout,
-        # [conv, act] + (sampling_num - 1) x [dw, pw, act]. A factor of 2 stops after [conv, act],
-        # leaving no depthwise to fuse. The flag sits on the sequential, which owns that loop.
+        # The kernels implement `dw_striding`'s layout, [conv, act] + (sampling_num - 1) x
+        # [dw, pw, act]; a factor of 2 stops after [conv, act], leaving no depthwise to fuse.
         if use_triton is None:
             use_triton = TRITON_AVAILABLE
         self.conv.fuse_triton = use_triton and subsampling == 'dw_striding' and self._sampling_num >= 2
@@ -707,8 +706,7 @@ def calculate_conv_output_size(input_size: torch.Tensor, kernel_size: int, strid
 
 
 class MaskedConvSequential(nn.Sequential):
-    # Set by ConvSubsampling when the stack is `dw_striding` and Triton is usable. Off by default,
-    # so every other subsampling type walks the plain PyTorch path.
+    # Set by ConvSubsampling; off by default, so every other subsampling type stays on PyTorch.
     fuse_triton = False
 
     def forward(self, x, lengths):
@@ -751,23 +749,22 @@ class MaskedConvSequential(nn.Sequential):
         return x, current_lengths, mask
 
     def _forward_fused(self, x, current_lengths):
-        """`_forward_torch` with conv0 and every depthwise replaced by Triton kernels.
+        """The `dw_striding` stack, with conv0 and the depthwise layers as Triton kernels.
 
-        Runs only on a `dw_striding` stack: conv0, activation, then a (depthwise, pointwise,
-        activation) triple per remaining subsampling step. One kernel covers the first three
-        layers, so the loop starts past them; only its depthwise layers stride, so the rest
-        leave the lengths untouched.
+        The stack is `[conv, act] + (sampling_num - 1) x [dw, pw, act]`. One kernel covers the
+        leading `conv, act, dw`; the loop over `self[3:]` runs each depthwise as a kernel, each
+        pointwise as a linear, and every other layer as itself. Lengths change only at the
+        depthwise layers.
 
-        Everything runs channels-last, `(batch, time, freq, channels)`: that is what both kernels
-        read and write, and the pointwise is a contraction over the channel axis either way. One
-        permute at the end restores the `(batch, channels, time, freq)` the caller expects.
+        Tensors are channels-last throughout, `(batch, time, freq, channels)`, and one permute at
+        the end returns the `(batch, channels, time, freq)` the caller expects.
 
-        Nothing is masked between layers: each kernel reads zeros past its input length and
-        stores zeros past its output length, so a mask here could not change any value. Only the
-        trailing pointwise and activation write into the tail, and `forward` masks that.
+        The kernels read zeros beyond their input lengths and write zeros beyond their output
+        lengths. Only the trailing pointwise and activation touch the padded tail, which
+        `apply_channel_mask` clears at the end of `forward`.
         """
         conv0, first_depthwise = self[0], self[2]
-        # conv -> ReLU -> depthwise in one kernel, so the intermediate is never written to memory.
+        # conv -> ReLU -> depthwise in one kernel; the intermediate never reaches memory.
         x, _ = fused_conv_relu_dw(
             x,
             conv0.weight,
@@ -784,7 +781,7 @@ class MaskedConvSequential(nn.Sequential):
 
         for layer in self[3:]:
             if _is_depthwise(layer):
-                # The kernel masks its own output, so it needs the lengths that mask is built from.
+                # The kernel masks its own output, so it needs the post-stride lengths.
                 next_lengths = calculate_conv_output_size(
                     current_lengths, layer.kernel_size[0], layer.stride[0], _layer_padding(layer)
                 )
@@ -793,7 +790,7 @@ class MaskedConvSequential(nn.Sequential):
                     layer.weight,
                     layer.bias,
                     layer.stride,
-                    _layer_padding(layer)[0],
+                    *_layer_padding(layer),
                     current_lengths,
                     next_lengths,
                 )
@@ -814,18 +811,18 @@ class MaskedConvSequential(nn.Sequential):
 
 
 def _layer_padding(layer):
-    """The (left, right) padding of a convolution.
+    """The (start, end) padding of a convolution.
 
-    CausalConv2D pads asymmetrically and keeps the two halves on private attributes; nn.Conv2d
-    keeps a symmetric pair on `.padding`.
+    nn.Conv2d's `.padding` is (pad_h, pad_w), one value per axis and symmetric within it, so the
+    height value is both edges. CausalConv2D keeps its two edges on private attributes.
     """
     if hasattr(layer, "_left_padding"):
         return layer._left_padding, layer._right_padding
-    return layer.padding
+    return layer.padding[0], layer.padding[0]
 
 
 def _is_depthwise(layer):
-    """A depthwise convolution: one group per channel, which is what the Triton kernel expects."""
+    """A depthwise convolution: one group per channel."""
     return isinstance(layer, nn.Conv2d) and layer.groups > 1
 
 
@@ -835,9 +832,5 @@ def _is_pointwise(layer):
 
 
 def _pointwise(layer, x):
-    """A 1x1 convolution over the channel axis of a channels-last tensor.
-
-    Contracting `(out, in, 1, 1)` against the last axis is the same computation on the same
-    parameter as the module's own forward, so weights and gradients are unaffected.
-    """
+    """A 1x1 convolution, run as a matrix multiply over the channel axis of a channels-last tensor."""
     return F.linear(x, layer.weight.view(layer.out_channels, layer.in_channels), layer.bias)

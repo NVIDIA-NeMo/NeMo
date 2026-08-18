@@ -1718,7 +1718,7 @@ class FeatureLabel(_Collection):
 
         self.uniq_labels = sorted(set(map(lambda x: x.label, data)))
 
-        logging.info(f"Filtered duration for loading collection is {duration_filtered / 2600:.2f} hours.")
+        logging.info(f"Filtered duration for loading collection is {duration_filtered / 3600:.2f} hours.")
         logging.info(f"Dataset loaded with {len(data)} items, total duration of {total_duration / 3600: .2f} hours.")
         logging.info("# {} files loaded including # {} unique labels".format(len(data), len(self.uniq_labels)))
         super().__init__(data)

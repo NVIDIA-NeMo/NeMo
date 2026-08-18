@@ -258,3 +258,17 @@ def test_prepare_for_vllm_generation_config(tmp_path):
     output_dir = _run_prepare(tmp_path, _FakeTokenizer(eos_token_id=99))
     gen_cfg = json.loads((output_dir / "generation_config.json").read_text())
     assert gen_cfg == {"eos_token_id": [99]}
+
+
+def test_adapt_strategy_collapses_incompatible_hsdp_replicate_axis() -> None:
+    original = {"dp_size": None, "dp_replicate_size": 16, "tp_size": 1, "pp_size": 1, "cp_size": 1, "ep_size": 8}
+    adapted = to_hf._adapt_strategy_for_conversion_world(original, world_size=8)
+    assert adapted["dp_replicate_size"] == 1
+    assert adapted["ep_size"] == 8
+    assert original["dp_replicate_size"] == 16
+
+
+def test_adapt_strategy_preserves_compatible_hsdp_replicate_axis() -> None:
+    original = {"dp_size": None, "dp_replicate_size": 2, "tp_size": 1, "pp_size": 1, "cp_size": 1}
+    adapted = to_hf._adapt_strategy_for_conversion_world(original, world_size=8)
+    assert adapted["dp_replicate_size"] == 2

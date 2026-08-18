@@ -1226,9 +1226,7 @@ class RotaryPositionalEncoding(torch.nn.Module):
         self.rope_base = rope_base
         self.max_len = max_len
 
-        inv_freq = 1.0 / (
-            rope_base ** (torch.arange(0, d_k_rot, 2, dtype=torch.float32, device="cpu") / d_k_rot)
-        )
+        inv_freq = 1.0 / (rope_base ** (torch.arange(0, d_k_rot, 2, dtype=torch.float32, device="cpu") / d_k_rot))
         self.register_buffer('inv_freq', inv_freq, persistent=False)
 
     def _rotate_half(self, x):

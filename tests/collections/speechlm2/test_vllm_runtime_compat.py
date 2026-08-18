@@ -18,9 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nemo.collections.speechlm2.vllm.salm.runtime_compat import (
-    _patch_speechlm_training_prompt_contract,
-)
+from nemo.collections.speechlm2.vllm.salm.runtime_compat import _patch_speechlm_training_prompt_contract
 
 _AUDIO = {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,AA=="}}
 

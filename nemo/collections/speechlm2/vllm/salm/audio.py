@@ -137,12 +137,8 @@ def _maybe_mount_pe_encoder(
         encoder_class = resolve_parallel_expert_encoder_pt(config=pe_encoder_config)
         pe_encoder = encoder_class.from_inline_config(pe_encoder_config, map_location="cpu")
     else:
-        encoder_class = resolve_parallel_expert_encoder_pt(
-            pe_encoder_path, architecture=pe_encoder_type
-        )
-        pe_encoder = encoder_class.load_from_nemo(
-            pe_encoder_path, map_location="cpu", strict=True
-        )
+        encoder_class = resolve_parallel_expert_encoder_pt(pe_encoder_path, architecture=pe_encoder_type)
+        pe_encoder = encoder_class.load_from_nemo(pe_encoder_path, map_location="cpu", strict=True)
 
     # The outgoing width is unconstrained; unchanged frontend and downstream
     # components must match the replacement encoder.
@@ -216,7 +212,8 @@ def _maybe_mount_independent_speaker_encoder(
         return False
     if not isinstance(speaker_encoder_cfg, Mapping):
         raise TypeError(
-            "speaker_encoder must be a mapping with encoder architecture and chunk settings; " f"got {type(speaker_encoder_cfg).__name__}."
+            "speaker_encoder must be a mapping with encoder architecture and chunk settings; "
+            f"got {type(speaker_encoder_cfg).__name__}."
         )
     if encoder_chunk_size_seconds is not None:
         raise ValueError(

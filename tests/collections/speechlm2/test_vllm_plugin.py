@@ -153,9 +153,7 @@ class TestNeMoSpeechLMConfig:
 
     def test_preserves_explicit_phpee_export_schema(self):
         pe_config = {"target": "ParallelExpertEncoderPT", "asr_chunk_size_seconds": 30.0}
-        cfg = NeMoSpeechLMConfig(
-            **_DEFAULT_CONFIG_KWARGS, pe_encoder_config=pe_config, pe_encoder_type="two_branch"
-        )
+        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, pe_encoder_config=pe_config, pe_encoder_type="two_branch")
 
         assert cfg.pe_encoder_path is None
         assert cfg.pe_encoder_config == pe_config
@@ -678,9 +676,7 @@ class TestAudioProcessing:
         perception.encoder = asr
         perception.modality_adapter = IdentityConnector()
         perception.rote = None
-        perception.preprocessor = SimpleNamespace(
-            featurizer=SimpleNamespace(hop_length=160, sample_rate=16000)
-        )
+        perception.preprocessor = SimpleNamespace(featurizer=SimpleNamespace(hop_length=160, sample_rate=16000))
         perception.proj = torch.nn.Linear(3, 7)
         perception.from_config_dict = lambda config: speaker
 
@@ -1313,9 +1309,7 @@ class TestMTPPlugin:
         monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_recording_orig))
         register()
 
-        hf_cfg = self._HFConfigLike(
-            model_type="nemo_speechlm", mtp={"enabled": False, "num_nextn_predict_layers": 1}
-        )
+        hf_cfg = self._HFConfigLike(model_type="nemo_speechlm", mtp={"enabled": False, "num_nextn_predict_layers": 1})
         SpeculativeConfig.hf_config_override(hf_cfg)
 
         assert len(original_calls) == 1

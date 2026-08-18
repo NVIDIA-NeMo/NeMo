@@ -19,8 +19,8 @@ This module exists so exported configs from the stacked integration continue to
 resolve to that exact same class object rather than a duplicate implementation.
 """
 
-from nemo.collections.asr.modules.parallel_expert_encoder import *  # noqa: F403
-from nemo.collections.asr.modules.parallel_expert_encoder import (
+from nemo.collections.asr.modules.parallel_expert_encoder import *  # noqa: F401,F403
+from nemo.collections.asr.modules.parallel_expert_encoder import (  # noqa: F401
     ParallelExpertEncoder,
     ParallelExpertEncoderPT,
     _clone_config,

@@ -736,9 +736,7 @@ def _normalize_packed_features_and_padding(features, lengths, sequence_ids, norm
         normalized = (centered / std[sequence_ids].unsqueeze(1)).to(input_dtype)
         padding = _expand_packed_padding(padding_value, statistics_features, lengths)
         normalized_padding = (
-            None
-            if padding is None
-            else ((padding - mean.unsqueeze(1)) / std.unsqueeze(1)).to(input_dtype)
+            None if padding is None else ((padding - mean.unsqueeze(1)) / std.unsqueeze(1)).to(input_dtype)
         )
         return normalized, normalized_padding
     if "fixed_mean" in normalize_type and "fixed_std" in normalize_type:

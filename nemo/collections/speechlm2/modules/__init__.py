@@ -21,6 +21,6 @@ __all__ = [
 ]
 
 if os.environ.get("NEMO_SPEECHLM2_VLLM_ONLY") != "1":
-    from .speech_generation import TransformerARSpeechDecoder
+    from .speech_generation import TransformerARSpeechDecoder  # noqa: F401
 
     __all__.append("TransformerARSpeechDecoder")

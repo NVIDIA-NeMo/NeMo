@@ -6,10 +6,7 @@ import pytest
 import torch
 
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
-from nemo.collections.asr.parts.preprocessing.features import (
-    normalize_batch,
-    normalize_packed_batch,
-)
+from nemo.collections.asr.parts.preprocessing.features import normalize_batch, normalize_packed_batch
 
 
 def make_features(device: str, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:

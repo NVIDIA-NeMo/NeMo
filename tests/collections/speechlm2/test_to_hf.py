@@ -298,9 +298,7 @@ def test_hf_export_config_embeds_portable_independent_dual_architecture():
         "asr_chunk_size_seconds": None,
     }
     assert "path" not in exported["speaker_encoder"]
-    assert original_cfg == {
-        "speaker_encoder": {"path": "/models/speaker-transformer", "frozen": True}
-    }
+    assert original_cfg == {"speaker_encoder": {"path": "/models/speaker-transformer", "frozen": True}}
 
 
 def test_save_hf_checkpoint_writes_explicit_mtp_contract(tmp_path):

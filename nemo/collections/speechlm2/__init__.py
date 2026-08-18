@@ -21,8 +21,8 @@ import os
 _VLLM_ONLY = os.getenv("NEMO_SPEECHLM2_VLLM_ONLY") == "1"
 
 if not _VLLM_ONLY:
-    from .data import DataModule, DuplexEARTTSDataset, DuplexS2SDataset, DuplexSTTDataset, SALMDataset
-    from .models import (
+    from .data import DataModule, DuplexEARTTSDataset, DuplexS2SDataset, DuplexSTTDataset, SALMDataset  # noqa: F401
+    from .models import (  # noqa: F401
         SALM,
         DuplexEARTTS,
         DuplexS2SModel,

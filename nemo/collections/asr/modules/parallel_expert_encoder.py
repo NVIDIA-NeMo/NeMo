@@ -787,9 +787,7 @@ class ParallelExpertEncoder(nn.Module):
         if downsample_factor <= 1:
             return predictions
         native_lengths = embedding_lengths * (int(model.encoder.subsampling_factor) // native_factor)
-        return model.sortformer_modules.downsample_preds(
-            predictions, downsample_factor, lengths=native_lengths
-        )
+        return model.sortformer_modules.downsample_preds(predictions, downsample_factor, lengths=native_lengths)
 
     def _run_diarization_packed(self, features: PackedEncoderActivations) -> PackedEncoderActivations:
         """Run the frozen streaming-trained Sortformer on raw, unnormalised mels."""

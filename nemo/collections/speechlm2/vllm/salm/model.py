@@ -139,9 +139,7 @@ class NeMoSpeechLMForConditionalGeneration(
                     pe_encoder_config,
                     getattr(config, "pe_encoder_type", None),
                 )
-                self._uses_pe_encoder = _is_parallel_expert_encoder(
-                    getattr(self.perception, "encoder", None)
-                )
+                self._uses_pe_encoder = _is_parallel_expert_encoder(getattr(self.perception, "encoder", None))
 
         self.make_empty_intermediate_tensors = self.language_model.make_empty_intermediate_tensors
 
@@ -246,9 +244,9 @@ class NeMoSpeechLMForConditionalGeneration(
 
         from nemo.collections.speechlm2.modules.perception import IndependentDualEncoder
 
-        requires_exact_architecture = isinstance(
-            getattr(self.perception, "encoder", None), IndependentDualEncoder
-        ) or self._uses_pe_encoder
+        requires_exact_architecture = (
+            isinstance(getattr(self.perception, "encoder", None), IndependentDualEncoder) or self._uses_pe_encoder
+        )
         if requires_exact_architecture:
             missing = [name for name in incompatible.missing_keys if not name.endswith("._extra_state")]
             unexpected = [name for name in incompatible.unexpected_keys if not name.endswith("._extra_state")]

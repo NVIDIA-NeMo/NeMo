@@ -429,9 +429,7 @@ def test_packed_diarization_supports_optional_post_encoder():
     mels = torch.randn(2, _MEL_FEATURES, 80)
 
     with torch.no_grad():
-        predictions = encoder._run_diarization_packed(
-            pack_encoder_output(mels.transpose(1, 2), lengths)
-        )
+        predictions = encoder._run_diarization_packed(pack_encoder_output(mels.transpose(1, 2), lengths))
 
     assert predictions.lengths.tolist() == [10, 7]
     assert torch.isfinite(predictions.data).all()

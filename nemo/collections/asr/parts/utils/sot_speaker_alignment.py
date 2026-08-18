@@ -33,6 +33,13 @@ _SPEAKER_TOKEN_SPLIT_PATTERN = re.compile(r"(<spk:\d+>)")
 # A one-hour session therefore uses 1,200 bins of 37 or 38 frames, or 3.0 seconds each.
 _DEFAULT_ALIGNMENT_FRAME_SECONDS = 0.08
 _DEFAULT_MAX_ALIGNMENT_FRAMES = int(round(96.0 / _DEFAULT_ALIGNMENT_FRAME_SECONDS))
+# Full permutation search is exact and affordable through six active speakers
+# (6! = 720), but becomes a dataloader-scale denial of service for the
+# eight-speaker targets used by SpeechLM (8! = 40,320). Seven- and eight-speaker
+# examples use a bounded shortlist; callers can pass ``None`` for strict
+# exhaustive parity when offline preprocessing time is acceptable.
+_DEFAULT_MAX_ALIGNMENT_PERMUTATIONS = 720
+_ALIGNMENT_TIMELINE_QUANTILES = np.linspace(0.1, 0.9, 9, dtype=np.float32)
 
 __all__ = [
     "SPEAKER_TOKEN_PATTERN",
@@ -237,6 +244,117 @@ def speaker_freq_cost_batch(text_freq: np.ndarray, rttm_freq: np.ndarray, perm_b
     return np.abs(text_freq - rttm_freq_perm).sum(axis=1).astype(np.float32)
 
 
+def speaker_timeline_cost_batch(
+    activity: np.ndarray,
+    spk_seq_arr: np.ndarray,
+    perm_batch: np.ndarray,
+    num_speakers: int,
+) -> np.ndarray:
+    """Cheap temporal-distribution mismatch used to shortlist DTW permutations.
+
+    For each text speaker and RTTM column, compare nine normalized occurrence
+    quantiles.  This preserves coarse speaker order even when speakers have
+    equal aggregate duration, while avoiding the factorial DTW cost.  It is
+    only a candidate-ranking heuristic: shortlisted permutations are still
+    scored by the original word/frame DTW objective.
+    """
+    activity = np.asarray(activity, dtype=np.bool_)
+    text_quantiles = np.zeros((num_speakers, _ALIGNMENT_TIMELINE_QUANTILES.size), dtype=np.float32)
+    activity_quantiles = np.zeros_like(text_quantiles)
+
+    token_denominator = max(spk_seq_arr.size - 1, 1)
+    frame_denominator = max(activity.shape[0] - 1, 1)
+    text_present = np.zeros(num_speakers, dtype=np.bool_)
+    activity_present = np.zeros(num_speakers, dtype=np.bool_)
+
+    for speaker_idx in range(num_speakers):
+        token_positions = np.flatnonzero(spk_seq_arr == speaker_idx)
+        if token_positions.size:
+            text_present[speaker_idx] = True
+            text_quantiles[speaker_idx] = np.quantile(token_positions, _ALIGNMENT_TIMELINE_QUANTILES).astype(
+                np.float32
+            ) / np.float32(token_denominator)
+
+        frame_positions = np.flatnonzero(activity[:, speaker_idx])
+        if frame_positions.size:
+            activity_present[speaker_idx] = True
+            activity_quantiles[speaker_idx] = np.quantile(
+                frame_positions, _ALIGNMENT_TIMELINE_QUANTILES
+            ).astype(np.float32) / np.float32(frame_denominator)
+
+    pair_cost = np.abs(text_quantiles[:, np.newaxis, :] - activity_quantiles[np.newaxis, :, :]).mean(axis=2)
+    pair_cost[~text_present, :] = 0.0
+    pair_cost[:, ~activity_present] += 1.0
+
+    output_speakers = np.arange(num_speakers, dtype=np.intp)
+    return pair_cost[output_speakers[np.newaxis, :], perm_batch].sum(axis=1).astype(np.float32)
+
+
+def _shortlist_alignment_permutations(
+    activity: np.ndarray,
+    spk_seq_arr: np.ndarray,
+    perm_batch: np.ndarray,
+    text_freq: np.ndarray,
+    rttm_freq: np.ndarray,
+    num_speakers: int,
+    max_permutations: Optional[int],
+) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    """Return DTW candidates, full frequency costs, and optional exact-class expansion.
+
+    Permutations that differ only on text-unused output slots have identical
+    DTW cost.  Score one representative per such equivalence class and expand
+    those scores back across the original full permutation order so the final
+    float32 frequency-cost and tie behavior remains exhaustive.  Only when the
+    number of distinct classes itself exceeds ``max_permutations`` do we apply
+    the bounded frequency/timeline shortlist.
+    """
+    freq_costs = speaker_freq_cost_batch(text_freq, rttm_freq, perm_batch)
+    if max_permutations is not None and max_permutations <= 0:
+        raise ValueError(f"max_alignment_permutations must be positive or None, got {max_permutations}.")
+
+    remapped_slots = sorted(
+        set(spk_seq_arr[(spk_seq_arr >= 0) & (spk_seq_arr < num_speakers)].tolist())
+        | set(np.flatnonzero(text_freq[:num_speakers]).tolist())
+    )
+    if remapped_slots:
+        class_keys = perm_batch[:, remapped_slots]
+        _, representative_indices, class_inverse = np.unique(
+            class_keys, axis=0, return_index=True, return_inverse=True
+        )
+    else:
+        representative_indices = np.array([0], dtype=np.intp)
+        class_inverse = np.zeros(perm_batch.shape[0], dtype=np.intp)
+
+    if max_permutations is None or representative_indices.size <= max_permutations:
+        return representative_indices.astype(np.intp, copy=False), freq_costs, class_inverse
+
+    timeline_costs = speaker_timeline_cost_batch(activity, spk_seq_arr, perm_batch, num_speakers)
+    ranking_costs = freq_costs + timeline_costs
+
+    # Keep the best-ranked representative from each distinct DTW class.  This
+    # avoids spending the bounded budget on permutations that differ only in
+    # output columns that are zeroed after alignment.
+    candidate_indices = []
+    selected_classes = set()
+    for permutation_idx in np.argsort(ranking_costs, kind="stable"):
+        class_idx = int(class_inverse[permutation_idx])
+        if class_idx in selected_classes:
+            continue
+        candidate_indices.append(int(permutation_idx))
+        selected_classes.add(class_idx)
+        if len(candidate_indices) == max_permutations:
+            break
+
+    # Identity is a deterministic baseline.  If its class was not shortlisted,
+    # replace the last heuristic candidate with it.
+    identity_class = int(class_inverse[0])
+    if identity_class not in selected_classes:
+        candidate_indices[-1] = 0
+    candidate_indices = np.asarray(candidate_indices, dtype=np.intp)
+    candidate_indices.sort()
+    return candidate_indices, freq_costs, None
+
+
 def dtw_cost(
     activity: np.ndarray,
     spk_seq_arr: np.ndarray,
@@ -296,6 +414,7 @@ def fix_speaker_activity(
     num_speakers: int,
     max_permutable: Optional[int] = None,
     max_alignment_frames: Optional[int] = _DEFAULT_MAX_ALIGNMENT_FRAMES,
+    max_alignment_permutations: Optional[int] = _DEFAULT_MAX_ALIGNMENT_PERMUTATIONS,
 ) -> torch.Tensor:
     """Align RTTM speaker-activity columns with SOT speaker-token order.
 
@@ -310,6 +429,11 @@ def fix_speaker_activity(
             the default 1,200 frames corresponds to 96 seconds at the standard 80 ms
             target rate, and therefore to 3.0-second bins for a one-hour session. Set
             to ``None`` to disable coarsening. The returned tensor stays full-resolution.
+        max_alignment_permutations (Optional[int]): Maximum number of speaker-column
+            permutations passed to word/frame DTW. Full search is retained below
+            this bound. Larger searches are shortlisted using speaker-frequency
+            and temporal-distribution costs, always including identity. Set to
+            ``None`` to force exhaustive DTW.
 
     Returns:
         torch.Tensor: Shape ``(T, N)`` activity with columns reordered to match text speaker order.
@@ -350,9 +474,32 @@ def fix_speaker_activity(
         perm_batch[:, num_active:] = np.arange(num_active, num_activity_speakers)
 
         alignment_activity = _coarsen_activity_for_alignment(activity_np, max_alignment_frames)
-        dtw_costs = dtw_cost_batch(alignment_activity, spk_seq_arr, perm_batch, num_activity_speakers, token_weights)
-        freq_costs = speaker_freq_cost_batch(text_freq, rttm_freq, perm_batch)
-        best_perm = perm_batch[int(np.argmin(dtw_costs + freq_costs))].tolist()
+        candidate_indices, freq_costs, class_inverse = _shortlist_alignment_permutations(
+            alignment_activity,
+            spk_seq_arr,
+            perm_batch,
+            text_freq,
+            rttm_freq,
+            num_activity_speakers,
+            max_alignment_permutations,
+        )
+        candidate_permutations = perm_batch[candidate_indices]
+        dtw_costs = dtw_cost_batch(
+            alignment_activity,
+            spk_seq_arr,
+            candidate_permutations,
+            num_activity_speakers,
+            token_weights,
+        )
+        if class_inverse is not None:
+            # Preserve the original full-permutation frequency summation and
+            # np.argmin tie order while reusing one expensive DTW score per
+            # mathematically identical class.
+            expanded_dtw_costs = dtw_costs[class_inverse]
+            best_perm = perm_batch[int(np.argmin(expanded_dtw_costs + freq_costs))].tolist()
+        else:
+            best_candidate = int(np.argmin(dtw_costs + freq_costs[candidate_indices]))
+            best_perm = candidate_permutations[best_candidate].tolist()
     else:
         best_perm = identity_perm
 

@@ -35,7 +35,7 @@ dependencies = [
     "smart-open",
     "tensorboard",
     "text-unidecode",
-    "torch>=2.6.0",
+    "torch>=2.7.0",
     "tqdm>=4.41.0",
     "wrapt",
 ]
@@ -518,7 +518,7 @@ requires-dist = [
     "pybind11",
     "pyyaml",
     "tiktoken",
-    "torch>=2.6.0",
+    "torch>=2.7.0",
     "torchdata",
     "transformers==5.12.1",
     "wandb>=0.28.0",

@@ -25,6 +25,24 @@ model:
     - "^perception\\.encoder(_multilayer\\.encoder)?\\..+$"
   prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
 
+  # Multi-Token Prediction is opt-in. Some LLM checkpoints include native MTP
+  # weights; they are restored when enabled and skipped entirely when disabled.
+  # For a base checkpoint without MTP weights, enabling this block initializes a
+  # fresh head before Automodel parallelizes and loads the backbone weights. Add
+  # "^llm\\.mtp\\..+$" to
+  # prevent_freeze_params when the broad LLM freeze pattern above is active.
+  mtp:
+    enabled: false
+    training_mode: joint  # joint preserves the recipe freeze policy; head_only trains only llm.mtp
+    num_nextn_predict_layers: 1
+    hybrid_override_pattern: "*"
+    # Preserve a checkpoint-native MTP architecture by default. Set true to
+    # construct a fresh recipe-defined head instead; all checkpoint MTP tensors
+    # are skipped so they cannot partially initialize the replacement head.
+    replace_existing_head: false
+    loss_scaling_factor: 0.1
+    use_repeated_layer: false
+
   prompt_format: nemotron-nano-v3
   audio_locator_tag: "<|audio|>"  # placeholder token for audio turn is expected
   # Split audios longer than this before the speech encoder forward, then concatenate

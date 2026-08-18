@@ -43,7 +43,7 @@ from urllib.parse import urlsplit, urlunsplit
 import benchmark_server as base
 import numpy as np
 import websockets
-from transformers import AutoTokenizer
+from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
 
 
 @dataclass
@@ -332,7 +332,7 @@ def main() -> None:
     text_items = base._load_items(args.text_file)
     if not text_items:
         raise ValueError(f"No usable lines found in {args.text_file}")
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    tokenizer = EasyMagpieTextTokenizer.from_pretrained(args.model)
     items = [(uttid, text, tokenizer.encode(text, add_special_tokens=False)) for uttid, text in text_items]
 
     output_dir: str | None = None

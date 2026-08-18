@@ -245,8 +245,21 @@ class HybridBackend(_BaseBackend):
         """
         target_vocab = getattr(self.config.text_config, "vocab_size", None)
         for name, tensor in weights:
+            # Automodel checkpoints may include the auxiliary multi-token
+            # prediction (MTP) head used only by the training loss. It is not
+            # part of vLLM's NemotronHForCausalLM inference module, so passing
+            # these tensors to AutoWeightsLoader leaves an invalid ``llm.mtp``
+            # path and aborts the entire model load.
+            if name.startswith("llm.mtp."):
+                continue
+
             hf_name = name.replace("llm.model.", "backbone.")
             hf_name = hf_name.replace("llm.lm_head", "lm_head")
+            # Automodel keeps Mamba stability-sensitive parameters in an
+            # internal FP32 ParameterDict. They are the canonical A_log, D,
+            # and dt_bias weights, not extra parameters; unwrap the storage
+            # detail so vLLM's Nemotron-H mapper can load them normally.
+            hf_name = hf_name.replace(".mixer._fp32_params.", ".mixer.")
             if hf_name == "backbone.norm.weight":
                 hf_name = "backbone.norm_f.weight"
 

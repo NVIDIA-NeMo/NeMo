@@ -264,6 +264,24 @@ class TestBackendSelection:
         assert isinstance(backend, HybridBackend)
         assert backend.architectures() == ["NemotronHForCausalLM"]
 
+    def test_hybrid_backend_unwraps_mamba_fp32_master_parameters(self):
+        from nemo.collections.speechlm2.vllm.salm.backends import make_backend
+
+        backend = make_backend(NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS))
+        marker = object()
+        weights = [
+            ("llm.model.layers.0.mixer._fp32_params.A_log", marker),
+            ("llm.model.layers.0.mixer._fp32_params.D", marker),
+            ("llm.model.layers.0.mixer._fp32_params.dt_bias", marker),
+            ("llm.mtp.layers.0.weight", marker),
+        ]
+
+        assert [name for name, _ in backend.nemo_to_hf_llm_weights(weights)] == [
+            "backbone.layers.0.mixer.A_log",
+            "backbone.layers.0.mixer.D",
+            "backbone.layers.0.mixer.dt_bias",
+        ]
+
     def test_transformer_config_picks_transformer_backend(self):
         from nemo.collections.speechlm2.vllm.salm.backends import TransformerBackend, make_backend
 

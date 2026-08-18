@@ -173,7 +173,7 @@ class TestNeMoSpeechLMConfig:
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
         assert cfg.is_hybrid is expected_is_hybrid
 
-    def test_derives_hr5c_mtp_contract_from_backbone(self, monkeypatch):
+    def test_derives_multibranch_mtp_contract_from_backbone(self, monkeypatch):
         """Legacy compute_mtp exports should derive the exact *E physical head."""
 
         def from_pretrained(model_name: str, trust_remote_code: bool = True):

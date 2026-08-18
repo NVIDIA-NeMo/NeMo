@@ -207,7 +207,7 @@ def _maybe_mount_independent_speaker_encoder(
 ) -> bool:
     """Reconstruct an exported independent ASR + speaker encoder pair.
 
-    Current HR5b exports retain a small architecture descriptor in the
+    Current dual-encoder exports retain a small architecture descriptor in the
     speaker_encoder field and refer to the immutable speaker-encoder artifact
     used at training time. The checkpoint's own perception.encoder tensors
     subsequently replace both branches through vLLM's normal weight loader.

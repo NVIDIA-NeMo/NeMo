@@ -234,7 +234,7 @@ def test_save_hf_checkpoint_preserves_adapter_forced_fp32_tensors(tmp_path):
 
 
 def test_hf_export_config_embeds_portable_phpee_architecture():
-    original_cfg = {"pe_encoder_path": "/nrt/private/placeholderParallelExpertEncoder.nemo"}
+    original_cfg = {"pe_encoder_path": "/models/placeholderParallelExpertEncoder.nemo"}
     pe_encoder = SimpleNamespace(
         _bundle_config=OmegaConf.create({"target": "ParallelExpertEncoderPT", "asr_chunk_size_seconds": None}),
         asr_normalize_type="per_feature",
@@ -253,7 +253,7 @@ def test_hf_export_config_embeds_portable_phpee_architecture():
     assert exported["pe_encoder_config"]["target"] == "ParallelExpertEncoderPT"
     assert exported["pe_encoder_config"]["asr_chunk_size_seconds"] == 30.0
     assert exported["pe_encoder_config"]["diar_chunk_size_seconds"] == 30.0
-    assert original_cfg == {"pe_encoder_path": "/nrt/private/placeholderParallelExpertEncoder.nemo"}
+    assert original_cfg == {"pe_encoder_path": "/models/placeholderParallelExpertEncoder.nemo"}
 
     pe_encoder.asr_chunk_size_seconds = 60.0
     model.cfg = exported

@@ -786,7 +786,7 @@ def test_exported_inline_config_round_trips_consolidated_weights():
     source.asr_chunk_size_seconds = 30.0
     source.diar_chunk_size_seconds = 45.0
     root = SimpleNamespace(
-        cfg={'pe_encoder_path': '/nrt/private/placeholderParallelExpertEncoder.nemo'},
+        cfg={'pe_encoder_path': '/models/placeholderParallelExpertEncoder.nemo'},
         perception=SimpleNamespace(encoder=source),
     )
 

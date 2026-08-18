@@ -36,6 +36,7 @@ Public surface used by the rest of the package:
 import os
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Annotated, Literal
 
 import torch
@@ -104,6 +105,64 @@ def _load_nemo_perception(perception_cfg: dict) -> nn.Module:
     perception = AudioPerceptionModule(cfg)
     perception.eval()
     return perception
+
+
+def _maybe_mount_independent_speaker_encoder(
+    perception: nn.Module, speaker_encoder_cfg: dict | None
+) -> bool:
+    """Recreate a checkpointed ``IndependentDualEncoder`` for inference.
+
+    Training mounts the auxiliary encoder after constructing the base perception
+    module, while the exported root config retains the base ASR encoder plus the
+    separate ``speaker_encoder`` stanza. Recreate that same module topology
+    before vLLM loads the consolidated checkpoint weights. Only the auxiliary
+    architecture is read from the artifact here; both branches' weights come
+    from the checkpoint itself.
+    """
+    if speaker_encoder_cfg in (None, "", False):
+        return False
+
+    from omegaconf import OmegaConf
+
+    from nemo.collections.speechlm2.modules import IndependentDualEncoder
+    from nemo.collections.speechlm2.modules.perception import IdentityConnector
+
+    cfg = speaker_encoder_cfg
+    artifact = Path(str(cfg.get("path", "")))
+    config_path = artifact / "model_config.yaml"
+    if not artifact.is_dir() or not config_path.is_file():
+        raise FileNotFoundError(
+            "speaker_encoder.path must contain model_config.yaml for vLLM "
+            f"dual-encoder construction; got {artifact}."
+        )
+    if not isinstance(perception.modality_adapter, IdentityConnector) or perception.rote is not None:
+        raise ValueError("IndependentDualEncoder requires IdentityConnector and rote=null.")
+    if "encoder_multilayer" in perception._modules:
+        raise ValueError("IndependentDualEncoder does not support multi-layer perception adapters.")
+
+    auxiliary = perception.from_config_dict(OmegaConf.load(config_path))
+    frame_shift_seconds = (
+        perception.preprocessor.featurizer.hop_length
+        / perception.preprocessor.featurizer.sample_rate
+    )
+    dual = IndependentDualEncoder(
+        perception.encoder,
+        auxiliary,
+        frame_shift_seconds=frame_shift_seconds,
+        asr_chunk_size_seconds=cfg.get("asr_chunk_size_seconds", None),
+        auxiliary_chunk_size_seconds=cfg.get("chunk_size_seconds", None),
+        freeze_auxiliary=cfg.get("frozen", True),
+    )
+
+    proj = getattr(perception, "proj", None)
+    if isinstance(proj, nn.Linear) and int(proj.in_features) != int(dual.d_model):
+        raise ValueError(
+            f"Dual encoder width {dual.d_model} does not match exported "
+            f"perception projection width {proj.in_features}."
+        )
+    perception.encoder = dual
+    perception.eval()
+    return True
 
 
 def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) -> bool:

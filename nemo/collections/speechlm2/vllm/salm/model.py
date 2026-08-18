@@ -58,6 +58,7 @@ from nemo.collections.speechlm2.vllm.salm.audio import (
     NeMoSpeechLMMultiModalProcessor,
     NeMoSpeechLMProcessingInfo,
     _load_nemo_perception,
+    _maybe_mount_independent_speaker_encoder,
     _maybe_mount_pe_encoder,
 )
 from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend, make_backend
@@ -106,7 +107,20 @@ class NeMoSpeechLMForConditionalGeneration(
 
         with self._mark_tower_model(vllm_config, {"audio"}):
             self.perception = _load_nemo_perception(config.perception)
-            _maybe_mount_pe_encoder(self.perception, getattr(config, "pe_encoder_path", None))
+            pe_encoder_path = getattr(config, "pe_encoder_path", None)
+            speaker_encoder_cfg = getattr(config, "speaker_encoder", None)
+            if pe_encoder_path not in (None, "", False) and speaker_encoder_cfg not in (
+                None,
+                "",
+                False,
+            ):
+                raise ValueError(
+                    "pe_encoder_path and speaker_encoder are mutually exclusive."
+                )
+            _maybe_mount_pe_encoder(self.perception, pe_encoder_path)
+            _maybe_mount_independent_speaker_encoder(
+                self.perception, speaker_encoder_cfg
+            )
 
         self._uses_pe_encoder = isinstance(getattr(self.perception, "encoder", None), ParallelExpertEncoder)
 

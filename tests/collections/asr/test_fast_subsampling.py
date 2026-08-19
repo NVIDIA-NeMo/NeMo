@@ -326,6 +326,27 @@ def test_export_takes_the_pytorch_path(tmp_path, dynamo):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+def test_deterministic_algorithms_take_the_pytorch_path(monkeypatch):
+    """The weight gradients accumulate through atomics, whose summation order varies per run."""
+    module = _build()
+    assert module.conv.fuse_triton
+    x, lengths = _inputs(batch=2, time=520)
+
+    def unreachable(*args, **kwargs):
+        raise AssertionError("the fused path ran under deterministic algorithms")
+
+    monkeypatch.setattr("nemo.collections.asr.parts.submodules.subsampling.fused_conv_relu_dw", unreachable)
+    torch.use_deterministic_algorithms(True)
+    try:
+        out, _ = module.conv(x, lengths)
+    finally:
+        torch.use_deterministic_algorithms(False)
+
+    assert torch.isfinite(out).all()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 def test_cpu_input_uses_the_pytorch_path():
     """Eligibility is a property of the config; a CPU tensor still takes the PyTorch path."""
     module = _build(device="cpu")

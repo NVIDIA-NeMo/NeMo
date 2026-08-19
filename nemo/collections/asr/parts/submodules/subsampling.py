@@ -716,12 +716,14 @@ class MaskedConvSequential(nn.Sequential):
         x = x.unsqueeze(1)  # (batch, 1, time, features)
         current_lengths = lengths
 
-        # Tracing and export cannot capture a Triton launch, and the fused kernel returns no
-        # input gradient.
+        # Tracing and export cannot capture a Triton launch, the fused kernel returns no input
+        # gradient, and its weight gradients accumulate through atomics, so their summation order
+        # varies between runs.
         if (
             self.fuse_triton
             and x.is_cuda
             and not x.requires_grad
+            and not torch.are_deterministic_algorithms_enabled()
             and not (torch.jit.is_tracing() or torch.compiler.is_exporting())
         ):
             x, current_lengths, mask = self._forward_fused(x, current_lengths)

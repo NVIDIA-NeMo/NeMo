@@ -57,6 +57,59 @@ def test_setup_speech_encoder_hydrates_missing_config_without_weights():
     assert model.cfg.perception.modality_adapter.output_dim == 8
 
 
+def test_setup_parallel_expert_encoder_applies_per_branch_chunk_overrides():
+    pe_encoder = SimpleNamespace(
+        d_model=4,
+        n_spk=8,
+        _feat_in=80,
+        parallel_expert_encoder_kind="two_branch",
+        freeze_asr=False,
+        freeze_diar=True,
+        spk_kernel_scale=1.0,
+        asr_chunk_size_seconds=None,
+        diar_chunk_size_seconds=None,
+        online_inference_enabled=False,
+    )
+    loader = MagicMock()
+    loader.load_from_nemo.return_value = pe_encoder
+    model = SimpleNamespace(
+        cfg=DictConfig(
+            {
+                "pe_encoder_path": "/tmp/placeholderParallelExpertEncoder.nemo",
+                "pe_asr_chunk_size_seconds": 30,
+                "pe_diar_chunk_size_seconds": 45.0,
+                "perception": {
+                    "preprocessor": {"features": 80, "normalize": "per_feature"},
+                    "modality_adapter": {"d_model": 4},
+                },
+            }
+        ),
+        perception=SimpleNamespace(
+            encoder=SimpleNamespace(d_model=4),
+            modality_adapter=object(),
+            proj=torch.nn.Linear(4, 8),
+            preprocessor=SimpleNamespace(
+                featurizer=SimpleNamespace(normalize="per_feature")
+            ),
+        ),
+    )
+
+    with patch.object(
+        pretrained, "_resolve_parallel_expert_encoder_class", return_value=loader
+    ):
+        pretrained.setup_parallel_expert_encoder(model)
+
+    loader.load_from_nemo.assert_called_once_with(
+        "/tmp/placeholderParallelExpertEncoder.nemo",
+        map_location="cpu",
+        strict=True,
+    )
+    assert pe_encoder.asr_chunk_size_seconds == 30.0
+    assert pe_encoder.diar_chunk_size_seconds == 45.0
+    assert model.perception.preprocessor.featurizer.normalize is None
+    assert model.cfg.perception.preprocessor.normalize is None
+
+
 def _mock_automodel_loader(config):
     automodel = SimpleNamespace(from_config=MagicMock(return_value=object()), from_pretrained=MagicMock())
     return (

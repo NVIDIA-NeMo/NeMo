@@ -460,6 +460,25 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         map_location="cpu",
         strict=True,
     )
+    for cfg_key, attribute in (
+        ("pe_asr_chunk_size_seconds", "asr_chunk_size_seconds"),
+        ("pe_diar_chunk_size_seconds", "diar_chunk_size_seconds"),
+    ):
+        if (chunk_size := model.cfg.get(cfg_key, None)) is None:
+            continue
+        chunk_size = float(chunk_size)
+        if chunk_size <= 0:
+            raise ValueError(
+                f"model.{cfg_key} must be positive or null, got {chunk_size}."
+            )
+        if not hasattr(pe_encoder, attribute):
+            raise TypeError(
+                f"{type(pe_encoder).__name__} does not support model.{cfg_key}; "
+                f"missing runtime attribute {attribute!r}."
+            )
+        setattr(pe_encoder, attribute, chunk_size)
+        logging.info("Overrode ParallelExpertEncoder %s=%g seconds", attribute, chunk_size)
+
     if (execution_mode := model.cfg.get("pe_sequence_packed_execution_mode", None)) is not None:
         if execution_mode not in ("grouped", "serial_checkpointed"):
             raise ValueError(

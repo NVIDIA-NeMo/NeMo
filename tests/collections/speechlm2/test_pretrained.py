@@ -515,6 +515,9 @@ def test_automodel_base_load_keeps_fresh_mtp_on_direct_fast_paths(tmp_path, chec
             self.loaded_keys = set(state_dict)
             return state_dict
 
+        def to_hf(self, state_dict, **_kwargs):
+            return state_dict
+
     class TinyModel(torch.nn.Module):
         def __init__(self):
             super().__init__()

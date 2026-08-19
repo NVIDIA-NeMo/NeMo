@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 import pytest
 import torch
 
@@ -28,6 +30,30 @@ CONV_CHANNELS = 256
 # stays fp32. Parity is therefore bounded by TF32 rounding, not by fp32 noise. Worst measured is
 # 2.1e-4, at factor 4, which has the fewest layers after the fused head to average the error out.
 FP32_PARITY_ATOL = 5e-4
+
+
+@pytest.fixture(scope="session", autouse=True)
+def one_config_per_kernel():
+    """Autotuning 180 configs per process dominates the runtime and none of it tests behaviour.
+
+    Set NEMO_TRITON_AUTOTUNE=1 to sweep them all, which is worth doing when a kernel changes.
+    """
+    if not CUDA_TRITON_AVAILABLE or os.environ.get("NEMO_TRITON_AUTOTUNE"):
+        yield
+        return
+    from triton.runtime.autotuner import Autotuner
+
+    from nemo.collections.asr.parts.triton import depthwise_conv, subsampling
+
+    pinned = [
+        obj for module in (subsampling, depthwise_conv) for obj in vars(module).values() if isinstance(obj, Autotuner)
+    ]
+    full = [kernel.configs for kernel in pinned]
+    for kernel in pinned:
+        kernel.configs = kernel.configs[:1]
+    yield
+    for kernel, configs in zip(pinned, full):
+        kernel.configs = configs
 
 
 @pytest.fixture

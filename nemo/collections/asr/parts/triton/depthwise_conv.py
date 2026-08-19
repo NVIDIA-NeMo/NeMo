@@ -63,9 +63,9 @@ if TRITON_AVAILABLE:
     def _forward_configs():
         return [
             triton.Config({"POSITION_BLOCK": positions, "CHANNEL_BLOCK": channels}, num_warps=warps)
-            for positions in (1, 2, 4, 8)
-            for channels in (64, 128, 256)
-            for warps in (2, 4, 8)
+            for positions in (2, 4, 8)
+            for channels in (128, 256)
+            for warps in (2, 4)
         ]
 
     def _weight_grad_configs():
@@ -75,7 +75,7 @@ if TRITON_AVAILABLE:
             triton.Config(
                 {"POSITION_BLOCK": positions, "CHANNEL_BLOCK": channels, "TILE_SPLITS": splits}, num_warps=warps
             )
-            for positions in (4, 8, 16, 32)
+            for positions in (16, 32)
             for channels in (64, 128, 256)
             for splits in (512, 2048)
             for warps in (2, 4)

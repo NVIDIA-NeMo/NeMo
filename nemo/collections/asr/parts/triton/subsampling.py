@@ -78,15 +78,15 @@ if TRITON_AVAILABLE:
     def _forward_configs():
         return [
             triton.Config({"CHANNEL_BLOCK": block, "TIME_ROWS": rows}, num_warps=warps)
-            for block in (32, 64, 128)
-            for rows in (1, 2, 4, 8)
+            for block in (64, 128)
+            for rows in (4, 8)
             for warps in (2, 4)
         ]
 
     def _backward_configs():
         return [
             triton.Config({"CHANNEL_BLOCK": block, "TIME_ROWS": rows, "TILE_SPLITS": splits}, num_warps=warps)
-            for block in (32, 64, 128)
+            for block in (64, 128)
             for rows in (1, 2, 4)
             for splits in (1024, 4096)
             for warps in (2, 4)

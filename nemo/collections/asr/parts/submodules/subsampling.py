@@ -16,7 +16,6 @@ import math
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.nn import LayerNorm
 
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
@@ -768,9 +767,9 @@ class MaskedConvSequential(nn.Sequential):
         lengths. Only the trailing pointwise and activation touch the padded tail, which
         `apply_channel_mask` clears at the end of `forward`.
         """
-        conv0, first_depthwise = self[0], self[2]
+        conv0, _, first_depthwise, first_pointwise, activation = self[:5]
         # conv -> ReLU -> depthwise in one kernel; the intermediate never reaches memory.
-        x, _ = fused_conv_relu_dw(
+        x, current_lengths = fused_conv_relu_dw(
             x,
             conv0.weight,
             conv0.bias,
@@ -779,31 +778,26 @@ class MaskedConvSequential(nn.Sequential):
             *_layer_padding(conv0),
             current_lengths,
         )
-        for conv in (conv0, first_depthwise):
-            current_lengths = calculate_conv_output_size(
-                current_lengths, conv.kernel_size[0], conv.stride[0], _layer_padding(conv)
-            )
 
-        for layer in self[3:]:
-            if _is_depthwise(layer):
-                # The kernel masks its own output, so it needs the post-stride lengths.
-                next_lengths = calculate_conv_output_size(
-                    current_lengths, layer.kernel_size[0], layer.stride[0], _layer_padding(layer)
-                )
-                x = dw_conv2d(
-                    x,
-                    layer.weight,
-                    layer.bias,
-                    layer.stride,
-                    *_layer_padding(layer),
-                    current_lengths,
-                    next_lengths,
-                )
-                current_lengths = next_lengths
-            elif _is_pointwise(layer):
-                x = _pointwise(layer, x)
-            else:
-                x = layer(x)
+        body = self[5:]
+        x = _pointwise_block(x, first_pointwise, activation)
+        for i in range(0, len(body), 3):
+            depthwise, pointwise, activation = body[i : i + 3]
+            # The kernel masks its own output, so it needs the post-stride lengths.
+            next_lengths = calculate_conv_output_size(
+                current_lengths, depthwise.kernel_size[0], depthwise.stride[0], _layer_padding(depthwise)
+            )
+            x = dw_conv2d(
+                x,
+                depthwise.weight,
+                depthwise.bias,
+                depthwise.stride,
+                *_layer_padding(depthwise),
+                current_lengths,
+                next_lengths,
+            )
+            current_lengths = next_lengths
+            x = _pointwise_block(x, pointwise, activation)
 
         x = x.permute(0, 3, 1, 2)
         return x, current_lengths, self._create_mask(x, current_lengths.long())
@@ -836,6 +830,14 @@ def _is_pointwise(layer):
     return isinstance(layer, nn.Conv2d) and layer.groups == 1 and layer.kernel_size == (1, 1)
 
 
-def _pointwise(layer, x):
-    """A 1x1 convolution, run as a matrix multiply over the channel axis of a channels-last tensor."""
-    return F.linear(x, layer.weight.view(layer.out_channels, layer.in_channels), layer.bias)
+def _pointwise_block(x, conv, activation):
+    # kernel_size=1 convs are pointwise, i.e. linear, but nn.Conv2d dispatches to much slower
+    # cuBLAS kernels. flatten(1) on the weight is a free view, so checkpoints are unchanged.
+    # F.linear on an N-D input returns a view of its 2D result. An in-place activation on a
+    # view copies the whole tensor in backward, so x is flattened and the activation runs on
+    # the 2D result itself.
+    # TODO: remove the shape manipulation once https://github.com/pytorch/pytorch/pull/194077
+    # is in the minimum required PyTorch version.
+    b, t, f, c = x.shape
+    x = nn.functional.linear(x.view(-1, c), conv.weight.flatten(1), conv.bias)
+    return activation(x).view(b, t, f, -1)

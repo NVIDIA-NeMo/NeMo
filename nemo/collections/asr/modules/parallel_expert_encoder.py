@@ -16,10 +16,10 @@
 
 Runs a Sortformer speaker-diarization branch and either an ASR FastConformer or
 native Transformer encoder on the same mel input, then fuses their outputs with
-a sinusoidal speaker kernel. The encoder expects unnormalized mels; the ASR
-branch reapplies ``normalize_batch`` internally. I/O matches
-:class:`ConformerEncoder`, including a compatibility fallback for packed SALM
-execution.
+a sinusoidal speaker kernel. The encoder expects unnormalized mels; the ASR and
+Sortformer branches independently reapply ``normalize_batch`` internally. I/O
+matches :class:`ConformerEncoder`, including a compatibility fallback for
+packed SALM execution.
 
 Only self-contained two-branch bundles with inline ``asr_encoder_cfg`` and
 ``diarization_model_cfg`` sections are supported. Legacy speech/speaker/sound
@@ -166,6 +166,7 @@ class ParallelExpertEncoderPT(ModelPT):
             diarization_model_cfg=self._cfg.get('diarization_model_cfg', None),
             asr_encoder_type=self._cfg.get('asr_encoder_type', 'fastconformer'),
             asr_normalize_type=self._cfg.get('asr_normalize_type', None),
+            diar_normalize_type=self._cfg.get('diar_normalize_type', None),
             freeze_diar=self._cfg.get('freeze_diar', True),
             freeze_asr=self._cfg.get('freeze_asr', False),
             online_inference_length=self._cfg.get('online_inference_length', 500),
@@ -197,6 +198,7 @@ class ParallelExpertEncoderPT(ModelPT):
         # consolidated checkpoint can reconstruct phPEE without carrying a
         # second, multi-GB copy of its initialization bundle.
         self.encoder._bundle_config = _clone_config(self._cfg)
+        self.encoder._bundle_config.diar_normalize_type = self.encoder.diar_normalize_type
 
     @staticmethod
     def _validate_bundle_schema(cfg: DictConfig) -> None:
@@ -361,6 +363,7 @@ class ParallelExpertEncoderPT(ModelPT):
 
         shell = cls(cfg=template_cfg, trainer=None)
         shell.encoder = encoder
+        template_cfg.diar_normalize_type = encoder.diar_normalize_type
         shell._cfg = template_cfg
         shell.save_to(output_nemo_path)
 
@@ -384,6 +387,7 @@ class ParallelExpertEncoder(nn.Module):
         asr_encoder_cfg: DictConfig,
         diarization_model_cfg: DictConfig,
         asr_normalize_type: Optional[str] = None,
+        diar_normalize_type: Optional[str] = None,
         freeze_diar: bool = True,
         freeze_asr: bool = False,
         online_inference_length: int = 500,
@@ -424,6 +428,9 @@ class ParallelExpertEncoder(nn.Module):
         self._feat_in = self.asr_encoder._feat_in
 
         diarization_model_cfg = _clone_config(diarization_model_cfg)
+        if diar_normalize_type is None:
+            diar_normalize_type = diarization_model_cfg.get('preprocessor', {}).get('normalize', None)
+        self.diar_normalize_type = diar_normalize_type
         configured_diar_subsampling = int(diarization_model_cfg.encoder.get('subsampling_factor', -1))
         if configured_diar_subsampling != self.asr_encoder.subsampling_factor:
             raise ValueError(
@@ -790,7 +797,9 @@ class ParallelExpertEncoder(nn.Module):
         return model.sortformer_modules.downsample_preds(predictions, downsample_factor, lengths=native_lengths)
 
     def _run_diarization_packed(self, features: PackedEncoderActivations) -> PackedEncoderActivations:
-        """Run the frozen streaming-trained Sortformer on raw, unnormalised mels."""
+        """Normalize each utterance, then run the frozen streaming-trained Sortformer."""
+        if self.diar_normalize_type:
+            features = normalize_packed_batch(features, self.diar_normalize_type)
         features = self._match_packed_module_io(features, self.diarization_model.encoder)
         with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_diar):
             embeddings = self._forward_packed_branch(
@@ -863,6 +872,8 @@ class ParallelExpertEncoder(nn.Module):
         return asr_encoded.with_data(normalized_states + getattr(self, 'spk_kernel_scale', 1.0) * infusion)
 
     def _run_diarization(self, audio_signal: torch.Tensor, length: torch.Tensor) -> torch.Tensor:
+        if self.diar_normalize_type:
+            audio_signal, _, _ = normalize_batch(audio_signal, length, normalize_type=self.diar_normalize_type)
         diar_signal = self._match_module_io(audio_signal, self.diarization_model)
         diar_length = length.to(device=diar_signal.device)
         with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_diar):
@@ -928,8 +939,12 @@ class ParallelExpertEncoder(nn.Module):
                 use_diarization = None
 
         if run_streaming_diar:
+            if self.diar_normalize_type:
+                diar_signal, _, _ = normalize_batch(audio_signal, length, normalize_type=self.diar_normalize_type)
+            else:
+                diar_signal = audio_signal
             streaming_state, stream_dtype, diar_signal, diar_length = self._init_streaming_diar(
-                audio_signal, length, batch_size=audio_signal.shape[0]
+                diar_signal, length, batch_size=audio_signal.shape[0]
             )
             total_preds = torch.zeros(
                 (diar_signal.shape[0], 0, self.n_spk),

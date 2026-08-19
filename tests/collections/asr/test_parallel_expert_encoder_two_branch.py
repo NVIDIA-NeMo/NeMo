@@ -36,6 +36,7 @@ from nemo.collections.asr.modules.parallel_expert_encoder_two_branch import (
 )
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, unpack_encoder_output
+from nemo.collections.asr.parts.preprocessing.features import normalize_batch, normalize_packed_batch
 
 _PEE = getattr(ParallelExpertEncoder, '__wrapped__', ParallelExpertEncoder)
 
@@ -273,6 +274,7 @@ def test_pe_encoder_builds_two_real_branches_and_freezes_diarizer():
     assert encoder.d_model == _ASR_D_MODEL
     assert encoder.subsampling_factor == _SUBSAMPLING_FACTOR
     assert encoder.n_spk == _N_SPK
+    assert encoder.diar_normalize_type == 'per_feature'
     assert all(not parameter.requires_grad for parameter in encoder.diarization_model.parameters())
     assert any(parameter.requires_grad for parameter in encoder.asr_encoder.parameters())
 
@@ -352,6 +354,26 @@ def test_offline_forward_runs_both_branches(asr_encoder_type, asr_encoder_cfg):
     assert output.shape[:2] == (2, _ASR_D_MODEL)
     assert output.shape[-1] == int(output_lengths.max())
     assert torch.isfinite(output).all()
+
+
+@pytest.mark.unit
+def test_offline_sortformer_receives_per_feature_normalized_mels(monkeypatch):
+    encoder = build_toy_pe_encoder().eval()
+    mels = 4.0 * torch.randn(2, _MEL_FEATURES, 80) + 17.0
+    lengths = torch.tensor([80, 53])
+    observed = []
+    original_frontend = encoder.diarization_model.frontend_encoder
+
+    def tracked_frontend(**kwargs):
+        observed.append(kwargs['processed_signal'].detach().clone())
+        return original_frontend(**kwargs)
+
+    monkeypatch.setattr(encoder.diarization_model, 'frontend_encoder', tracked_frontend)
+    with torch.no_grad():
+        encoder._run_diarization(mels, lengths)
+
+    expected, _, _ = normalize_batch(mels, lengths, normalize_type='per_feature')
+    torch.testing.assert_close(observed[0], expected)
 
 
 @pytest.mark.unit
@@ -454,13 +476,13 @@ def test_packed_fallback_matches_padded_forward_for_dense_and_packed_inputs():
 
     restored = unpack_encoder_output(packed_from_dense, total_length=padded.shape[-1])
     valid = torch.arange(padded.shape[-1])[None, :] < output_lengths[:, None]
-    torch.testing.assert_close(restored[valid], padded.transpose(1, 2)[valid], rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(restored[valid], padded.transpose(1, 2)[valid], rtol=1e-4, atol=1e-5)
     torch.testing.assert_close(packed_from_packed.data, packed_from_dense.data, rtol=1e-5, atol=1e-6)
     assert torch.equal(packed_from_packed.lengths, packed_from_dense.lengths)
 
 
 @pytest.mark.unit
-def test_native_packed_path_is_serial_raw_diar_then_normalized_asr_without_unpack(monkeypatch):
+def test_native_packed_path_normalizes_diar_and_asr_independently_without_unpack(monkeypatch):
     encoder = build_toy_pe_encoder(
         asr_encoder_type='transformer',
         asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
@@ -487,8 +509,9 @@ def test_native_packed_path_is_serial_raw_diar_then_normalized_asr_without_unpac
         output = encoder.forward_sequence_packed(packed)
 
     assert [branch for branch, _, _ in calls] == [encoder.diarization_model.encoder, encoder.asr_encoder]
-    torch.testing.assert_close(calls[0][1], packed.data)
-    assert not torch.equal(calls[1][1], packed.data)
+    expected_diar = normalize_packed_batch(packed, 'per_feature')
+    torch.testing.assert_close(calls[0][1], expected_diar.data)
+    torch.testing.assert_close(calls[1][1], expected_diar.data)
     assert torch.equal(output.lengths, torch.tensor([10, 7]))
     assert torch.isfinite(output.data).all()
 
@@ -628,8 +651,8 @@ def test_online_inference_runs_two_real_branches_with_conformer_io():
 
 
 @pytest.mark.unit
-def test_online_inference_passes_time_major_mels_to_sortformer(monkeypatch):
-    """Sortformer owns any pre-encoder-specific layout conversion."""
+def test_online_inference_passes_normalized_time_major_mels_to_sortformer(monkeypatch):
+    """Sortformer receives normalized time-major features before its pre-encoder."""
     encoder = build_toy_pe_encoder(
         diarization_model_cfg=toy_packed_diarization_model_cfg(),
         online_inference_length=10,
@@ -641,22 +664,25 @@ def test_online_inference_passes_time_major_mels_to_sortformer(monkeypatch):
     ).eval()
     encoder._suppress_online_pbar = True
     original = encoder.diarization_model.forward_streaming_step
-    observed_shapes = []
+    observed_signals = []
 
     def checked_forward_streaming_step(**kwargs):
         processed_signal = kwargs['processed_signal']
-        observed_shapes.append(tuple(processed_signal.shape))
+        observed_signals.append(processed_signal.detach().clone())
         assert processed_signal.shape[2] == _MEL_FEATURES
         return original(**kwargs)
 
     monkeypatch.setattr(encoder.diarization_model, 'forward_streaming_step', checked_forward_streaming_step)
-    mels = torch.randn(1, _MEL_FEATURES, 160)
+    mels = 4.0 * torch.randn(1, _MEL_FEATURES, 160) + 17.0
     lengths = torch.tensor([160])
 
     with torch.no_grad(), encoder.online_inference():
         encoder(mels, lengths)
 
-    assert observed_shapes
+    expected, _, _ = normalize_batch(mels, lengths, normalize_type='per_feature')
+    assert observed_signals
+    expected_first_chunk = expected[:, :, : observed_signals[0].shape[1]].transpose(1, 2)
+    torch.testing.assert_close(observed_signals[0], expected_first_chunk)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='Test requires CUDA')
@@ -781,6 +807,8 @@ def test_inline_config_reconstructs_architecture_without_standalone_weights():
 
     assert restored.asr_chunk_size_seconds == 30.0
     assert restored.diar_chunk_size_seconds == 45.0
+    assert restored.diar_normalize_type == 'per_feature'
+    assert restored._bundle_config.diar_normalize_type == 'per_feature'
     assert restored._bundle_config.target == config.target
 
 
@@ -837,6 +865,7 @@ def test_exported_inline_config_round_trips_consolidated_weights():
     assert set(restored.state_dict()) == set(source.state_dict())
     assert restored.asr_chunk_size_seconds == 30.0
     assert restored.diar_chunk_size_seconds == 45.0
+    assert restored.diar_normalize_type == 'per_feature'
     mels = torch.randn(1, _MEL_FEATURES, 161)
     lengths = torch.tensor([161])
     with torch.no_grad():

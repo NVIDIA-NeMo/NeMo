@@ -16,8 +16,8 @@
 
 Runs a Sortformer speaker-diarization branch and either an ASR FastConformer or
 native Transformer encoder on the same mel input, then fuses their outputs with
-a sinusoidal speaker kernel. The encoder expects unnormalized mels; the ASR
-branch reapplies ``normalize_batch`` internally. I/O matches
+a sinusoidal speaker kernel. The encoder expects unnormalized mels; the ASR and
+Sortformer branches independently reapply ``normalize_batch`` internally. I/O matches
 :class:`ConformerEncoder`, including a compatibility fallback for packed SALM
 execution.
 
@@ -29,6 +29,7 @@ GGEMM bundles are intentionally rejected.
 from __future__ import annotations
 
 import contextlib
+import importlib
 import io
 import math
 import os
@@ -42,8 +43,6 @@ from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from tqdm import tqdm
 
-from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
-from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
     pack_encoder_output,
@@ -71,8 +70,8 @@ _LEGACY_CONFIG_KEYS = frozenset(
     }
 )
 _ASR_ENCODER_TYPES = {
-    'fastconformer': ConformerEncoder,
-    'transformer': TransformerEncoder,
+    'fastconformer': ('nemo.collections.asr.modules.conformer_encoder', 'ConformerEncoder'),
+    'transformer': ('nemo.collections.asr.modules.transformer_encoder', 'TransformerEncoder'),
 }
 
 
@@ -83,6 +82,17 @@ def _normalize_asr_encoder_type(asr_encoder_type: Optional[str]) -> str:
         supported = ', '.join(sorted(_ASR_ENCODER_TYPES))
         raise ValueError(f"asr_encoder_type must be one of {{{supported}}}, got {asr_encoder_type!r}.")
     return normalized
+
+
+def _get_asr_encoder_class(asr_encoder_type: str):
+    """Import only the selected ASR encoder class.
+
+    In the lean SpeechLM vLLM import mode, eagerly importing Conformer pulls in
+    the full ASR model package and creates a circular import even for
+    Transformer-only checkpoints.
+    """
+    module_name, class_name = _ASR_ENCODER_TYPES[asr_encoder_type]
+    return getattr(importlib.import_module(module_name), class_name)
 
 
 @contextlib.contextmanager
@@ -123,6 +133,105 @@ def _clone_config(config: Optional[DictConfig]) -> Optional[DictConfig]:
     if config is None:
         return None
     return OmegaConf.create(OmegaConf.to_container(config, resolve=False))
+
+
+class _SortformerInferenceBranch(nn.Module):
+    """Inference/training branch containing only Sortformer's neural modules.
+
+    ``SortformerEncLabelModel`` eagerly imports datasets, metrics, and decoder
+    utilities that are unavailable in the lean vLLM image. PEE only needs its
+    encoder, Transformer head, Sortformer head, and streaming update routine;
+    keeping those under the same attribute names preserves checkpoint keys.
+    """
+
+    def __init__(self, cfg: DictConfig):
+        super().__init__()
+        # Retain Sortformer's preprocessor buffers so legacy/full-model state
+        # dicts remain strict-load compatible, even though PEE receives mels.
+        self.preprocessor = Serialization.from_config_dict(_clone_config(cfg.preprocessor))
+        self.encoder = Serialization.from_config_dict(_clone_config(cfg.encoder))
+        self.sortformer_modules = Serialization.from_config_dict(_clone_config(cfg.sortformer_modules))
+        self.transformer_encoder = Serialization.from_config_dict(_clone_config(cfg.transformer_encoder))
+        if int(cfg.encoder.d_model) == int(cfg.model_defaults.tf_d_model):
+            self.sortformer_modules.encoder_proj = None
+        self.async_streaming = bool(cfg.get('async_streaming', False))
+
+    def frontend_encoder(self, processed_signal, processed_signal_length, bypass_pre_encode: bool = False):
+        emb_seq, emb_seq_length = self.encoder(
+            audio_signal=processed_signal,
+            length=processed_signal_length,
+            bypass_pre_encode=bypass_pre_encode,
+        )
+        emb_seq = emb_seq.transpose(1, 2)
+        if self.sortformer_modules.encoder_proj is not None:
+            emb_seq = self.sortformer_modules.encoder_proj(emb_seq)
+        return emb_seq, emb_seq_length
+
+    def forward_infer(self, emb_seq, emb_seq_length):
+        encoder_mask = self.sortformer_modules.length_to_mask(emb_seq_length, emb_seq.shape[1])
+        trans_emb_seq = self.transformer_encoder(encoder_states=emb_seq, encoder_mask=encoder_mask)
+        preds = self.sortformer_modules.forward_speaker_sigmoids(trans_emb_seq)
+        return preds * encoder_mask.unsqueeze(-1)
+
+    def forward_streaming_step(
+        self,
+        processed_signal,
+        processed_signal_length,
+        streaming_state,
+        total_preds,
+        drop_extra_pre_encoded=0,
+        left_offset=0,
+        right_offset=0,
+    ):
+        chunk_pre_encode_embs, chunk_pre_encode_lengths = self.encoder.pre_encode(
+            x=processed_signal, lengths=processed_signal_length
+        )
+        if drop_extra_pre_encoded > 0:
+            chunk_pre_encode_embs = chunk_pre_encode_embs[:, drop_extra_pre_encoded:, :]
+            chunk_pre_encode_lengths = chunk_pre_encode_lengths - drop_extra_pre_encoded
+
+        if self.async_streaming:
+            spkcache_fifo_chunk_pre_encode_embs, spkcache_fifo_chunk_pre_encode_lengths = (
+                self.sortformer_modules.concat_and_pad(
+                    [streaming_state.spkcache, streaming_state.fifo, chunk_pre_encode_embs],
+                    [streaming_state.spkcache_lengths, streaming_state.fifo_lengths, chunk_pre_encode_lengths],
+                )
+            )
+        else:
+            spkcache_fifo_chunk_pre_encode_embs = self.sortformer_modules.concat_embs(
+                [streaming_state.spkcache, streaming_state.fifo, chunk_pre_encode_embs],
+                dim=1,
+                device=chunk_pre_encode_embs.device,
+            )
+            spkcache_fifo_chunk_pre_encode_lengths = (
+                streaming_state.spkcache.shape[1] + streaming_state.fifo.shape[1] + chunk_pre_encode_lengths
+            )
+
+        embeddings, embedding_lengths = self.frontend_encoder(
+            processed_signal=spkcache_fifo_chunk_pre_encode_embs,
+            processed_signal_length=spkcache_fifo_chunk_pre_encode_lengths,
+            bypass_pre_encode=True,
+        )
+        preds = self.forward_infer(emb_seq=embeddings, emb_seq_length=embedding_lengths)
+        preds = self.sortformer_modules.apply_mask_to_preds(preds, embedding_lengths)
+        if self.async_streaming:
+            streaming_state, chunk_preds = self.sortformer_modules.streaming_update_async(
+                streaming_state=streaming_state,
+                chunk=chunk_pre_encode_embs,
+                chunk_lengths=chunk_pre_encode_lengths,
+                preds=preds,
+                lc=round(left_offset / self.encoder.subsampling_factor),
+                rc=math.ceil(right_offset / self.encoder.subsampling_factor),
+            )
+        else:
+            streaming_state, chunk_preds = self.sortformer_modules.streaming_update(
+                streaming_state=streaming_state,
+                chunk=chunk_pre_encode_embs,
+                preds=preds,
+                lc=round(left_offset / self.encoder.subsampling_factor),
+                rc=math.ceil(right_offset / self.encoder.subsampling_factor),
+            )
+        return streaming_state, torch.cat([total_preds, chunk_preds], dim=1)
 
 
 def _read_bundle_members(nemo_path: str) -> tuple[DictConfig, dict[str, torch.Tensor]]:
@@ -166,6 +275,7 @@ class ParallelExpertEncoderPT(ModelPT):
             diarization_model_cfg=self._cfg.get('diarization_model_cfg', None),
             asr_encoder_type=self._cfg.get('asr_encoder_type', 'fastconformer'),
             asr_normalize_type=self._cfg.get('asr_normalize_type', None),
+            diar_normalize_type=self._cfg.get('diar_normalize_type', None),
             freeze_diar=self._cfg.get('freeze_diar', True),
             freeze_asr=self._cfg.get('freeze_asr', False),
             online_inference_length=self._cfg.get('online_inference_length', 500),
@@ -186,6 +296,7 @@ class ParallelExpertEncoderPT(ModelPT):
         # consolidated checkpoint can reconstruct phPEE without carrying a
         # second, multi-GB copy of its initialization bundle.
         self.encoder._bundle_config = _clone_config(self._cfg)
+        self.encoder._bundle_config.diar_normalize_type = self.encoder.diar_normalize_type
 
     @staticmethod
     def _validate_bundle_schema(cfg: DictConfig) -> None:
@@ -347,6 +458,7 @@ class ParallelExpertEncoderPT(ModelPT):
 
         shell = cls(cfg=template_cfg, trainer=None)
         shell.encoder = encoder
+        template_cfg.diar_normalize_type = encoder.diar_normalize_type
         shell._cfg = template_cfg
         shell.save_to(output_nemo_path)
 
@@ -369,6 +481,7 @@ class ParallelExpertEncoder(nn.Module):
         diarization_model_cfg: DictConfig,
         asr_encoder_type: str = 'fastconformer',
         asr_normalize_type: Optional[str] = None,
+        diar_normalize_type: Optional[str] = None,
         freeze_diar: bool = True,
         freeze_asr: bool = False,
         online_inference_length: int = 500,
@@ -386,9 +499,6 @@ class ParallelExpertEncoder(nn.Module):
     ):
         super().__init__()
 
-        # Lazy import: SortformerEncLabelModel imports from asr.modules.
-        from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel
-
         if asr_encoder_cfg is None or diarization_model_cfg is None:
             raise ValueError(
                 'ParallelExpertEncoder requires both asr_encoder_cfg and diarization_model_cfg; '
@@ -397,7 +507,7 @@ class ParallelExpertEncoder(nn.Module):
 
         self.asr_encoder_type = _normalize_asr_encoder_type(asr_encoder_type)
         self.asr_encoder = Serialization.from_config_dict(_clone_config(asr_encoder_cfg))
-        expected_encoder_class = _ASR_ENCODER_TYPES[self.asr_encoder_type]
+        expected_encoder_class = _get_asr_encoder_class(self.asr_encoder_type)
         if not isinstance(self.asr_encoder, expected_encoder_class):
             raise TypeError(
                 f"asr_encoder_type={self.asr_encoder_type!r} requires asr_encoder_cfg._target_ "
@@ -407,6 +517,9 @@ class ParallelExpertEncoder(nn.Module):
         self._feat_in = self.asr_encoder._feat_in
 
         diarization_model_cfg = _clone_config(diarization_model_cfg)
+        if diar_normalize_type is None:
+            diar_normalize_type = diarization_model_cfg.get('preprocessor', {}).get('normalize', None)
+        self.diar_normalize_type = diar_normalize_type
         configured_diar_subsampling = int(diarization_model_cfg.encoder.get('subsampling_factor', -1))
         if configured_diar_subsampling != self.asr_encoder.subsampling_factor:
             raise ValueError(
@@ -415,7 +528,7 @@ class ParallelExpertEncoder(nn.Module):
                 f'subsampling factor ({self.asr_encoder.subsampling_factor}).'
             )
         diarization_model_cfg.output_subsampling_factor = self.asr_encoder.subsampling_factor
-        self.diarization_model = SortformerEncLabelModel.from_config_dict(diarization_model_cfg)
+        self.diarization_model = _SortformerInferenceBranch(diarization_model_cfg)
         diarization_subsampling_factor = int(self.diarization_model.encoder.subsampling_factor)
         if diarization_subsampling_factor != self.asr_encoder.subsampling_factor:
             raise ValueError(
@@ -737,7 +850,9 @@ class ParallelExpertEncoder(nn.Module):
         )
 
     def _run_diarization_packed(self, features: PackedEncoderActivations) -> PackedEncoderActivations:
-        """Run the frozen streaming-trained Sortformer on raw, unnormalised mels."""
+        """Normalize each utterance, then run the frozen streaming-trained Sortformer."""
+        if self.diar_normalize_type:
+            features = normalize_packed_batch(features, self.diar_normalize_type)
         features = self._match_packed_module_io(features, self.diarization_model.encoder)
         with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_diar):
             embeddings = self._forward_packed_branch(
@@ -808,6 +923,8 @@ class ParallelExpertEncoder(nn.Module):
         return asr_encoded.with_data(normalized_states + self.spk_kernel_scale * infusion)
 
     def _run_diarization(self, audio_signal: torch.Tensor, length: torch.Tensor) -> torch.Tensor:
+        if self.diar_normalize_type:
+            audio_signal, _, _ = normalize_batch(audio_signal, length, normalize_type=self.diar_normalize_type)
         diar_signal = self._match_module_io(audio_signal, self.diarization_model)
         diar_length = length.to(device=diar_signal.device)
         with torch.set_grad_enabled(torch.is_grad_enabled() and not self.freeze_diar):
@@ -871,8 +988,12 @@ class ParallelExpertEncoder(nn.Module):
                 use_diarization = None
 
         if run_streaming_diar:
+            if self.diar_normalize_type:
+                diar_signal, _, _ = normalize_batch(audio_signal, length, normalize_type=self.diar_normalize_type)
+            else:
+                diar_signal = audio_signal
             streaming_state, stream_dtype, diar_signal, diar_length = self._init_streaming_diar(
-                audio_signal, length, batch_size=audio_signal.shape[0]
+                diar_signal, length, batch_size=audio_signal.shape[0]
             )
             diar_pre_encode = getattr(self.diarization_model.encoder, 'pre_encode', None)
             diar_pre_encode = getattr(diar_pre_encode, '_checkpoint_wrapped_module', diar_pre_encode)

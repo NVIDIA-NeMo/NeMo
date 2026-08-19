@@ -12,43 +12,50 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.asr.modules.transformer.bridge_encoders import BridgeEncoder
-from nemo.collections.asr.modules.transformer.perceiver_encoders import PerceiverEncoder
-from nemo.collections.asr.modules.transformer.transformer_bottleneck import (
-    NeMoTransformerBottleneckConfig,
-    NeMoTransformerBottleneckDecoderConfig,
-    NeMoTransformerBottleneckEncoderConfig,
-    TransformerBottleneckEncoderNM,
-)
-from nemo.collections.asr.modules.transformer.transformer_decoders import TransformerDecoder
-from nemo.collections.asr.modules.transformer.transformer_encoders import TransformerEncoder
-from nemo.collections.asr.modules.transformer.transformer_generators import (
-    BeamSearchSequenceGenerator,
-    BeamSearchSequenceGeneratorWithFusionModels,
-    BeamSearchSequenceGeneratorWithLanguageModel,
-    EnsembleBeamSearchSequenceGenerator,
-    GreedySequenceGenerator,
-    TopKSequenceGenerator,
-)
-from nemo.collections.asr.modules.transformer.transformer_modules import AttentionBridge, TransformerEmbedding
-from nemo.collections.asr.modules.transformer.transformer_utils import get_nemo_transformer
+import os
 
-__all__ = [
-    "BridgeEncoder",
-    "PerceiverEncoder",
-    "NeMoTransformerBottleneckConfig",
-    "NeMoTransformerBottleneckDecoderConfig",
-    "NeMoTransformerBottleneckEncoderConfig",
-    "TransformerBottleneckEncoderNM",
-    "TransformerDecoder",
-    "TransformerEncoder",
-    "BeamSearchSequenceGenerator",
-    "BeamSearchSequenceGeneratorWithLanguageModel",
-    "BeamSearchSequenceGeneratorWithFusionModels",
-    "EnsembleBeamSearchSequenceGenerator",
-    "GreedySequenceGenerator",
-    "TopKSequenceGenerator",
-    "AttentionBridge",
-    "TransformerEmbedding",
-    "get_nemo_transformer",
-]
+if os.getenv("NEMO_SPEECHLM2_VLLM_ONLY") == "1":
+    from nemo.collections.asr.modules.transformer.transformer_encoders import TransformerEncoder
+
+    __all__ = ['TransformerEncoder']
+else:
+    from nemo.collections.asr.modules.transformer.bridge_encoders import BridgeEncoder
+    from nemo.collections.asr.modules.transformer.perceiver_encoders import PerceiverEncoder
+    from nemo.collections.asr.modules.transformer.transformer_bottleneck import (
+        NeMoTransformerBottleneckConfig,
+        NeMoTransformerBottleneckDecoderConfig,
+        NeMoTransformerBottleneckEncoderConfig,
+        TransformerBottleneckEncoderNM,
+    )
+    from nemo.collections.asr.modules.transformer.transformer_decoders import TransformerDecoder
+    from nemo.collections.asr.modules.transformer.transformer_encoders import TransformerEncoder
+    from nemo.collections.asr.modules.transformer.transformer_generators import (
+        BeamSearchSequenceGenerator,
+        BeamSearchSequenceGeneratorWithFusionModels,
+        BeamSearchSequenceGeneratorWithLanguageModel,
+        EnsembleBeamSearchSequenceGenerator,
+        GreedySequenceGenerator,
+        TopKSequenceGenerator,
+    )
+    from nemo.collections.asr.modules.transformer.transformer_modules import AttentionBridge, TransformerEmbedding
+    from nemo.collections.asr.modules.transformer.transformer_utils import get_nemo_transformer
+
+    __all__ = [
+        "BridgeEncoder",
+        "PerceiverEncoder",
+        "NeMoTransformerBottleneckConfig",
+        "NeMoTransformerBottleneckDecoderConfig",
+        "NeMoTransformerBottleneckEncoderConfig",
+        "TransformerBottleneckEncoderNM",
+        "TransformerDecoder",
+        "TransformerEncoder",
+        "BeamSearchSequenceGenerator",
+        "BeamSearchSequenceGeneratorWithLanguageModel",
+        "BeamSearchSequenceGeneratorWithFusionModels",
+        "EnsembleBeamSearchSequenceGenerator",
+        "GreedySequenceGenerator",
+        "TopKSequenceGenerator",
+        "AttentionBridge",
+        "TransformerEmbedding",
+        "get_nemo_transformer",
+    ]

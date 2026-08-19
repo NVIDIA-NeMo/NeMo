@@ -33,9 +33,12 @@ from nemo.collections.asr.modules.parallel_expert_encoder_two_branch import (
     _clone_config,
     _default_dtype,
     _disable_dist_feature_sync,
+    _get_asr_encoder_class,
+    _SortformerInferenceBranch,
 )
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, unpack_encoder_output
+from nemo.collections.asr.parts.preprocessing.features import normalize_batch, normalize_packed_batch
 
 _PEE = getattr(ParallelExpertEncoder, '__wrapped__', ParallelExpertEncoder)
 
@@ -45,6 +48,41 @@ _DIAR_FC_D_MODEL = 32
 _DIAR_TF_D_MODEL = 16
 _N_SPK = 4
 _SUBSAMPLING_FACTOR = 8
+
+
+def test_transformer_encoder_class_lookup_does_not_import_conformer(monkeypatch):
+    imported_modules = []
+    real_import_module = pee_module.importlib.import_module
+
+    def tracked_import_module(module_name):
+        imported_modules.append(module_name)
+        return real_import_module(module_name)
+
+    monkeypatch.setattr(pee_module.importlib, 'import_module', tracked_import_module)
+
+    assert _get_asr_encoder_class('transformer') is TransformerEncoder
+    assert imported_modules == ['nemo.collections.asr.modules.transformer_encoder']
+
+
+def test_lightweight_sortformer_branch_matches_full_model_state_and_forward():
+    cfg = toy_diarization_model_cfg()
+    full = SortformerEncLabelModel.from_config_dict(cfg).eval()
+    lightweight = _SortformerInferenceBranch(cfg).eval()
+
+    lightweight.load_state_dict(full.state_dict(), strict=True)
+    assert set(lightweight.state_dict()) == set(full.state_dict())
+
+    mels = torch.randn(2, _MEL_FEATURES, 80)
+    lengths = torch.tensor([80, 64])
+    with torch.no_grad():
+        full_embeddings, full_lengths = full.frontend_encoder(mels, lengths)
+        lightweight_embeddings, lightweight_lengths = lightweight.frontend_encoder(mels, lengths)
+        full_preds = full.forward_infer(full_embeddings, full_lengths)
+        lightweight_preds = lightweight.forward_infer(lightweight_embeddings, lightweight_lengths)
+
+    torch.testing.assert_close(lightweight_embeddings, full_embeddings)
+    torch.testing.assert_close(lightweight_lengths, full_lengths)
+    torch.testing.assert_close(lightweight_preds, full_preds)
 
 
 def toy_asr_encoder_cfg() -> DictConfig:
@@ -273,6 +311,7 @@ def test_pe_encoder_builds_two_real_branches_and_freezes_diarizer():
     assert encoder.d_model == _ASR_D_MODEL
     assert encoder.subsampling_factor == _SUBSAMPLING_FACTOR
     assert encoder.n_spk == _N_SPK
+    assert encoder.diar_normalize_type == 'per_feature'
     assert all(not parameter.requires_grad for parameter in encoder.diarization_model.parameters())
     assert any(parameter.requires_grad for parameter in encoder.asr_encoder.parameters())
 
@@ -355,6 +394,26 @@ def test_offline_forward_runs_both_branches(asr_encoder_type, asr_encoder_cfg):
 
 
 @pytest.mark.unit
+def test_offline_sortformer_receives_per_feature_normalized_mels(monkeypatch):
+    encoder = build_toy_pe_encoder().eval()
+    mels = 4.0 * torch.randn(2, _MEL_FEATURES, 80) + 17.0
+    lengths = torch.tensor([80, 53])
+    observed = []
+    original_frontend = encoder.diarization_model.frontend_encoder
+
+    def tracked_frontend(**kwargs):
+        observed.append(kwargs['processed_signal'].detach().clone())
+        return original_frontend(**kwargs)
+
+    monkeypatch.setattr(encoder.diarization_model, 'frontend_encoder', tracked_frontend)
+    with torch.no_grad():
+        encoder._run_diarization(mels, lengths)
+
+    expected, _, _ = normalize_batch(mels, lengths, normalize_type='per_feature')
+    torch.testing.assert_close(observed[0], expected)
+
+
+@pytest.mark.unit
 def test_mixed_missing_rttm_rows_use_sortformer_predictions(monkeypatch):
     encoder = build_toy_pe_encoder().eval()
     mels = torch.randn(3, _MEL_FEATURES, 80)
@@ -420,7 +479,7 @@ def test_packed_fallback_matches_padded_forward_for_dense_and_packed_inputs():
 
 
 @pytest.mark.unit
-def test_native_packed_path_is_serial_raw_diar_then_normalized_asr_without_unpack(monkeypatch):
+def test_native_packed_path_normalizes_diar_and_asr_independently_without_unpack(monkeypatch):
     encoder = build_toy_pe_encoder(
         asr_encoder_type='transformer',
         asr_encoder_cfg=toy_transformer_asr_encoder_cfg(),
@@ -447,8 +506,9 @@ def test_native_packed_path_is_serial_raw_diar_then_normalized_asr_without_unpac
         output = encoder.forward_sequence_packed(packed)
 
     assert [branch for branch, _, _ in calls] == [encoder.diarization_model.encoder, encoder.asr_encoder]
-    torch.testing.assert_close(calls[0][1], packed.data)
-    assert not torch.equal(calls[1][1], packed.data)
+    expected_diar = normalize_packed_batch(packed, 'per_feature')
+    torch.testing.assert_close(calls[0][1], expected_diar.data)
+    torch.testing.assert_close(calls[1][1], expected_diar.data)
     assert torch.equal(output.lengths, torch.tensor([10, 7]))
     assert torch.isfinite(output.data).all()
 
@@ -601,22 +661,24 @@ def test_online_inference_passes_feature_first_mels_to_sortformer(monkeypatch):
     ).eval()
     encoder._suppress_online_pbar = True
     original = encoder.diarization_model.forward_streaming_step
-    observed_shapes = []
+    observed_signals = []
 
     def checked_forward_streaming_step(**kwargs):
         processed_signal = kwargs['processed_signal']
-        observed_shapes.append(tuple(processed_signal.shape))
+        observed_signals.append(processed_signal.detach().clone())
         assert processed_signal.shape[1] == _MEL_FEATURES
         return original(**kwargs)
 
     monkeypatch.setattr(encoder.diarization_model, 'forward_streaming_step', checked_forward_streaming_step)
-    mels = torch.randn(1, _MEL_FEATURES, 160)
+    mels = 4.0 * torch.randn(1, _MEL_FEATURES, 160) + 17.0
     lengths = torch.tensor([160])
 
     with torch.no_grad(), encoder.online_inference():
         encoder(mels, lengths)
 
-    assert observed_shapes
+    expected, _, _ = normalize_batch(mels, lengths, normalize_type='per_feature')
+    assert observed_signals
+    torch.testing.assert_close(observed_signals[0], expected[:, :, : observed_signals[0].shape[-1]])
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='Test requires CUDA')

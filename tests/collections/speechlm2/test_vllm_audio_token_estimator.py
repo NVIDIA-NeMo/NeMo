@@ -27,6 +27,7 @@ changes upstream (different kernel/stride/repeat), this test fails and
 forces an update to the estimator.
 """
 
+from types import SimpleNamespace
 import pytest
 import torch
 
@@ -93,6 +94,29 @@ def test_estimator_chunking_disabled_matches_single_pass() -> None:
     assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(
         samples, chunk_size_seconds=None
     ) == NeMoSpeechLMProcessingInfo._estimate_audio_tokens_single_pass(samples)
+
+
+def test_pe_encoder_ignores_generic_chunk_size_for_placeholder_estimation() -> None:
+    config = SimpleNamespace(
+        pe_encoder_path="/checkpoint/ParallelExpertEncoder.nemo",
+        encoder_chunk_size_seconds=15.0,
+    )
+    info = SimpleNamespace(get_hf_config=lambda: config)
+
+    assert (NeMoSpeechLMProcessingInfo._get_encoder_chunk_size_seconds(info)) is None
+
+    # Regression length from corrected ASR-LB row 0: generic 15-second
+    # chunking overcounts the full-audio PEE output by one placeholder.
+    samples = 559_280
+    assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, None) == 437
+    assert NeMoSpeechLMProcessingInfo._estimate_audio_tokens(samples, 15.0) == 438
+
+
+def test_standard_encoder_keeps_generic_chunk_size() -> None:
+    config = SimpleNamespace(pe_encoder_path=None, encoder_chunk_size_seconds=15.0)
+    info = SimpleNamespace(get_hf_config=lambda: config)
+
+    assert NeMoSpeechLMProcessingInfo._get_encoder_chunk_size_seconds(info) == 15.0
 
 
 def test_estimator_short_audio_falls_back_to_single_pass() -> None:

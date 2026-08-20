@@ -2073,12 +2073,16 @@ class ParallelExpertEncoder(nn.Module):
                     prefix_mode=prefix_mode,
                 )
 
-            # Trim context off in output-frame space using rounded cumulative positions.
-            # Speech/sound now also carry `extra` frames of extra left context up front.
+            # Trim context using FeatureStacking's ceil-divided cumulative
+            # positions so windowed inference preserves the offline frame count.
+            # Speech/sound also carry `extra` left-context frames up front.
             n_extra = extra if prefix_mode == 'replace' else 0
             left_drop = n_extra + left_offset // self.subsampling_factor
             right_drop = right_offset // self.subsampling_factor
-            core_len = round(end / self.subsampling_factor) - round(stt / self.subsampling_factor)
+            factor = self.subsampling_factor
+            core_start = (stt + factor - 1) // factor
+            core_end = (end + factor - 1) // factor
+            core_len = core_end - core_start
 
             enc_ctx, _ = packed['speech']
             core = max(0, min(core_len, enc_ctx.shape[-1] - left_drop))

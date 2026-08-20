@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from omegaconf import DictConfig
 
 import nemo.collections.speechlm2.models.salm_automodel as salm_module
 import nemo.collections.speechlm2.parts.mtp as mtp_module
@@ -26,6 +27,8 @@ def _bare_model():
     '''Create a SALMAutomodel instance without loading any weights.'''
     model = SALMAutomodel.__new__(SALMAutomodel)
     torch.nn.Module.__init__(model)
+    model.cfg = DictConfig({})
+    model._fused_linear_cross_entropy = None
     return model
 
 

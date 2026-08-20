@@ -82,9 +82,12 @@ _MIN_CHUNK_SIZE_SAMPLES = 320
 
 
 def _ensure_special_tokens(tokenizer: PreTrainedTokenizerBase) -> None:
-    special = [_AUDIO_PLACEHOLDER]
-    existing = set(tokenizer.get_vocab().keys())
-    to_add = [t for t in special if t not in existing]
+    # NOTE: called per request from _call_hf_processor on the API-server event loop.
+    # Use O(1) dict membership; `set(get_vocab().keys())` rebuilt a 131k-entry set
+    # every request (~5-6 ms) purely to check one token. get_vocab() returns vLLM's
+    # cached dict, so membership is O(1).
+    vocab = tokenizer.get_vocab()
+    to_add = [t for t in (_AUDIO_PLACEHOLDER,) if t not in vocab]
     if to_add:
         tokenizer.add_special_tokens({"additional_special_tokens": to_add})
 
@@ -211,11 +214,17 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
     def _get_encoder_chunk_size_seconds(self) -> float | None:
         """Return the per-encoder-call chunk size baked into the checkpoint.
 
-        Mirrors the training-time ``model.encoder_chunk_size_seconds`` field
-        (see ``encode_audio_with_optional_chunking``). ``None`` means the
-        encoder runs once over the full audio, matching legacy checkpoints.
+        Standard perception encoders mirror the training-time
+        ``model.encoder_chunk_size_seconds`` field. A mounted
+        ParallelExpertEncoder instead owns its context-preserving online
+        windowing and the model deliberately bypasses generic waveform
+        chunking, so its prompt estimator must also use one full-audio pass.
+        ``None`` means the encoder runs once over the full audio.
         """
-        return getattr(self.get_hf_config(), "encoder_chunk_size_seconds", None)
+        config = self.get_hf_config()
+        if getattr(config, "pe_encoder_path", None) not in (None, "", False):
+            return None
+        return getattr(config, "encoder_chunk_size_seconds", None)
 
     @staticmethod
     def _estimate_audio_tokens_single_pass(audio_length_samples: int) -> int:

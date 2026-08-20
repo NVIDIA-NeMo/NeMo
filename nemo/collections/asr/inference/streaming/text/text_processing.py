@@ -30,10 +30,14 @@ from nemo.collections.asr.inference.utils.text_segment import Word
 if TYPE_CHECKING:
     from nemo.collections.asr.inference.itn.inverse_normalizer import AlignmentPreservingInverseNormalizer
 
-# An unterminated language tag, e.g. "<mt-MT" or "<sl-", left when the stream ends before the model
-# finishes emitting the tag. Complete tags are removed earlier at token level; these never form a
-# matchable token sequence, so they are dropped from the text instead. Anchored at the end of the
-# string, since the tag is always the last thing a stream emits.
+# Multilingual models close an utterance with a language tag such as "<en-US>". Most tags are a
+# single vocabulary token and are removed at token level, but a few locales have no token of their
+# own (e.g. mt-MT, and sl-SI whose vocabulary entry is misspelled "<sl-SL>"). For those the model
+# spells the tag out from ordinary sub-word pieces - "<", "m", "t", "-", "M", "T", ">" - which takes
+# several decoding steps, so a stream can end part-way through and leave a fragment like "<mt-MT" or
+# "<sl-" in the transcript. A fragment is not a complete token sequence and cannot be matched by
+# token-level filtering, so it is removed from the text here instead. The pattern is anchored at the
+# end of the string because a tag is only ever truncated where the stream stops.
 INCOMPLETE_LANG_TAG = re.compile(r"\s*<[^\s<>]{0,10}\s*$")
 
 

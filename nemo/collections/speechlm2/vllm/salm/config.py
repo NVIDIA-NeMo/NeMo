@@ -65,7 +65,9 @@ def _mtp_pattern_from_backbone_config(text_config) -> str | None:
     """
     pattern = getattr(text_config, "mtp_hybrid_override_pattern", None)
     if pattern:
-        unsupported = sorted(set(pattern) - set(_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL.values()))
+        unsupported = sorted(
+            set(pattern) - set(_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL.values())
+        )
         if unsupported:
             raise ValueError(
                 f"vLLM Nemotron-H MTP does not support pattern symbols {unsupported!r} "
@@ -77,7 +79,9 @@ def _mtp_pattern_from_backbone_config(text_config) -> str | None:
     if not block_types:
         return None
     try:
-        return "".join(_MTP_BLOCK_TYPE_TO_VLLM_SYMBOL[block_type] for block_type in block_types)
+        return "".join(
+            _MTP_BLOCK_TYPE_TO_VLLM_SYMBOL[block_type] for block_type in block_types
+        )
     except KeyError as error:
         raise ValueError(
             f"vLLM Nemotron-H MTP does not support block type {error.args[0]!r} in "
@@ -115,7 +119,9 @@ def _resolve_speechlm_mtp_config(
         if explicit_mtp is not None and "num_nextn_predict_layers" in explicit_mtp:
             num_nextn_predict_layers = explicit_mtp["num_nextn_predict_layers"]
         else:
-            num_nextn_predict_layers = getattr(text_config, "num_nextn_predict_layers", 0)
+            num_nextn_predict_layers = getattr(
+                text_config, "num_nextn_predict_layers", 0
+            )
     num_nextn_predict_layers = int(num_nextn_predict_layers or 0)
     if num_nextn_predict_layers <= 0:
         raise ValueError(
@@ -123,7 +129,11 @@ def _resolve_speechlm_mtp_config(
             "the root mtp config or the backbone config."
         )
 
-    explicit_pattern = explicit_mtp.get("hybrid_override_pattern") if explicit_mtp is not None else None
+    explicit_pattern = (
+        explicit_mtp.get("hybrid_override_pattern")
+        if explicit_mtp is not None
+        else None
+    )
     backbone_pattern = _mtp_pattern_from_backbone_config(text_config)
     if explicit_pattern and backbone_pattern and explicit_pattern != backbone_pattern:
         raise ValueError(
@@ -145,7 +155,11 @@ def _resolve_speechlm_mtp_config(
         )
 
     if use_repeated_layer is None:
-        use_repeated_layer = bool(explicit_mtp.get("use_repeated_layer", False)) if explicit_mtp else False
+        use_repeated_layer = (
+            bool(explicit_mtp.get("use_repeated_layer", False))
+            if explicit_mtp
+            else False
+        )
 
     return {
         "enabled": True,
@@ -186,6 +200,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         pe_encoder_path: str | None = None,
         pe_encoder_config: dict | None = None,
         pe_encoder_type: str | None = None,
+        pe_encoder_overrides: dict | None = None,
         speaker_encoder: dict | None = None,
         **kwargs,
     ):
@@ -203,6 +218,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             and pe_encoder_path is None
             and pe_encoder_config is None
             and pe_encoder_type is None
+            and pe_encoder_overrides is None
             and speaker_encoder is None
             and not kwargs
             and all(value is None for value in required_fields.values())
@@ -232,6 +248,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             self.pe_encoder_path = None
             self.pe_encoder_config = None
             self.pe_encoder_type = None
+            self.pe_encoder_overrides = None
             self.speaker_encoder = None
             return
 
@@ -251,14 +268,26 @@ class NeMoSpeechLMConfig(PretrainedConfig):
                 f"the model class's get_placeholder_str (vLLM-mandated "
                 f"class-level metadata) need to be updated together."
             )
-        has_pe_encoder = pe_encoder_path not in (None, "", False) or pe_encoder_config not in (
+        has_pe_encoder = pe_encoder_path not in (
+            None,
+            "",
+            False,
+        ) or pe_encoder_config not in (
             None,
             {},
             "",
             False,
         )
         if has_pe_encoder and speaker_encoder not in (None, {}, "", False):
-            raise ValueError("ParallelExpertEncoder and speaker_encoder are mutually exclusive.")
+            raise ValueError(
+                "ParallelExpertEncoder and speaker_encoder are mutually exclusive."
+            )
+        if pe_encoder_overrides not in (None, {}) and pe_encoder_path in (
+            None,
+            "",
+            False,
+        ):
+            raise ValueError("pe_encoder_overrides requires pe_encoder_path.")
         self.perception = perception or {}
         self.pretrained_llm = pretrained_llm
         self.pretrained_asr = pretrained_asr
@@ -268,10 +297,13 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.lora = lora
         self.encoder_chunk_size_seconds = encoder_chunk_size_seconds
 
-        self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+        self.text_config = AutoConfig.from_pretrained(
+            pretrained_llm, trust_remote_code=True
+        )
         self.pe_encoder_path = pe_encoder_path
         self.pe_encoder_config = pe_encoder_config
         self.pe_encoder_type = pe_encoder_type
+        self.pe_encoder_overrides = pe_encoder_overrides
         self.speaker_encoder = speaker_encoder
 
         # Backward compatibility for early Nemotron 3.5 SpeechLM exports:
@@ -297,13 +329,20 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         if self.is_hybrid:
             # Normalize to vLLM's official NemotronH architecture name.
             self.text_config.architectures = ["NemotronHForCausalLM"]
-            if not hasattr(self.text_config, "total_num_kv_heads") or self.text_config.total_num_kv_heads is None:
+            if (
+                not hasattr(self.text_config, "total_num_kv_heads")
+                or self.text_config.total_num_kv_heads is None
+            ):
                 if (
                     not hasattr(self.text_config, "num_key_value_heads")
                     or self.text_config.num_key_value_heads is None
                 ):
-                    raise ValueError("NemotronH config must define num_key_value_heads.")
-                self.text_config.total_num_kv_heads = self.text_config.num_key_value_heads
+                    raise ValueError(
+                        "NemotronH config must define num_key_value_heads."
+                    )
+                self.text_config.total_num_kv_heads = (
+                    self.text_config.num_key_value_heads
+                )
             if not hasattr(self.text_config, "rms_norm_eps"):
                 if not hasattr(self.text_config, "layer_norm_epsilon"):
                     raise ValueError("NemotronH config must define layer_norm_epsilon.")
@@ -339,7 +378,11 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         ``*`` means attention and ``E`` means MoE.
         """
         mtp_cfg = self.__dict__.get("mtp") or {}
-        return mtp_cfg.get("hybrid_override_pattern", "*") if isinstance(mtp_cfg, dict) else "*"
+        return (
+            mtp_cfg.get("hybrid_override_pattern", "*")
+            if isinstance(mtp_cfg, dict)
+            else "*"
+        )
 
     _ATTR_ALIASES = {
         "rms_norm_eps": "layer_norm_epsilon",
@@ -377,6 +420,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             "pe_encoder_path",
             "pe_encoder_config",
             "pe_encoder_type",
+            "pe_encoder_overrides",
             "speaker_encoder",
         ):
             raise AttributeError(name)

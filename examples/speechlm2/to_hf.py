@@ -73,7 +73,9 @@ def _adapt_strategy_for_conversion_world(strategy_cfg: dict, world_size: int) ->
 
     conversion_dp_size = world_size // non_dp_size
     replicate_size = int(strategy_cfg.get("dp_replicate_size") or 1)
-    if replicate_size > 1 and (conversion_dp_size % replicate_size != 0 or replicate_size >= conversion_dp_size):
+    if replicate_size > 1 and (
+        conversion_dp_size % replicate_size != 0 or replicate_size >= conversion_dp_size
+    ):
         strategy_cfg["dp_replicate_size"] = 1
     return strategy_cfg
 
@@ -93,7 +95,9 @@ def setup_distributed_from_config(strategy_cfg: dict) -> Any:
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
 
-    strategy_cfg = _adapt_strategy_for_conversion_world(strategy_cfg, dist.get_world_size())
+    strategy_cfg = _adapt_strategy_for_conversion_world(
+        strategy_cfg, dist.get_world_size()
+    )
     strategy = safe_instantiate(strategy_cfg)
     _resolve_automodel_configs(strategy)
     strategy.create_device_mesh()
@@ -118,12 +122,23 @@ def _canonical_torch_dtype_name(dtype: str | torch.dtype) -> str:
     return str(str_to_dtype(dtype)).replace("torch.", "")
 
 
-def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[str, Any]:
+def _hf_export_config(
+    model: torch.nn.Module, dtype: str | torch.dtype
+) -> dict[str, Any]:
     """Build the exported root config without mutating the training config."""
-    config = OmegaConf.to_container(model.cfg) if isinstance(model.cfg, DictConfig) else deepcopy(model.cfg)
+    config = (
+        OmegaConf.to_container(model.cfg)
+        if isinstance(model.cfg, DictConfig)
+        else deepcopy(model.cfg)
+    )
     pe_encoder_path = config.get("pe_encoder_path", None)
     pe_encoder_config = config.get("pe_encoder_config", None)
-    if pe_encoder_path not in (None, "", False) or pe_encoder_config not in (None, {}, "", False):
+    if pe_encoder_path not in (None, "", False) or pe_encoder_config not in (
+        None,
+        {},
+        "",
+        False,
+    ):
         pe_encoder = getattr(getattr(model, "perception", None), "encoder", None)
         bundle_config = getattr(pe_encoder, "_bundle_config", None)
         if bundle_config is None:
@@ -135,18 +150,26 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
         # defaults. The consolidated root state dict supplies all weights.
         for config_key, attr_name in (
             ("asr_normalize_type", "asr_normalize_type"),
+            ("diar_normalize_type", "diar_normalize_type"),
             ("asr_chunk_size_seconds", "asr_chunk_size_seconds"),
             ("diar_chunk_size_seconds", "diar_chunk_size_seconds"),
             ("frame_shift_seconds", "frame_shift_seconds"),
             ("missing_rttm_target", "missing_rttm_target"),
+            ("speaker_feature_mode", "speaker_feature_mode"),
             ("speaker_activity_threshold", "speaker_activity_threshold"),
             ("spk_kernel_scale", "spk_kernel_scale"),
-            ("align_diarization_output_resolution", "align_diarization_output_resolution"),
+            (
+                "align_diarization_output_resolution",
+                "align_diarization_output_resolution",
+            ),
         ):
             if hasattr(pe_encoder, attr_name):
                 bundle_config[config_key] = getattr(pe_encoder, attr_name)
+        if hasattr(pe_encoder, "speaker_feature_mode"):
+            bundle_config["speaker_feature_config_version"] = 1
         config["pe_encoder_config"] = bundle_config
         config["pe_encoder_path"] = None
+        config.pop("pe_encoder_overrides", None)
 
     speaker_encoder_cfg = config.get("speaker_encoder", None)
     if speaker_encoder_cfg not in (None, {}, "", False):
@@ -185,18 +208,24 @@ def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[
     return config
 
 
-def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportConfig) -> None:
+def save_hf_checkpoint(
+    model: torch.nn.Module, state_dict: dict, cfg: HfExportConfig
+) -> None:
     """Save a consolidated state dict and model config in HuggingFace Hub format."""
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     target_dtype = str_to_dtype(cfg.dtype)
     forced_dtypes = {}
-    state_dict_adapter = getattr(getattr(model, "llm", None), "state_dict_adapter", None)
+    state_dict_adapter = getattr(
+        getattr(model, "llm", None), "state_dict_adapter", None
+    )
     if callable(getattr(state_dict_adapter, "forced_hf_dtype_mapping", None)):
         forced_dtypes = state_dict_adapter.forced_hf_dtype_mapping(state_dict)
     state_dict = {
-        key: value.to(torch.float32 if forced_dtypes.get(key) == "F32" else target_dtype)
+        key: value.to(
+            torch.float32 if forced_dtypes.get(key) == "F32" else target_dtype
+        )
         for key, value in state_dict.items()
     }
 
@@ -268,13 +297,17 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     output_dir = Path(output_dir)
     pretrained_llm = model_cfg.get("pretrained_llm", "")
     if not pretrained_llm:
-        raise ValueError("model config has no 'pretrained_llm'; cannot load tokenizer for vLLM")
+        raise ValueError(
+            "model config has no 'pretrained_llm'; cannot load tokenizer for vLLM"
+        )
 
     # ``model.audio_locator_tag`` is the SoT for the audio placeholder;
     # fail loud rather than default, since a mismatch is silent at inference.
     audio_token = model_cfg.get("audio_locator_tag")
     if not audio_token:
-        raise ValueError("model config has no 'audio_locator_tag' (set it in the training YAML).")
+        raise ValueError(
+            "model config has no 'audio_locator_tag' (set it in the training YAML)."
+        )
 
     # 1. Patch config.json (arch, model_type, audio_locator_tag for vLLM plugin).
     arch_model_cfg = dict(model_cfg)
@@ -293,7 +326,8 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     existing = [
         f.name
         for f in output_dir.iterdir()
-        if f.name in ("tokenizer_config.json", "tokenizer.json", "generation_config.json")
+        if f.name
+        in ("tokenizer_config.json", "tokenizer.json", "generation_config.json")
     ]
     if existing:
         LOG.info("Overwriting existing files in %s: %s", output_dir, existing)
@@ -303,7 +337,9 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     pad_token = model_cfg.get("pad_token", None)
     if pad_token:
         if pad_token not in tok.get_vocab():
-            raise ValueError(f"model pad_token={pad_token!r} is absent from the exported tokenizer vocabulary.")
+            raise ValueError(
+                f"model pad_token={pad_token!r} is absent from the exported tokenizer vocabulary."
+            )
         tok.pad_token = pad_token
     tok.save_pretrained(str(output_dir))
     # Newer transformers splits long chat_template into a separate
@@ -340,7 +376,9 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     gen_cfg = {"eos_token_id": [tok.eos_token_id]}
     if tok.pad_token_id is not None:
         gen_cfg["pad_token_id"] = tok.pad_token_id
-    (output_dir / "generation_config.json").write_text(json.dumps(gen_cfg, indent=2) + "\n")
+    (output_dir / "generation_config.json").write_text(
+        json.dumps(gen_cfg, indent=2) + "\n"
+    )
 
 
 def _try_prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
@@ -408,7 +446,9 @@ def main(cfg: HfExportConfig) -> None:
 
     full_cfg = OmegaConf.to_container(OmegaConf.load(cfg.ckpt_config), resolve=True)
     model_cfg = full_cfg["model"]
-    audio_token_estimator = full_cfg.get("data", {}).get("train_ds", {}).get("audio_token_estimator")
+    audio_token_estimator = (
+        full_cfg.get("data", {}).get("train_ds", {}).get("audio_token_estimator")
+    )
     if audio_token_estimator is not None:
         # The vLLM prompt processor must reserve exactly as many audio
         # placeholders as the checkpoint's encoder emits.
@@ -453,7 +493,9 @@ def main(cfg: HfExportConfig) -> None:
         model = cls(model_cfg)
         load_checkpoint(model, cfg.ckpt_path)
         model = model.to(str_to_dtype(cfg.dtype))
-        model.save_pretrained(cfg.output_dir, config=_hf_export_config(model, cfg.dtype))
+        model.save_pretrained(
+            cfg.output_dir, config=_hf_export_config(model, cfg.dtype)
+        )
         save_llm_backbone_config(model, cfg.output_dir)
         _try_prepare_for_vllm(cfg.output_dir, model_cfg)
 

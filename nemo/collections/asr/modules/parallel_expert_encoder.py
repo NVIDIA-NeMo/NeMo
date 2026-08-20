@@ -687,6 +687,20 @@ class ParallelExpertEncoder(nn.Module):
             return torch.zeros(spk_targets.shape[0], dtype=torch.bool, device=spk_targets.device)
         return (spk_targets == missing_rttm_target).all(dim=(1, 2))
 
+    def _should_run_diarization(
+        self,
+        spk_targets: Optional[torch.Tensor],
+        use_diarization: Optional[torch.Tensor] = None,
+    ) -> bool:
+        """Run a uniform training/distributed path while retaining the local eval fast path."""
+        if spk_targets is None or self.training:
+            return True
+        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+            return True
+        if use_diarization is None:
+            use_diarization = self._missing_target_rows(spk_targets)
+        return bool(use_diarization.any().item())
+
     def _speaker_features(self, targets: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
         """Apply opt-in thresholding while preserving released continuous fusion."""
         threshold = getattr(self, 'speaker_activity_threshold', None)
@@ -764,7 +778,7 @@ class ParallelExpertEncoder(nn.Module):
             features = pack_encoder_output(audio_signal.transpose(1, 2), length)
 
         self._check_spk_targets(spk_targets, features.batch_size)
-        needs_diarization = spk_targets is None or bool(self._missing_target_rows(spk_targets).any().item())
+        needs_diarization = self._should_run_diarization(spk_targets)
         diarization_preds = self._run_diarization_packed(features) if needs_diarization else None
         asr_encoded = self._run_asr_packed(features)
         if diarization_preds is not None and not (
@@ -901,7 +915,7 @@ class ParallelExpertEncoder(nn.Module):
         """Single-pass two-branch forward used by training and validation."""
         self._check_spk_targets(spk_targets, audio_signal.shape[0])
         use_diarization = None if spk_targets is None else self._missing_target_rows(spk_targets)
-        needs_diarization = spk_targets is None or bool(use_diarization.any().item())
+        needs_diarization = self._should_run_diarization(spk_targets, use_diarization)
         diarization_preds = self._run_diarization(audio_signal, length) if needs_diarization else None
         asr_encoded, asr_encoded_len = self._run_asr(audio_signal, length)
 

@@ -403,6 +403,92 @@ def test_mixed_missing_rttm_rows_use_sortformer_predictions(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(('training', 'world_size'), [(True, 1), (False, 2)])
+def test_all_rttm_rows_still_run_sortformer_in_collective_safe_paths(monkeypatch, training, world_size):
+    encoder = build_toy_pe_encoder().train(training)
+    monkeypatch.setattr(dist, 'is_available', lambda: True)
+    monkeypatch.setattr(dist, 'is_initialized', lambda: world_size > 1)
+    monkeypatch.setattr(dist, 'get_world_size', lambda: world_size)
+    mels = torch.randn(2, _MEL_FEATURES, 80)
+    lengths = torch.tensor([80, 64])
+    diarization = torch.rand(2, 10, _N_SPK)
+    asr_states = torch.randn(2, _ASR_D_MODEL, 10)
+    asr_lengths = torch.tensor([10, 8])
+    diarization_calls = 0
+
+    def run_diarization(*_):
+        nonlocal diarization_calls
+        diarization_calls += 1
+        return diarization
+
+    monkeypatch.setattr(encoder, '_run_diarization', run_diarization)
+    monkeypatch.setattr(encoder, '_run_asr', lambda *_: (asr_states, asr_lengths))
+
+    targets = torch.zeros(2, 10, _N_SPK)
+    targets[0, :, 0] = 1.0
+    targets[1, :, 1] = 1.0
+    expected = encoder._fuse_diar_and_asr(asr_states, targets)
+    actual, actual_lengths = encoder(mels, lengths, spk_targets=targets)
+
+    assert diarization_calls == 1
+    torch.testing.assert_close(actual, expected)
+    assert torch.equal(actual_lengths, asr_lengths)
+
+
+@pytest.mark.unit
+def test_all_rttm_rows_can_skip_sortformer_in_single_process_eval(monkeypatch):
+    encoder = build_toy_pe_encoder().eval()
+    mels = torch.randn(2, _MEL_FEATURES, 80)
+    lengths = torch.tensor([80, 64])
+    asr_states = torch.randn(2, _ASR_D_MODEL, 10)
+    asr_lengths = torch.tensor([10, 8])
+    monkeypatch.setattr(
+        encoder,
+        '_run_diarization',
+        lambda *_: (_ for _ in ()).throw(AssertionError('single-process eval unexpectedly ran Sortformer')),
+    )
+    monkeypatch.setattr(encoder, '_run_asr', lambda *_: (asr_states, asr_lengths))
+
+    targets = torch.zeros(2, 10, _N_SPK)
+    targets[0, :, 0] = 1.0
+    targets[1, :, 1] = 1.0
+    expected = encoder._fuse_diar_and_asr(asr_states, targets)
+    actual, actual_lengths = encoder(mels, lengths, spk_targets=targets)
+
+    torch.testing.assert_close(actual, expected)
+    assert torch.equal(actual_lengths, asr_lengths)
+
+
+@pytest.mark.unit
+def test_all_rttm_rows_still_run_sortformer_in_packed_training_path(monkeypatch):
+    encoder = build_toy_pe_encoder().train()
+    lengths = torch.tensor([80, 64])
+    packed_input = pack_encoder_output(torch.randn(2, 80, _MEL_FEATURES), lengths)
+    output_lengths = torch.tensor([10, 8])
+    asr_states = pack_encoder_output(torch.randn(2, 10, _ASR_D_MODEL), output_lengths)
+    diarization = pack_encoder_output(torch.rand(2, 10, _N_SPK), output_lengths)
+    diarization_calls = 0
+
+    def run_diarization(_):
+        nonlocal diarization_calls
+        diarization_calls += 1
+        return diarization
+
+    monkeypatch.setattr(encoder, '_run_diarization_packed', run_diarization)
+    monkeypatch.setattr(encoder, '_run_asr_packed', lambda _: asr_states)
+
+    targets = torch.zeros(2, 10, _N_SPK)
+    targets[0, :, 0] = 1.0
+    targets[1, :, 1] = 1.0
+    expected = encoder._fuse_diar_and_asr_packed(asr_states, targets)
+    actual = encoder.forward_sequence_packed(packed_input, spk_targets=targets)
+
+    assert diarization_calls == 1
+    torch.testing.assert_close(actual.data, expected.data)
+    assert torch.equal(actual.lengths, expected.lengths)
+
+
+@pytest.mark.unit
 def test_speaker_threshold_and_kernel_scale_are_preserved():
     encoder = build_toy_pe_encoder(speaker_activity_threshold=0.5, spk_kernel_scale=0.25).eval()
     asr_states = torch.randn(1, _ASR_D_MODEL, 3)

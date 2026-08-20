@@ -237,7 +237,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         llm_positional_args = (llm_input_ids, *mtp_embed_inputs) if mtp_embed_inputs else ()
         if not mtp_embed_inputs:
             llm_kwargs["input_ids"] = llm_input_ids
-        use_fused_linear_ce = self.training and self._fused_linear_cross_entropy is not None and cache is None
+        use_fused_linear_ce = (
+            self.training and getattr(self, "_fused_linear_cross_entropy", None) is not None and cache is None
+        )
         if use_fused_linear_ce:
             llm_kwargs["output_hidden_states"] = True
             llm_kwargs["compute_logits"] = False
@@ -528,14 +530,15 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         self, forward_outputs: dict[str, Tensor], target_ids: Tensor, dp_group
     ) -> tuple[Tensor, Tensor | None]:
         """Return local summed CE and optional full logits used by auxiliary losses."""
-        if self._fused_linear_cross_entropy is not None:
+        fused_linear_cross_entropy = getattr(self, "_fused_linear_cross_entropy", None)
+        if fused_linear_cross_entropy is not None:
             hidden_states = forward_outputs.get("hidden_states", None)
             if hidden_states is None:
                 raise RuntimeError("Fused linear CE requires final hidden states from forward().")
             lm_head = self.llm.get_output_embeddings() if hasattr(self.llm, "get_output_embeddings") else None
             if lm_head is None:
                 lm_head = self.llm.lm_head
-            loss_sum = self._fused_linear_cross_entropy(
+            loss_sum = fused_linear_cross_entropy(
                 hidden_states,
                 target_ids,
                 lm_head.weight,
@@ -691,7 +694,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         }
 
     def _log_training_batch_debug(self, batch: dict | None, batch_idx: int) -> None:
-        max_logged = int(self.cfg.get("debug_log_training_batches", 2) or 0)
+        cfg = getattr(self, "cfg", None)
+        if cfg is None:
+            return
+        max_logged = int(cfg.get("debug_log_training_batches", 2) or 0)
         logged = getattr(self, "_debug_logged_training_batches", 0)
         if logged >= max_logged:
             return

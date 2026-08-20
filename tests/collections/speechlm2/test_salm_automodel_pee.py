@@ -38,6 +38,7 @@ from nemo.collections.common.data.lhotse.text_adapters import AudioTurn, TextTur
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.speechlm2.data import SALMDataset
+from nemo.collections.speechlm2.data.salm_dataset import MultiSpeakerConfig, SALMMultiSpeakerProcessor
 from nemo.collections.speechlm2.models import SALMAutomodel
 
 # Reuse the toy PE encoder (and its dimensions) defined for the standalone
@@ -48,6 +49,11 @@ from tests.collections.asr.test_parallel_expert_encoder import (
     _N_SPK,
     _SUBSAMPLING_FACTOR,
     build_toy_pe_encoder,
+)
+
+# Reuse the shared toy encoder and dimensions so both suites use one fixture.
+from tests.collections.asr.test_parallel_expert_encoder_two_branch import (
+    build_toy_pe_encoder as build_toy_two_branch_encoder,
 )
 
 # SALMAutomodel.configure_model() pulls in the (gitignored) nemo_automodel package,
@@ -96,6 +102,28 @@ SOT_CFG = {
     "subsampling_factor": _SUBSAMPLING_FACTOR,
     "no_rttm_to_ones": True,
 }
+
+
+@pytest.mark.unit
+def test_multispeaker_processor_preserves_missing_rttm_sentinel_after_variable_length_collation(monkeypatch):
+    processor = SALMMultiSpeakerProcessor(MultiSpeakerConfig(num_speakers=_N_SPK))
+    missing_rttm = torch.full((2, _N_SPK), -1.0)
+    explicit_rttm = torch.zeros((4, _N_SPK))
+    monkeypatch.setattr(processor, "_build_speaker_activities", lambda conversations: [missing_rttm, explicit_rttm])
+    batch = {
+        "conversations": object(),
+        "audios": torch.zeros(2, 640),
+        "audio_lens": torch.tensor([320, 640], dtype=torch.long),
+    }
+
+    processor(batch)
+
+    assert batch["spk_targets"].shape == (2, 4, _N_SPK)
+    assert torch.all(batch["spk_targets"][0] == -1.0)
+    assert torch.all(batch["spk_targets"][1] == 0.0)
+    assert torch.equal(batch["spk_target_length"], torch.tensor([2, 4]))
+    encoder = build_toy_two_branch_encoder().eval()
+    assert encoder._missing_target_rows(batch["spk_targets"]).tolist() == [True, False]
 
 
 def mount_dummy_pe_encoder(model: SALMAutomodel) -> ParallelExpertEncoder:

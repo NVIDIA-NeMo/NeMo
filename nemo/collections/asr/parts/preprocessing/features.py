@@ -715,23 +715,29 @@ def _normalize_packed_features(features, lengths, sequence_ids, normalize_type):
 
 def _normalize_packed_features_and_padding(features, lengths, sequence_ids, normalize_type, *, padding_value=None):
     if normalize_type == "per_feature":
+        input_dtype = features.dtype
+        statistics_features = _packed_normalization_statistics_features(features)
         denominator = lengths.clamp_min(1).unsqueeze(1)
-        mean = _packed_segment_sum(features, lengths) / denominator
-        centered = features - mean[sequence_ids]
+        mean = _packed_segment_sum(statistics_features, lengths) / denominator
+        centered = statistics_features - mean[sequence_ids]
         variance = _packed_segment_sum(centered.square(), lengths) / (denominator - 1)
         std = torch.sqrt(variance).masked_fill(variance.isnan(), 0.0) + CONSTANT
-        normalized = centered / std[sequence_ids]
+        normalized = (centered / std[sequence_ids]).to(input_dtype)
         normalized_padding = features.new_zeros((lengths.numel(), features.shape[1]))
         return normalized, normalized_padding
     if normalize_type == "all_features":
+        input_dtype = features.dtype
+        statistics_features = _packed_normalization_statistics_features(features)
         denominator = lengths * features.shape[1]
-        mean = _packed_segment_sum(features.sum(1), lengths) / denominator.clamp_min(1)
-        centered = features - mean[sequence_ids].unsqueeze(1)
+        mean = _packed_segment_sum(statistics_features.sum(1), lengths) / denominator.clamp_min(1)
+        centered = statistics_features - mean[sequence_ids].unsqueeze(1)
         variance = _packed_segment_sum(centered.square().sum(1), lengths) / (denominator.clamp_min(1) - 1)
         std = torch.sqrt(variance).masked_fill(variance.isnan(), 0.0) + CONSTANT
-        normalized = centered / std[sequence_ids].unsqueeze(1)
-        padding = _expand_packed_padding(padding_value, features, lengths)
-        normalized_padding = None if padding is None else (padding - mean.unsqueeze(1)) / std.unsqueeze(1)
+        normalized = (centered / std[sequence_ids].unsqueeze(1)).to(input_dtype)
+        padding = _expand_packed_padding(padding_value, statistics_features, lengths)
+        normalized_padding = (
+            None if padding is None else ((padding - mean.unsqueeze(1)) / std.unsqueeze(1)).to(input_dtype)
+        )
         return normalized, normalized_padding
     if "fixed_mean" in normalize_type and "fixed_std" in normalize_type:
         mean = torch.as_tensor(normalize_type["fixed_mean"], device=features.device, dtype=features.dtype)
@@ -753,6 +759,13 @@ def _normalize_packed_features_and_padding(features, lengths, sequence_ids, norm
 def _packed_segment_sum(values, lengths):
     # Public packed entry points validate lengths; avoid repeating their synchronizing checks here.
     return torch.segment_reduce(values, "sum", lengths=lengths, unsafe=True)
+
+
+def _packed_normalization_statistics_features(features):
+    """Accumulate packed normalization statistics safely for low-precision inputs."""
+    if features.dtype in (torch.float16, torch.bfloat16):
+        return features.float()
+    return features
 
 
 def _expand_packed_padding(padding_value, features, lengths):

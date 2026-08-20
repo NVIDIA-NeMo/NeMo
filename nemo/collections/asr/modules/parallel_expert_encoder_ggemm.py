@@ -95,6 +95,7 @@ from torch.utils.checkpoint import checkpoint
 from tqdm import tqdm
 
 from nemo.collections.asr.modules.ggemm_transformer_encoder import GGEMMTransformerEncoder
+from nemo.collections.asr.modules.parallel_expert_encoder_resolver import classify_parallel_expert_encoder_config
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
     _new_packed_encoder_activations,
@@ -352,6 +353,7 @@ class ParallelExpertEncoderPT(ModelPT):
             inject_sound_styles=self._cfg.get('inject_sound_styles', True),
             sound_style_scale=self._cfg.get('sound_style_scale', 0.75),
         )
+        self.encoder._bundle_config = _clone_config(self._cfg)
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:
@@ -424,7 +426,12 @@ class ParallelExpertEncoderPT(ModelPT):
                         if fobj is None:
                             return False
                         cfg = OmegaConf.create(fobj.read().decode('utf-8'))
-                        return str(cfg.get('target', '')).endswith('ParallelExpertEncoderPT')
+                        if not str(cfg.get('target', '')).endswith('ParallelExpertEncoderPT'):
+                            return False
+                        try:
+                            return classify_parallel_expert_encoder_config(cfg) == 'ggemm'
+                        except ValueError:
+                            return False
         except (tarfile.TarError, OSError) as exc:
             logging.warning("[ParallelExpertEncoder] Could not inspect %s: %s", nemo_path, exc)
             return False
@@ -472,6 +479,47 @@ class ParallelExpertEncoderPT(ModelPT):
             strict=strict,
         )
         return bundle.encoder
+
+    @classmethod
+    def from_inline_config(
+        cls,
+        cfg: Union[DictConfig, dict],
+        *,
+        map_location: Union[str, torch.device] = 'cpu',
+    ) -> ParallelExpertEncoder:
+        """Construct either supported PEE architecture without a second weight bundle.
+
+        Consolidated SpeechLM checkpoints carry all PEE tensors in their root
+        state dict, so only the self-contained architecture config is needed
+        here. The older two-branch phPEE and the current speech/speaker/sound
+        GGEMM PEE have incompatible state layouts; dispatch by explicit schema
+        keys rather than attempting to translate between them.
+        """
+        cfg = OmegaConf.create(cfg)
+        keys = set(cfg)
+        two_branch = {"asr_encoder_cfg", "diarization_model_cfg"} <= keys
+        ggemm = {
+            "speech_expert_cfg",
+            "speaker_expert_cfg",
+            "sound_expert_cfg",
+            "sortformer_modules_cfg",
+        } <= keys
+        if two_branch and ggemm:
+            raise ValueError("pe_encoder_config ambiguously contains both two-branch and GGEMM PEE schemas.")
+        if two_branch:
+            from nemo.collections.asr.modules.parallel_expert_encoder_two_branch import (
+                ParallelExpertEncoderPT as TwoBranchParallelExpertEncoderPT,
+            )
+
+            return TwoBranchParallelExpertEncoderPT.from_inline_config(cfg, map_location=map_location)
+        if not ggemm:
+            raise ValueError(
+                "pe_encoder_config does not match a supported self-contained ParallelExpertEncoder schema. "
+                "Expected either two-branch {asr_encoder_cfg, diarization_model_cfg} or GGEMM "
+                "{speech_expert_cfg, speaker_expert_cfg, sound_expert_cfg, sortformer_modules_cfg}."
+            )
+        shell = cls(cfg=cfg, trainer=None)
+        return shell.encoder.to(map_location)
 
     @classmethod
     def _load_encoder_from_archive(

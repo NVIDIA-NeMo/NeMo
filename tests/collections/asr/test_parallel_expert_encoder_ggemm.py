@@ -268,16 +268,34 @@ def write_nemo(path, *, target=None, include_cfg=True):
 @pytest.mark.parametrize(
     "target, expected",
     [
-        ("nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT", True),
-        ("ParallelExpertEncoderPT", True),
+        ("nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT", False),
+        ("ParallelExpertEncoderPT", False),
         ("nemo.collections.asr.models.SomethingElse", False),
         (None, False),  # model_config.yaml present but no `target`
     ],
 )
-def test_is_pe_nemo_by_target(tmp_path, target, expected):
+def test_is_pe_nemo_rejects_target_without_ggemm_schema(tmp_path, target, expected):
     nemo_path = str(tmp_path / "bundle.nemo")
     write_nemo(nemo_path, target=target)
     assert ParallelExpertEncoderPT.is_pe_nemo(nemo_path) is expected
+
+
+@pytest.mark.unit
+def test_is_pe_nemo_accepts_ggemm_schema(tmp_path):
+    nemo_path = str(tmp_path / "ggemm.nemo")
+    config = {
+        "target": "nemo.collections.asr.modules.parallel_expert_encoder_ggemm.ParallelExpertEncoderPT",
+        "speech_expert_cfg": {"_target_": "example.Speech"},
+        "speaker_expert_cfg": {"_target_": "example.Speaker"},
+        "sound_expert_cfg": {"_target_": "example.Sound"},
+        "sortformer_modules_cfg": {"_target_": "example.Sortformer"},
+    }
+    data = OmegaConf.to_yaml(config).encode()
+    with tarfile.open(nemo_path, "w") as archive:
+        info = tarfile.TarInfo(name="model_config.yaml")
+        info.size = len(data)
+        archive.addfile(info, io.BytesIO(data))
+    assert ParallelExpertEncoderPT.is_pe_nemo(nemo_path) is True
 
 
 @pytest.mark.unit

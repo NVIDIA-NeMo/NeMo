@@ -37,8 +37,9 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
 
     2. ``SpeculativeConfig.hf_config_override`` — the static method that
        rewrites the draft-model HF config is wrapped to detect
-       ``nemo_speechlm`` checkpoints that carry MTP heads (``mtp.enabled``
-       and ``mtp.num_nextn_predict_layers > 0``) and redirect them to the
+       ``nemo_speechlm`` checkpoints that carry enabled MTP heads
+       (``mtp.enabled`` and ``mtp.num_nextn_predict_layers > 0``) and redirect
+       them to the
        ``NeMoSpeechLMMTPModel`` architecture with the right ``n_predict``.
 
     3. ``ModelRegistry`` — ``NeMoSpeechLMMTPModel`` is registered so that
@@ -64,8 +65,8 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
                 mtp_cfg = getattr(hf_config, "mtp", None)
                 if not isinstance(mtp_cfg, dict):
                     mtp_cfg = {}
-                n_predict = mtp_cfg.get("num_nextn_predict_layers", 0)
-                if n_predict > 0:
+                n_predict = int(mtp_cfg.get("num_nextn_predict_layers", 0) or 0)
+                if mtp_cfg.get("enabled", False) and n_predict > 0:
                     use_repeated_layer = bool(mtp_cfg.get("use_repeated_layer", False))
                     if n_predict > 1 and not use_repeated_layer:
                         raise ValueError(
@@ -134,3 +135,7 @@ def register():
     MODELS_CONFIG_MAP["NeMoSpeechLMForConditionalGeneration"] = NeMoSpeechLMForConditionalGenerationConfig
 
     _patch_vllm_for_nemo_speechlm_mtp()
+
+    from nemo.collections.speechlm2.vllm.salm.runtime_compat import install_prompt_contract
+
+    install_prompt_contract()

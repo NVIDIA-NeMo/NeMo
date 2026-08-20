@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from itertools import permutations
+
 import numpy as np
 import pytest
 import torch
@@ -186,6 +188,101 @@ def test_fix_speaker_activity_caps_one_hour_alignment_at_1200_frames(monkeypatch
     # Coarsening is alignment-only: the returned training target keeps all 45,000 frames.
     assert fixed.shape == activity.shape
     assert torch.equal(fixed, activity[:, [1, 0]])
+
+
+@pytest.mark.unit
+def test_fix_speaker_activity_keeps_exhaustive_search_through_six_speakers(monkeypatch):
+    num_speakers = 6
+    frames_per_speaker = 4
+    activity = torch.zeros(num_speakers * frames_per_speaker, num_speakers)
+    text_parts = []
+    for speaker_idx in range(num_speakers):
+        activity[speaker_idx * frames_per_speaker : (speaker_idx + 1) * frames_per_speaker, speaker_idx] = 1
+        text_parts.append(f"<spk:{speaker_idx}> word")
+
+    observed = {}
+    original_dtw_cost_batch = sot_alignment.dtw_cost_batch
+
+    def capture_permutation_count(activity, spk_seq_arr, perm_batch, *args, **kwargs):
+        observed["num_permutations"] = perm_batch.shape[0]
+        return original_dtw_cost_batch(activity, spk_seq_arr, perm_batch, *args, **kwargs)
+
+    monkeypatch.setattr(sot_alignment, "dtw_cost_batch", capture_permutation_count)
+    fixed = sot_alignment.fix_speaker_activity(" ".join(text_parts), activity, num_speakers=num_speakers)
+
+    assert observed["num_permutations"] == 720
+    assert torch.equal(fixed, activity)
+
+
+@pytest.mark.unit
+def test_fix_speaker_activity_bounds_eight_speaker_search_and_recovers_temporal_mapping(monkeypatch):
+    num_speakers = 8
+    frames_per_speaker = 40
+    source_column_for_text_speaker = [7, 5, 3, 1, 6, 4, 2, 0]
+    activity = torch.zeros(num_speakers * frames_per_speaker, num_speakers)
+    expected = torch.zeros_like(activity)
+    text_parts = []
+    for text_speaker, source_column in enumerate(source_column_for_text_speaker):
+        frame_slice = slice(text_speaker * frames_per_speaker, (text_speaker + 1) * frames_per_speaker)
+        activity[frame_slice, source_column] = 1
+        expected[frame_slice, text_speaker] = 1
+        text_parts.append(f"<spk:{text_speaker}> " + " ".join([f"word{text_speaker}"] * 10))
+
+    observed = {}
+    original_dtw_cost_batch = sot_alignment.dtw_cost_batch
+
+    def capture_permutation_count(activity, spk_seq_arr, perm_batch, *args, **kwargs):
+        observed["num_permutations"] = perm_batch.shape[0]
+        return original_dtw_cost_batch(activity, spk_seq_arr, perm_batch, *args, **kwargs)
+
+    monkeypatch.setattr(sot_alignment, "dtw_cost_batch", capture_permutation_count)
+    fixed = sot_alignment.fix_speaker_activity(" ".join(text_parts), activity, num_speakers=num_speakers)
+
+    assert observed["num_permutations"] == 720
+    assert torch.equal(fixed, expected)
+
+
+@pytest.mark.unit
+def test_fix_speaker_activity_exactly_collapses_text_unused_permutation_classes(monkeypatch):
+    num_speakers = 8
+    activity = torch.zeros(80, num_speakers)
+    for speaker_idx in range(num_speakers):
+        activity[speaker_idx * 10 : (speaker_idx + 1) * 10, speaker_idx] = 1
+    text = "<spk:0> alpha beta <spk:2> gamma delta"
+
+    observed = {"num_permutations": []}
+    original_dtw_cost_batch = sot_alignment.dtw_cost_batch
+
+    def capture_permutation_count(activity, spk_seq_arr, perm_batch, *args, **kwargs):
+        observed["num_permutations"].append(perm_batch.shape[0])
+        return original_dtw_cost_batch(activity, spk_seq_arr, perm_batch, *args, **kwargs)
+
+    monkeypatch.setattr(sot_alignment, "dtw_cost_batch", capture_permutation_count)
+    bounded = sot_alignment.fix_speaker_activity(text, activity, num_speakers=num_speakers)
+
+    spk_seq_arr = np.asarray(sot_alignment.parse_speaker_tokens(text), dtype=np.intp)
+    perm_batch = np.asarray(list(permutations(range(num_speakers))), dtype=np.intp)
+    token_counts = np.maximum(np.bincount(spk_seq_arr, minlength=num_speakers), 1.0)
+    token_weights = (spk_seq_arr.size / token_counts)[spk_seq_arr]
+    activity_np = activity.numpy().astype(np.bool_)
+    text_freq = sot_alignment.get_text_speaker_char_counts(text, num_speakers)
+    rttm_freq = activity_np.sum(axis=0).astype(np.float32)
+    rttm_freq /= rttm_freq.sum()
+    exhaustive_costs = original_dtw_cost_batch(
+        activity_np,
+        spk_seq_arr,
+        perm_batch,
+        num_speakers,
+        token_weights,
+    ) + sot_alignment.speaker_freq_cost_batch(text_freq, rttm_freq, perm_batch)
+    exhaustive = activity[:, perm_batch[int(np.argmin(exhaustive_costs))]].clone()
+    exhaustive[:, [speaker_idx for speaker_idx in range(num_speakers) if speaker_idx not in {0, 2}]] = 0
+
+    # Two text-used slots can be injectively assigned to eight active RTTM
+    # columns in P(8, 2) = 56 distinct ways.  Reordering the remaining six
+    # columns cannot affect DTW and those output columns are zeroed afterward.
+    assert observed["num_permutations"] == [56]
+    assert torch.equal(bounded, exhaustive)
 
 
 @pytest.mark.unit

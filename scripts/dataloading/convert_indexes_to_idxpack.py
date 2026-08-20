@@ -49,7 +49,6 @@ import click
 from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, write_index_pack
 from lhotse.indexing import index_file_path
 from omegaconf import DictConfig, ListConfig, OmegaConf
-
 from scripts.dataloading.build_indexes import (
     _NO_INDEX_TYPES,
     _TRANSFORM_TYPES,
@@ -96,6 +95,7 @@ _REBUILD_TAR_INDEXES_HINT = (
 )
 _URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://")
 _IN_BAND_NEMO_TAR_INDEX_MAGIC = b"NEMOTAR\0"
+_MAX_VERIFIED_ZERO_PADDING_GROWTH = 64 * 1024 * 1024
 
 # The source .idx format stays intentionally unversioned. Sentinel/source-size
 # equality is the semantic compatibility check; the output .idxpack already
@@ -161,28 +161,132 @@ def _read_raw_tar_sentinel(idx_path: Path) -> tuple[int, os.stat_result]:
     return sentinel, index_stat
 
 
-def _validate_native_tar_sidecar(path: str, indexes_root) -> Path:
-    idx_path = _resolve_local_sidecar(path, indexes_root)
+def _repair_local_native_tar_sidecar(path: str, repair_root) -> Path:
+    if _is_remote_path(path):
+        raise ValueError(f"Refusing to repair non-local native tar source: {path}")
+    from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
+
+    repair_idx = _resolve_local_sidecar(path, repair_root)
+    repair_idx.parent.mkdir(parents=True, exist_ok=True)
+    source_size = Path(path).stat().st_size
+    create_nemo_tar_index(path, repair_idx)
+    sentinel, index_stat = _read_raw_tar_sentinel(repair_idx)
+    if sentinel != source_size:
+        raise ValueError(
+            f"Private native-tar repair {repair_idx} has sentinel {sentinel}, "
+            f"but source {path} is {source_size} bytes."
+        )
+    if Path(path).stat().st_mtime_ns > index_stat.st_mtime_ns:
+        raise ValueError(f"Source {path} changed while rebuilding private sidecar {repair_idx}.")
+    logging.info(
+        "Rebuilt stale local native-tar sidecar privately: source=%s bytes=%d sidecar=%s",
+        path,
+        source_size,
+        repair_idx,
+    )
+    return repair_idx
+
+
+def _verify_trailing_zero_padding(path: str, start: int, source_size: int) -> None:
+    growth = source_size - start
+    if growth <= 0 or growth > _MAX_VERIFIED_ZERO_PADDING_GROWTH:
+        raise ValueError(
+            f"Cannot accept native tar growth for {path}: {growth} bytes is outside "
+            f"the verified zero-padding bound (1..{_MAX_VERIFIED_ZERO_PADDING_GROWTH})."
+        )
+    if _is_remote_path(path):
+        from lhotse.ais import AISRangeReader
+
+        stream = AISRangeReader(path)
+    else:
+        stream = Path(path).open("rb")
+    try:
+        stream.seek(start)
+        remaining = growth
+        while remaining:
+            chunk = stream.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise ValueError(
+                    f"Short read while verifying trailing padding for {path}: " f"{remaining} bytes remain"
+                )
+            if any(chunk):
+                raise ValueError(
+                    f"Native tar {path} contains non-zero data after stale sentinel "
+                    f"{start}; rebuild its index. {_REBUILD_TAR_INDEXES_HINT}"
+                )
+            remaining -= len(chunk)
+    finally:
+        stream.close()
+
+
+def _validate_native_tar_sidecar(
+    path: str,
+    indexes_root,
+    *,
+    accept_trailing_zero_padding: bool = False,
+    repair_stale_local_sidecars_root=None,
+) -> tuple[Path, int | None]:
+    shared_idx_path = _resolve_local_sidecar(path, indexes_root)
+    repair_idx_path = (
+        _resolve_local_sidecar(path, repair_stale_local_sidecars_root)
+        if repair_stale_local_sidecars_root is not None and not _is_remote_path(path)
+        else None
+    )
+    idx_path = repair_idx_path if repair_idx_path is not None and repair_idx_path.exists() else shared_idx_path
     sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
 
     source_size = _source_size(path)
+    source_size_override = None
     if sentinel != source_size:
-        raise ValueError(
-            f"Native tar index {idx_path} has sentinel {sentinel}, but source "
-            f"{path} is {source_size} bytes. {_REBUILD_TAR_INDEXES_HINT}"
-        )
+        accepted_padding = False
+        if accept_trailing_zero_padding and sentinel < source_size:
+            try:
+                _verify_trailing_zero_padding(path, sentinel, source_size)
+            except ValueError:
+                if _is_remote_path(path) or repair_stale_local_sidecars_root is None:
+                    raise
+            else:
+                source_size_override = source_size
+                accepted_padding = True
+                logging.info(
+                    "Accepted verified trailing zero padding for %s: sentinel=%d source_size=%d growth=%d",
+                    path,
+                    sentinel,
+                    source_size,
+                    source_size - sentinel,
+                )
+        if not accepted_padding:
+            if not _is_remote_path(path) and repair_stale_local_sidecars_root is not None:
+                idx_path = _repair_local_native_tar_sidecar(path, repair_stale_local_sidecars_root)
+                sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
+            else:
+                raise ValueError(
+                    f"Native tar index {idx_path} has sentinel {sentinel}, but source "
+                    f"{path} is {source_size} bytes. {_REBUILD_TAR_INDEXES_HINT}"
+                )
 
     if not _is_remote_path(path):
         source_stat = Path(path).stat()
-        if source_stat.st_mtime_ns > index_stat.st_mtime_ns:
-            raise ValueError(
-                f"Source {path} is newer than native tar index {idx_path}. " f"{_REBUILD_TAR_INDEXES_HINT}"
-            )
-    return idx_path
+        if source_stat.st_mtime_ns > index_stat.st_mtime_ns and source_size_override is None:
+            if repair_stale_local_sidecars_root is not None:
+                idx_path = _repair_local_native_tar_sidecar(path, repair_stale_local_sidecars_root)
+            else:
+                raise ValueError(
+                    f"Source {path} is newer than native tar index {idx_path}. " f"{_REBUILD_TAR_INDEXES_HINT}"
+                )
+    return idx_path, source_size_override
 
 
-def _preflight_native_tar_sidecars(collections, indexes_root) -> None:
+def _preflight_native_tar_sidecars(
+    collections,
+    indexes_root,
+    *,
+    accept_trailing_zero_padding: bool = False,
+    repair_stale_local_sidecars_root=None,
+) -> tuple[dict[str, int], dict[str, Path]]:
     validated = set()
+    source_size_overrides = {}
+    index_path_overrides = {}
     for collection in collections:
         if collection.kind != NEMO_TAR or not collection.offsets_required:
             continue
@@ -190,8 +294,19 @@ def _preflight_native_tar_sidecars(collections, indexes_root) -> None:
             path = str(path)
             if path in validated:
                 continue
-            _validate_native_tar_sidecar(path, indexes_root)
+            _idx_path, override = _validate_native_tar_sidecar(
+                path,
+                indexes_root,
+                accept_trailing_zero_padding=accept_trailing_zero_padding,
+                repair_stale_local_sidecars_root=repair_stale_local_sidecars_root,
+            )
+            if override is not None:
+                source_size_overrides[path] = override
+            shared_idx_path = _resolve_local_sidecar(path, indexes_root)
+            if _idx_path != shared_idx_path:
+                index_path_overrides[path] = _idx_path
             validated.add(path)
+    return source_size_overrides, index_path_overrides
 
 
 def _discover_paths_collections(
@@ -427,6 +542,24 @@ def discover_pack_collections(
         "Use for AIS URL-backed audio; manifest offsets remain fully packed."
     ),
 )
+@click.option(
+    "--accept-trailing-zero-tar-padding",
+    is_flag=True,
+    help=(
+        "Accept a stale native-tar sentinel only when the source grew by at most "
+        "64 MiB and every appended byte is zero; rewrite only the packed sentinel."
+    ),
+)
+@click.option(
+    "--repair-stale-local-native-tar-sidecars-root",
+    type=click.Path(file_okay=False),
+    default=None,
+    help=(
+        "Privately rebuild only stale local native-tar sidecars under this "
+        "mirror root instead of mutating --indexes-root. Remote sources are "
+        "never repaired by this option."
+    ),
+)
 @click.option("--dry-run", is_flag=True, help="Print discovered collections without writing.")
 def main(
     input_cfg: str,
@@ -434,6 +567,8 @@ def main(
     indexes_root: Optional[str],
     overwrite: bool,
     native_tar_paths_only: bool,
+    accept_trailing_zero_tar_padding: bool,
+    repair_stale_local_native_tar_sidecars_root: Optional[str],
     dry_run: bool,
 ) -> None:
     """Convert one INPUT_CFG dataset and its existing sidecars to one idxpack.
@@ -463,12 +598,19 @@ def main(
             )
         return
     try:
-        _preflight_native_tar_sidecars(collections, indexes_root)
+        source_size_overrides, index_path_overrides = _preflight_native_tar_sidecars(
+            collections,
+            indexes_root,
+            accept_trailing_zero_padding=accept_trailing_zero_tar_padding,
+            repair_stale_local_sidecars_root=repair_stale_local_native_tar_sidecars_root,
+        )
         write_index_pack(
             output,
             collections,
             indexes_root=indexes_root,
             overwrite=overwrite,
+            source_size_overrides=source_size_overrides,
+            index_path_overrides=index_path_overrides,
         )
     except (FileNotFoundError, ValueError) as ex:
         raise click.ClickException(str(ex)) from ex

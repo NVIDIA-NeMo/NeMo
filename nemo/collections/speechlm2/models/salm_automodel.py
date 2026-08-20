@@ -22,7 +22,7 @@ import torch.distributed as dist
 from lightning import LightningModule
 from omegaconf import DictConfig, OmegaConf
 from torch import Tensor
-from torch.distributed.fsdp import fully_shard
+from torch.distributed.fsdp import fully_shard, register_fsdp_forward_method
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor.parallel import loss_parallel
 from transformers import GenerationConfig
@@ -33,6 +33,7 @@ from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.models.salm import _resolve_audios_in_prompt, replace_placeholders_and_build_targets
 from nemo.collections.speechlm2.parts.automodel_lora import ensure_lora_trainable, make_peft_config, maybe_install_lora
 from nemo.collections.speechlm2.parts.encoder_chunking import encode_audio_with_optional_chunking
+from nemo.collections.speechlm2.parts.gc import GarbageCollectionManager
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.mtp import (
     build_mtp_loss_fn,
@@ -68,7 +69,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
         self.tokenizer = AutoTokenizer(
-            tokenizer_src, use_fast=True, trust_remote_code=self.cfg.get("trust_remote_code", False)
+            tokenizer_src,
+            use_fast=True,
+            trust_remote_code=self.cfg.get("trust_remote_code", False),
+            pad_token=self.cfg.get("pad_token", None),
         )
         self.tokenizer.add_special_tokens({"additional_special_tokens": [self.audio_locator_tag]})
         self.speaker_token_ids = build_speaker_tokens(self.cfg.get("speaker_tokens", None), self.tokenizer)
@@ -78,6 +82,22 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         self._use_fsdp = False
         self._use_tp = False
+        self._garbage_collection = GarbageCollectionManager(self.cfg.get("gc_every_steps", None))
+        self._fused_linear_cross_entropy = None
+        cross_entropy_backend = str(self.cfg.get("cross_entropy_backend", "eager"))
+        if cross_entropy_backend not in ("eager", "fused_linear"):
+            raise ValueError(
+                "model.cross_entropy_backend must be 'eager' or 'fused_linear', " f"got {cross_entropy_backend!r}."
+            )
+        if cross_entropy_backend == "fused_linear":
+            if self.lss_loss is not None:
+                raise ValueError(
+                    "model.cross_entropy_backend='fused_linear' is incompatible with model.lss_loss because "
+                    "the training path deliberately does not materialize full logits."
+                )
+            from nemo_automodel.components.loss.linear_ce import FusedLinearCrossEntropy
+
+            self._fused_linear_cross_entropy = FusedLinearCrossEntropy(ignore_index=-100, reduction="sum")
 
         if self.cfg.get("init_configure_model", False):
             self.configure_model()
@@ -214,9 +234,16 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             llm_input_ids = torch.zeros((1, seq_len), device=input_embeds.device, dtype=torch.long)
 
         mtp_embed_inputs = tuple(llm_kwargs.pop("mtp_embed_inputs", ()))
+        llm_positional_args = (llm_input_ids, *mtp_embed_inputs) if mtp_embed_inputs else ()
+        if not mtp_embed_inputs:
+            llm_kwargs["input_ids"] = llm_input_ids
+        use_fused_linear_ce = self.training and self._fused_linear_cross_entropy is not None and cache is None
+        if use_fused_linear_ce:
+            llm_kwargs["output_hidden_states"] = True
+            llm_kwargs["compute_logits"] = False
+
         out = self.llm(
-            llm_input_ids,
-            *mtp_embed_inputs,
+            *llm_positional_args,
             inputs_embeds=input_embeds,
             attention_mask=attention_mask,
             past_key_values=cache,
@@ -229,6 +256,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             ans = {"logits": out}
         else:
             ans = {"logits": out['logits']}  # (B, T, text_vocab_size)
+            if use_fused_linear_ce:
+                hidden_states = out.get("hidden_states", None)
+                if hidden_states is None:
+                    raise RuntimeError("Fused linear CE requires the LLM to return final hidden states.")
+                if isinstance(hidden_states, (list, tuple)):
+                    hidden_states = hidden_states[-1]
+                ans["hidden_states"] = hidden_states
             if cache is not None:
                 ans["cache"] = out["past_key_values"]
             # MTP per-depth hidden states are returned when an MTP head is attached and
@@ -320,6 +354,13 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         spk_target_lengths = batch.get("spk_target_length", None)
         cp_mesh, cp_size, _ = get_cp_mesh(device_mesh)
         fsdp_sync_group = get_perception_fsdp_group(device_mesh)
+        packed_encoder_sequences = bool(self.cfg.get("packed_encoder_sequences", False))
+        packed_encoder_cp = bool(self.cfg.get("packed_encoder_cp", False))
+        audio_lens = batch["audio_lens"]
+        audio_cu_seqlens = batch.get("audio_cu_seqlens")
+        audios = batch.get("audios")
+        if audios is None:
+            audios = batch["packed_audio_samples"]
 
         # Source audio encoding. Input audio: (B, T_samples), audio embeddings: (B, T, H).
         # Routing uses valid targets for RTTM rows, a -1 sentinel for non-RTTM
@@ -330,17 +371,24 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # PEE=false, RTTM exists: RTTM is ignored and the regular encoder runs through optional chunking/CP.
         # Audio-free batches must take the branch below, whose audio-presence all-reduce keeps FSDP ranks in step.
         dummy_audio_loss = None
-        if self._uses_ext_spk_tgts() and spk_targets is None and batch["audios"].shape[0] > 0:
+        if (
+            self._uses_ext_spk_tgts()
+            and spk_targets is None
+            and audio_lens.numel() > 0
+            and not packed_encoder_sequences
+        ):
             self._warn_parallel_expert_encoder_inference_compatibility(cp_size)
-            audio_embs, audio_emb_lens = self.perception(
-                input_signal=batch["audios"], input_signal_length=batch["audio_lens"]
-            )
+            perception_kwargs = {"input_signal": audios, "input_signal_length": audio_lens}
+            if audio_cu_seqlens is not None:
+                perception_kwargs["input_signal_cu_seqlens"] = audio_cu_seqlens
+            audio_embs, audio_emb_lens = self.perception(**perception_kwargs)
             audio_embs = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
         else:
             audio_embs, dummy_audio_loss = encode_audio_with_cp_distribution(
                 self.perception,
-                batch["audios"],
-                batch["audio_lens"],
+                audios,
+                audio_lens,
+                audio_cu_seqlens=audio_cu_seqlens,
                 chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
                 chunk_batch_size=self.cfg.get("encoder_chunk_batch_size", None),
                 sampling_rate=self.sampling_rate,
@@ -349,6 +397,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 spk_target_lengths=spk_target_lengths if self._uses_ext_spk_tgts() else None,
                 fsdp_sync_group=fsdp_sync_group,
                 return_dummy_loss=True,
+                sequence_packed=packed_encoder_sequences,
+                packed_cp_gather=packed_encoder_cp,
             )
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self._embed_tokens(input_ids_to_embed)
@@ -411,6 +461,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         averaging (see ``_configure_moe_aux_loss_scaler``)."""
         self._validate_parallelism_compatibility()
         self._configure_moe_aux_loss_scaler()
+        self._garbage_collection.on_fit_start()
+
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure=None) -> None:
+        """Run configured manual GC after each completed optimizer step."""
+        super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
+        self._garbage_collection.on_optimizer_step()
 
     def on_validation_start(self) -> None:
         """Reject unsupported parallel layouts for fit and standalone validation."""
@@ -468,6 +524,34 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         batch, batch_idx = read_batch(dataloader_iter, self)
         return self._training_step_batch(batch, batch_idx)
 
+    def _compute_training_cross_entropy_sum(
+        self, forward_outputs: dict[str, Tensor], target_ids: Tensor, dp_group
+    ) -> tuple[Tensor, Tensor | None]:
+        """Return local summed CE and optional full logits used by auxiliary losses."""
+        if self._fused_linear_cross_entropy is not None:
+            hidden_states = forward_outputs.get("hidden_states", None)
+            if hidden_states is None:
+                raise RuntimeError("Fused linear CE requires final hidden states from forward().")
+            lm_head = self.llm.get_output_embeddings() if hasattr(self.llm, "get_output_embeddings") else None
+            if lm_head is None:
+                lm_head = self.llm.lm_head
+            loss_sum = self._fused_linear_cross_entropy(
+                hidden_states,
+                target_ids,
+                lm_head.weight,
+                grad_reduce_group=dp_group,
+            )
+            return loss_sum, None
+
+        logits = forward_outputs["logits"]
+        loss_sum = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            target_ids.reshape(-1),
+            reduction="sum",
+            ignore_index=-100,
+        )
+        return loss_sum, logits
+
     def _training_step_batch(self, batch: dict | None, batch_idx: int):
         self._current_batch_idx = batch_idx
         for m in (self.perception.preprocessor, self.perception.encoder, self.llm):
@@ -502,12 +586,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         num_frames_global = num_frames_global.clamp(min=1)
 
         with loss_parallel():
-            logits = forward_outputs["logits"]
-            loss_sum = torch.nn.functional.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),  # BSHD (B,T,V) or THD (1,T,V) -> (*, V)
-                inputs["target_ids"].reshape(-1),  # BSHD (B,T) or THD (T,) -> (*,)
-                reduction="sum",
-                ignore_index=-100,
+            loss_sum, logits = self._compute_training_cross_entropy_sum(
+                forward_outputs, inputs["target_ids"], dp_group
             )
             loss = loss_sum * dp_size / num_frames_global
         if (dummy_audio_loss := inputs.get("dummy_audio_loss")) is not None:
@@ -588,6 +668,8 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             self.log("mtp_loss", mtp_metrics.pop("mtp_loss"), on_step=True, prog_bar=True, batch_size=B)
             self.log_dict(mtp_metrics, on_step=True, batch_size=B)
         self.log_dict({k: v for k, v in ans.items() if k != "loss"}, on_step=True, batch_size=B)
+        if (packing_efficiency := batch.get("packing_efficiency")) is not None:
+            self.log("packing_efficiency", packing_efficiency, on_step=True, batch_size=B)
         self.maybe_log_moe_metrics(batch_idx)
         return ans
 
@@ -651,6 +733,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             "training_batch_debug "
             f"rank={rank} batch_idx={batch_idx} "
             f"input_ids_shape={shape_of('input_ids')} audios_shape={shape_of('audios')} "
+            f"packed_audio_samples_shape={shape_of('packed_audio_samples')} "
             f"audio_lens_min={audio_lens_min} audio_lens_max={audio_lens_max} "
             f"audio_sec_max={audio_sec_max:.2f} nonpad_tokens={nonpad_tokens} loss_tokens={loss_tokens} "
             f"spk_targets_shape={shape_of('spk_targets')} "
@@ -1414,7 +1497,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
         if fsdp_mesh.size() > 1:
             self._use_fsdp = True
-            self.perception = fully_shard(self.perception, mesh=fsdp_mesh)
+            self.perception = _fully_shard_perception(self.perception, fsdp_mesh)
 
         # Enable MoE FSDP gradient accumulation optimization.
         # The MoEFSDPSyncMixin on the LLM defers gradient sync/resharding on
@@ -1456,3 +1539,10 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 {"name": "loss_mask", "type": NeuralType(("B", "T"), MaskType()), "seq_length": "output"},
             ],
         }
+
+
+def _fully_shard_perception(perception, mesh):
+    """FSDP2-shard perception and register its packed custom root forward."""
+    perception = fully_shard(perception, mesh=mesh)
+    register_fsdp_forward_method(perception, "forward_sequence_packed")
+    return perception

@@ -30,6 +30,7 @@ from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import (
     _disable_dist_feature_sync,
 )
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
+from nemo.collections.asr.parts.packed_sequence import unpack_encoder_output
 
 # ``@experimental`` wraps the class in a wrapt proxy, so ``__new__`` (used to build
 # bare instances that skip the heavy real ``__init__``) must target the underlying
@@ -264,7 +265,7 @@ def write_nemo(path, *, target=None, include_cfg=True):
 @pytest.mark.parametrize(
     "target, expected",
     [
-        ("nemo.collections.asr.modules.parallel_expert_encoder_ggemm.ParallelExpertEncoderPT", True),
+        ("nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT", True),
         ("ParallelExpertEncoderPT", True),
         ("nemo.collections.asr.models.SomethingElse", False),
         (None, False),  # model_config.yaml present but no `target`
@@ -487,28 +488,13 @@ def test_pe_encoder_builds_and_wires_all_three_experts():
     assert enc.diar_kernel.shape == (_N_SPK, _ASR_D_MODEL)
     # The sound merge is an elementwise add, so sound must match the speech width.
     assert enc.pee.experts["sound"].d_model == enc.d_model
-    # Defaults: the auxiliary speaker and sound experts are frozen; only the speech
-    # backbone and fusion layers train.
+    # Defaults: ONLY the speaker branch is frozen. Its kernel comes from a hard
+    # threshold on the speaker activities, so no gradient reaches it through the
+    # fusion anyway. Speech and sound both train.
     assert all(not p.requires_grad for p in enc.pee.experts["speaker"].parameters())
     assert all(not p.requires_grad for p in enc.sortformer_modules.parameters())
     assert any(p.requires_grad for p in enc.pee.experts["speech"].parameters())
-    assert all(not p.requires_grad for p in enc.pee.experts["sound"].parameters())
-
-
-@pytest.mark.unit
-def test_pe_encoder_train_and_unfreeze_preserve_auxiliary_freezing():
-    enc = build_toy_pe_encoder()
-
-    enc.train()
-    enc.unfreeze()
-
-    assert enc.pee.experts["speech"].training
-    assert any(p.requires_grad for p in enc.pee.experts["speech"].parameters())
-    for role in ("speaker", "sound"):
-        assert not enc.pee.experts[role].training
-        assert all(not p.requires_grad for p in enc.pee.experts[role].parameters())
-    assert not enc.sortformer_modules.training
-    assert all(not p.requires_grad for p in enc.sortformer_modules.parameters())
+    assert any(p.requires_grad for p in enc.pee.experts["sound"].parameters())
 
 
 @pytest.mark.unit
@@ -605,12 +591,12 @@ def test_pe_encoder_activation_checkpointing_is_pee_local(monkeypatch):
     lengths = torch.tensor([64])
     outputs = enc._forward_all_training(mels, lengths)
 
-    assert checkpointed == [enc.pee.experts["speech"]]
+    assert checkpointed == [enc.pee.experts["speech"], enc.pee.experts["sound"]]
     assert set(outputs) == {"speech", "speaker", "sound"}
     assert all(torch.isfinite(output).all() for output, _ in outputs.values())
     sum(output.float().sum() for output, _ in outputs.values()).backward()
     assert any(parameter.grad is not None for parameter in enc.pee.experts["speech"].parameters())
-    assert all(parameter.grad is None for parameter in enc.pee.experts["sound"].parameters())
+    assert any(parameter.grad is not None for parameter in enc.pee.experts["sound"].parameters())
     assert all(parameter.grad is None for parameter in enc.pee.experts["speaker"].parameters())
 
 
@@ -630,7 +616,7 @@ def test_pe_encoder_activation_checkpointing_real_cuda_backward():
 
     assert torch.isfinite(output).all()
     assert any(parameter.grad is not None for parameter in enc.pee.experts["speech"].parameters())
-    assert all(parameter.grad is None for parameter in enc.pee.experts["sound"].parameters())
+    assert any(parameter.grad is not None for parameter in enc.pee.experts["sound"].parameters())
     assert all(parameter.grad is None for parameter in enc.pee.experts["speaker"].parameters())
 
 
@@ -832,3 +818,91 @@ def test_pe_encoder_online_forward_on_gpu():
     assert outputs.shape == (batch_size, _ASR_D_MODEL, expected_t)
     assert expected_t > 0
     assert torch.isfinite(outputs).all()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("merge_sound_expert_to_asr", [False, True])
+def test_pe_encoder_sequence_packed_matches_legacy_offline(merge_sound_expert_to_asr):
+    torch.manual_seed(0)
+    kwargs = {'merge_sound_expert_to_asr': merge_sound_expert_to_asr}
+    if not merge_sound_expert_to_asr:
+        kwargs['sound_ctc_head_cfg'] = toy_sound_ctc_head_cfg()
+    enc = build_toy_pe_encoder(**kwargs).eval()
+    mels = torch.randn(3, _MEL_FEATURES, 40)
+    lengths = torch.tensor([40, 23, 9])
+    # Stay safely away from the hard speaker threshold while exercising both states.
+    spk_targets = torch.zeros(3, 5, _N_SPK)
+    spk_targets[0, :, 0] = 1.0
+    spk_targets[1, :, 1] = 1.0
+
+    with torch.no_grad():
+        legacy, output_lengths = enc(mels, lengths, spk_targets=spk_targets)
+        packed = enc.forward_sequence_packed(mels, lengths, spk_targets=spk_targets)
+
+    restored = unpack_encoder_output(packed, total_length=legacy.shape[-1])
+    valid = torch.arange(legacy.shape[-1])[None, :] < output_lengths[:, None]
+    torch.testing.assert_close(restored[valid], legacy.transpose(1, 2)[valid], rtol=1e-5, atol=1e-6)
+    assert packed.total_tokens == int(output_lengths.sum())
+    assert packed.lengths.tolist() == output_lengths.tolist()
+
+
+@pytest.mark.unit
+def test_pe_encoder_sequence_packed_does_not_collide_with_head_packed_api():
+    enc = build_toy_pe_encoder().eval()
+
+    assert enc.supports_sequence_packed_output
+    assert hasattr(enc.pee, "forward_all_sequence_packed")
+    assert hasattr(enc.pee, "forward_packed")
+    assert not getattr(enc.pee, "supports_sequence_packed_output", False)
+
+
+@pytest.mark.unit
+def test_pe_encoder_sequence_packed_rejects_online_context():
+    enc = build_toy_pe_encoder().eval()
+    mels = torch.randn(1, _MEL_FEATURES, 16)
+    lengths = torch.tensor([16])
+
+    with enc.online_inference(), pytest.raises(RuntimeError, match="offline API"):
+        enc.forward_sequence_packed(mels, lengths)
+
+
+@pytest.mark.unit
+def test_pe_encoder_sequence_packed_adds_no_state_dict_keys():
+    enc = build_toy_pe_encoder().eval()
+    keys = set(enc.state_dict())
+    with torch.no_grad():
+        enc.forward_sequence_packed(torch.randn(2, _MEL_FEATURES, 24), torch.tensor([24, 11]))
+
+    assert set(enc.state_dict()) == keys
+
+
+@pytest.mark.unit
+@pytest.mark.run_only_on('GPU')
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PEE packed backward requires CUDA")
+def test_pe_encoder_sequence_packed_activation_checkpointing_backward_does_not_double_moe_stats():
+    torch.manual_seed(0)
+    enc = (
+        build_toy_pe_encoder(
+            freeze_speaker=True,
+            freeze_sound=True,
+            merge_sound_expert_to_asr=True,
+        )
+        .cuda()
+        .train()
+    )
+    enc.set_activation_checkpointing(True)
+    speech = enc.pee.experts["speech"]
+    mels = torch.randn(2, _MEL_FEATURES, 32, device="cuda", requires_grad=True)
+    lengths = torch.tensor([32, 17], device="cuda")
+    spk_targets = torch.zeros(2, 4, _N_SPK, device="cuda")
+
+    packed = enc.forward_sequence_packed(mels, lengths, spk_targets=spk_targets)
+    counts_before = speech._cum_counts.clone()
+    tokens_before = speech._cum_tokens.clone()
+    packed.data.float().square().mean().backward()
+
+    assert mels.grad is not None
+    assert torch.isfinite(mels.grad).all()
+    torch.testing.assert_close(speech._cum_counts, counts_before)
+    torch.testing.assert_close(speech._cum_tokens, tokens_before)
+    assert int(tokens_before.sum()) == int(packed.lengths.sum()) * len(speech.moe_layer_indices)

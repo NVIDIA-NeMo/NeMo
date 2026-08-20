@@ -16,6 +16,7 @@ import torch
 
 from nemo.collections.speechlm2.data.salm_dataset import MultiSpeakerConfig
 from nemo.collections.speechlm2.parts.encoder_chunking import (
+    _preserve_module_buffers,
     _recombine_chunked_audio_embeddings,
     _split_audio_into_chunks,
     _split_spk_targets_into_chunks,
@@ -307,6 +308,31 @@ def test_encode_audio_with_optional_chunking_can_microbatch_chunks():
     assert torch.equal(embs[0].squeeze(-1), audios[0])
 
 
+def test_preserve_module_buffers_does_not_invalidate_saved_immutable_buffer():
+    class BufferUsingModule(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("kernel", torch.randn(8, 2048))
+            self.register_buffer("forward_count", torch.zeros((), dtype=torch.long))
+
+        def forward(self, inputs):
+            self.forward_count.add_(1)
+            return inputs @ self.kernel.T
+
+    module = BufferUsingModule()
+    inputs = torch.randn(2, 2048, requires_grad=True)
+    real_output = module(inputs)
+    kernel_version = module.kernel._version
+
+    with _preserve_module_buffers(module):
+        dummy_output = module(inputs)
+
+    assert module.forward_count.item() == 1
+    assert module.kernel._version == kernel_version
+    (real_output.sum() + dummy_output.sum() * 0.0).backward()
+    assert inputs.grad is not None
+
+
 @pytest.mark.parametrize(
     ("audio_values", "audio_len", "expected_chunk_lens", "expected_spk_targets"),
     [
@@ -353,3 +379,101 @@ def test_encode_audio_with_optional_chunking_forwards_chunked_spk_targets(
     assert torch.equal(chunked_lens, torch.tensor(expected_chunk_lens, dtype=torch.long))
     assert torch.equal(perception.spk_targets_calls[0], torch.tensor(expected_spk_targets))
     assert torch.equal(embs[0].squeeze(-1), audios[0])
+
+
+@pytest.mark.parametrize(
+    ("chunk_size_seconds", "chunk_batch_size", "expected_calls"),
+    [(None, None, 1), (2.0, None, 1), (2.0, 2, 3)],
+)
+def test_sequence_packed_chunking_matches_legacy(chunk_size_seconds, chunk_batch_size, expected_calls):
+    audios = torch.tensor(
+        [
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0, 10.0, 0.0, 0.0],
+        ]
+    )
+    audio_lens = torch.tensor([6, 4], dtype=torch.long)
+    legacy_perception = ChunkingTestPerception(sampling_rate=1, hop_length=1)
+    packed_perception = ChunkingTestPerception(sampling_rate=1, hop_length=1)
+
+    legacy = encode_audio_with_optional_chunking(
+        legacy_perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=chunk_size_seconds,
+        chunk_batch_size=chunk_batch_size,
+        sampling_rate=1,
+    )
+    packed = encode_audio_with_optional_chunking(
+        packed_perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=chunk_size_seconds,
+        chunk_batch_size=chunk_batch_size,
+        sampling_rate=1,
+        sequence_packed=True,
+    )
+
+    assert packed_perception.sequence_packed_calls == expected_calls
+    assert len(packed) == len(legacy) == 2
+    for actual, expected in zip(packed, legacy):
+        torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("sequence_packed", [False, True])
+@pytest.mark.parametrize(
+    ("chunk_size_seconds", "chunk_batch_size"),
+    [(None, None), (2.0, None), (2.0, 2)],
+)
+def test_packed_audio_samples_match_padded_frontend(sequence_packed, chunk_size_seconds, chunk_batch_size):
+    audios = torch.tensor(
+        [
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0, 10.0, 0.0, 0.0],
+        ]
+    )
+    audio_lens = torch.tensor([6, 4], dtype=torch.long)
+    packed_audio_samples = torch.cat([audios[0, :6], audios[1, :4]])
+    audio_cu_seqlens = torch.tensor([0, 6, 10], dtype=torch.long)
+    padded_perception = ChunkingTestPerception(sampling_rate=1, hop_length=1)
+    packed_perception = ChunkingTestPerception(sampling_rate=1, hop_length=1)
+
+    expected = encode_audio_with_optional_chunking(
+        padded_perception,
+        audios,
+        audio_lens,
+        chunk_size_seconds=chunk_size_seconds,
+        chunk_batch_size=chunk_batch_size,
+        sampling_rate=1,
+        sequence_packed=sequence_packed,
+    )
+    actual = encode_audio_with_optional_chunking(
+        packed_perception,
+        packed_audio_samples,
+        audio_lens,
+        input_signal_cu_seqlens=audio_cu_seqlens,
+        chunk_size_seconds=chunk_size_seconds,
+        chunk_batch_size=chunk_batch_size,
+        sampling_rate=1,
+        sequence_packed=sequence_packed,
+    )
+
+    assert len(actual) == len(expected) == 2
+    for actual_row, expected_row in zip(actual, expected):
+        torch.testing.assert_close(actual_row, expected_row, rtol=0.0, atol=0.0)
+
+
+def test_sequence_packed_chunking_rejects_unsupported_perception():
+    class UnsupportedPerception:
+        def __call__(self, **kwargs):
+            raise AssertionError("legacy path must not be called")
+
+    with pytest.raises(ValueError, match="does not support native packed output"):
+        encode_audio_with_optional_chunking(
+            UnsupportedPerception(),
+            torch.zeros(1, 4),
+            torch.tensor([4]),
+            chunk_size_seconds=None,
+            sampling_rate=1,
+            sequence_packed=True,
+        )

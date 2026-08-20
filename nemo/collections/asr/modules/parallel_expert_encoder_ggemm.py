@@ -95,7 +95,12 @@ from torch.utils.checkpoint import checkpoint
 from tqdm import tqdm
 
 from nemo.collections.asr.modules.ggemm_transformer_encoder import GGEMMTransformerEncoder
-from nemo.collections.asr.parts.preprocessing.features import normalize_batch
+from nemo.collections.asr.parts.packed_sequence import (
+    PackedEncoderActivations,
+    _new_packed_encoder_activations,
+    unpack_encoder_output,
+)
+from nemo.collections.asr.parts.preprocessing.features import normalize_batch, normalize_packed_batch
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.module import freeze, unfreeze
@@ -103,10 +108,10 @@ from nemo.utils import logging
 from nemo.utils.decorators import experimental
 
 __all__ = [
-    'GGEMMParallelExpertEncoder',
-    'GGEMMParallelExpertEncoderPT',
     'ParallelExpertEncoder',
     'ParallelExpertEncoderPT',
+    'GGEMMParallelExpertEncoder',
+    'GGEMMParallelExpertEncoderPT',
 ]
 
 # Roles follow packed-attention order.
@@ -310,7 +315,7 @@ class ParallelExpertEncoderPT(ModelPT):
             asr_normalize_type=self._cfg.get('asr_normalize_type', 'per_feature'),
             freeze_speaker=self._cfg.get('freeze_speaker', True),
             freeze_speech=self._cfg.get('freeze_speech', False),
-            freeze_sound=self._cfg.get('freeze_sound', True),
+            freeze_sound=self._cfg.get('freeze_sound', False),
             online_inference_length=self._cfg.get('online_inference_length', 375),
             chunk_left_context=self._cfg.get('chunk_left_context', 50),
             chunk_right_context=self._cfg.get('chunk_right_context', 50),
@@ -337,6 +342,8 @@ class ParallelExpertEncoderPT(ModelPT):
             moe_mode=self._cfg.get('moe_mode', 'dense'),
             fused_forward_in_training=self._cfg.get('fused_forward_in_training', False),
             ggemm_backend=self._cfg.get('ggemm_backend', 'baddbmm'),
+            sequence_packed_moe_mode=self._cfg.get('sequence_packed_moe_mode', 'auto'),
+            sequence_packed_ggemm_backend=self._cfg.get('sequence_packed_ggemm_backend', 'grouped_mm'),
             online_prefix_mode=self._cfg.get('online_prefix_mode', 'replace'),
             merge_sound_expert_to_asr=self._cfg.get('merge_sound_expert_to_asr', False),
             sound_merge_scale=self._cfg.get('sound_merge_scale', 0.3),
@@ -610,8 +617,7 @@ class ParallelExpertEncoderPT(ModelPT):
                 f"encoder.n_spk={enc_n_spk}; the saved bundle would fail strict reload."
             )
 
-        # New bundles use an unambiguous module path; schema dispatch still accepts historical targets.
-        template_cfg.target = 'nemo.collections.asr.modules.parallel_expert_encoder_ggemm.ParallelExpertEncoderPT'
+        template_cfg.target = "nemo.collections.asr.modules.parallel_expert_encoder_ggemm.ParallelExpertEncoderPT"
 
         # Fresh PT shell from the template cfg to reuse NeMo's save_to; swap in encoder.
         shell = cls(cfg=template_cfg, trainer=None)
@@ -693,7 +699,13 @@ class ParallelExpertEncoder(nn.Module):
         fused_forward_in_training (bool): Use the fused packed path while training too.
             The per-expert path generally uses less activation memory, while
             inference always uses grouped execution.
-        ggemm_backend (str): Grouped-GEMM backend.
+        ggemm_backend (str): Grouped-GEMM backend for the historical padded grouped path.
+        sequence_packed_moe_mode (str): Packed-only MoE compute strategy. ``'auto'``
+            uses dense grouped experts in eval and ragged grouped top-k in training;
+            ``'dense'``, ``'topk'``, and memory-first ``'native'`` are explicit overrides.
+        sequence_packed_ggemm_backend (str): Packed-only grouped-GEMM backend.
+            ``'grouped_mm'`` uses PyTorch's ragged CUDA kernel when supported and
+            falls back to capacity-padded batched GEMM elsewhere.
         online_prefix_mode (str): How the speaker's streaming cache is spliced in the
             windowed path. ``'replace'`` lets the cache stand in for the speaker's
             leading frames; ``'extend'`` lengthens the speaker sequence and pads the
@@ -741,6 +753,7 @@ class ParallelExpertEncoder(nn.Module):
 
     supports_external_speaker_targets = True
     parallel_expert_encoder_kind = "ggemm"
+    supports_sequence_packed_output = True
 
     def __init__(
         self,
@@ -752,7 +765,7 @@ class ParallelExpertEncoder(nn.Module):
         asr_normalize_type: Optional[str] = 'per_feature',
         freeze_speaker: bool = True,
         freeze_speech: bool = False,
-        freeze_sound: bool = True,
+        freeze_sound: bool = False,
         online_inference_length: int = 375,
         chunk_left_context: int = 50,
         chunk_right_context: int = 50,
@@ -769,6 +782,8 @@ class ParallelExpertEncoder(nn.Module):
         moe_mode: str = 'dense',
         fused_forward_in_training: bool = False,
         ggemm_backend: str = 'baddbmm',
+        sequence_packed_moe_mode: str = 'auto',
+        sequence_packed_ggemm_backend: str = 'grouped_mm',
         online_prefix_mode: str = 'replace',
         merge_sound_expert_to_asr: bool = False,
         sound_merge_scale: float = 0.3,
@@ -847,6 +862,18 @@ class ParallelExpertEncoder(nn.Module):
         # recomputed during backward at the expert boundary.
         self.activation_checkpointing = False
         self.ggemm_backend = ggemm_backend
+        if sequence_packed_moe_mode not in ('auto', 'dense', 'topk', 'native'):
+            raise ValueError(
+                "sequence_packed_moe_mode must be 'auto', 'dense', 'topk', or 'native', "
+                f"got {sequence_packed_moe_mode!r}."
+            )
+        if sequence_packed_ggemm_backend not in ('baddbmm', 'grouped_mm', 'loop'):
+            raise ValueError(
+                "sequence_packed_ggemm_backend must be 'baddbmm', 'grouped_mm', or 'loop', "
+                f"got {sequence_packed_ggemm_backend!r}."
+            )
+        self.sequence_packed_moe_mode = sequence_packed_moe_mode
+        self.sequence_packed_ggemm_backend = sequence_packed_ggemm_backend
         if online_prefix_mode not in ('replace', 'extend'):
             raise ValueError(f"online_prefix_mode must be 'replace' or 'extend', got {online_prefix_mode!r}.")
         self.online_prefix_mode = online_prefix_mode
@@ -1060,22 +1087,6 @@ class ParallelExpertEncoder(nn.Module):
 
         self._apply_freezing()
 
-    def freeze_experts(self, *roles: str) -> None:
-        """Permanently freeze selected expert branches for this encoder instance.
-
-        The matching ``freeze_<role>`` flags are set as well as ``requires_grad`` so
-        later calls to :meth:`train` or :meth:`unfreeze` preserve the policy.
-
-        Args:
-            roles (str): Expert roles to freeze (``'speech'``, ``'speaker'``, or ``'sound'``).
-        """
-        unknown = set(roles) - set(EXPERT_ROLES)
-        if unknown:
-            raise ValueError(f"Unknown expert roles {sorted(unknown)}; expected roles from {EXPERT_ROLES}.")
-        for role in roles:
-            setattr(self, f'freeze_{role}', True)
-        self._apply_freezing()
-
     def _apply_freezing(self) -> None:
         """Put each frozen branch in eval and drop its grads."""
         frozen = {
@@ -1089,18 +1100,18 @@ class ParallelExpertEncoder(nn.Module):
             expert = self.pee.experts[role]
             expert.eval()
             for p in expert.parameters():
-                p.requires_grad_(False)
+                p.requires_grad = False
         if self.freeze_speaker:
             # The head travels with the speaker expert.
             self.sortformer_modules.eval()
             for p in self.sortformer_modules.parameters():
-                p.requires_grad_(False)
+                p.requires_grad = False
         if self.sound_ctc_head is not None:
             # Unconditionally frozen, unlike the speaker head: the event tags are
             # binarized before the kernel, so nothing could train it through the fusion.
             self.sound_ctc_head.eval()
             for p in self.sound_ctc_head.parameters():
-                p.requires_grad_(False)
+                p.requires_grad = False
 
     def train(self, mode: bool = True) -> "ParallelExpertEncoder":
         """Set training mode, but keep frozen experts in eval.
@@ -1116,7 +1127,17 @@ class ParallelExpertEncoder(nn.Module):
             ParallelExpertEncoder: ``self``, matching ``nn.Module.train``.
         """
         super().train(mode)
-        self._apply_freezing()
+        for role, is_frozen in (
+            ('speech', self.freeze_speech),
+            ('speaker', self.freeze_speaker),
+            ('sound', self.freeze_sound),
+        ):
+            if is_frozen:
+                self.pee.experts[role].eval()
+        if self.freeze_speaker:
+            self.sortformer_modules.eval()
+        if self.sound_ctc_head is not None:
+            self.sound_ctc_head.eval()
         return self
 
     # ConformerEncoder-compatible properties (drop-in for SALM perception).
@@ -1208,13 +1229,12 @@ class ParallelExpertEncoder(nn.Module):
         freeze(self)
 
     def unfreeze(self, partial: bool = False) -> None:
-        """Unfreeze trainable branches while preserving expert freeze policy.
+        """Unfreeze module parameters (re-exposes :func:`nemo.core.classes.module.unfreeze`).
 
         Args:
             partial (bool): If ``True``, unfreeze only parameters that were partially frozen.
         """
         unfreeze(self, partial=partial)
-        self._apply_freezing()
 
     # Fusion helpers
     @staticmethod
@@ -1565,6 +1585,32 @@ class ParallelExpertEncoder(nn.Module):
         Returns:
             tuple: ``(audio_signal, length)`` normalized, cast, and on the experts' device.
         """
+        if isinstance(audio_signal, PackedEncoderActivations):
+            if (
+                length is not None
+                and length is not audio_signal.lengths
+                and not torch.equal(length.to(audio_signal.lengths), audio_signal.lengths)
+            ):
+                raise ValueError("length must match audio_signal.lengths for packed input.")
+            if self.asr_normalize_type:
+                audio_signal = normalize_packed_batch(audio_signal, self.asr_normalize_type)
+            data = self._match_module_io(audio_signal.data)
+            lengths = audio_signal.lengths.to(device=data.device)
+            cu_seqlens = audio_signal.cu_seqlens.to(device=data.device)
+            padding_value = audio_signal.padding_value
+            if isinstance(padding_value, torch.Tensor):
+                padding_value = padding_value.to(data)
+            return (
+                PackedEncoderActivations(
+                    data,
+                    lengths,
+                    cu_seqlens,
+                    audio_signal.max_seqlen,
+                    padding_value=padding_value,
+                    padded_length=audio_signal.padded_length,
+                ),
+                lengths,
+            )
         if self.asr_normalize_type:
             audio_signal, _, _ = normalize_batch(audio_signal, length, normalize_type=self.asr_normalize_type)
         audio_signal = self._match_module_io(audio_signal)
@@ -1614,12 +1660,133 @@ class ParallelExpertEncoder(nn.Module):
         # Off unless a generation call opened `online_inference()`, so training and
         # validation both take the single-pass path no matter what the batch holds.
         use_online = self.online_inference_enabled and self.online_inference_length > 0
-
         runner = self._forward_online if use_online else self._forward
         outputs, lengths, experts = runner(audio_signal=audio_signal, length=length, spk_targets=spk_targets)
+        result = (outputs, lengths)
         if return_experts:
-            return outputs, lengths, experts
-        return outputs, lengths
+            result += (experts,)
+        return result
+
+    def forward_sequence_packed(
+        self,
+        audio_signal,
+        length,
+        spk_targets=None,
+        return_experts: bool = False,
+    ) -> PackedEncoderActivations | tuple[PackedEncoderActivations, dict[str, object]]:
+        """Encode offline while keeping expert Transformer activations token-flat.
+
+        Online/windowed inference retains its established prefix/cache path. Existing
+        :meth:`forward` remains the Conformer-compatible padded API.
+
+        Set ``return_experts=True`` to also return packed speech/sound states and
+        the padded Sortformer speaker predictions. Production execution is always
+        layer-synchronous and grouped; the low-level container retains a serial oracle.
+        """
+        if self.online_inference_enabled:
+            raise RuntimeError(
+                "forward_sequence_packed is an offline API and cannot run while online_inference() is enabled."
+            )
+        return self._forward_sequence_packed(audio_signal, length, spk_targets, return_experts=return_experts)
+
+    def _sequence_packed_moe_execution_mode(self):
+        if self.sequence_packed_moe_mode == 'auto':
+            return 'topk' if self.training else 'dense'
+        return self.sequence_packed_moe_mode
+
+    def _forward_all_sequence_packed_training(self, audio_signal, length):
+        """Run grouped packed experts, optionally recomputing the grouped PEE boundary."""
+        grouped_forward = self.pee.forward_grouped_sequence_packed
+        grouped_kwargs = {
+            'backend': self.sequence_packed_ggemm_backend,
+            'moe_mode': self._sequence_packed_moe_execution_mode(),
+            'fused_qkv': True,
+        }
+        if not self.activation_checkpointing or not torch.is_grad_enabled():
+            return grouped_forward(audio_signal, length, **grouped_kwargs)
+
+        names = tuple(self.pee.expert_names)
+
+        def run(signal, signal_length):
+            packed_outputs = grouped_forward(signal, signal_length, **grouped_kwargs)
+            _validate_packed_expert_lengths(packed_outputs)
+            reference = packed_outputs[names[0]]
+            max_seqlen = torch.tensor(reference.max_seqlen, dtype=torch.int64)
+            return tuple(packed_outputs[name].data for name in names) + (
+                reference.lengths,
+                reference.cu_seqlens,
+                max_seqlen,
+            )
+
+        @contextlib.contextmanager
+        def suppress_recompute_stats():
+            with contextlib.ExitStack() as stack:
+                for expert in self.pee.experts.values():
+                    stack.enter_context(_suppress_moe_stat_accumulation(expert))
+                yield
+
+        def context_fn():
+            return contextlib.nullcontext(), suppress_recompute_stats()
+
+        flat_outputs = checkpoint(
+            run,
+            audio_signal,
+            length,
+            use_reentrant=False,
+            context_fn=context_fn,
+        )
+        *data_outputs, output_lengths, cu_seqlens, max_seqlen = flat_outputs
+        max_seqlen = int(max_seqlen)
+        return {
+            name: _new_packed_encoder_activations(data, output_lengths, cu_seqlens, max_seqlen)
+            for name, data in zip(names, data_outputs)
+        }
+
+    def _forward_all_sequence_packed_serial_training(self, audio_signal, length):
+        """Run packed PEE branches serially with one checkpoint per trainable branch."""
+        outputs = {}
+        group_speech_moe = getattr(self, 'sequence_packed_serial_speech_grouped_moe', False)
+        use_checkpoint = self.activation_checkpointing and torch.is_grad_enabled()
+
+        for name in self.pee.expert_names:
+            expert = self.pee.experts[name]
+            signal_requires_grad = (
+                audio_signal.data.requires_grad
+                if isinstance(audio_signal, PackedEncoderActivations)
+                else audio_signal.requires_grad
+            )
+            branch_requires_grad = signal_requires_grad or any(p.requires_grad for p in expert.parameters())
+
+            def run(signal, signal_length, *, name=name, expert=expert):
+                if name == 'speech' and group_speech_moe:
+                    packed = self.pee.forward_grouped_sequence_packed(
+                        signal,
+                        signal_length,
+                        backend=self.sequence_packed_ggemm_backend,
+                        moe_mode=self._sequence_packed_moe_execution_mode(),
+                        fused_qkv=True,
+                        expert_names=(name,),
+                    )[name]
+                else:
+                    packed = expert.forward_sequence_packed(signal, signal_length, fused_qkv=True)
+                max_seqlen = torch.tensor(packed.max_seqlen, dtype=torch.int64)
+                return packed.data, packed.lengths, packed.cu_seqlens, max_seqlen
+
+            if use_checkpoint and branch_requires_grad:
+
+                def context_fn(expert=expert):
+                    return contextlib.nullcontext(), _suppress_moe_stat_accumulation(expert)
+
+                data, output_lengths, cu_seqlens, max_seqlen = checkpoint(
+                    run, audio_signal, length, use_reentrant=False, context_fn=context_fn
+                )
+            else:
+                with torch.set_grad_enabled(torch.is_grad_enabled() and branch_requires_grad):
+                    data, output_lengths, cu_seqlens, max_seqlen = run(audio_signal, length)
+
+            outputs[name] = _new_packed_encoder_activations(data, output_lengths, cu_seqlens, int(max_seqlen))
+
+        return outputs
 
     def _forward(self, audio_signal, length, spk_targets=None):
         """Offline (non-chunked) forward pass. See :meth:`forward` for argument semantics.
@@ -1710,6 +1877,79 @@ class ParallelExpertEncoder(nn.Module):
             'speaker_preds': diarization_preds,
         }
         return outputs, asr_encoded_len, experts
+
+    def _forward_sequence_packed(self, audio_signal, length, spk_targets=None, *, return_experts=False, grouped=True):
+        self._check_spk_target_width(spk_targets)
+        use_diarization = (
+            None if spk_targets is None else (spk_targets <= self.missing_rttm_target).flatten(start_dim=1).any(dim=1)
+        )
+        if spk_targets is None or self.always_run_diarization:
+            run_diarization = True
+        else:
+            run_diarization = bool(use_diarization.any())
+
+        signal, signal_length = self._prepare_input(audio_signal, length)
+        track_gradients = torch.is_grad_enabled() and not (
+            self.freeze_speech and self.freeze_speaker and self.freeze_sound
+        )
+        with torch.set_grad_enabled(track_gradients):
+            if not grouped:
+                if self.activation_checkpointing and self.training and torch.is_grad_enabled():
+                    raise RuntimeError("The serial THD reference does not support PEE boundary checkpointing.")
+                packed = self.pee.forward_all_sequence_packed(signal, signal_length, fused_qkv=True)
+            elif self.training:
+                execution_mode = getattr(self, 'sequence_packed_execution_mode', 'grouped')
+                if execution_mode == 'serial_checkpointed':
+                    packed = self._forward_all_sequence_packed_serial_training(signal, signal_length)
+                elif execution_mode == 'grouped':
+                    packed = self._forward_all_sequence_packed_training(signal, signal_length)
+                else:
+                    raise ValueError(
+                        f"Unknown sequence_packed_execution_mode={execution_mode!r}; "
+                        "expected 'grouped' or 'serial_checkpointed'."
+                    )
+            else:
+                packed = self.pee.forward_grouped_sequence_packed(
+                    signal,
+                    signal_length,
+                    backend=self.sequence_packed_ggemm_backend,
+                    moe_mode=self._sequence_packed_moe_execution_mode(),
+                    fused_qkv=True,
+                )
+
+        _validate_packed_expert_lengths(packed)
+        asr = packed["speech"]
+        sound = packed["sound"]
+
+        diarization_preds = None
+        if run_diarization:
+            speaker = packed["speaker"]
+            speaker_padded = unpack_encoder_output(speaker).transpose(1, 2)
+            with torch.set_grad_enabled(track_gradients and not self.freeze_speaker):
+                diarization_preds = self._speaker_head(speaker_padded, speaker.lengths)
+            if spk_targets is None:
+                spk_targets = diarization_preds
+
+        if self.merge_sound_expert_to_asr:
+            states = self._merge_sound_and_asr_sequence_packed(asr, sound)
+        else:
+            states = self._inject_sound_tokens_sequence_packed(asr, sound)
+
+        if spk_targets is not None:
+            states = self._fuse_diar_and_asr_sequence_packed(
+                states,
+                spk_targets,
+                diarization_preds=diarization_preds,
+                use_diarization=use_diarization,
+            )
+        if return_experts:
+            experts = {
+                "speech": asr,
+                "sound": sound,
+                "speaker_preds": diarization_preds,
+            }
+            return states, experts
+        return states
 
     def _forward_online(self, audio_signal, length, spk_targets=None):
         """Long-form generation path: dispatches to the offline pass or the windowed loop.
@@ -1932,7 +2172,95 @@ class ParallelExpertEncoder(nn.Module):
             streaming_state = sm.init_streaming_state(batch_size=batch_size, async_streaming=False, device=device)
         return streaming_state, stream_dtype
 
+    def _inject_sound_tokens_sequence_packed(self, asr, sound):
+        sound_padded = unpack_encoder_output(sound).transpose(1, 2)
+        with torch.no_grad():
+            events, styles = self._sound_tag_posteriors(sound_padded)
+            events = (events > self.sound_event_threshold).to(asr.data.dtype)
+            if styles is not None:
+                styles = (styles > self.sound_event_threshold).to(asr.data.dtype)
+        event_data = _pack_aligned_data(events, sound.lengths)
+        event_data = self.sound_token_norm(event_data)
+        infusion = self.sound_kernel_scale * torch.matmul(event_data, self.sound_token_kernel.to(event_data.dtype))
+        if styles is not None:
+            style_data = _pack_aligned_data(styles, sound.lengths)
+            style_data = self.sound_style_norm(style_data)
+            infusion = infusion + self.sound_style_scale * torch.matmul(
+                style_data, self.sound_style_kernel.to(style_data.dtype)
+            )
+        data = asr.data + infusion.to(asr.data.dtype)
+        return asr.with_data(data)
 
-# Public names distinguish this architecture from the two-branch encoder on main.
+    def _merge_sound_and_asr_sequence_packed(self, asr, sound):
+        if not self.merge_sound_expert_to_asr:
+            raise RuntimeError("Packed encoder-state sound merge requested while merge_sound_expert_to_asr is False.")
+        if sound.data.shape != asr.data.shape:
+            raise ValueError(
+                f"sound packed data shape {tuple(sound.data.shape)} must match speech {tuple(asr.data.shape)}."
+            )
+        speech_states = self.merge_speech_norm(asr.data)
+        sound_states = self.sound_norm(sound.data)
+        data = speech_states + self.sound_merge_scale * sound_states.to(speech_states.dtype)
+        return asr.with_data(data.to(asr.data.dtype))
+
+    def _fuse_diar_and_asr_sequence_packed(
+        self,
+        asr,
+        spk_targets,
+        *,
+        diarization_preds=None,
+        use_diarization=None,
+    ):
+        spk_targets = self._align_diar_frames(spk_targets, asr.max_seqlen).to(asr.data.dtype)
+        if use_diarization is not None and diarization_preds is not None:
+            if use_diarization.numel() != spk_targets.shape[0]:
+                raise ValueError(
+                    f"use_diarization size ({use_diarization.numel()}) must match "
+                    f"the speaker-target batch size ({spk_targets.shape[0]})."
+                )
+            diarization_preds = self._align_diar_frames(diarization_preds, asr.max_seqlen).to(asr.data.dtype)
+            spk_targets = torch.where(
+                use_diarization.to(device=spk_targets.device, dtype=torch.bool).view(-1, 1, 1),
+                diarization_preds,
+                spk_targets,
+            )
+        spk_targets = (spk_targets > self.speaker_activity_threshold).to(asr.data.dtype)
+        speaker_data = _pack_aligned_data(spk_targets, asr.lengths)
+        states = self.asr_norm(asr.data)
+        speaker_data = self.diar_norm(speaker_data)
+        infusion = torch.matmul(speaker_data, self.diar_kernel.to(speaker_data.dtype))
+        data = states + self.spk_kernel_scale * infusion.to(states.dtype)
+        return asr.with_data(data)
+
+
 GGEMMParallelExpertEncoder = ParallelExpertEncoder
 GGEMMParallelExpertEncoderPT = ParallelExpertEncoderPT
+
+
+@contextlib.contextmanager
+def _suppress_moe_stat_accumulation(expert):
+    previous = getattr(expert, "_suppress_moe_stat_accumulation", False)
+    expert._suppress_moe_stat_accumulation = True
+    try:
+        yield
+    finally:
+        expert._suppress_moe_stat_accumulation = previous
+
+
+def _validate_packed_expert_lengths(outputs):
+    reference_name = next(iter(outputs))
+    reference = outputs[reference_name]
+    for name, output in outputs.items():
+        if output.lengths is reference.lengths:
+            continue
+        if not torch.equal(output.lengths, reference.lengths):
+            raise ValueError(
+                f"Packed PEE expert '{name}' lengths {output.lengths.tolist()} do not match "
+                f"'{reference_name}' lengths {reference.lengths.tolist()}."
+            )
+
+
+def _pack_aligned_data(padded, lengths):
+    """Pack an already length-aligned tensor without revalidating metadata."""
+    positions = torch.arange(padded.shape[1], device=padded.device)
+    return padded[positions.unsqueeze(0) < lengths.unsqueeze(1)]

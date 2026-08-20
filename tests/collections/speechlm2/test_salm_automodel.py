@@ -18,6 +18,7 @@ import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
+from lightning import LightningModule
 from transformers import GenerationConfig
 
 from nemo.collections.common.data.lhotse import NeMoMultimodalConversation
@@ -203,6 +204,125 @@ def test_salm_automodel_training_step(model, dataset, prompt_formatter, training
 
 def test_salm_automodel_training_step_uses_dataloader_iter_signature():
     assert list(inspect.signature(SALMAutomodel.training_step).parameters) == ["self", "dataloader_iter"]
+
+
+def test_salm_automodel_pad_token_override_preserves_eot_labels(monkeypatch):
+    seen = {}
+
+    class FakeTokenizer:
+        def __init__(self, _src, *, use_fast, trust_remote_code, pad_token):
+            seen["pad_token"] = pad_token
+            self.pad = 0 if pad_token == "<unk>" else 11
+            self.unk_id = 0
+
+        def add_special_tokens(self, _tokens):
+            return 0
+
+    salm_module = __import__("nemo.collections.speechlm2.models.salm_automodel", fromlist=["AutoTokenizer"])
+    monkeypatch.setattr(salm_module, "AutoTokenizer", FakeTokenizer)
+    model = SALMAutomodel(
+        {
+            "pretrained_llm": "unused",
+            "audio_locator_tag": "<|audio|>",
+            "pad_token": "<unk>",
+        }
+    )
+
+    assert seen["pad_token"] == "<unk>"
+    assert model.text_pad_id == 0
+
+    from nemo.collections.speechlm2.parts.packed_sequences import prepare_packed_llm_inputs
+
+    packed = prepare_packed_llm_inputs(
+        input_ids=torch.tensor([[0, 10, 11, 10, 42, 11]]),
+        text_embs=torch.randn(1, 6, 2),
+        audio_embs=[],
+        target_ids=torch.tensor([[-100, -100, -100, -100, 42, 11]]),
+        padding_id=model.text_pad_id,
+        placeholder_id=999,
+    )
+    assert packed["target_ids"].tolist() == [-100, -100, 42, 11, -100]
+
+
+def test_salm_automodel_fused_linear_forward_keeps_hidden_states_without_logits():
+    class FakeLLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.kwargs = None
+
+        def forward(self, **kwargs):
+            self.kwargs = kwargs
+            hidden = kwargs["inputs_embeds"] + 3
+            logits = hidden[..., :0] if kwargs.get("compute_logits") is False else hidden[..., :1]
+            return {"logits": logits, "hidden_states": (hidden,)}
+
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    torch.nn.Module.__init__(model)
+    model.cfg = {}
+    model._fused_linear_cross_entropy = object()
+    model.llm = FakeLLM()
+    model.train()
+    inputs = torch.randn(1, 5, 4)
+
+    outputs = model.forward(inputs)
+
+    assert model.llm.kwargs["compute_logits"] is False
+    assert model.llm.kwargs["output_hidden_states"] is True
+    assert "compute_mtp" not in model.llm.kwargs
+    torch.testing.assert_close(outputs["hidden_states"], inputs + 3)
+    assert outputs["logits"].shape == (1, 5, 0)
+
+
+def test_salm_automodel_fused_linear_loss_consumes_hidden_states_and_lm_weight():
+    calls = []
+
+    class FakeFusedLoss:
+        def __call__(self, hidden_states, target_ids, weight, grad_reduce_group):
+            calls.append((hidden_states, target_ids, weight, grad_reduce_group))
+            return hidden_states.new_tensor(7.0)
+
+    class FakeLLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lm_head = torch.nn.Linear(3, 5, bias=False)
+
+        def get_output_embeddings(self):
+            return self.lm_head
+
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    torch.nn.Module.__init__(model)
+    model.llm = FakeLLM()
+    model._fused_linear_cross_entropy = FakeFusedLoss()
+    hidden = torch.randn(1, 4, 3)
+    targets = torch.tensor([[0, 1, -100, 2]])
+    group = object()
+
+    loss_sum, logits = model._compute_training_cross_entropy_sum(
+        {"hidden_states": hidden, "logits": torch.empty(0)}, targets, group
+    )
+
+    assert loss_sum.item() == 7.0
+    assert logits is None
+    assert calls == [(hidden, targets, model.llm.lm_head.weight, group)]
+
+
+def test_salm_automodel_notifies_garbage_collection_after_optimizer_step(monkeypatch):
+    calls = []
+
+    class FakeGarbageCollectionManager:
+        def on_optimizer_step(self):
+            calls.append("gc")
+
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    torch.nn.Module.__init__(model)
+    model._garbage_collection = FakeGarbageCollectionManager()
+    monkeypatch.setattr(
+        LightningModule,
+        "optimizer_step",
+        lambda *args, **kwargs: calls.append("optimizer"),
+    )
+    model.optimizer_step(0, 0, object())
+    assert calls == ["optimizer", "gc"]
 
 
 def test_salm_automodel_record_training_stats_uses_thd_metadata():
@@ -471,6 +591,71 @@ def test_salm_automodel_generate_chunks_audio_before_llm(device):
         torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device=device),
     )
     assert answer.shape == (1, 3)
+
+
+@pytest.mark.parametrize("device", chunking_test_devices())
+def test_salm_automodel_limits_packed_encoder_opt_in_to_training(device):
+    model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
+    model.cfg["packed_encoder_sequences"] = True
+    batch = {
+        "audios": torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]], device=device),
+        "audio_lens": torch.tensor([5], dtype=torch.long, device=device),
+        "input_ids": torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long, device=device),
+        "loss_mask": torch.tensor([[False, True]], dtype=torch.bool, device=device),
+    }
+
+    inputs = model.prepare_inputs(batch)
+
+    assert model.perception.sequence_packed_calls == 1
+    assert torch.equal(
+        inputs["input_embeds"][0, :, 0],
+        torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device=device),
+    )
+
+    answer = model.generate(
+        prompts=torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long, device=device),
+        audios=torch.tensor([[6.0, 7.0, 8.0, 9.0, 10.0]], device=device),
+        audio_lens=torch.tensor([5], dtype=torch.long, device=device),
+        max_new_tokens=2,
+    )
+
+    assert model.perception.sequence_packed_calls == 1
+    assert torch.equal(
+        model.llm.generate_kwargs["inputs_embeds"][0, :5, 0],
+        torch.tensor([6.0, 7.0, 8.0, 9.0, 10.0], device=device),
+    )
+    assert answer.shape == (1, 2)
+
+
+@pytest.mark.parametrize("device", chunking_test_devices())
+def test_salm_automodel_packed_audio_samples_match_padded_batch(device):
+    padded_model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
+    packed_model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
+    padded_model.cfg["packed_encoder_sequences"] = True
+    packed_model.cfg["packed_encoder_sequences"] = True
+    audios = torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0], [10.0, 11.0, 12.0, 13.0, 14.0]], device=device)
+    audio_lens = torch.tensor([3, 5], dtype=torch.long, device=device)
+    common = {
+        "audio_lens": audio_lens,
+        "input_ids": torch.tensor(
+            [[padded_model.audio_locator_tag_id, padded_model.audio_locator_tag_id, 10]],
+            dtype=torch.long,
+            device=device,
+        ),
+        "loss_mask": torch.tensor([[False, False, True]], dtype=torch.bool, device=device),
+    }
+    padded_batch = {**common, "audios": audios}
+    packed_batch = {
+        **common,
+        "packed_audio_samples": torch.cat([audios[0, :3], audios[1, :5]]),
+        "audio_cu_seqlens": torch.tensor([0, 3, 8], dtype=torch.long, device=device),
+    }
+
+    expected = padded_model.prepare_inputs(padded_batch)
+    actual = packed_model.prepare_inputs(packed_batch)
+
+    torch.testing.assert_close(actual["input_embeds"], expected["input_embeds"], rtol=0.0, atol=0.0)
+    assert torch.equal(actual["target_ids"], expected["target_ids"])
 
 
 def _make_chunking_test_model(encoder_chunk_size_seconds, sampling_rate, device, hop_length=1):

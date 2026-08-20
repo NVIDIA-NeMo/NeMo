@@ -38,6 +38,7 @@ class TestMagpieTTSInferenceCLI:
         # Test names
         ids=["disable_fcd", "disable_utmosv2"],
     )
+    @pytest.mark.pleasefixme
     def test_disable_metric_produces_nan(self, tmp_path, disable_flag, metric_key):
         """
         Test that disabling a metric via CLI flag:

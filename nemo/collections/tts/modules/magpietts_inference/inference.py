@@ -157,6 +157,7 @@ class EasyMagpieInferenceConfig(BaseInferenceConfig):
     phoneme_input_type: str = "gt"
     phoneme_sampling_method: str = "argmax"
     dropout_text_input: bool = False
+    oneshot_acoustic_inference_mode: str = "flow"
 
     def build_identifier(self) -> str:
         parts = [
@@ -165,6 +166,7 @@ class EasyMagpieInferenceConfig(BaseInferenceConfig):
             f"Cfg_{self.use_cfg}_{self.model_inference_parameters.cfg_scale}",
             f"LT_{self.use_local_transformer}",
             f"Phoneme_{self.phoneme_input_type}_{self.phoneme_sampling_method}",
+            f"Acoustic_{self.oneshot_acoustic_inference_mode}",
         ]
         return "_".join(parts)
 
@@ -885,6 +887,7 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
 
     def __init__(self, model, config: EasyMagpieInferenceConfig):
         super().__init__(model, config)
+        self.model.set_oneshot_acoustic_inference_mode(config.oneshot_acoustic_inference_mode)
 
     def create_dataset(
         self,

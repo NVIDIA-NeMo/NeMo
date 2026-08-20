@@ -1384,6 +1384,76 @@ def test_flow_matching_sampling_uses_separate_cfg_conditions():
     torch.testing.assert_close(acoustic_embedding, expected_acoustic)
 
 
+def test_flow_matching_sampling_can_use_auxiliary_acoustic_projection():
+    _seed_everything()
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "frame_stacking_factor": 2,
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "local_flow_matching_inference_steps": 2,
+                "acoustic_aux_loss_scale": 0.1,
+            }
+        )
+    )
+    model.set_oneshot_acoustic_inference_mode("aux_projection")
+    batch_size = 1
+    semantic_channels = model.num_semantic_codebooks * model.frame_stacking_factor
+    last_hidden = torch.ones(batch_size, 1, model.cfg.hidden_dim)
+    logits = torch.zeros(batch_size, semantic_channels * model.num_all_tokens_per_codebook)
+    sampled_semantic = torch.zeros(batch_size, semantic_channels, dtype=torch.long)
+    stacked_acoustic = torch.full(
+        (batch_size, model.acoustic_codec_embedding_dim * model.frame_stacking_factor, 1),
+        0.25,
+    )
+
+    with (
+        patch.object(model, "sample_codes_from_logits", return_value=sampled_semantic),
+        patch.object(model.acoustic_aux_projection, "forward", return_value=stacked_acoustic) as aux_mock,
+        patch.object(
+            model.local_predictor,
+            "predict",
+            side_effect=AssertionError("flow predictor must be bypassed in aux_projection mode"),
+        ),
+    ):
+        _, _, acoustic_embedding = model._sample_audio_codes_with_flow(
+            last_hidden=last_hidden,
+            all_code_logits_t=logits,
+            temperature=0.7,
+            topk=20,
+            use_cfg=False,
+            cfg_scale=1.0,
+        )
+
+    assert aux_mock.call_count == 1
+    expected_acoustic = model.unstack_codec_embeddings(
+        stacked_acoustic,
+        model.frame_stacking_factor,
+        model.acoustic_codec_embedding_dim,
+    )
+    torch.testing.assert_close(acoustic_embedding, expected_acoustic)
+
+
+def test_auxiliary_acoustic_projection_inference_requires_trained_head():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "acoustic_aux_loss_scale": 0.0,
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="acoustic_aux_loss_scale > 0"):
+        model.set_oneshot_acoustic_inference_mode("aux_projection")
+
+
 def test_one_shot_flow_teacher_forced_inference_decodes_continuous_acoustics_directly():
     _seed_everything()
     model = _make_easy_magpie_model(

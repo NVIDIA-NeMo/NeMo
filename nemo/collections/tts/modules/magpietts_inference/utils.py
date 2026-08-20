@@ -1300,6 +1300,13 @@ def _add_easy_magpie_args(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument('--dropout_text_input', action='store_true', help='Force dropout on text input')
     group.add_argument(
+        '--oneshot_acoustic_inference_mode',
+        type=str,
+        default='flow',
+        choices=['flow', 'aux_projection'],
+        help='Use the regular one-shot predictor or the auxiliary condition-to-acoustic projection.',
+    )
+    group.add_argument(
         '--phoneme_tokenizer_path',
         type=str,
         default=None,
@@ -1354,6 +1361,7 @@ def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
         phoneme_input_type=args.phoneme_input_type,
         phoneme_sampling_method=args.phoneme_sampling_method,
         dropout_text_input=args.dropout_text_input,
+        oneshot_acoustic_inference_mode=args.oneshot_acoustic_inference_mode,
         default_tokenizer_name=args.tokenizer_name,
     )
     if cfg_cls is EasyMagpieMultiturnUserAudioInferenceConfig:

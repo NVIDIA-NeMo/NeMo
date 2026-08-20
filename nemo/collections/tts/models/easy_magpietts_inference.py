@@ -839,6 +839,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 condition_channels,
             )
 
+        self.oneshot_acoustic_inference_mode = "flow"
+        self.set_oneshot_acoustic_inference_mode(str(cfg.get("oneshot_acoustic_inference_mode", "flow")))
+
     @property
     def codec_sil_codes(self):
         """Return the representative silence codes in the active codec codebook space."""
@@ -2217,7 +2220,26 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 unconditional_condition=unconditional_condition,
                 cfg_scale=cfg_scale if flow_cfg_scale is None else flow_cfg_scale,
             )
-        stacked_acoustic_embedding = self.local_predictor.predict(**predict_kwargs)
+        if self.oneshot_acoustic_inference_mode == "aux_projection":
+            if self.acoustic_aux_projection is None:
+                raise RuntimeError(
+                    "oneshot_acoustic_inference_mode=aux_projection requires a checkpoint trained with "
+                    "acoustic_aux_loss_scale > 0."
+                )
+            # The regular one-shot predictors draw one initial acoustic-noise tensor here.
+            # Consume the matching draw so paired evaluations start each later semantic
+            # sampling step from the same RNG state; acoustic feedback can still make the
+            # semantic trajectories diverge legitimately.
+            torch.randn(
+                condition.size(0),
+                self.local_predictor.acoustic_channels,
+                condition.size(2),
+                device=condition.device,
+                dtype=condition.dtype,
+            )
+            stacked_acoustic_embedding = self.acoustic_aux_projection(condition)
+        else:
+            stacked_acoustic_embedding = self.local_predictor.predict(**predict_kwargs)
         acoustic_embedding = self.unstack_codec_embeddings(
             stacked_acoustic_embedding,
             self.frame_stacking_factor,
@@ -2233,6 +2255,22 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             semantic_codes_argmax.reshape(batch_size, -1),
             acoustic_embedding,
         )
+
+    def set_oneshot_acoustic_inference_mode(self, mode: str) -> None:
+        """Select the acoustic estimator used by one-shot inference."""
+        valid_modes = {"flow", "aux_projection"}
+        if mode not in valid_modes:
+            raise ValueError(
+                f"oneshot_acoustic_inference_mode must be one of {sorted(valid_modes)}, got {mode!r}."
+            )
+        if mode == "aux_projection":
+            if not self.local_transformer_type.is_oneshot:
+                raise ValueError("aux_projection acoustic inference requires a one-shot local predictor.")
+            if self.acoustic_aux_projection is None:
+                raise ValueError(
+                    "aux_projection acoustic inference requires a checkpoint trained with acoustic_aux_loss_scale > 0."
+                )
+        self.oneshot_acoustic_inference_mode = mode
 
     def _sample_audio_codes(
         self,

@@ -55,6 +55,7 @@ class StreamingTextProcessor:
         confidence_aggregator: Callable,
         sep: str,
         enable_itn: bool = False,
+        prompt_enabled: bool = False,
     ):
         """
         Initialize the streaming text processor.
@@ -67,9 +68,12 @@ class StreamingTextProcessor:
             confidence_aggregator (Callable): Function for aggregating confidence scores.
             sep (str): String separator used in ASR output processing.
             enable_itn (bool): Boolean to enable ITN. Default is False.
+            prompt_enabled (bool): Whether the ASR model is prompt-conditioned, i.e. can emit
+                language tags. Only such models need incomplete-tag removal. Default is False.
         """
 
         self.supports_punctuation = asr_supports_punctuation
+        self.prompt_enabled = prompt_enabled
 
         self.itn_model = itn_model
         self.itn_enabled = False
@@ -295,7 +299,7 @@ class StreamingTextProcessor:
             attr_name = "itn_words" if state.options.enable_itn else "pnc_words"
             words = getattr(state, attr_name)
             for word in words:
-                if INCOMPLETE_LANG_TAG.fullmatch(word.text.strip()):
+                if self.prompt_enabled and INCOMPLETE_LANG_TAG.fullmatch(word.text.strip()):
                     continue  # the whole word is an unterminated language tag
                 state.final_segments.append(word.copy())
                 state.final_transcript += word.text + self.sep
@@ -305,7 +309,8 @@ class StreamingTextProcessor:
         for state in segment_boundary_states:
             for segment in state.segments:
                 segment = segment.copy()
-                segment.text = INCOMPLETE_LANG_TAG.sub("", segment.text)
+                if self.prompt_enabled:
+                    segment.text = INCOMPLETE_LANG_TAG.sub("", segment.text)
                 state.final_segments.append(segment)
                 state.final_transcript += segment.text + self.sep
             state.final_transcript = state.final_transcript.rstrip(self.sep)

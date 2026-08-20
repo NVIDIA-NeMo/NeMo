@@ -404,6 +404,7 @@ class BasePipeline(PipelineInterface):
             confidence_aggregator=self.confidence_aggregator,
             sep=self.sep,
             enable_itn=cfg.enable_itn,
+            prompt_enabled=getattr(self, "prompt_enabled", False),
         )
 
     def init_nmt_model(self, nmt_model: LLMTranslator | None) -> None:

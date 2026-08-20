@@ -41,6 +41,7 @@ import torch
 
 from nemo.collections.tts.modules.nemotron_h_decoder import (
     HybridMambaAttentionDynamicCache,
+    MambaRMSNormGated,
     NemotronHConfig,
     NemotronHForCausalLM,
     NemotronHMLP,
@@ -48,6 +49,24 @@ from nemo.collections.tts.modules.nemotron_h_decoder import (
     NemotronHMOE,
     NemotronHTopkRouter,
 )
+
+
+def test_mamba_rmsnorm_gated_pytorch_fallback_matches_grouped_reference():
+    hidden_states = torch.tensor(
+        [[[0.5, -1.0, 2.0, -0.25, 1.5, -3.0], [1.0, 0.25, -0.5, 2.0, -1.5, 0.75]]], dtype=torch.float16
+    )
+    gate = torch.tensor([[[-2.0, -1.0, 0.0, 0.5, 1.0, 2.0], [2.5, -0.5, 1.5, -1.5, 0.25, -2.5]]], dtype=torch.float16)
+    norm = MambaRMSNormGated(hidden_size=6, group_size=3, eps=1e-5)
+    norm.weight.data.copy_(torch.tensor([0.5, 1.0, 1.5, 2.0, 0.75, 1.25]))
+
+    actual = norm(hidden_states, gate)
+
+    gated = hidden_states.float() * torch.nn.functional.silu(gate.float())
+    grouped = gated.reshape(*gated.shape[:-1], -1, norm.group_size)
+    grouped = grouped * torch.rsqrt(grouped.square().mean(dim=-1, keepdim=True) + norm.variance_epsilon)
+    expected = (grouped.flatten(-2) * norm.weight.float()).to(hidden_states.dtype)
+    torch.testing.assert_close(actual, expected)
+    assert actual.dtype == hidden_states.dtype
 
 
 class TestNemotronHConfig:

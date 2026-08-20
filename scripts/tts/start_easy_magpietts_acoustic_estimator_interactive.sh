@@ -32,6 +32,11 @@ RUNNER="${SCRIPT_DIR}/run_easy_magpietts_acoustic_estimator_eval.sh"
 CONTAINER="${CONTAINER:-/lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/containers/nemo_26.06_rc3.sqsh}"
 EVAL_DATA_HOST="${EVAL_DATA_HOST:-/lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/data/raw_audio_data}"
 CONTAINER_MOUNTS="/lustre/fsw:/lustre/fsw,/lustre/fs11:/lustre/fs11,${EVAL_DATA_HOST}:/data/TTS"
+EVAL_GPUS="${EVAL_GPUS:-8}"
+EVAL_CPUS_PER_TASK="${EVAL_CPUS_PER_TASK:-8}"
+EVAL_TIME_LIMIT="${EVAL_TIME_LIMIT:-02:00:00}"
+EVAL_MEMORY="${EVAL_MEMORY:-0}"
+EVAL_EXCLUSIVE="${EVAL_EXCLUSIVE:-true}"
 
 for required_file in "${HPARAMS_FILE}" "${CHECKPOINT_FILE}" "${CODEC_FILE}" "${RUNNER}" "${CONTAINER}"; do
     [[ -r "${required_file}" ]] || {
@@ -43,29 +48,44 @@ done
     echo "Evaluation data host directory is not readable: ${EVAL_DATA_HOST}" >&2
     exit 2
 }
+if ! [[ "${EVAL_GPUS}" =~ ^[1-8]$ && "${EVAL_CPUS_PER_TASK}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "EVAL_GPUS must be 1-8 and EVAL_CPUS_PER_TASK must be positive" >&2
+    exit 2
+fi
+case "${EVAL_EXCLUSIVE}" in
+    true) EXCLUSIVE_ARGS=(--exclusive) ;;
+    false) EXCLUSIVE_ARGS=() ;;
+    *)
+        echo "EVAL_EXCLUSIVE must be true or false: ${EVAL_EXCLUSIVE}" >&2
+        exit 2
+        ;;
+esac
 
 mkdir -p "${OUTPUT_DIR}"
 export PYTHONPATH="${CODE_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONDONTWRITEBYTECODE=1
+export EVAL_DEVICES="${EVAL_DEVICES:-${EVAL_GPUS}}"
 
 echo "Speech checkout: ${CODE_DIR}"
 echo "Checkpoint: ${CHECKPOINT_FILE}"
 echo "Mode: ${REQUESTED_MODE}"
 echo "Output: ${OUTPUT_DIR}"
 echo "Container mounts: ${CONTAINER_MOUNTS}"
+echo "Resources: ${EVAL_GPUS} GPU(s), ${EVAL_CPUS_PER_TASK} CPU(s)/task, memory=${EVAL_MEMORY}, exclusive=${EVAL_EXCLUSIVE}"
+echo "Time limit: ${EVAL_TIME_LIMIT}"
 
 exec srun \
     --account=nemotron_speech_tts \
     --partition=interactive \
     --job-name=nemotron_speech_tts_easymagpie_acoustic_eval \
     --nodes=1 \
-    --ntasks=8 \
-    --ntasks-per-node=8 \
-    --gpus-per-node=8 \
-    --cpus-per-task=8 \
-    --time=02:00:00 \
-    --exclusive \
-    --mem=0 \
+    --ntasks="${EVAL_GPUS}" \
+    --ntasks-per-node="${EVAL_GPUS}" \
+    --gpus-per-node="${EVAL_GPUS}" \
+    --cpus-per-task="${EVAL_CPUS_PER_TASK}" \
+    --time="${EVAL_TIME_LIMIT}" \
+    --mem="${EVAL_MEMORY}" \
+    "${EXCLUSIVE_ARGS[@]}" \
     --kill-on-bad-exit=1 \
     --export=ALL \
     --no-container-mount-home \

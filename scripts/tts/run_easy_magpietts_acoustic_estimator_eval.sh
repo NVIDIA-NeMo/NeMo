@@ -41,7 +41,7 @@ SETENV_FILE="${SETENV_FILE:-$(cd "${CODE_DIR}/.." && pwd)/../setenv.sh}"
 CACHE_ROOT="${CACHE_ROOT:-/lustre/fsw/portfolios/nemotron/projects/nemotron_speech_tts/data/cache}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-8}"
 EVAL_NUM_WORKERS="${EVAL_NUM_WORKERS:-2}"
-EVAL_DEVICES="${EVAL_DEVICES:-8}"
+EVAL_DEVICES="${EVAL_DEVICES:-${SLURM_NTASKS:-8}}"
 EVAL_SEED="${EVAL_SEED:-9}"
 
 if [[ -r "${SETENV_FILE}" ]]; then

@@ -20,6 +20,7 @@ from typing import Dict, Iterable, List, Tuple
 import torch
 import torch.nn.functional as F
 from einops import rearrange
+from huggingface_hub import hf_hub_download
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 
@@ -224,11 +225,11 @@ class AudioCodecModel(ModelPT):
         self.scl_loss_scale = cfg.get("scl_loss_scale", False)
         if self.use_scl_loss:
             self.speaker_encoder = ResNetSpeakerEncoder()
-            # load pretrained model
-            # self.speaker_encoder.load_checkpoint("https://github.com/coqui-ai/TTS/releases/download/speaker_encoder_model/model_se.pth.tar")
-            self.speaker_encoder.load_checkpoint(
-                "https://huggingface.co/Edresson/Speaker_Encoder_H_ASP/resolve/main/pytorch_model.bin", strict=False
+            speaker_encoder_checkpoint = hf_hub_download(
+                repo_id="Edresson/Speaker_Encoder_H_ASP",
+                filename="pytorch_model.bin",
             )
+            self.speaker_encoder.load_checkpoint(speaker_encoder_checkpoint, strict=False)
             # freeze the pretrained speaker encoder
             self.speaker_encoder.freeze()
             logging.info("Speaker encoder loaded and frozen !!")

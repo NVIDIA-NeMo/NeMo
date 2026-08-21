@@ -64,7 +64,10 @@ def train(cfg):
     dataset = _create_salm_dataset(model.tokenizer, cfg.data)
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)
 
-    trainer.fit(model, datamodule)
+    if cfg.get("run_validate_only", False):
+        trainer.validate(model, datamodule)
+    else:
+        trainer.fit(model, datamodule)
 
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()

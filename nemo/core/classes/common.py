@@ -1153,9 +1153,6 @@ class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
         # Try to take from cache first - if not fallback to options below
         if not refresh_cache:
             path = try_to_load_from_cache(repo_id=model_name, filename=resolved_model_filename)
-            print("####################")
-            print(path)
-            print("####################")
             if path is not None and path is not _CACHED_NO_EXIST:
                 return cls, path
 

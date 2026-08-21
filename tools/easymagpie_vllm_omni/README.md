@@ -17,13 +17,21 @@ Deployment knobs are in [`deploy/easymagpie.yaml`](deploy/easymagpie.yaml).
 
 ### Convert a NeMo checkpoint
 
-This step turns the training-time `.nemo` checkpoints into a self-contained
-vLLM-Omni model directory: it converts EasyMagpie LM and the causal codec to native
-vLLM models, precomputes the text-embedding lookup, and saves the tokenizer and
-optional speaker embedding. Run it in the **NeMo environment** from the repository root:
+This step converts the EasyMagpie LM, precomputes the text-embedding lookup,
+and saves the tokenizer and optional named-speaker embedding. The Stage-1 codec
+decoder is always bundled. By default, the codec encoder and reference-speaker
+Transformer are not copied, so the resulting artifact accepts only known
+`speaker_id` values.
+
+Pass `--bundle-audio-encoders` only when you intend to package the codec encoder
+and reference-speaker Transformer together. This one opt-in enables request-time
+raw audio and therefore zero-shot voice cloning; it does not control the decoder.
+Run conversion in the **NeMo environment** from the repository root. Prepending
+the repository root to `PYTHONPATH` is important when the environment has an
+editable NeMo install pointing at a different checkout:
 
 ```bash
-python tools/easymagpie_vllm_omni/scripts/convert_to_vllm.py \
+PYTHONPATH="$PWD" python tools/easymagpie_vllm_omni/scripts/convert_to_vllm.py \
   --nemo_file /path/to/emptts.nemo \
   --codec_model_path /path/to/25fps_spectral_codec.nemo \
   --phoneme_tokenizer_path /path/to/bpe_ipa_tokenizer.json \
@@ -59,6 +67,42 @@ better kernels; for an explicit sweep, run `python scripts/tune_mamba_ssu.py --m
 See the [`offline_demo.ipynb`](../../tutorials/tts/easymagpie_vllm_omni/offline_demo.ipynb) tutorial to check how
 `AsyncOmni` is initialized and used.
 
+### Request-time reference audio
+
+Every source EasyMagpie NeMo checkpoint contains the codec encoder and
+reference-speaker Transformer. A converted artifact accepts raw reference audio
+only when conversion was explicitly run with `--bundle-audio-encoders`;
+artifacts that omit those bundled files continue to use `speaker_id`.
+
+Pass audio as `(waveform, sample_rate)`. The waveform must already be mono and
+match `arch.codec_input_sample_rate`; the serving path deliberately does not
+downmix or resample it.
+
+```python
+prompt = {
+    "prompt_token_ids": (
+        [0] * task_rows
+        + [arch.audio_input_token_id]
+        + [0] * len(context_token_ids)
+        + [0] * arch.text_prefill_num
+    ),
+    "multi_modal_data": {
+        "audio": [(reference_waveform, reference_sample_rate)],
+    },
+    "additional_information": {
+        "context_text": "[EN]",
+        "text": target_text,
+        "text_prefill_num": arch.text_prefill_num,
+        "prefill_text_tokens": target_token_ids[: arch.text_prefill_num],
+        "temperature": 0.7,
+        "top_k": 80,
+    },
+}
+```
+
+The OpenAI-compatible speech endpoint accepts request-time reference audio for
+zero-shot TTS. The incremental WebSocket endpoint accepts a known `voice` only.
+
 ### Serve over HTTP and WebSocket
 
 ```bash
@@ -68,7 +112,8 @@ bash ./scripts/run_server.sh ./converted_model 8091
 This starts `vllm serve` with the EasyMagpie plugin on port 8091. Two serving
 APIs are available:
 
-- `POST /v1/audio/speech` with a complete text input.
+- `POST /v1/audio/speech` with a complete text input and either a known `voice`
+  or one request-time `ref_audio`.
 - `WS /v1/audio/speech/stream` with incremental text/token updates and
   asynchronous PCM audio output.
 
@@ -98,6 +143,26 @@ curl -X POST http://localhost:8091/v1/audio/speech \
 
 See the [`server_request.ipynb`](../../tutorials/tts/easymagpie_vllm_omni/server_request.ipynb) tutorial for examples
 of both serving APIs.
+
+For zero-shot TTS, omit `voice` and send `ref_audio` as an HTTP(S) URL, a base64
+data URL, or a `file://` URI. Local files must be under the server's
+`--allowed-local-media-path`. EasyMagpie does not require `ref_text`. The audio
+is downmixed to mono by the HTTP media loader, but it is not resampled: its
+sample rate must equal `codec_input_sample_rate` in the converted model.
+The model must have been converted with `--bundle-audio-encoders`.
+
+```bash
+curl -X POST http://localhost:8091/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "input":"This voice is conditioned from request-time reference audio.",
+    "ref_audio":"file:///absolute/path/to/reference.wav",
+    "response_format":"wav",
+    "stream":true,
+    "stream_format":"audio"
+  }' \
+  --output out_zero_shot.wav
+```
 
 ### Benchmarks
 

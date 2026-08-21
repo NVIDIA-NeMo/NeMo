@@ -49,6 +49,22 @@ class EasyMagpieOmniArch:
     text_eos_id: int | None = None
     use_multiturn_dataset: bool = False
 
+    # A valid dummy-backbone token used as the raw-audio placeholder. vLLM's
+    # multimodal processor expands one occurrence to the codec encoder's rows.
+    audio_input_token_id: int = 1
+    max_user_audio_seconds: float = 30.0
+
+    # Conversion opt-in. When true, the converted artifact includes both the
+    # codec encoder and the reference-speaker Transformer needed for raw audio.
+    codec_encoder_bundled: bool = False
+    codec_input_sample_rate: int = 16000
+    codec_samples_per_frame: int = 640
+    reference_speaker_encoder_n_layers: int = 1
+    reference_speaker_encoder_d_ffn: int = 3072
+    reference_speaker_encoder_n_heads: int = 12
+    reference_speaker_encoder_kernel_size: int = 1
+    reference_speaker_encoder_max_length: int = 4096
+
     # The text/phoneme/audio streams are temporally offset: at decode step ``k``
     # the text channel consumes ``text_tokens[k]``, the phoneme channel starts at
     # ``k == streaming_phonemes_delay`` (seeded with phoneme BOS), and the audio
@@ -92,6 +108,13 @@ class EasyMagpieOmniArch:
             "local_transformer_n_layers",
             "local_transformer_n_heads",
             "local_transformer_hidden_dim",
+            "codec_input_sample_rate",
+            "codec_samples_per_frame",
+            "reference_speaker_encoder_n_layers",
+            "reference_speaker_encoder_d_ffn",
+            "reference_speaker_encoder_n_heads",
+            "reference_speaker_encoder_kernel_size",
+            "reference_speaker_encoder_max_length",
         )
         for name in positive_fields:
             if getattr(self, name) <= 0:
@@ -158,13 +181,24 @@ class EasyMagpieOmniArch:
                     f"{name}={token_id} must be in the special-token range [{special_start}, {special_end})"
                 )
         if len(set(audio_special_ids.values())) != len(audio_special_ids):
-            raise ValueError("audio BOS, EOS, and MASK token ids must be distinct")
+            raise ValueError("enabled audio special token ids must be distinct")
 
         if self.num_task_embeddings < 0:
             raise ValueError("num_task_embeddings cannot be negative")
+        if self.audio_input_token_id < 0:
+            raise ValueError("audio_input_token_id cannot be negative")
+        if self.max_user_audio_seconds <= 0:
+            raise ValueError("max_user_audio_seconds must be positive")
+        if self.codec_encoder_bundled:
+            if self.reference_speaker_encoder_kernel_size % 2 == 0:
+                raise ValueError("reference_speaker_encoder_kernel_size must be odd")
+            if self.embedding_dim % self.reference_speaker_encoder_n_heads:
+                raise ValueError("embedding_dim must be divisible by reference_speaker_encoder_n_heads")
         if text_vocab_size is not None:
             if text_vocab_size <= 0:
                 raise ValueError(f"text_vocab_size must be positive, got {text_vocab_size}")
+            if self.audio_input_token_id >= text_vocab_size:
+                raise ValueError(f"audio_input_token_id={self.audio_input_token_id} must be in [0, {text_vocab_size})")
             text_eos_id = self.resolved_text_eos_id(text_vocab_size)
             if not 0 <= text_eos_id < text_vocab_size:
                 raise ValueError(f"text_eos_id={text_eos_id} must be in [0, {text_vocab_size})")
@@ -173,6 +207,22 @@ class EasyMagpieOmniArch:
     def num_stacked_codebooks(self) -> int:
         """Number of independent codebooks the model autoregresses over (``C * S``)."""
         return self.num_audio_codebooks * self.frame_stacking_factor
+
+    @property
+    def codec_samples_per_row(self) -> int:
+        """Input waveform samples represented by one stacked acoustic row."""
+        return self.codec_samples_per_frame * self.frame_stacking_factor
+
+    def codec_num_frames(self, num_samples: int) -> int:
+        """Number of unstacked codec frames after right-padding the waveform."""
+        if num_samples <= 0:
+            raise ValueError("audio must contain at least one sample")
+        return (num_samples + self.codec_samples_per_frame - 1) // self.codec_samples_per_frame
+
+    def reference_audio_num_rows(self, num_samples: int) -> int:
+        """Reference-speaker rows including context BOS and stacked EOS."""
+        frames = self.codec_num_frames(num_samples)
+        return 1 + (frames + self.frame_stacking_factor) // self.frame_stacking_factor
 
     @property
     def text_prefill_num(self) -> int:
@@ -210,6 +260,29 @@ class EasyMagpieOmniArch:
         if self.forced_audio_eos_id is not None:
             return self.forced_audio_eos_id
         return self.codebook_size + SPECIAL_AUDIO_EOS
+
+    @property
+    def context_audio_bos_id(self) -> int:
+        """Embedding-table id of the context-audio BOS token."""
+        return self.codebook_size + SPECIAL_AUDIO_CONTEXT_BOS
+
+    @property
+    def context_audio_eos_id(self) -> int:
+        """Embedding-table id of the context-audio EOS token."""
+        return self.codebook_size + SPECIAL_AUDIO_CONTEXT_EOS
+
+    @property
+    def supports_reference_audio(self) -> bool:
+        """Whether conversion bundled the checkpoint's reference-audio tower."""
+        return self.codec_encoder_bundled
+
+    def ensure_reference_audio_available(self) -> None:
+        """Raise unless this artifact was converted with both audio encoders."""
+        if not self.supports_reference_audio:
+            raise RuntimeError(
+                "This EasyMagpie artifact was converted without the optional raw-audio encoder tower. "
+                "Use speaker_id, or reconvert with --bundle-audio-encoders to enable raw-audio conditioning."
+            )
 
     @property
     def mask_token_id(self) -> int:
@@ -257,6 +330,16 @@ class EasyMagpieOmniArch:
             "phoneme_vocab_size",
             "text_eos_id",
             "use_multiturn_dataset",
+            "audio_input_token_id",
+            "max_user_audio_seconds",
+            "codec_encoder_bundled",
+            "codec_input_sample_rate",
+            "codec_samples_per_frame",
+            "reference_speaker_encoder_n_layers",
+            "reference_speaker_encoder_d_ffn",
+            "reference_speaker_encoder_n_heads",
+            "reference_speaker_encoder_kernel_size",
+            "reference_speaker_encoder_max_length",
             "streaming_phonemes_delay",
             "streaming_speech_delay",
             "phoneme_bos_id",

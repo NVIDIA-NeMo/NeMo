@@ -15,17 +15,20 @@
 
 The Nemotron-H backbone consumes additive text, phoneme, and previous-audio
 embeddings. A local transformer predicts the stacked audio codebooks for each
-frame. Request metadata supplies the target text, speaker id or embedding,
-optional context text and task mode, and audio sampling parameters.
+frame. Request metadata supplies target text, optional context text and task
+mode, audio sampling parameters, and either precomputed or raw reference audio
+conditioning.
 
 ``prompt_token_ids`` must have the same length as the assembled speaker
-conditioning plus any causal target-text rows moved into prefill. Streaming
-text requests provide one or more ``text_token`` ids per decode chunk and
-terminate the stream with ``text_eos_id``.
+conditioning plus any causal target-text rows moved into prefill. Raw reference
+waveforms use ``audio_input_token_id`` placeholders plus matching
+``multi_modal_data["audio"]`` items. Streaming text requests provide one or more
+``text_token`` ids per decode chunk and terminate the stream with ``text_eos_id``.
 """
 from __future__ import annotations
 
 import bisect
+import os
 from collections.abc import Callable, Iterable
 from typing import Any, Optional
 
@@ -35,17 +38,30 @@ from easymagpie_vllm_omni.backbone_patches import (
     patch_moe_routed_scale,
     patch_shared_expert_activation,
 )
+from easymagpie_vllm_omni.codec.encoder import EasyMagpieCodecEncoder
+from easymagpie_vllm_omni.codec.encoder_config import EasyMagpieCodecEncoderConfig
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from easymagpie_vllm_omni.local_transformer import EasyMagpieCodePredictor
+from easymagpie_vllm_omni.multimodal import (
+    EasyMagpieDummyInputsBuilder,
+    EasyMagpieMultiModalProcessor,
+    EasyMagpieProcessingInfo,
+)
 from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
 from torch import nn
 from vllm.compilation.backends import set_model_tag
 from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import BatchDescriptor, get_forward_context
 from vllm.logger import init_logger
-from vllm.model_executor.models.interfaces import HasInnerState, IsHybrid, SupportsMambaPrefixCaching
+from vllm.model_executor.models.interfaces import (
+    HasInnerState,
+    IsHybrid,
+    SupportsMambaPrefixCaching,
+    SupportsMultiModal,
+)
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM, NemotronHModel
-from vllm.model_executor.models.utils import maybe_prefix
+from vllm.model_executor.models.utils import _merge_multimodal_embeddings, maybe_prefix
+from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.sequence import IntermediateTensors
 from vllm_omni.model_executor.models.output_templates import OmniOutput
 
@@ -96,11 +112,17 @@ _DEFAULT_CONTEXT_TEXT = "[EN]"
 # backbone and :class:`EasyMagpieCodePredictor` each manage their own
 # ``torch.compile`` / CUDA-graph capture internally, so the outer ``forward``
 # runs eagerly and dispatches into the two self-compiled subgraphs.
+@MULTIMODAL_REGISTRY.register_processor(
+    EasyMagpieMultiModalProcessor,
+    info=EasyMagpieProcessingInfo,
+    dummy_inputs=EasyMagpieDummyInputsBuilder,
+)
 class EasyMagpieTTSForConditionalGeneration(
     nn.Module,
     HasInnerState,
     IsHybrid,
     SupportsMambaPrefixCaching,
+    SupportsMultiModal,
 ):
     """EasyMagpie LM stage for vLLM-Omni.
 
@@ -119,6 +141,8 @@ class EasyMagpieTTSForConditionalGeneration(
     # Omni runner hooks.
     has_preprocess: bool = True
     has_postprocess: bool = True
+    # Keep token-id views available to the custom Omni preprocess hook.
+    requires_raw_input_tokens: bool = True
     have_multimodal_outputs: bool = True
 
     # Stage 1 (Code2Wav) consumes only the sampled codes (multimodal outputs),
@@ -189,6 +213,17 @@ class EasyMagpieTTSForConditionalGeneration(
                 vllm_config=vllm_config,
                 prefix=maybe_prefix(prefix, "code_predictor"),
             )
+
+        # Conversion optionally packages the codec and reference-speaker encoders
+        # as one raw-audio tower. Multi-turn capability is checked separately.
+        self.codec_encoder: EasyMagpieCodecEncoder | None = None
+        if arch.codec_encoder_bundled:
+            arch.ensure_reference_audio_available()
+            self._validate_audio_encoder_artifacts()
+            encoder_config_path = os.path.join(self.model_path, "codec_encoder.json")
+            encoder_config = EasyMagpieCodecEncoderConfig.from_json_file(encoder_config_path)
+            with self._mark_tower_model(vllm_config, "audio"):
+                self.codec_encoder = EasyMagpieCodecEncoder(encoder_config).float()
 
         # ── Text + phoneme embedding heads ──────────────────────────────
         # Precomputed per-subword text embedding (one row per subword id), baked
@@ -280,7 +315,7 @@ class EasyMagpieTTSForConditionalGeneration(
         # every request, so the cache subsumes a separate speaker-embedding table
         # — the speaker ``.pt`` is read from disk only on the (first) cache miss
         # for that combo (see :meth:`_load_known_speaker_embedding`), then never
-        # again. Custom raw-tensor voices are one-off and skip the cache.
+        # again. Raw-reference embeddings are owned by vLLM's multimodal cache.
         self._prefill_cache: dict[tuple, torch.Tensor] = {}
 
     # ------------------------------------------------------------------
@@ -302,8 +337,85 @@ class EasyMagpieTTSForConditionalGeneration(
         """Compatibility shim — unused at runtime (everything goes via inputs_embeds)."""
         return self.text_embedding(input_ids)
 
-    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.get_input_embeddings(input_ids)
+    def embed_input_ids(
+        self,
+        input_ids: torch.Tensor,
+        multimodal_embeddings: Any = None,
+        *,
+        is_multimodal: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        embeddings = self.get_input_embeddings(input_ids)
+        if multimodal_embeddings is None or len(multimodal_embeddings) == 0:
+            return embeddings
+        if is_multimodal is None:
+            raise ValueError("is_multimodal is required when multimodal embeddings are present")
+        return _merge_multimodal_embeddings(
+            inputs_embeds=embeddings,
+            multimodal_embeddings=multimodal_embeddings,
+            is_multimodal=is_multimodal,
+        )
+
+    def embed_multimodal(self, **kwargs: object) -> list[torch.Tensor]:
+        """Encode batched speaker references through the bundled raw-audio tower."""
+        if self.codec_encoder is None:
+            self.arch.ensure_reference_audio_available()
+            raise AssertionError("reference-audio capability check did not fail")
+
+        audio_values = kwargs.get("audio_values")
+        audio_lens = kwargs.get("audio_lens")
+        if audio_values is None or not isinstance(audio_lens, torch.Tensor):
+            return []
+
+        lengths = audio_lens.reshape(-1).long()
+        if lengths.numel() == 0:
+            return []
+        if torch.any(lengths <= 0):
+            raise ValueError("audio_lens entries must be positive")
+
+        if isinstance(audio_values, torch.Tensor):
+            if audio_values.ndim == 1:
+                audio_batch = audio_values.unsqueeze(0)
+            elif audio_values.ndim == 2:
+                audio_batch = audio_values
+            else:
+                raise ValueError(f"audio_values must be [T], [B, T], or a list of [T], got {audio_values.shape}")
+            if audio_batch.shape[0] != lengths.numel():
+                raise ValueError(f"Got {audio_batch.shape[0]} waveforms but {lengths.numel()} audio lengths")
+            if torch.any(lengths > audio_batch.shape[1]):
+                raise ValueError("audio_lens contains a length larger than the corresponding waveform")
+            audio_batch = audio_batch.float()
+        elif isinstance(audio_values, list):
+            if len(audio_values) != lengths.numel():
+                raise ValueError(f"Got {len(audio_values)} waveforms but {lengths.numel()} audio lengths")
+            if not all(isinstance(value, torch.Tensor) and value.ndim == 1 for value in audio_values):
+                raise TypeError("audio_values must be a tensor or list of 1-D tensors")
+            for waveform, item_len in zip(audio_values, lengths.tolist(), strict=True):
+                if item_len > waveform.numel():
+                    raise ValueError("audio_lens contains a length larger than the corresponding waveform")
+            max_samples = max(waveform.numel() for waveform in audio_values)
+            audio_batch = audio_values[0].new_zeros((len(audio_values), max_samples), dtype=torch.float32)
+            for item_index, waveform in enumerate(audio_values):
+                audio_batch[item_index, : waveform.numel()].copy_(waveform)
+        else:
+            raise TypeError("audio_values must be a tensor or list of tensors")
+
+        lengths = lengths.to(audio_batch.device)
+
+        encoded = self.codec_encoder(
+            audio_batch,
+            lengths,
+            audio_frame_embedder=self.code_predictor.embed_audio_frame,
+        )
+        if encoded.reference_speaker_embeddings is None or encoded.reference_speaker_embedding_lens is None:
+            raise RuntimeError("Codec tower did not return requested speaker embeddings")
+
+        outputs = []
+        for item_index in range(audio_batch.shape[0]):
+            num_rows = int(encoded.reference_speaker_embedding_lens[item_index].item())
+            outputs.append(
+                encoded.reference_speaker_embeddings[item_index, :num_rows].to(self._combined_embeddings.dtype)
+            )
+        return outputs
 
     def _embed_phoneme(self, phoneme_tokens: torch.Tensor) -> torch.Tensor:
         """Average the per-stack phoneme embeddings (``[num_tokens, S] -> [num_tokens, dim]``)."""
@@ -616,7 +728,7 @@ class EasyMagpieTTSForConditionalGeneration(
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         """Build per-request ``(input_ids, inputs_embeds)`` for this step.
 
-        Prefill (``span_len > 1``): assemble the full context embedding
+        Prefill (as marked by vLLM-Omni): assemble the full context embedding
         (``[task_embedding | speaker_embedding | context_text_embedded]`` from
         the per-request inputs; see :meth:`_build_prefill_embeds`), slice this
         chunk out of it, and return it;
@@ -638,8 +750,8 @@ class EasyMagpieTTSForConditionalGeneration(
             base = input_embeds if input_embeds is not None else self.embed_input_ids(input_ids)
             return input_ids, base, {}
 
-        if span_len > 1:
-            return self._preprocess_prefill(input_ids, span_len, device, info_dict)
+        if bool(info_dict["_omni_is_prefill"]):
+            return self._preprocess_prefill(input_ids, input_embeds, span_len, device, info_dict)
 
         start = self._batch_slot_offset(input_ids, start)
         return self._preprocess_decode(input_ids, start, device, info_dict)
@@ -656,60 +768,42 @@ class EasyMagpieTTSForConditionalGeneration(
     def _preprocess_prefill(
         self,
         input_ids: torch.Tensor,
+        input_embeds: Optional[torch.Tensor],
         span_len: int,
         device: torch.device,
         info_dict: dict[str, Any],
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        # Forward the audio (local-transformer) sampling params from the request.
-        # vLLM's ``SamplingParams.temperature`` drives only the dummy backbone
-        # token sampler, so the real audio temperature/top-k are passed via
-        # ``additional_information`` and applied to the code predictor here (once,
-        # at prefill — they are scalars that persist across decode steps).
         self._maybe_set_lt_sampling_params(info_dict)
+        offset = int(info_dict["_omni_num_computed_tokens"])
+        prompt_len = int(info_dict["_omni_prompt_len"])
 
-        prefill_embeds = self._build_prefill_embeds(device, info_dict)
+        if not info_dict.get("speaker_id"):
+            take = self._build_reference_audio_prefill_chunk(
+                input_embeds=input_embeds,
+                info_dict=info_dict,
+                offset=offset,
+                span_len=span_len,
+                prompt_len=prompt_len,
+            )
+        else:
+            prefill_embeds = self._build_prefill_embeds(device, info_dict)
+            total = int(prefill_embeds.shape[0])
+            take = prefill_embeds[offset : offset + span_len]
+            assert int(take.shape[0]) == span_len, (
+                f"EasyMagpieTTS prefill chunk [{offset}:{offset + span_len}] is not fully covered by the "
+                f"assembled context embedding (length {total}). The caller must size prompt_token_ids to "
+                "[task?] + speaker frames + context-text tokens + text_prefill_num."
+            )
 
-        offset = int(info_dict.get("prefill_offset", 0) or 0)
-        total = int(prefill_embeds.shape[0])
-        take = prefill_embeds[offset : offset + span_len]
-        # The prefill chunk must lie fully within the assembled context. Padding
-        # short chunks with zeros / a repeated last row is invalid: the backbone
-        # was never trained on padded context frames, so silently doing so would
-        # corrupt conditioning rather than fail loudly. This holds iff the caller
-        # sized ``prompt_token_ids`` to the complete assembled prefill.
-        assert int(take.shape[0]) == span_len, (
-            f"EasyMagpieTTS prefill chunk [{offset}:{offset + span_len}] is not fully covered by the "
-            f"assembled context embedding (length {total}). The caller must pass "
-            f"prompt_token_ids of length [task?] + speaker_embedding.shape[0] + "
-            f"len(tokenize(context_text)) + text_prefill_num; "
-            f"zero-padding the backbone context is invalid (the model was not trained on it)."
-        )
-
-        info_update = {
+        info_update: dict[str, Any] = {
             "prefill_offset": offset + span_len,
             "decode_offset": int(info_dict.get("text_prefill_num", 0) or 0),
         }
-        # Tokenize the caller's ``text`` in-model and stash the subword ids in the
-        # per-request info dict (alongside the offsets) so each decode step
-        # consumes one id from it without the caller ever running the tokenizer
-        # (see :meth:`_preprocess_decode`). When the caller passes ``text`` whole
-        # at prefill we bake the ``text_tokens`` list here; an already-present
-        # ``text_tokens`` list is left untouched. When *neither* ``text`` nor
-        # ``text_tokens`` is provided the request runs in **streaming-text mode**:
-        # no list is baked, and :meth:`_preprocess_decode` instead reads one
-        # subword id per step from the streamed ``additional_information.text_token``.
         if not info_dict.get("text_tokens"):
-            text = info_dict.get("text")
-            if text:
-                info_update["text_tokens"] = self._encode_text_stream(text)
+            text_value = info_dict.get("text")
+            if text_value:
+                info_update["text_tokens"] = self._encode_text_stream(text_value)
             else:
-                # Absolute-position streaming: seed the buffer with the prefill
-                # segment's own ``text_token`` chunk here instead of relying on it
-                # being absorbed at the first decode step. When that chunk carries a
-                # single id (max_tokens==1) vLLM's one-step segment lookahead swaps
-                # the visible ``text_token`` for the *next* segment's payload before
-                # ``decode_offset==0`` runs, so the prefill id would otherwise be
-                # dropped and every later chunk misaligned (start=1 vs len=0).
                 incoming = info_dict.get("text_token") or []
                 if incoming:
                     info_update["text_tokens"], _ = _merge_streaming_text_chunk(
@@ -717,6 +811,68 @@ class EasyMagpieTTSForConditionalGeneration(
                     )
         input_ids_out = torch.full_like(input_ids, _DUMMY_TOKEN_ID)
         return input_ids_out, take, info_update
+
+    def _build_reference_audio_prefill_chunk(
+        self,
+        *,
+        input_embeds: Optional[torch.Tensor],
+        info_dict: dict[str, Any],
+        offset: int,
+        span_len: int,
+        prompt_len: int,
+    ) -> torch.Tensor:
+        """Overlay deterministic conditioning around variable-length speaker rows."""
+        if input_embeds is None:
+            raise RuntimeError("Reference-audio prefill requires vLLM multimodal embeddings")
+        if offset + span_len > prompt_len:
+            raise ValueError(
+                f"Reference-audio chunk [{offset}:{offset + span_len}] exceeds prompt length {prompt_len}"
+            )
+
+        device = input_embeds.device
+        dtype = input_embeds.dtype
+        task_rows: Optional[torch.Tensor] = None
+        task_mode_id = self._require_default_task_mode(info_dict)
+        if self.task_embedding is not None:
+            task_rows = self.task_embedding(torch.tensor([task_mode_id], device=device, dtype=torch.long)).to(dtype)
+        task_len = 0 if task_rows is None else int(task_rows.shape[0])
+
+        context_text = info_dict.get("context_text") or _DEFAULT_CONTEXT_TEXT
+        context_ids = self._encode_context_text(context_text, device)
+        context_rows = self.text_embedding(context_ids).to(dtype)
+        text_prefill_num = int(info_dict.get("text_prefill_num", 0) or 0)
+        reference_rows = prompt_len - task_len - int(context_rows.shape[0]) - text_prefill_num
+        if reference_rows <= 0:
+            raise ValueError("Reference-audio prompt does not contain any codec-produced speaker rows")
+
+        context_start = task_len + reference_rows
+        conditioning_len = context_start + int(context_rows.shape[0])
+        expected_prompt_len = conditioning_len + text_prefill_num
+        if prompt_len != expected_prompt_len:
+            raise ValueError(
+                f"Reference-audio prompt has {prompt_len} rows; expected {expected_prompt_len} "
+                "for [task | reference | context text | text prefill]"
+            )
+
+        take = input_embeds.clone()
+
+        def overlay(rows: Optional[torch.Tensor], absolute_start: int) -> None:
+            if rows is None or rows.shape[0] == 0:
+                return
+            absolute_end = absolute_start + int(rows.shape[0])
+            overlap_start = max(offset, absolute_start)
+            overlap_end = min(offset + span_len, absolute_end)
+            if overlap_end <= overlap_start:
+                return
+            dst = slice(overlap_start - offset, overlap_end - offset)
+            src = slice(overlap_start - absolute_start, overlap_end - absolute_start)
+            take[dst].copy_(rows[src])
+
+        overlay(task_rows, 0)
+        overlay(context_rows, context_start)
+        target_prefill = self._build_text_prefill_embeds(device, dtype, info_dict)
+        overlay(target_prefill, conditioning_len)
+        return take
 
     def _build_prefill_embeds(
         self,
@@ -729,10 +885,8 @@ class EasyMagpieTTSForConditionalGeneration(
 
         from the per-request inputs:
 
-        * speaker context audio — either ``speaker_id`` (a known speaker whose
-          embedding is precomputed model state, see
-          :meth:`_resolve_speaker_embedding`) or, for custom / one-off voices, a
-          2-D ``(T_audio, embedding_dim)`` ``speaker_embedding`` tensor.
+        * ``speaker_id`` — identifies a known speaker whose embedding is stored
+          in the converted artifact.
         * ``context_text`` — a plain string (e.g. ``"[EN]"``); tokenized in-model
           and embedded through the baked per-subword ``text_embedding`` table.
         * ``task_mode_id`` — selects the per-mode task ("service token")
@@ -749,20 +903,16 @@ class EasyMagpieTTSForConditionalGeneration(
         cached instance is safe.
         """
         speaker_id = info_dict.get("speaker_id")
+        if not speaker_id:
+            raise ValueError("Known-speaker prefill requires additional_information.speaker_id")
         context_text = info_dict.get("context_text") or _DEFAULT_CONTEXT_TEXT
-        if self.task_embedding is not None:
-            task_mode_id = int(info_dict.get("task_mode_id", 0) or 0)
-            task_mode_id = max(0, min(task_mode_id, self.num_task_embeddings - 1))
-        else:
-            task_mode_id = 0
+        task_mode_id = self._require_default_task_mode(info_dict)
 
-        # Custom raw-tensor voices (no speaker_id) are one-off, so skip the cache.
-        cache_key = (task_mode_id, speaker_id, context_text, str(device)) if speaker_id else None
-        if cache_key is not None:
-            cached = self._prefill_cache.get(cache_key)
-            if cached is not None:
-                target_prefill = self._build_text_prefill_embeds(device, self._combined_embeddings.dtype, info_dict)
-                return cached if target_prefill is None else torch.cat((cached, target_prefill), dim=0)
+        cache_key = (task_mode_id, speaker_id, context_text, str(device))
+        cached = self._prefill_cache.get(cache_key)
+        if cached is not None:
+            target_prefill = self._build_text_prefill_embeds(device, self._combined_embeddings.dtype, info_dict)
+            return cached if target_prefill is None else torch.cat((cached, target_prefill), dim=0)
 
         dtype = self._combined_embeddings.dtype
         parts: list[torch.Tensor] = []
@@ -772,8 +922,8 @@ class EasyMagpieTTSForConditionalGeneration(
             task_row = self.task_embedding(torch.tensor([task_mode_id], device=device, dtype=torch.long))
             parts.append(task_row.to(dtype))
 
-        # Speaker-encoded context audio (known-speaker state or custom tensor).
-        parts.append(self._resolve_speaker_embedding(device, info_dict))
+        # Speaker-encoded context audio stored in the converted checkpoint.
+        parts.append(self._load_known_speaker_embedding(speaker_id, device, dtype))
 
         # Context text: tokenized in-model and embedded through the baked table.
         ctx_ids = self._encode_context_text(context_text, device)
@@ -781,8 +931,7 @@ class EasyMagpieTTSForConditionalGeneration(
             parts.append(self.text_embedding(ctx_ids).to(dtype))
 
         embeds = torch.cat(parts, dim=0)
-        if cache_key is not None:
-            self._prefill_cache[cache_key] = embeds
+        self._prefill_cache[cache_key] = embeds
         target_prefill = self._build_text_prefill_embeds(device, dtype, info_dict)
         return embeds if target_prefill is None else torch.cat((embeds, target_prefill), dim=0)
 
@@ -823,30 +972,13 @@ class EasyMagpieTTSForConditionalGeneration(
             rows[bos_row : bos_row + 1] += self._embed_phoneme(bos).to(dtype)
         return rows
 
-    def _resolve_speaker_embedding(self, device: torch.device, info_dict: dict[str, Any]) -> torch.Tensor:
-        """Return the speaker context-audio embedding on ``device`` in model dtype.
-
-        For a known ``speaker_id`` the embedding is read from disk by
-        :meth:`_load_known_speaker_embedding`; this only ever runs on a
-        prefill-cache miss (see :meth:`_build_prefill_embeds`), i.e. once per
-        ``(speaker_id, context_text, task)`` combo, so there is no separate
-        speaker-embedding table — the assembled prefill cache subsumes it. Falls
-        back to a raw ``speaker_embedding`` tensor (custom / one-off voice),
-        copied H2D here. Exactly one of the two must be supplied.
-        """
-        dtype = self._combined_embeddings.dtype
-        speaker_id = info_dict.get("speaker_id")
-        if speaker_id:
-            return self._load_known_speaker_embedding(speaker_id, device, dtype)
-
-        speaker_embedding = info_dict.get("speaker_embedding")
-        assert isinstance(speaker_embedding, torch.Tensor) and speaker_embedding.ndim == 2, (
-            "EasyMagpieTTS preprocess expects additional_information.speaker_id (a known speaker) or "
-            "speaker_embedding as a 2-D (T_audio, embedding_dim) tensor (the speaker-encoded context "
-            f"audio); got speaker_embedding={type(speaker_embedding).__name__}"
-            + (f" with ndim={speaker_embedding.ndim}" if isinstance(speaker_embedding, torch.Tensor) else "")
-        )
-        return speaker_embedding.to(device=device, dtype=dtype)
+    @staticmethod
+    def _require_default_task_mode(info_dict: dict[str, Any]) -> int:
+        """Reject task rows that the serving implementation does not support."""
+        task_mode_id = int(info_dict.get("task_mode_id", 0) or 0)
+        if task_mode_id != 0:
+            raise ValueError(f"Only task_mode_id=0 is supported; got {task_mode_id}")
+        return task_mode_id
 
     def _load_known_speaker_embedding(self, speaker_id: str, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         """Read one known speaker's embedding from ``<model_path>/speaker_embeddings/<id>.pt``.
@@ -868,8 +1000,7 @@ class EasyMagpieTTSForConditionalGeneration(
             known = sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(os.path.join(spk_dir, "*.pt")))
             raise AssertionError(
                 f"EasyMagpieTTS preprocess got unknown speaker_id {speaker_id!r}; known speakers: {known}. "
-                "Register it under the checkpoint's speaker_embeddings/ dir, or pass a raw "
-                "speaker_embedding tensor for a custom voice."
+                "Register it under the checkpoint's speaker_embeddings/ dir, or supply raw reference audio."
             )
         loaded = torch.load(path, map_location="cpu")
         embedding = loaded["speaker_encoding"] if isinstance(loaded, dict) else loaded
@@ -1130,6 +1261,8 @@ class EasyMagpieTTSForConditionalGeneration(
     # HF Nemotron-H naming + Mamba/MoE packing). The TTS submodules are copied
     # manually.
     _TTS_PREFIX_MAP = {
+        "audio_encoder.": "codec_encoder.audio_encoder.",
+        "reference_speaker_encoder.": "codec_encoder.reference_speaker_encoder.",
         "local_transformer.": "code_predictor.local_transformer.",
         "local_transformer_in_projection.": "code_predictor.local_transformer_in_projection.",
         "local_transformer_audio_out_projection.": "code_predictor.local_transformer_audio_out_projection.",
@@ -1141,6 +1274,17 @@ class EasyMagpieTTSForConditionalGeneration(
         "text_embedding.": "text_embedding.",
         "task_embedding.": "task_embedding.",
     }
+
+    def _validate_audio_encoder_artifacts(self) -> None:
+        """Validate optional raw-audio files once, while constructing the model."""
+        required = ("codec_encoder.json", "codec_encoder.safetensors")
+        missing = [name for name in required if not os.path.isfile(os.path.join(self.model_path, name))]
+        if missing:
+            raise FileNotFoundError(
+                "This EasyMagpie artifact declares raw-audio support, but "
+                f"{', '.join(missing)} is missing from {self.model_path}. "
+                "Re-run convert_to_vllm.py with --bundle-audio-encoders."
+            )
 
     def _remap_tts_key(self, name: str) -> Optional[str]:
         """Map a raw checkpoint key to its in-model parameter path (or ``None``)."""
@@ -1159,7 +1303,9 @@ class EasyMagpieTTSForConditionalGeneration(
         :meth:`NemotronHModel.load_weights` (which handles HF naming + Mamba/MoE
         packing); TTS weights are copied directly by name.
         """
-        own_params = dict(self.named_parameters())
+        # The codec's fixed STFT windows are persistent buffers in the
+        # standalone safetensors shard and must be restored alongside weights.
+        own_params = {**dict(self.named_parameters()), **dict(self.named_buffers())}
         loaded: set[str] = set()
         backbone_weights: list[tuple[str, torch.Tensor]] = []
 
@@ -1170,6 +1316,8 @@ class EasyMagpieTTSForConditionalGeneration(
             mapped = self._remap_tts_key(name)
             if mapped is None:
                 # Unrelated checkpoint section (codec, speaker encoder, CAS, etc.).
+                continue
+            if mapped.startswith("codec_encoder.") and self.codec_encoder is None:
                 continue
             if mapped.startswith("task_embedding.") and self.task_embedding is None:
                 # Single-mode model: checkpoint may still ship an (unused) table.

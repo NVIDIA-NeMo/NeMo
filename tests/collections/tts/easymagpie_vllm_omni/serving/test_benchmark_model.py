@@ -25,7 +25,6 @@ async def test_model_benchmark_uses_service_protocol_for_one_token_chunks():
     meta = SimpleNamespace(
         tokenizer=SimpleNamespace(encode=lambda _text, add_special_tokens=False: [10, 11, 12]),
         speaker_id="eng",
-        speaker_embedding=None,
         prompt_len=2,
         text_eos_id=99,
     )

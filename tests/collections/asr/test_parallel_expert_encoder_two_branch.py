@@ -531,10 +531,7 @@ def test_high_resolution_diarization_is_pooled_to_asr_grid():
     diarization_config = toy_diarization_model_cfg()
     diarization_config.high_resolution = True
     diarization_config.output_subsampling_factor = 1
-    encoder = build_toy_pe_encoder(
-        diarization_model_cfg=diarization_config,
-        align_diarization_output_resolution=True,
-    ).eval()
+    encoder = build_toy_pe_encoder(diarization_model_cfg=diarization_config).eval()
     lengths = torch.tensor([80, 53])
     mels = torch.randn(2, _MEL_FEATURES, 80)
     packed_input = pack_encoder_output(mels.transpose(1, 2), lengths)
@@ -549,6 +546,27 @@ def test_high_resolution_diarization_is_pooled_to_asr_grid():
     restored = unpack_encoder_output(packed, total_length=padded.shape[1])
     valid = torch.arange(padded.shape[1])[None, :] < packed.lengths[:, None]
     torch.testing.assert_close(restored[valid], padded[valid], rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.unit
+def test_high_resolution_fusion_pools_offline_but_not_aligned_online_predictions():
+    diarization_config = toy_diarization_model_cfg()
+    diarization_config.high_resolution = True
+    diarization_config.output_subsampling_factor = 1
+    encoder = build_toy_pe_encoder(diarization_model_cfg=diarization_config).eval()
+    asr_states = torch.randn(1, _ASR_D_MODEL, 3)
+    fine_predictions = torch.sigmoid(
+        torch.arange(24 * _N_SPK).reshape(1, 24, _N_SPK).float() / 17.0 - 2.0
+    )
+    aligned_predictions = encoder.diarization_model.sortformer_modules.downsample_preds(
+        fine_predictions, _SUBSAMPLING_FACTOR
+    )
+
+    offline_fused = encoder._fuse_diar_and_asr(asr_states, fine_predictions)
+    online_fused = encoder._fuse_diar_and_asr(asr_states, aligned_predictions)
+
+    assert aligned_predictions.shape[1] == asr_states.shape[-1]
+    torch.testing.assert_close(offline_fused, online_fused)
 
 
 @pytest.mark.unit

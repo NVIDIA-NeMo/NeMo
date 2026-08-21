@@ -998,6 +998,9 @@ class ParallelExpertEncoder(nn.Module):
     ) -> torch.Tensor:
         """Fuse ASR states with continuous or explicitly thresholded speaker activity."""
         states = asr_encoded.transpose(1, 2)
+        spk_targets = self._downsample_high_resolution_diarization_for_fusion(
+            spk_targets, states.shape[1]
+        )
         spk_targets = self._align_diar_frames(spk_targets, states.shape[1]).to(
             device=states.device, dtype=states.dtype
         )
@@ -1010,6 +1013,9 @@ class ParallelExpertEncoder(nn.Module):
                 raise ValueError(
                     "use_diarization must contain one value per batch row."
                 )
+            diarization_preds = self._downsample_high_resolution_diarization_for_fusion(
+                diarization_preds, states.shape[1]
+            )
             diarization_preds = self._align_diar_frames(
                 diarization_preds, states.shape[1]
             ).to(device=states.device, dtype=states.dtype)
@@ -1101,9 +1107,7 @@ class ParallelExpertEncoder(nn.Module):
     def _align_diarization_output_resolution(
         self, predictions: torch.Tensor, embedding_lengths: torch.Tensor
     ) -> torch.Tensor:
-        """Map native Sortformer probabilities onto its advertised output grid."""
-        if not getattr(self, "align_diarization_output_resolution", False):
-            return predictions
+        """Map native Sortformer probabilities onto the ASR fusion grid."""
         model = self.diarization_model
         native_factor = (
             1 if model.high_resolution else int(model.encoder.subsampling_factor)
@@ -1117,6 +1121,27 @@ class ParallelExpertEncoder(nn.Module):
         return model.sortformer_modules.downsample_preds(
             predictions, downsample_factor, lengths=native_lengths
         )
+
+    def _downsample_high_resolution_diarization_for_fusion(
+        self, predictions: torch.Tensor, target_len: int
+    ) -> torch.Tensor:
+        """Pool unaligned high-resolution Sortformer probabilities exactly once."""
+        model = getattr(self, "diarization_model", None)
+        if model is None:
+            return predictions
+        if not model.high_resolution or predictions.shape[1] <= target_len:
+            return predictions
+        downsample_factor = int(model.output_subsampling_factor)
+        predictions = model.sortformer_modules.downsample_preds(
+            predictions, downsample_factor
+        )
+        if predictions.shape[1] != target_len:
+            raise RuntimeError(
+                "High-resolution Sortformer predictions did not align with the ASR grid after "
+                f"{downsample_factor}x downsampling: diar={predictions.shape[1]} "
+                f"asr={target_len}."
+            )
+        return predictions
 
     def _run_diarization_packed(
         self, features: PackedEncoderActivations

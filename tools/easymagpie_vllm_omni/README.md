@@ -67,16 +67,24 @@ better kernels; for an explicit sweep, run `python scripts/tune_mamba_ssu.py --m
 See the [`offline_demo.ipynb`](../../tutorials/tts/easymagpie_vllm_omni/offline_demo.ipynb) tutorial to check how
 `AsyncOmni` is initialized and used.
 
-### Request-time reference audio
+### Request-time reference and user audio
 
 Every source EasyMagpie NeMo checkpoint contains the codec encoder and
-reference-speaker Transformer. A converted artifact accepts raw reference audio
-only when conversion was explicitly run with `--bundle-audio-encoders`;
-artifacts that omit those bundled files continue to use `speaker_id`.
+reference-speaker Transformer. They are omitted from converted artifacts by
+default and bundled together only with `--bundle-audio-encoders`; the Stage-1
+codec decoder is always bundled. Without this explicit opt-in, requests must
+select a precomputed embedding by `speaker_id`.
 
-Pass audio as `(waveform, sample_rate)`. The waveform must already be mono and
-match `arch.codec_input_sample_rate`; the serving path deliberately does not
-downmix or resample it.
+Audio placement is derived from the prompt. Each item is encoded once into
+both acoustic-history and reference-speaker representations; the placeholder
+selects which one is inserted.
+
+Pass each item as `(waveform, sample_rate)`. It must already be mono and match
+`arch.codec_input_sample_rate`; the serving path deliberately does not downmix
+or resample it.
+
+For a first turn with raw reference audio and user speech, place the reference
+marker before context rows and the user marker last:
 
 ```python
 prompt = {
@@ -84,24 +92,46 @@ prompt = {
         [0] * task_rows
         + [arch.audio_input_token_id]
         + [0] * len(context_token_ids)
-        + [0] * arch.text_prefill_num
+        + [arch.audio_input_token_id]
     ),
     "multi_modal_data": {
-        "audio": [(reference_waveform, reference_sample_rate)],
+        "audio": [
+            (reference_waveform, reference_sample_rate),
+            (user_waveform, user_sample_rate),
+        ],
     },
     "additional_information": {
         "context_text": "[EN]",
-        "text": target_text,
+        "text": response_text,
         "text_prefill_num": arch.text_prefill_num,
-        "prefill_text_tokens": target_token_ids[: arch.text_prefill_num],
         "temperature": 0.7,
         "top_k": 80,
+        "reset_codec_on_segment": True,
     },
 }
 ```
 
+A non-final marker is reference conditioning; a final marker is user history.
+For reference-only synthesis, replace the final user marker with
+`arch.text_prefill_num` zero rows and provide `prefill_text_tokens`. For a
+known voice, set `speaker_id`; then a sole final marker is user history. On
+later turns of the same Stage-0 request, submit only that final marker and the
+new user waveform—the model retains the earlier raw reference conditioning.
+
+User-history prefill additionally requires a checkpoint configured with
+`use_multiturn_dataset`, `condition_on_user_speech`, and the user-speaking
+tokens. Reference-only raw audio does not require those multiturn features.
+
+Yielding turns as `StreamingInput` items from one async input generator keeps
+the Stage-0 causal/Mamba state. A separate `omni.generate(...)` call starts a
+new request and must provide `speaker_id` or raw reference conditioning again.
+Set `reset_codec_on_segment=True` for each reply so Stage 1 flushes and resets
+its response-local codec state.
+
 The OpenAI-compatible speech endpoint accepts request-time reference audio for
-zero-shot TTS. The incremental WebSocket endpoint accepts a known `voice` only.
+zero-shot TTS. The incremental WebSocket endpoint currently accepts text input
+with a known `voice` only; use the direct `AsyncOmni` path for multi-turn raw
+user-audio history.
 
 ### Serve over HTTP and WebSocket
 

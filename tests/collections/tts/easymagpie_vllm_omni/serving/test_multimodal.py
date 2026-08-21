@@ -17,7 +17,12 @@ import numpy as np
 import pytest
 
 from easymagpie_vllm_omni.config import EasyMagpieOmniArch
-from easymagpie_vllm_omni.multimodal import EasyMagpieAudioParser, EasyMagpieMultiModalProcessor
+from easymagpie_vllm_omni.multimodal import (
+    EasyMagpieAudioParser,
+    EasyMagpieDummyInputsBuilder,
+    EasyMagpieMultiModalProcessor,
+)
+from vllm.multimodal.processing import ProcessorInputs
 
 
 def test_audio_parser_requires_explicit_codec_format():
@@ -34,6 +39,24 @@ def test_audio_parser_requires_explicit_codec_format():
         parser._get_audio_with_sr((np.zeros((2, 16), dtype=np.float32), 16000))
     with pytest.raises(ValueError, match="must be passed as a"):
         parser._get_audio_with_sr(waveform)
+
+
+def test_dummy_inputs_profile_reference_and_user_layout(monkeypatch):
+    builder = object.__new__(EasyMagpieDummyInputsBuilder)
+    builder.info = SimpleNamespace(
+        arch=SimpleNamespace(audio_input_token_id=1),
+        parse_mm_data=lambda data, validate: data,
+    )
+    monkeypatch.setattr(builder, "get_dummy_mm_data", lambda seq_len, mm_counts, mm_options: {"audio": []})
+
+    inputs = builder.get_dummy_processor_inputs(
+        seq_len=0,
+        mm_counts={"audio": 2},
+        mm_options={},
+    )
+
+    assert inputs.prompt == [1, 0, 1]
+    assert inputs.hf_processor_mm_kwargs == {}
 
 
 class _AudioItems:
@@ -56,15 +79,19 @@ def _processor_for_lengths(lengths):
 def test_strict_audio_parser_bypasses_vllm_preprocessing_cache(monkeypatch):
     processor = EasyMagpieMultiModalProcessor.__new__(EasyMagpieMultiModalProcessor)
     expected = object()
+    processor.info = SimpleNamespace(arch=SimpleNamespace(audio_input_token_id=1))
+    captured = []
 
     def apply_processor(inputs, timing_ctx):
+        captured.append(inputs)
         return expected
 
     monkeypatch.setattr(processor, "_apply_hf_processor", apply_processor)
 
-    inputs = SimpleNamespace(hf_processor_mm_kwargs={})
+    inputs = ProcessorInputs(prompt=[1, 0, 1], mm_data_items={"audio": _AudioItems([100, 100])})
 
     assert processor._cached_apply_hf_processor(inputs, None) is expected
+    assert captured[0].hf_processor_mm_kwargs["_easymagpie_audio_outputs"] == [1, 0]
 
 
 def test_reference_audio_placeholder_uses_actual_codec_row_count():
@@ -78,3 +105,28 @@ def test_reference_audio_placeholder_uses_actual_codec_row_count():
     ].resolve(0)
 
     assert update.content.full == [1] * 27
+
+
+def test_capable_checkpoint_expands_inferred_reference_and_user_outputs():
+    processor = EasyMagpieMultiModalProcessor.__new__(EasyMagpieMultiModalProcessor)
+    processor.info = SimpleNamespace(
+        arch=EasyMagpieOmniArch(
+            codec_encoder_bundled=True,
+            use_multiturn_dataset=True,
+            condition_on_user_speech=True,
+            use_user_speaking_token=True,
+            use_user_speaking_end_token=True,
+            streaming_phonemes_delay=3,
+            streaming_speech_delay=5,
+        )
+    )
+    mm_items = {"audio": _AudioItems([32_000, 100])}
+
+    replacement = processor._get_prompt_updates(
+        mm_items,
+        {"_easymagpie_audio_outputs": [1, 0]},
+        None,
+    )[0]
+
+    assert replacement.resolve(0).content.full == [1] * 27
+    assert replacement.resolve(1).content.full == [1] * 6

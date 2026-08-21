@@ -357,6 +357,9 @@ def build_config(model, vocab_size: int, torch_dtype: str, *, bundle_audio_encod
     config["text_vocab_size"] = vocab_size
     config["text_eos_id"] = int(model.eos_id)
     config["use_multiturn_dataset"] = bool(cfg.get("use_multiturn_dataset", False))
+    config["condition_on_user_speech"] = bool(cfg.get("condition_on_user_speech", False))
+    config["use_user_speaking_token"] = bool(cfg.get("use_user_speaking_token", False))
+    config["use_user_speaking_end_token"] = bool(cfg.get("use_user_speaking_end_token", False))
     config["codec_encoder_bundled"] = bundle_audio_encoders
     if bundle_audio_encoders:
         config["audio_input_token_id"] = 1
@@ -430,6 +433,10 @@ def build_config(model, vocab_size: int, torch_dtype: str, *, bundle_audio_encod
     config["forced_audio_bos_id"] = int(model.audio_bos_id)
     config["forced_audio_eos_id"] = int(model.audio_eos_id)
     config["forced_mask_token_id"] = int(model.mask_token_id)
+    config["forced_audio_user_speaking_id"] = int(getattr(model, "audio_user_speaking_id", model.codebook_size + 5))
+    config["forced_audio_user_speaking_end_id"] = int(
+        getattr(model, "audio_user_speaking_end_id", model.codebook_size + 6)
+    )
 
     return config
 

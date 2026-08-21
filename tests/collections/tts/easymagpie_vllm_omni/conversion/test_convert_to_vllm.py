@@ -161,6 +161,9 @@ def test_build_config_exports_multiturn_text_metadata(monkeypatch):
                 "nemotron_h_config": {"hidden_size": 4},
                 "local_transformer_type": "ar",
                 "use_multiturn_dataset": True,
+                "condition_on_user_speech": True,
+                "use_user_speaking_token": True,
+                "use_user_speaking_end_token": True,
             }
         ),
         eos_id=101,
@@ -175,6 +178,8 @@ def test_build_config_exports_multiturn_text_metadata(monkeypatch):
         task_embedding=None,
         audio_bos_id=32,
         audio_eos_id=33,
+        audio_user_speaking_id=37,
+        audio_user_speaking_end_id=38,
         mask_token_id=36,
     )
 
@@ -185,6 +190,11 @@ def test_build_config_exports_multiturn_text_metadata(monkeypatch):
     assert config["use_multiturn_dataset"] is True
     assert config["enable_phoneme_text_input"] is False
     assert config["codec_encoder_bundled"] is False
+    assert config["condition_on_user_speech"] is True
+    assert config["use_user_speaking_token"] is True
+    assert config["use_user_speaking_end_token"] is True
+    assert config["forced_audio_user_speaking_id"] == 37
+    assert config["forced_audio_user_speaking_end_id"] == 38
     assert "audio_input_token_id" not in config
     assert "max_user_audio_seconds" not in config
     assert "codec_input_sample_rate" not in config

@@ -38,11 +38,12 @@ def validate_parallelism_compatibility(
     attn_backend: str,
     nvte_fused_attn: Optional[str],
     device_capability: Optional[tuple[int, int]],
+    check_backward: bool = True,
 ) -> None:
     """Raise on known-incompatible SALMAutomodel configurations.
 
-    Catches three combinations that produce silent NaN gradients or
-    hangs at training time:
+    Catches three combinations that produce incorrect forward execution,
+    silent NaN gradients, or hangs at training time:
 
     1. ``packed_sequences=False`` (BSHD) under ``cp_size > 1``: TE's
        fused-attention CP path rejects ``padding_causal``, so the
@@ -64,14 +65,14 @@ def validate_parallelism_compatibility(
        ``NVTE_FUSED_ATTN=0`` in the launcher environment to force
        FlashAttention dispatch.
 
-    Hard error on (1), (2), and (3)-on-sm_120; ``warnings.warn`` on
-    (3) for other architectures (the bug may not apply but we have no
-    way to be certain).
+    Hard error on (1) and (2). When ``check_backward`` is true, hard error
+    on (3)-on-sm_120 and ``warnings.warn`` on (3) for other architectures
+    (the bug may not apply but we have no way to be certain).
 
     Pure function — no side effects on globals or environment, so it
-    can be unit-tested with synthetic inputs. Called from
-    :meth:`SALMAutomodel.on_fit_start` once the device mesh is wired
-    up.
+    can be unit-tested with synthetic inputs. ``check_backward=False``
+    skips only case (3) for validation/test forwards that do not run a
+    backward pass.
     """
     # Case 1: BSHD + CP > 1 — hard incompatibility.
     if not packed_sequences and cp_size > 1:
@@ -97,7 +98,7 @@ def validate_parallelism_compatibility(
             )
 
         # Case 3: THD + TE attention without NVTE_FUSED_ATTN=0.
-        if nvte_fused_attn != "0":
+        if check_backward and nvte_fused_attn != "0":
             msg = (
                 "SALMAutomodel: ``packed_sequences=true`` with ``attn=te`` and "
                 "``NVTE_FUSED_ATTN`` not set to ``\"0\"`` (got "

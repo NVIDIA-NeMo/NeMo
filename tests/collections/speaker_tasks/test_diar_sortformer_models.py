@@ -20,16 +20,13 @@ import numpy as np
 import onnx
 import pytest
 import torch
-from examples.speaker_tasks.diarization.neural_diarizer.e2e_diarize_speech import (
-    configure_output_subsampling_factor,
-    get_tensor_path,
-)
+from examples.speaker_tasks.diarization.neural_diarizer.e2e_diarize_speech import DiarizationConfig, get_tensor_path
 from omegaconf import DictConfig
 from onnx.reference import ReferenceEvaluator
 
 from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking
-from nemo.collections.asr.parts.utils.sortformer_utils import InferenceProfiler
+from nemo.collections.asr.parts.utils.sortformer_utils import InferenceProfiler, configure_output_subsampling_factor
 
 
 class RecordingSpecAugment(torch.nn.Module):
@@ -258,6 +255,11 @@ class TestSortformerEncLabelModelOffline:
 
 class TestSortformerEncLabelModelStreaming:
     @pytest.mark.unit
+    @pytest.mark.parametrize("field_name", ["spkcache_len", "chunk_left_context"])
+    def test_model_dependent_streaming_overrides_default_to_none(self, field_name):
+        assert getattr(DiarizationConfig(), field_name) is None
+
+    @pytest.mark.unit
     def test_constructor(self, sortformer_model):
         sortformer_model.streaming_mode = True
         sortformer_diar_model = sortformer_model.train()
@@ -289,6 +291,37 @@ class TestSortformerEncLabelModelStreaming:
             sortformer_model._cfg.model_defaults.fc_d_model,
         )
         assert torch.equal(encoded_lengths, torch.tensor(expected_encoded_lengths))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("pre_encode_kind", ["feature_stacking", "conv_subsampling"])
+    @pytest.mark.parametrize("diar_right_context", [0, 1, 3, 5, 13])
+    @pytest.mark.parametrize("has_real_future_context", [True, False])
+    def test_streaming_right_context_is_not_committed(
+        self, pre_encode_kind, diar_right_context, has_real_future_context
+    ):
+        frontend_encoder = "transformer" if pre_encode_kind == "feature_stacking" else "conformer"
+        model = _create_sortformer_model(frontend_encoder=frontend_encoder).eval()
+        model.sortformer_modules.fifo_len = 100
+        model.sortformer_modules.spkcache_update_period = 14
+        streaming_state = model.sortformer_modules.init_streaming_state(batch_size=1)
+        total_preds = torch.zeros(1, 0, model.sortformer_modules.n_spk)
+        input_frames = (14 + diar_right_context) * model.encoder.subsampling_factor
+        processed_signal = torch.randn(1, input_frames, model.encoder._feat_in)
+        real_future_context = diar_right_context if has_real_future_context else 0
+        processed_signal_length = torch.tensor([(14 + real_future_context) * model.encoder.subsampling_factor])
+        right_offset = diar_right_context * model.encoder.subsampling_factor
+
+        with torch.no_grad():
+            for expected_length in (14, 28):
+                streaming_state, total_preds = model.forward_streaming_step(
+                    processed_signal=processed_signal,
+                    processed_signal_length=processed_signal_length,
+                    streaming_state=streaming_state,
+                    total_preds=total_preds,
+                    right_offset=right_offset,
+                )
+                assert total_preds.shape[1] == expected_length
+                assert streaming_state.fifo.shape[1] == expected_length
 
     @pytest.mark.unit
     @pytest.mark.parametrize(

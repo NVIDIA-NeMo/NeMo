@@ -342,6 +342,11 @@ class SpeakerFilter:
                 else:
                     speaker_id = getattr(supervision, field, None)
 
+                # Support the TTS speaker ID format:
+                # | Language:en Dataset:<dataset_name> Speaker:<speaker_id> |
+                if isinstance(speaker_id, str) and "Speaker:" in speaker_id:
+                    speaker_id = speaker_id.rsplit("Speaker:", maxsplit=1)[-1].split("|", maxsplit=1)[0].strip()
+
                 if speaker_id in excluded_speaker_ids:
                     return False
         return True

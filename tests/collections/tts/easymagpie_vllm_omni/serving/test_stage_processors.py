@@ -143,7 +143,7 @@ def test_async_codec_drops_only_warmup_not_moved_into_prefill():
     torch.testing.assert_close(first_audio.codes.audio, torch.tensor([[2, 102]]))
 
 
-def test_async_codec_drops_terminal_audio_eos_row():
+def test_async_codec_forwards_terminal_audio_eos_row():
     manager = _manager()
     manager.config.hf_config = SimpleNamespace(
         streaming_speech_delay=0,
@@ -166,7 +166,7 @@ def test_async_codec_drops_terminal_audio_eos_row():
     )
 
     assert bool(terminal.meta.finished)
-    torch.testing.assert_close(terminal.codes.audio, torch.tensor([[1, 101], [2, 102]]))
+    torch.testing.assert_close(terminal.codes.audio, torch.tensor([[1, 101], [2, 102], [1025, 777]]))
 
 
 def test_async_codec_buffer_drops_emitted_rows():

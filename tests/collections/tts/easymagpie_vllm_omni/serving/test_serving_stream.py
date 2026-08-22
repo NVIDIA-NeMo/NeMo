@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 from easymagpie_vllm_omni.serving_adapter import _build_adapter_cls
 from easymagpie_vllm_omni.serving_stream import EasyMagpieInputStream, EasyMagpieStreamingSpeechHandler
+from easymagpie_vllm_omni.tokenizer import EasyMagpieTextTokenizer
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 
 
@@ -73,7 +74,7 @@ async def test_input_stream_builds_one_resumable_request_from_token_chunks():
 
 
 @pytest.mark.asyncio
-async def test_input_stream_prefills_four_tokens_and_requires_them_in_first_update():
+async def test_input_stream_accumulates_tokens_until_first_prefill_is_complete():
     params = SamplingParams(max_tokens=32, output_kind=RequestOutputKind.DELTA)
     stream = EasyMagpieInputStream(
         prefill_prompt={
@@ -87,21 +88,8 @@ async def test_input_stream_prefills_four_tokens_and_requires_them_in_first_upda
         pace_timeout_s=0.0,
     )
 
-    with pytest.raises(ValueError, match="first input update must contain at least 4"):
-        await stream.put_tokens([10, 11, 12])
-
-    stream = EasyMagpieInputStream(
-        prefill_prompt={
-            "prompt_token_ids": [0] * 6,
-            "additional_information": {"speaker_id": "eng", "text_prefill_num": 4},
-        },
-        sampling_params=params,
-        text_eos_id=99,
-        max_new_tokens=32,
-        text_prefill_num=4,
-        pace_timeout_s=0.0,
-    )
-    await stream.put_tokens([10, 11, 12, 13, 14])
+    await stream.put_tokens([10, 11, 12])
+    await stream.put_tokens([13, 14])
     await stream.finish()
     chunks = [chunk async for chunk in stream.inputs()]
 
@@ -278,13 +266,16 @@ def test_two_stage_pipeline_exposes_lm_progress_for_stream_pacing():
 
 
 @pytest.mark.asyncio
-async def test_handler_accepts_token_events_and_streams_pcm():
+async def test_handler_tokenizes_ipa_span_split_across_text_events():
     class FakeWebSocket:
         def __init__(self):
             self.received = iter(
                 [
                     {"type": "session.config", "voice": "eng", "stream_audio": True, "response_format": "pcm"},
-                    {"type": "input.tokens", "tokens": [10, 11]},
+                    {"type": "input.text", "text": "x<bo"},
+                    {"type": "input.text", "text": "p>a"},
+                    {"type": "input.text", "text": "b<eo"},
+                    {"type": "input.text", "text": "p>y"},
                     {"type": "input.done"},
                 ]
             )
@@ -327,10 +318,31 @@ async def test_handler_accepts_token_events_and_streams_pcm():
     class FakeAdapter:
         @staticmethod
         def build_streaming_spec(_request):
+            class FakeBaseTokenizer:
+                @staticmethod
+                def encode(text, add_special_tokens=False):
+                    return [10] * len(text)
+
+            class FakePhonemeTokenizer:
+                @staticmethod
+                def get_vocab():
+                    return {f"p{i}": i for i in range(5)}
+
+                @staticmethod
+                def encode(text):
+                    return SimpleNamespace(ids=[ord(char) - ord("a") for char in text])
+
+            tokenizer = EasyMagpieTextTokenizer(
+                FakeBaseTokenizer(),
+                text_vocab_size=28,
+                phoneme_tokenizer=FakePhonemeTokenizer(),
+                text_phoneme_token_offset=20,
+                text_phoneme_vocab_size=8,
+            )
             return SimpleNamespace(
                 prefill_prompt={"prompt_token_ids": [0]},
-                tokenizer=SimpleNamespace(encode=lambda text, add_special_tokens=False: [len(text)]),
-                text_eos_id=99,
+                tokenizer=tokenizer,
+                text_eos_id=9,
                 sample_rate=22050,
             )
 
@@ -354,5 +366,7 @@ async def test_handler_accepts_token_events_and_streams_pcm():
     assert websocket.accepted
     assert websocket.audio_chunks
     assert websocket.json_messages[0]["type"] == "audio.start"
+    assert websocket.json_messages[-2]["sentence_text"] == "x<bop>ab<eop>y"
+    assert websocket.json_messages[-2]["text_tokens"] == 4
     assert websocket.json_messages[-2]["type"] == "audio.done"
     assert websocket.json_messages[-1] == {"type": "session.done", "total_sentences": 1}

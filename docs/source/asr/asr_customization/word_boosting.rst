@@ -47,27 +47,22 @@ List of the most important parameters:
 Per-phrase boosting parameters
 ------------------------------
 
-By default, all phrases share the global ``context_score`` and ``boosting_tree_alpha``. To boost individual phrases by different amounts,
-use ``boosting_tree.key_phrase_items_list``, where each item can carry its own parameters:
+``context_score`` is a global parameter shared by all phrases. To boost individual phrases by different amounts,
+use ``boosting_tree.key_phrase_items_list``, where each item can carry a per-phrase ``alpha``:
 
 .. code-block::
 
-    boosting_tree.key_phrase_items_list='[{phrase:"nvlink",alpha:2.0},{phrase:"omniverse cloud",context_score:1.5},{phrase:"gtc"}]'
+    boosting_tree.key_phrase_items_list='[{phrase:"nvlink",alpha:2.0},{phrase:"omniverse cloud",alpha:1.5},{phrase:"gtc"}]'
 
-*  ``context_score`` (per phrase) - Overrides the global ``context_score`` (and ``score_per_phrase``) for this phrase's arc transitions.
-*  ``alpha`` (per phrase) - A relative boosting weight multiplier baked into the tree weights at build time.
-   The effective boost for a phrase is ``boosting_tree_alpha (decoding config) * alpha (per phrase)``.
-   Note that the decode-time ``boosting_tree_alpha=0.0`` disables all boosting regardless of per-phrase values.
+*  ``alpha`` (per phrase) - A relative boosting weight multiplier for this phrase, baked into the tree weights at build
+   time. It scales the phrase's whole contribution (arcs, backoff, and EOS) proportionally, mirroring the runtime
+   ``boosting_tree_alpha`` at per-phrase granularity. The effective boost for a phrase is
+   ``boosting_tree_alpha (decoding config) * alpha (per phrase)``; the decode-time ``boosting_tree_alpha=0.0`` disables
+   all boosting regardless of per-phrase values.
 *  ``lang`` (per phrase) - Language for the aggregate tokenizer; falls back to ``source_lang`` if omitted.
 
-**When to use which**: most lists only need one knob. ``context_score`` is a *base-only* gain — it scales a phrase's per-token
-arc score, leaving the depth term and the EOS ``final_eos_score`` unchanged. ``alpha`` is a *uniform* gain — it scales the phrase's
-whole contribution (arcs, backoff, and EOS) proportionally, mirroring the runtime ``boosting_tree_alpha`` at per-phrase granularity.
-For single-token phrases the two are equivalent; reach for ``alpha`` when a stubborn multi-token phrase needs to be scaled up while
-preserving its internal scoring shape.
-
-Omitted fields fall back to the global values. Per-phrase parameters also work with ``build_gpu_boosting_tree.py``
-(the parameters are baked into the saved boosting tree).
+Omitted fields fall back to the global values, and per-phrase ``alpha`` works in all ``bpe_mode`` variants (including
+``case_insensitive`` / ``var_bpe``) and with ``build_gpu_boosting_tree.py`` (baked into the saved boosting tree).
 
 **0.0. [Optional] Build the boosting tree for a specific ASR model:**
 

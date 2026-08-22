@@ -34,9 +34,9 @@ class BuildWordBoostingTreeConfig(BoostingTreeModelConfig):
     """
     Build GPU-accelerated phrase boosting tree (btree) to be used with greedy and beam search decoders of ASR models.
 
-    Per-phrase boosting parameters (context_score and alpha) can be passed via key_phrase_items_list,
-    e.g. key_phrase_items_list='[{phrase:"word1",context_score:2.0,alpha:4.0},{phrase:"word2"}]';
-    omitted fields fall back to the global values, and the parameters are baked into the saved boosting tree.
+    A per-phrase boosting multiplier (alpha) can be passed via key_phrase_items_list,
+    e.g. key_phrase_items_list='[{phrase:"word1",alpha:4.0},{phrase:"word2"}]';
+    omitted fields fall back to the global values, and the multiplier is baked into the saved boosting tree.
     """
 
     asr_pretrained_name: Optional[str] = None  # Name of a pretrained model

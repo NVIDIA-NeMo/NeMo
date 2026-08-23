@@ -50,6 +50,12 @@ class HfExportConfig:
 
     weights_only: bool = True
 
+    # Write the llm_backbone config and the vLLM-ready artifacts (patched
+    # config.json, tokenizer, generation_config). Off by default for the distributed
+    # branch: those checkpoints are consumed by StreamingSTTModel, and the
+    # non-automodel export path already covers the serving case.
+    prepare_vllm: bool = False
+
 
 def load_checkpoint(model: torch.nn.Module, checkpoint_path: str, weights_only: bool = True):
     if Path(checkpoint_path).is_dir():
@@ -124,7 +130,6 @@ def save_hf_checkpoint(model: torch.nn.Module, state_dict: dict, cfg: HfExportCo
     config = _hf_export_config(model, cfg.dtype)
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
-    save_llm_backbone_config(model, output_dir)
 
 
 def save_llm_backbone_config(model: torch.nn.Module, output_dir: str | Path) -> None:
@@ -344,7 +349,9 @@ def main(cfg: HfExportConfig) -> None:
         consolidated = consolidate_state_dict(model)
         if dist.get_rank() == 0:
             save_hf_checkpoint(model, consolidated, cfg)
-            _try_prepare_for_vllm(cfg.output_dir, model_cfg)
+            if cfg.prepare_vllm:
+                save_llm_backbone_config(model, cfg.output_dir)
+                _try_prepare_for_vllm(cfg.output_dir, model_cfg)
 
         dist.barrier()
         dist.destroy_process_group()
@@ -355,8 +362,9 @@ def main(cfg: HfExportConfig) -> None:
         model = model.to(str_to_dtype(cfg.dtype))
         model_cfg["pretrained_weights"] = False
         model.save_pretrained(cfg.output_dir, config=_hf_export_config(model, cfg.dtype))
-        # save_llm_backbone_config(model, cfg.output_dir)
-        # _try_prepare_for_vllm(cfg.output_dir, model_cfg)
+        if cfg.prepare_vllm:
+            save_llm_backbone_config(model, cfg.output_dir)
+            _try_prepare_for_vllm(cfg.output_dir, model_cfg)
 
     logging.info(f"Model saved to {cfg.output_dir}")
 

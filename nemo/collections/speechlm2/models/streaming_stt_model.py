@@ -51,6 +51,7 @@ from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, i
 from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, move_embedding, setup_perception
 from nemo.collections.speechlm2.parts.utils import freeze_module, to_dataclass, unfreeze_module
 from nemo.utils import logging
+from nemo.utils.dtype import str_to_dtype
 
 
 def token_in_vocab(token: str, tokenizer: AutoTokenizer) -> bool:
@@ -373,16 +374,30 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
         # --- LLM ---
         self.tokenizer = AutoTokenizer(self.core_cfg.pretrained_llm, use_fast=True)
+        # Build at the config's dtype rather than load_pretrained_hf's fp32 default:
+        # the caller only casts to bf16 after construction, which is too late for a
+        # 30B backbone (32.2B params x 4 bytes = 129 GiB, an instant host OOM).
+        # Defaults to float32 when torch_dtype is absent, so existing configs are
+        # unaffected; checkpoints written by to_hf.py always carry it.
         self.llm = load_pretrained_hf(
             self.core_cfg.pretrained_llm,
             pretrained_weights=self.core_cfg.load_llm_weights,
+            dtype=str_to_dtype(self.cfg.get("torch_dtype", "float32")),
         )
 
         self._register_special_tokens()
 
-        # Separate embedding layer to avoid FSDP/TP conflicts (same pattern as SALM)
-        self.embed_tokens = self.llm.model.embed_tokens
-        del self.llm.model.embed_tokens
+        # Separate embedding layer to avoid FSDP/TP conflicts (same pattern as SALM).
+        # Llama-style backbones (Qwen3 etc.) call this ``embed_tokens``; some others,
+        # e.g. transformers' NemotronHModel, call it ``embeddings``.
+        emb_attr = "embed_tokens" if hasattr(self.llm.model, "embed_tokens") else "embeddings"
+        if not hasattr(self.llm.model, emb_attr):
+            raise AttributeError(
+                f"{type(self.llm.model).__name__} exposes neither 'embed_tokens' nor 'embeddings'; "
+                "cannot hoist the input embedding out of the LLM."
+            )
+        self.embed_tokens = getattr(self.llm.model, emb_attr)
+        delattr(self.llm.model, emb_attr)
 
         # --- Speech encoder (perception module) ---
         self.perception = setup_perception(

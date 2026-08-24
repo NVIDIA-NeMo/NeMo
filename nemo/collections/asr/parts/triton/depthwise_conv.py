@@ -52,302 +52,299 @@ and store masks that already bound the reads.
 from __future__ import annotations
 
 import torch
+import triton
+import triton.language as tl
 
-from nemo.core.utils.optional_libs import TRITON_AVAILABLE
+
+def _forward_configs():
+    return [
+        triton.Config({"POSITION_BLOCK": positions, "CHANNEL_BLOCK": channels}, num_warps=warps)
+        for positions in (2, 4, 8)
+        for channels in (128, 256)
+        for warps in (2, 4)
+    ]
 
 
-if TRITON_AVAILABLE:
-    import triton
-    import triton.language as tl
+def _weight_grad_configs():
+    # The accumulator is [TAPS_PADDED, CHANNEL_BLOCK]; positions are reduced inside the
+    # loop, so POSITION_BLOCK only sets how many output positions each iteration reads.
+    return [
+        triton.Config({"POSITION_BLOCK": positions, "CHANNEL_BLOCK": channels, "TILE_SPLITS": splits}, num_warps=warps)
+        for positions in (16, 32)
+        for channels in (64, 128, 256)
+        for splits in (512, 2048)
+        for warps in (2, 4)
+    ]
 
-    def _forward_configs():
-        return [
-            triton.Config({"POSITION_BLOCK": positions, "CHANNEL_BLOCK": channels}, num_warps=warps)
-            for positions in (2, 4, 8)
-            for channels in (128, 256)
-            for warps in (2, 4)
-        ]
 
-    def _weight_grad_configs():
-        # The accumulator is [TAPS_PADDED, CHANNEL_BLOCK]; positions are reduced inside the
-        # loop, so POSITION_BLOCK only sets how many output positions each iteration reads.
-        return [
-            triton.Config(
-                {"POSITION_BLOCK": positions, "CHANNEL_BLOCK": channels, "TILE_SPLITS": splits}, num_warps=warps
-            )
-            for positions in (16, 32)
-            for channels in (64, 128, 256)
-            for splits in (512, 2048)
-            for warps in (2, 4)
-        ]
+@triton.jit
+def _decode_position(position, extent_y, extent_x):
+    """Split a flat position back into (batch, y, x)."""
+    per_image = extent_y * extent_x
+    return position // per_image, (position % per_image) // extent_x, position % extent_x
 
-    @triton.jit
-    def _decode_position(position, extent_y, extent_x):
-        """Split a flat position back into (batch, y, x)."""
-        per_image = extent_y * extent_x
-        return position // per_image, (position % per_image) // extent_x, position % extent_x
 
-    @triton.jit
-    def _load_tap(weight_ptr, channel, channel_mask, tap: tl.constexpr, TAPS: tl.constexpr):
-        """weight is (channels, KERNEL_H * KERNEL_W), channel-major as nn.Conv2d stores it."""
-        return tl.load(weight_ptr + channel * TAPS + tap, mask=channel_mask, other=0.0).to(tl.float32)
+@triton.jit
+def _load_tap(weight_ptr, channel, channel_mask, tap: tl.constexpr, TAPS: tl.constexpr):
+    """weight is (channels, KERNEL_H * KERNEL_W), channel-major as nn.Conv2d stores it."""
+    return tl.load(weight_ptr + channel * TAPS + tap, mask=channel_mask, other=0.0).to(tl.float32)
 
-    @triton.jit
-    def _load_input_at_tap(
-        input_ptr,
-        batch,
-        out_y,
-        out_x,
-        channel,
-        position_mask,
-        channel_mask,
-        in_height,
-        in_width,
-        channels,
-        valid_height,
-        kh: tl.constexpr,
-        kw: tl.constexpr,
-        STRIDE_H: tl.constexpr,
-        STRIDE_W: tl.constexpr,
-        PAD_H: tl.constexpr,
-        PAD_W: tl.constexpr,
-    ):
-        """The input each output position reads through tap (kh, kw); zero at out of bounds and past
-        ``valid_height``."""
-        in_y = out_y * STRIDE_H - PAD_H + kh
-        in_x = out_x * STRIDE_W - PAD_W + kw
-        valid = (
-            (in_y >= 0) & (in_y < in_height) & (in_y < valid_height) & (in_x >= 0) & (in_x < in_width) & position_mask
-        )
-        offset = batch * (in_height * in_width * channels) + in_y * (in_width * channels) + in_x * channels
-        return tl.load(
-            input_ptr + offset[:, None] + channel[None, :], mask=valid[:, None] & channel_mask[None, :], other=0.0
-        ).to(tl.float32)
 
-    @triton.autotune(configs=_forward_configs(), key=["channels", "in_width"])
-    @triton.jit
-    def _forward_kernel(
-        input_ptr,
-        weight_ptr,
-        bias_ptr,
-        output_ptr,
-        in_length_ptr,
-        out_length_ptr,
-        channels,
-        in_height,
-        in_width,
-        out_height,
-        out_width,
-        num_output_positions,
-        KERNEL_H: tl.constexpr,
-        KERNEL_W: tl.constexpr,
-        STRIDE_H: tl.constexpr,
-        STRIDE_W: tl.constexpr,
-        PAD_H: tl.constexpr,
-        PAD_W: tl.constexpr,
-        TAPS: tl.constexpr,
-        POSITION_BLOCK: tl.constexpr,
-        CHANNEL_BLOCK: tl.constexpr,
-    ):
-        position = tl.program_id(0) * POSITION_BLOCK + tl.arange(0, POSITION_BLOCK)
-        channel = tl.program_id(1) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
-        position_mask = position < num_output_positions
-        channel_mask = channel < channels
+@triton.jit
+def _load_input_at_tap(
+    input_ptr,
+    batch,
+    out_y,
+    out_x,
+    channel,
+    position_mask,
+    channel_mask,
+    in_height,
+    in_width,
+    channels,
+    valid_height,
+    kh: tl.constexpr,
+    kw: tl.constexpr,
+    STRIDE_H: tl.constexpr,
+    STRIDE_W: tl.constexpr,
+    PAD_H: tl.constexpr,
+    PAD_W: tl.constexpr,
+):
+    """The input each output position reads through tap (kh, kw); zero at out of bounds and past
+    ``valid_height``."""
+    in_y = out_y * STRIDE_H - PAD_H + kh
+    in_x = out_x * STRIDE_W - PAD_W + kw
+    valid = (in_y >= 0) & (in_y < in_height) & (in_y < valid_height) & (in_x >= 0) & (in_x < in_width) & position_mask
+    offset = batch * (in_height * in_width * channels) + in_y * (in_width * channels) + in_x * channels
+    return tl.load(
+        input_ptr + offset[:, None] + channel[None, :], mask=valid[:, None] & channel_mask[None, :], other=0.0
+    ).to(tl.float32)
 
-        batch, out_y, out_x = _decode_position(position, out_height, out_width)
-        valid_in_height = tl.load(in_length_ptr + batch, mask=position_mask, other=0)
-        valid_out_height = tl.load(out_length_ptr + batch, mask=position_mask, other=0)
 
-        total = tl.load(bias_ptr + channel, mask=channel_mask, other=0.0).to(tl.float32)[None, :] + tl.zeros(
-            [POSITION_BLOCK, CHANNEL_BLOCK], tl.float32
-        )
-        for kh in tl.static_range(KERNEL_H):
-            for kw in tl.static_range(KERNEL_W):
-                total += _load_tap(weight_ptr, channel, channel_mask, kh * KERNEL_W + kw, TAPS) * _load_input_at_tap(
-                    input_ptr,
-                    batch,
-                    out_y,
-                    out_x,
-                    channel,
-                    position_mask,
-                    channel_mask,
-                    in_height,
-                    in_width,
-                    channels,
-                    valid_in_height,
-                    kh,
-                    kw,
-                    STRIDE_H,
-                    STRIDE_W,
-                    PAD_H,
-                    PAD_W,
-                )
+@triton.autotune(configs=_forward_configs(), key=["channels", "in_width"])
+@triton.jit
+def _forward_kernel(
+    input_ptr,
+    weight_ptr,
+    bias_ptr,
+    output_ptr,
+    in_length_ptr,
+    out_length_ptr,
+    channels,
+    in_height,
+    in_width,
+    out_height,
+    out_width,
+    num_output_positions,
+    KERNEL_H: tl.constexpr,
+    KERNEL_W: tl.constexpr,
+    STRIDE_H: tl.constexpr,
+    STRIDE_W: tl.constexpr,
+    PAD_H: tl.constexpr,
+    PAD_W: tl.constexpr,
+    TAPS: tl.constexpr,
+    POSITION_BLOCK: tl.constexpr,
+    CHANNEL_BLOCK: tl.constexpr,
+):
+    position = tl.program_id(0) * POSITION_BLOCK + tl.arange(0, POSITION_BLOCK)
+    channel = tl.program_id(1) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
+    position_mask = position < num_output_positions
+    channel_mask = channel < channels
 
-        # zeros are stored past each sample's valid height
-        total = tl.where((out_y < valid_out_height)[:, None], total, 0.0)
-        tl.store(
-            output_ptr + (position * channels)[:, None] + channel[None, :],
-            total.to(output_ptr.dtype.element_ty),
-            mask=position_mask[:, None] & channel_mask[None, :],
-        )
+    batch, out_y, out_x = _decode_position(position, out_height, out_width)
+    valid_in_height = tl.load(in_length_ptr + batch, mask=position_mask, other=0)
+    valid_out_height = tl.load(out_length_ptr + batch, mask=position_mask, other=0)
 
-    @triton.autotune(configs=_forward_configs(), key=["channels", "in_width"])
-    @triton.jit
-    def _input_grad_kernel(
-        grad_output_ptr,
-        weight_ptr,
-        grad_input_ptr,
-        in_length_ptr,
-        out_length_ptr,
-        channels,
-        in_height,
-        in_width,
-        out_height,
-        out_width,
-        num_input_positions,
-        KERNEL_H: tl.constexpr,
-        KERNEL_W: tl.constexpr,
-        STRIDE_H: tl.constexpr,
-        STRIDE_W: tl.constexpr,
-        PAD_H: tl.constexpr,
-        PAD_W: tl.constexpr,
-        TAPS: tl.constexpr,
-        POSITION_BLOCK: tl.constexpr,
-        CHANNEL_BLOCK: tl.constexpr,
-    ):
-        """Gradient with respect to the input.
-
-        Each input pixel fed several outputs in the forward pass, so its gradient is the sum of
-        what comes back from each, weighted by the tap that carried it. A program owns a block of
-        input pixels and walks the taps, accumulating those contributions.
-        """
-        position = tl.program_id(0) * POSITION_BLOCK + tl.arange(0, POSITION_BLOCK)
-        channel = tl.program_id(1) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
-        position_mask = position < num_input_positions
-        channel_mask = channel < channels
-
-        batch, in_y, in_x = _decode_position(position, in_height, in_width)
-        valid_in_height = tl.load(in_length_ptr + batch, mask=position_mask, other=0)
-        valid_out_height = tl.load(out_length_ptr + batch, mask=position_mask, other=0)
-
-        total = tl.zeros([POSITION_BLOCK, CHANNEL_BLOCK], tl.float32)
-        for kh in tl.static_range(KERNEL_H):
-            reach_y = in_y + PAD_H - kh
-            out_y = reach_y // STRIDE_H
-            row_ok = (reach_y % STRIDE_H == 0) & (out_y >= 0) & (out_y < out_height) & (out_y < valid_out_height)
-            for kw in tl.static_range(KERNEL_W):
-                reach_x = in_x + PAD_W - kw
-                out_x = reach_x // STRIDE_W
-                valid = row_ok & (reach_x % STRIDE_W == 0) & (out_x >= 0) & (out_x < out_width) & position_mask
-                offset = (
-                    batch * (out_height * out_width * channels) + out_y * (out_width * channels) + out_x * channels
-                )
-                grad = tl.load(
-                    grad_output_ptr + offset[:, None] + channel[None, :],
-                    mask=valid[:, None] & channel_mask[None, :],
-                    other=0.0,
-                ).to(tl.float32)
-                total += _load_tap(weight_ptr, channel, channel_mask, kh * KERNEL_W + kw, TAPS) * grad
-
-        total = tl.where((in_y < valid_in_height)[:, None], total, 0.0)
-        tl.store(
-            grad_input_ptr + (position * channels)[:, None] + channel[None, :],
-            total.to(grad_input_ptr.dtype.element_ty),
-            mask=position_mask[:, None] & channel_mask[None, :],
-        )
-
-    @triton.autotune(
-        configs=_weight_grad_configs(),
-        key=["channels", "in_width"],
-        reset_to_zero=["grad_weight_ptr", "grad_bias_ptr"],
+    total = tl.load(bias_ptr + channel, mask=channel_mask, other=0.0).to(tl.float32)[None, :] + tl.zeros(
+        [POSITION_BLOCK, CHANNEL_BLOCK], tl.float32
     )
-    @triton.jit
-    def _weight_grad_kernel(
-        input_ptr,
-        grad_output_ptr,
-        grad_weight_ptr,
-        grad_bias_ptr,
-        in_length_ptr,
-        out_length_ptr,
-        channels,
-        in_height,
-        in_width,
-        out_height,
-        out_width,
-        num_output_positions,
-        KERNEL_H: tl.constexpr,
-        KERNEL_W: tl.constexpr,
-        STRIDE_H: tl.constexpr,
-        STRIDE_W: tl.constexpr,
-        PAD_H: tl.constexpr,
-        PAD_W: tl.constexpr,
-        TAPS: tl.constexpr,
-        TAPS_PADDED: tl.constexpr,
-        POSITION_BLOCK: tl.constexpr,
-        CHANNEL_BLOCK: tl.constexpr,
-        TILE_SPLITS: tl.constexpr,
-    ):
-        """Weight and bias gradients, summed over every output position.
+    for kh in tl.static_range(KERNEL_H):
+        for kw in tl.static_range(KERNEL_W):
+            total += _load_tap(weight_ptr, channel, channel_mask, kh * KERNEL_W + kw, TAPS) * _load_input_at_tap(
+                input_ptr,
+                batch,
+                out_y,
+                out_x,
+                channel,
+                position_mask,
+                channel_mask,
+                in_height,
+                in_width,
+                channels,
+                valid_in_height,
+                kh,
+                kw,
+                STRIDE_H,
+                STRIDE_W,
+                PAD_H,
+                PAD_W,
+            )
 
-        One program handles all KERNEL_H x KERNEL_W taps for a block of channels, so each
-        ``grad`` value it loads is used by all of them. Triton cannot index into a block with a
-        runtime value, so the per-tap accumulators share one [TAPS_PADDED, CHANNEL_BLOCK] tile
-        and each tap is picked out with a one-hot ``tl.where``.
-        """
-        channel = tl.program_id(0) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
-        channel_mask = channel < channels
-        tap_index = tl.arange(0, TAPS_PADDED)
+    # zeros are stored past each sample's valid height
+    total = tl.where((out_y < valid_out_height)[:, None], total, 0.0)
+    tl.store(
+        output_ptr + (position * channels)[:, None] + channel[None, :],
+        total.to(output_ptr.dtype.element_ty),
+        mask=position_mask[:, None] & channel_mask[None, :],
+    )
 
-        grad_weight_total = tl.zeros([TAPS_PADDED, CHANNEL_BLOCK], tl.float32)
-        grad_bias_total = tl.zeros([CHANNEL_BLOCK], tl.float32)
 
-        for base in range(tl.program_id(1) * POSITION_BLOCK, num_output_positions, TILE_SPLITS * POSITION_BLOCK):
-            position = base + tl.arange(0, POSITION_BLOCK)
-            position_mask = position < num_output_positions
-            batch, out_y, out_x = _decode_position(position, out_height, out_width)
-            position_mask = position_mask & (out_y < tl.load(out_length_ptr + batch, mask=position_mask, other=0))
-            valid_in_height = tl.load(in_length_ptr + batch, mask=position_mask, other=0)
+@triton.autotune(configs=_forward_configs(), key=["channels", "in_width"])
+@triton.jit
+def _input_grad_kernel(
+    grad_output_ptr,
+    weight_ptr,
+    grad_input_ptr,
+    in_length_ptr,
+    out_length_ptr,
+    channels,
+    in_height,
+    in_width,
+    out_height,
+    out_width,
+    num_input_positions,
+    KERNEL_H: tl.constexpr,
+    KERNEL_W: tl.constexpr,
+    STRIDE_H: tl.constexpr,
+    STRIDE_W: tl.constexpr,
+    PAD_H: tl.constexpr,
+    PAD_W: tl.constexpr,
+    TAPS: tl.constexpr,
+    POSITION_BLOCK: tl.constexpr,
+    CHANNEL_BLOCK: tl.constexpr,
+):
+    """Gradient with respect to the input.
+
+    Each input pixel fed several outputs in the forward pass, so its gradient is the sum of
+    what comes back from each, weighted by the tap that carried it. A program owns a block of
+    input pixels and walks the taps, accumulating those contributions.
+    """
+    position = tl.program_id(0) * POSITION_BLOCK + tl.arange(0, POSITION_BLOCK)
+    channel = tl.program_id(1) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
+    position_mask = position < num_input_positions
+    channel_mask = channel < channels
+
+    batch, in_y, in_x = _decode_position(position, in_height, in_width)
+    valid_in_height = tl.load(in_length_ptr + batch, mask=position_mask, other=0)
+    valid_out_height = tl.load(out_length_ptr + batch, mask=position_mask, other=0)
+
+    total = tl.zeros([POSITION_BLOCK, CHANNEL_BLOCK], tl.float32)
+    for kh in tl.static_range(KERNEL_H):
+        reach_y = in_y + PAD_H - kh
+        out_y = reach_y // STRIDE_H
+        row_ok = (reach_y % STRIDE_H == 0) & (out_y >= 0) & (out_y < out_height) & (out_y < valid_out_height)
+        for kw in tl.static_range(KERNEL_W):
+            reach_x = in_x + PAD_W - kw
+            out_x = reach_x // STRIDE_W
+            valid = row_ok & (reach_x % STRIDE_W == 0) & (out_x >= 0) & (out_x < out_width) & position_mask
+            offset = batch * (out_height * out_width * channels) + out_y * (out_width * channels) + out_x * channels
             grad = tl.load(
-                grad_output_ptr + (position * channels)[:, None] + channel[None, :],
-                mask=position_mask[:, None] & channel_mask[None, :],
+                grad_output_ptr + offset[:, None] + channel[None, :],
+                mask=valid[:, None] & channel_mask[None, :],
                 other=0.0,
             ).to(tl.float32)
-            grad_bias_total += tl.sum(grad, 0)
+            total += _load_tap(weight_ptr, channel, channel_mask, kh * KERNEL_W + kw, TAPS) * grad
 
-            for kh in tl.static_range(KERNEL_H):
-                for kw in tl.static_range(KERNEL_W):
-                    tap_total = tl.sum(
-                        grad
-                        * _load_input_at_tap(
-                            input_ptr,
-                            batch,
-                            out_y,
-                            out_x,
-                            channel,
-                            position_mask,
-                            channel_mask,
-                            in_height,
-                            in_width,
-                            channels,
-                            valid_in_height,
-                            kh,
-                            kw,
-                            STRIDE_H,
-                            STRIDE_W,
-                            PAD_H,
-                            PAD_W,
-                        ),
-                        0,
-                    )
-                    grad_weight_total += tl.where((tap_index == kh * KERNEL_W + kw)[:, None], tap_total[None, :], 0.0)
+    total = tl.where((in_y < valid_in_height)[:, None], total, 0.0)
+    tl.store(
+        grad_input_ptr + (position * channels)[:, None] + channel[None, :],
+        total.to(grad_input_ptr.dtype.element_ty),
+        mask=position_mask[:, None] & channel_mask[None, :],
+    )
 
-        # grad_weight is (TAPS, channels), so each atomic row is a contiguous channel run
-        tl.atomic_add(
-            grad_weight_ptr + tap_index[:, None] * channels + channel[None, :],
-            grad_weight_total,
-            mask=(tap_index < TAPS)[:, None] & channel_mask[None, :],
-        )
-        tl.atomic_add(grad_bias_ptr + channel, grad_bias_total, mask=channel_mask)
+
+@triton.autotune(
+    configs=_weight_grad_configs(),
+    key=["channels", "in_width"],
+    reset_to_zero=["grad_weight_ptr", "grad_bias_ptr"],
+)
+@triton.jit
+def _weight_grad_kernel(
+    input_ptr,
+    grad_output_ptr,
+    grad_weight_ptr,
+    grad_bias_ptr,
+    in_length_ptr,
+    out_length_ptr,
+    channels,
+    in_height,
+    in_width,
+    out_height,
+    out_width,
+    num_output_positions,
+    KERNEL_H: tl.constexpr,
+    KERNEL_W: tl.constexpr,
+    STRIDE_H: tl.constexpr,
+    STRIDE_W: tl.constexpr,
+    PAD_H: tl.constexpr,
+    PAD_W: tl.constexpr,
+    TAPS: tl.constexpr,
+    TAPS_PADDED: tl.constexpr,
+    POSITION_BLOCK: tl.constexpr,
+    CHANNEL_BLOCK: tl.constexpr,
+    TILE_SPLITS: tl.constexpr,
+):
+    """Weight and bias gradients, summed over every output position.
+
+    One program handles all KERNEL_H x KERNEL_W taps for a block of channels, so each
+    ``grad`` value it loads is used by all of them. Triton cannot index into a block with a
+    runtime value, so the per-tap accumulators share one [TAPS_PADDED, CHANNEL_BLOCK] tile
+    and each tap is picked out with a one-hot ``tl.where``.
+    """
+    channel = tl.program_id(0) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
+    channel_mask = channel < channels
+    tap_index = tl.arange(0, TAPS_PADDED)
+
+    grad_weight_total = tl.zeros([TAPS_PADDED, CHANNEL_BLOCK], tl.float32)
+    grad_bias_total = tl.zeros([CHANNEL_BLOCK], tl.float32)
+
+    for base in range(tl.program_id(1) * POSITION_BLOCK, num_output_positions, TILE_SPLITS * POSITION_BLOCK):
+        position = base + tl.arange(0, POSITION_BLOCK)
+        position_mask = position < num_output_positions
+        batch, out_y, out_x = _decode_position(position, out_height, out_width)
+        position_mask = position_mask & (out_y < tl.load(out_length_ptr + batch, mask=position_mask, other=0))
+        valid_in_height = tl.load(in_length_ptr + batch, mask=position_mask, other=0)
+        grad = tl.load(
+            grad_output_ptr + (position * channels)[:, None] + channel[None, :],
+            mask=position_mask[:, None] & channel_mask[None, :],
+            other=0.0,
+        ).to(tl.float32)
+        grad_bias_total += tl.sum(grad, 0)
+
+        for kh in tl.static_range(KERNEL_H):
+            for kw in tl.static_range(KERNEL_W):
+                tap_total = tl.sum(
+                    grad
+                    * _load_input_at_tap(
+                        input_ptr,
+                        batch,
+                        out_y,
+                        out_x,
+                        channel,
+                        position_mask,
+                        channel_mask,
+                        in_height,
+                        in_width,
+                        channels,
+                        valid_in_height,
+                        kh,
+                        kw,
+                        STRIDE_H,
+                        STRIDE_W,
+                        PAD_H,
+                        PAD_W,
+                    ),
+                    0,
+                )
+                grad_weight_total += tl.where((tap_index == kh * KERNEL_W + kw)[:, None], tap_total[None, :], 0.0)
+
+    # grad_weight is (TAPS, channels), so each atomic row is a contiguous channel run
+    tl.atomic_add(
+        grad_weight_ptr + tap_index[:, None] * channels + channel[None, :],
+        grad_weight_total,
+        mask=(tap_index < TAPS)[:, None] & channel_mask[None, :],
+    )
+    tl.atomic_add(grad_bias_ptr + channel, grad_bias_total, mask=channel_mask)
 
 
 class _DepthwiseConv2d(torch.autograd.Function):
@@ -522,10 +519,8 @@ def dw_conv2d(
         ``(batch, out_height, out_width, channels)``.
 
     Raises:
-        RuntimeError: if triton is unavailable or the inputs are not on a CUDA device.
+        RuntimeError: if the inputs are not on a CUDA device.
     """
-    if not TRITON_AVAILABLE:
-        raise RuntimeError("Triton is required for the depthwise convolution kernel")
     if not features.is_cuda:
         raise RuntimeError("The depthwise convolution kernel requires CUDA tensors")
     batch_size, in_height, in_width, channels = features.shape

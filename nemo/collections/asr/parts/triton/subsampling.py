@@ -57,146 +57,265 @@ The 9 taps and 15 positions are padded to PAD, the next power of two, as ``tl.ar
 from __future__ import annotations
 
 import torch
+import triton
+import triton.language as tl
 
-from nemo.core.utils.optional_libs import TRITON_AVAILABLE
+# The geometry both kernels hardcode in their index arithmetic. Names, not knobs. They must be
+# ``tl.constexpr``: @triton.jit rejects a plain int global. ``.value`` unwraps one for the
+# tensor arithmetic that would otherwise return a wrapped constexpr.
+KERNEL = tl.constexpr(3)
+STRIDE = tl.constexpr(2)
+NUM_BINS = tl.constexpr(2)  # frequency bins one program emits together
+WINDOW_COLS = tl.constexpr(KERNEL.value + (NUM_BINS.value - 1) * STRIDE.value)  # columns they span
+WINDOW_SIZE = tl.constexpr(KERNEL.value * WINDOW_COLS.value)
+TAPS = tl.constexpr(KERNEL.value * KERNEL.value)
+PAD = tl.constexpr(1 << (max(TAPS.value, WINDOW_SIZE.value) - 1).bit_length())  # a power of two
 
-if TRITON_AVAILABLE:
-    import triton
-    import triton.language as tl
 
-    # The geometry both kernels hardcode in their index arithmetic. Names, not knobs. They must be
-    # ``tl.constexpr``: @triton.jit rejects a plain int global. ``.value`` unwraps one for the
-    # tensor arithmetic that would otherwise return a wrapped constexpr.
-    KERNEL = tl.constexpr(3)
-    STRIDE = tl.constexpr(2)
-    NUM_BINS = tl.constexpr(2)  # frequency bins one program emits together
-    WINDOW_COLS = tl.constexpr(KERNEL.value + (NUM_BINS.value - 1) * STRIDE.value)  # columns they span
-    WINDOW_SIZE = tl.constexpr(KERNEL.value * WINDOW_COLS.value)
-    TAPS = tl.constexpr(KERNEL.value * KERNEL.value)
-    PAD = tl.constexpr(1 << (max(TAPS.value, WINDOW_SIZE.value) - 1).bit_length())  # a power of two
+def _forward_configs():
+    return [
+        triton.Config({"CHANNEL_BLOCK": block, "TIME_ROWS": rows}, num_warps=warps)
+        for block in (64, 128)
+        for rows in (4, 8)
+        for warps in (2, 4)
+    ]
 
-    def _forward_configs():
-        return [
-            triton.Config({"CHANNEL_BLOCK": block, "TIME_ROWS": rows}, num_warps=warps)
-            for block in (64, 128)
-            for rows in (4, 8)
-            for warps in (2, 4)
-        ]
 
-    def _backward_configs():
-        return [
-            triton.Config({"CHANNEL_BLOCK": block, "TIME_ROWS": rows, "TILE_SPLITS": splits}, num_warps=warps)
-            for block in (64, 128)
-            for rows in (1, 2, 4)
-            for splits in (1024, 4096)
-            for warps in (2, 4)
-        ]
+def _backward_configs():
+    return [
+        triton.Config({"CHANNEL_BLOCK": block, "TIME_ROWS": rows, "TILE_SPLITS": splits}, num_warps=warps)
+        for block in (64, 128)
+        for rows in (1, 2, 4)
+        for splits in (1024, 4096)
+        for warps in (2, 4)
+    ]
 
-    @triton.jit
-    def _window_cells(out_row, bin0_col, relu_out_len, relu_out_freq, pad_start):
-        """Where each window position sits in `relu_out`, and whether that cell exists."""
-        window_pos = tl.arange(0, PAD)
-        row = STRIDE * out_row + window_pos // WINDOW_COLS - pad_start
-        col = STRIDE * bin0_col + window_pos % WINDOW_COLS - pad_start
-        return (
-            row,
-            col,
-            (row >= 0) & (row < relu_out_len) & (col >= 0) & (col < relu_out_freq) & (window_pos < WINDOW_SIZE),
+
+@triton.jit
+def _window_cells(out_row, bin0_col, relu_out_len, relu_out_freq, pad_start):
+    """Where each window position sits in `relu_out`, and whether that cell exists."""
+    window_pos = tl.arange(0, PAD)
+    row = STRIDE * out_row + window_pos // WINDOW_COLS - pad_start
+    col = STRIDE * bin0_col + window_pos % WINDOW_COLS - pad_start
+    return (
+        row,
+        col,
+        (row >= 0) & (row < relu_out_len) & (col >= 0) & (col < relu_out_freq) & (window_pos < WINDOW_SIZE),
+    )
+
+
+@triton.jit
+def _load_params(conv_weight_ptr, conv_bias_ptr, taps_bin0_ptr, taps_bin1_ptr, channel, channel_mask):
+    """conv0's taps and bias, and each bin's depthwise taps."""
+    tap = tl.arange(0, PAD)
+    window_pos = tl.arange(0, PAD)
+    conv_taps = tl.load(
+        conv_weight_ptr + channel[:, None] * TAPS + tap[None, :],
+        mask=(tap < TAPS)[None, :] & channel_mask[:, None],
+        other=0.0,
+    )
+    conv_bias = tl.load(conv_bias_ptr + channel, mask=channel_mask, other=0.0).to(tl.float32)
+    taps_bin0 = tl.load(
+        taps_bin0_ptr + channel[:, None] * PAD + window_pos[None, :], mask=channel_mask[:, None], other=0.0
+    ).to(tl.float32)
+    taps_bin1 = tl.load(
+        taps_bin1_ptr + channel[:, None] * PAD + window_pos[None, :], mask=channel_mask[:, None], other=0.0
+    ).to(tl.float32)
+    return conv_taps, conv_bias, taps_bin0, taps_bin1
+
+
+@triton.jit
+def _load_window(
+    mel_ptr, batch_base, mel_time_stride, relu_out_row, relu_out_col, pos_ok, valid_time, mel_freq, pad_start
+):
+    """The window's mel patch as [tap, window position], both padded to PAD. The GEMM's rhs.
+
+    Indexed directly into the unpadded mel. The mask that keeps those reads in bounds also
+    zeroes anything at or past ``valid_time``, this utterance's own length.
+    """
+    tap = tl.arange(0, PAD)
+    mel_row = STRIDE * relu_out_row[None, :] + (tap // KERNEL)[:, None] - pad_start
+    mel_col = STRIDE * relu_out_col[None, :] + (tap % KERNEL)[:, None] - pad_start
+    in_range = (mel_row >= 0) & (mel_row < valid_time) & (mel_col >= 0) & (mel_col < mel_freq)
+    return tl.load(
+        mel_ptr + batch_base + mel_row * mel_time_stride + mel_col,
+        mask=(tap < TAPS)[:, None] & pos_ok[None, :] & in_range,
+        other=0.0,
+    )
+
+
+@triton.autotune(configs=_forward_configs(), key=["channels", "out_freq"])
+@triton.jit
+def _forward_kernel(
+    mel_ptr,
+    conv_weight_ptr,
+    conv_bias_ptr,
+    taps_bin0_ptr,
+    taps_bin1_ptr,
+    depth_bias_ptr,
+    output_ptr,
+    mel_len_ptr,
+    relu_out_len_ptr,
+    out_len_ptr,
+    pad_start,
+    channels,
+    out_time,
+    out_freq,
+    mel_freq,
+    relu_out_freq,
+    mel_batch_stride,
+    mel_time_stride,
+    out_batch_stride,
+    out_time_stride,
+    out_freq_stride,
+    TIME_ROWS: tl.constexpr,
+    CHANNEL_BLOCK: tl.constexpr,
+):
+    # CUDA caps the three grid axes at 2**31 - 1, 65535 and 65535. Only the tile count grows
+    # with audio length, so it takes the first; channel tiles and batch stay far below 65535.
+    tile = tl.program_id(0)
+    batch = tl.program_id(2)
+    freq_tiles = tl.cdiv(out_freq, NUM_BINS)
+    first_out_row = (tile // freq_tiles) * TIME_ROWS
+    bin0_col = (tile % freq_tiles) * NUM_BINS
+    channel = tl.program_id(1) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
+    channel_mask = channel < channels
+
+    conv_taps, conv_bias, taps_bin0, taps_bin1 = _load_params(
+        conv_weight_ptr, conv_bias_ptr, taps_bin0_ptr, taps_bin1_ptr, channel, channel_mask
+    )
+    depth_bias = tl.load(depth_bias_ptr + channel, mask=channel_mask, other=0.0).to(tl.float32)
+
+    batch_base = batch * mel_batch_stride
+    # Each stage has its own length. `relu_out` is masked at the post-conv0 length because
+    # relu(conv_bias) is non-zero, so padded time would otherwise carry the bias forward.
+    this_mel_len = tl.load(mel_len_ptr + batch)
+    this_relu_out_len = tl.load(relu_out_len_ptr + batch)
+    this_out_len = tl.load(out_len_ptr + batch)
+
+    # Tiles past the utterance skip their work but must still store zeros: the downstream
+    # `pw1` contracts over every time position for its weight gradient.
+    tile_live = first_out_row < this_out_len
+
+    for step in tl.static_range(TIME_ROWS):
+        if tile_live:
+            relu_out_row, relu_out_col, pos_ok = _window_cells(
+                first_out_row + step, bin0_col, this_relu_out_len, relu_out_freq, pad_start
+            )
+            feats = _load_window(
+                mel_ptr,
+                batch_base,
+                mel_time_stride,
+                relu_out_row,
+                relu_out_col,
+                pos_ok,
+                this_mel_len,
+                mel_freq,
+                pad_start,
+            )
+            relu_out = tl.dot(conv_taps, feats) + conv_bias[:, None]
+            relu_out = tl.where(pos_ok[None, :], tl.maximum(relu_out, 0.0), 0.0)
+
+            out_bin0 = depth_bias + tl.sum(relu_out * taps_bin0, 1)
+            out_bin1 = depth_bias + tl.sum(relu_out * taps_bin1, 1)
+        else:
+            out_bin0 = tl.zeros([CHANNEL_BLOCK], tl.float32)
+            out_bin1 = tl.zeros([CHANNEL_BLOCK], tl.float32)
+        # zeros are stored past the utterance, so mask the value, not the store
+        in_length = first_out_row + step < this_out_len
+        out_bin0 = tl.where(in_length, out_bin0, 0.0)
+        out_bin1 = tl.where(in_length, out_bin1, 0.0)
+        time_valid = channel_mask & (first_out_row + step < out_time)
+        out_base = (
+            output_ptr
+            + batch * out_batch_stride
+            + (first_out_row + step) * out_time_stride
+            + bin0_col * out_freq_stride
+            + channel
+        )
+        # Each tile covers NUM_BINS bins, so bin0 is always in range. When out_freq is odd the
+        # last tile's bin1 is one past the end.
+        tl.store(out_base, out_bin0.to(output_ptr.dtype.element_ty), mask=time_valid)
+        tl.store(
+            out_base + out_freq_stride,
+            out_bin1.to(output_ptr.dtype.element_ty),
+            mask=time_valid & (bin0_col + 1 < out_freq),
         )
 
-    @triton.jit
-    def _load_params(conv_weight_ptr, conv_bias_ptr, taps_bin0_ptr, taps_bin1_ptr, channel, channel_mask):
-        """conv0's taps and bias, and each bin's depthwise taps."""
-        tap = tl.arange(0, PAD)
-        window_pos = tl.arange(0, PAD)
-        conv_taps = tl.load(
-            conv_weight_ptr + channel[:, None] * TAPS + tap[None, :],
-            mask=(tap < TAPS)[None, :] & channel_mask[:, None],
-            other=0.0,
-        )
-        conv_bias = tl.load(conv_bias_ptr + channel, mask=channel_mask, other=0.0).to(tl.float32)
-        taps_bin0 = tl.load(
-            taps_bin0_ptr + channel[:, None] * PAD + window_pos[None, :], mask=channel_mask[:, None], other=0.0
-        ).to(tl.float32)
-        taps_bin1 = tl.load(
-            taps_bin1_ptr + channel[:, None] * PAD + window_pos[None, :], mask=channel_mask[:, None], other=0.0
-        ).to(tl.float32)
-        return conv_taps, conv_bias, taps_bin0, taps_bin1
 
-    @triton.jit
-    def _load_window(
-        mel_ptr, batch_base, mel_time_stride, relu_out_row, relu_out_col, pos_ok, valid_time, mel_freq, pad_start
-    ):
-        """The window's mel patch as [tap, window position], both padded to PAD. The GEMM's rhs.
+# reset_to_zero: this kernel accumulates with atomic_add, and autotune re-runs each config.
+@triton.autotune(
+    configs=_backward_configs(),
+    key=["channels", "out_freq"],
+    reset_to_zero=[
+        "grad_conv_weight_ptr",
+        "grad_conv_bias_ptr",
+        "acc_bin0_ptr",
+        "acc_bin1_ptr",
+        "grad_depth_bias_ptr",
+    ],
+)
+@triton.jit
+def _backward_kernel(
+    mel_ptr,
+    conv_weight_ptr,
+    conv_bias_ptr,
+    taps_bin0_ptr,
+    taps_bin1_ptr,
+    grad_output_ptr,
+    grad_conv_weight_ptr,
+    grad_conv_bias_ptr,
+    acc_bin0_ptr,
+    acc_bin1_ptr,
+    grad_depth_bias_ptr,
+    mel_len_ptr,
+    relu_out_len_ptr,
+    out_len_ptr,
+    pad_start,
+    channels,
+    out_time,
+    out_freq,
+    mel_freq,
+    relu_out_freq,
+    batch_size,
+    mel_batch_stride,
+    mel_time_stride,
+    grad_batch_stride,
+    grad_time_stride,
+    grad_freq_stride,
+    TIME_ROWS: tl.constexpr,
+    CHANNEL_BLOCK: tl.constexpr,
+    TILE_SPLITS: tl.constexpr,
+):
+    channel = tl.program_id(0) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
+    channel_mask = channel < channels
+    tap = tl.arange(0, PAD)
+    window_pos = tl.arange(0, PAD)
+    conv_taps, conv_bias, taps_bin0, taps_bin1 = _load_params(
+        conv_weight_ptr, conv_bias_ptr, taps_bin0_ptr, taps_bin1_ptr, channel, channel_mask
+    )
 
-        Indexed directly into the unpadded mel. The mask that keeps those reads in bounds also
-        zeroes anything at or past ``valid_time``, this utterance's own length.
-        """
-        tap = tl.arange(0, PAD)
-        mel_row = STRIDE * relu_out_row[None, :] + (tap // KERNEL)[:, None] - pad_start
-        mel_col = STRIDE * relu_out_col[None, :] + (tap % KERNEL)[:, None] - pad_start
-        in_range = (mel_row >= 0) & (mel_row < valid_time) & (mel_col >= 0) & (mel_col < mel_freq)
-        return tl.load(
-            mel_ptr + batch_base + mel_row * mel_time_stride + mel_col,
-            mask=(tap < TAPS)[:, None] & pos_ok[None, :] & in_range,
-            other=0.0,
-        )
+    # Columns 0..TAPS-1 accumulate the conv0 weight gradients, column TAPS accumulates the bias gradient.
+    grad_conv_weight = tl.zeros([CHANNEL_BLOCK, PAD], tl.float32)
+    acc_bin0 = tl.zeros([CHANNEL_BLOCK, PAD], tl.float32)
+    acc_bin1 = tl.zeros([CHANNEL_BLOCK, PAD], tl.float32)
+    grad_depth_bias = tl.zeros([CHANNEL_BLOCK], tl.float32)
 
-    @triton.autotune(configs=_forward_configs(), key=["channels", "out_freq"])
-    @triton.jit
-    def _forward_kernel(
-        mel_ptr,
-        conv_weight_ptr,
-        conv_bias_ptr,
-        taps_bin0_ptr,
-        taps_bin1_ptr,
-        depth_bias_ptr,
-        output_ptr,
-        mel_len_ptr,
-        relu_out_len_ptr,
-        out_len_ptr,
-        pad_start,
-        channels,
-        out_time,
-        out_freq,
-        mel_freq,
-        relu_out_freq,
-        mel_batch_stride,
-        mel_time_stride,
-        out_batch_stride,
-        out_time_stride,
-        out_freq_stride,
-        TIME_ROWS: tl.constexpr,
-        CHANNEL_BLOCK: tl.constexpr,
-    ):
-        # CUDA caps the three grid axes at 2**31 - 1, 65535 and 65535. Only the tile count grows
-        # with audio length, so it takes the first; channel tiles and batch stay far below 65535.
-        tile = tl.program_id(0)
-        batch = tl.program_id(2)
-        freq_tiles = tl.cdiv(out_freq, NUM_BINS)
-        first_out_row = (tile // freq_tiles) * TIME_ROWS
-        bin0_col = (tile % freq_tiles) * NUM_BINS
-        channel = tl.program_id(1) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
-        channel_mask = channel < channels
-
-        conv_taps, conv_bias, taps_bin0, taps_bin1 = _load_params(
-            conv_weight_ptr, conv_bias_ptr, taps_bin0_ptr, taps_bin1_ptr, channel, channel_mask
-        )
-        depth_bias = tl.load(depth_bias_ptr + channel, mask=channel_mask, other=0.0).to(tl.float32)
-
+    freq_tiles = tl.cdiv(out_freq, NUM_BINS)
+    tiles_per_batch = tl.cdiv(out_time, TIME_ROWS) * freq_tiles
+    for tile in range(tl.program_id(1), batch_size * tiles_per_batch, TILE_SPLITS):
+        batch = tile // tiles_per_batch
+        tile_in_batch = tile % tiles_per_batch
+        first_out_row = (tile_in_batch // freq_tiles) * TIME_ROWS
+        bin0_col = (tile_in_batch % freq_tiles) * NUM_BINS
         batch_base = batch * mel_batch_stride
-        # Each stage has its own length. `relu_out` is masked at the post-conv0 length because
-        # relu(conv_bias) is non-zero, so padded time would otherwise carry the bias forward.
         this_mel_len = tl.load(mel_len_ptr + batch)
         this_relu_out_len = tl.load(relu_out_len_ptr + batch)
         this_out_len = tl.load(out_len_ptr + batch)
 
-        # Tiles past the utterance skip their work but must still store zeros: the downstream
-        # `pw1` contracts over every time position for its weight gradient.
-        tile_live = first_out_row < this_out_len
-
-        for step in tl.static_range(TIME_ROWS):
-            if tile_live:
+        # Tiles past the utterance contribute nothing to any gradient.
+        if first_out_row < this_out_len:
+            for step in tl.static_range(TIME_ROWS):
                 relu_out_row, relu_out_col, pos_ok = _window_cells(
                     first_out_row + step, bin0_col, this_relu_out_len, relu_out_freq, pad_start
                 )
@@ -211,171 +330,45 @@ if TRITON_AVAILABLE:
                     mel_freq,
                     pad_start,
                 )
-                relu_out = tl.dot(conv_taps, feats) + conv_bias[:, None]
-                relu_out = tl.where(pos_ok[None, :], tl.maximum(relu_out, 0.0), 0.0)
+                # The bias enters conv0 as `bias * 1`, making it a tap whose input is always 1,
+                # so its gradient is the same sum as any other tap's. Row TAPS of `feats` is
+                # padding, so ones there produce the bias gradient in column TAPS.
+                # conv_taps is zero in that row, so the conv0 recompute is unaffected.
+                feats = tl.where((tap == TAPS)[:, None] & pos_ok[None, :], tl.full((1, 1), 1.0, feats.dtype), feats)
+                pre_relu = tl.dot(conv_taps, feats) + conv_bias[:, None]
+                live = pos_ok[None, :] & (pre_relu > 0.0)
+                relu_out = tl.where(live, pre_relu, 0.0)
 
-                out_bin0 = depth_bias + tl.sum(relu_out * taps_bin0, 1)
-                out_bin1 = depth_bias + tl.sum(relu_out * taps_bin1, 1)
-            else:
-                out_bin0 = tl.zeros([CHANNEL_BLOCK], tl.float32)
-                out_bin1 = tl.zeros([CHANNEL_BLOCK], tl.float32)
-            # zeros are stored past the utterance, so mask the value, not the store
-            in_length = first_out_row + step < this_out_len
-            out_bin0 = tl.where(in_length, out_bin0, 0.0)
-            out_bin1 = tl.where(in_length, out_bin1, 0.0)
-            time_valid = channel_mask & (first_out_row + step < out_time)
-            out_base = (
-                output_ptr
-                + batch * out_batch_stride
-                + (first_out_row + step) * out_time_stride
-                + bin0_col * out_freq_stride
-                + channel
-            )
-            # Each tile covers NUM_BINS bins, so bin0 is always in range. When out_freq is odd the
-            # last tile's bin1 is one past the end.
-            tl.store(out_base, out_bin0.to(output_ptr.dtype.element_ty), mask=time_valid)
-            tl.store(
-                out_base + out_freq_stride,
-                out_bin1.to(output_ptr.dtype.element_ty),
-                mask=time_valid & (bin0_col + 1 < out_freq),
-            )
+                time_valid = channel_mask & (first_out_row + step < out_time) & (first_out_row + step < this_out_len)
+                grad_base = (
+                    grad_output_ptr
+                    + batch * grad_batch_stride
+                    + (first_out_row + step) * grad_time_stride
+                    + bin0_col * grad_freq_stride
+                    + channel
+                )
+                grad_bin0 = tl.load(grad_base, mask=time_valid, other=0.0).to(tl.float32)
+                grad_bin1 = tl.load(
+                    grad_base + grad_freq_stride, mask=time_valid & (bin0_col + 1 < out_freq), other=0.0
+                ).to(tl.float32)
 
-    # reset_to_zero: this kernel accumulates with atomic_add, and autotune re-runs each config.
-    @triton.autotune(
-        configs=_backward_configs(),
-        key=["channels", "out_freq"],
-        reset_to_zero=[
-            "grad_conv_weight_ptr",
-            "grad_conv_bias_ptr",
-            "acc_bin0_ptr",
-            "acc_bin1_ptr",
-            "grad_depth_bias_ptr",
-        ],
+                grad_depth_bias += grad_bin0 + grad_bin1
+                acc_bin0 += grad_bin0[:, None] * relu_out
+                acc_bin1 += grad_bin1[:, None] * relu_out
+
+                grad_relu_out = tl.where(live, grad_bin0[:, None] * taps_bin0 + grad_bin1[:, None] * taps_bin1, 0.0)
+                grad_conv_weight += tl.dot(grad_relu_out.to(feats.dtype), tl.trans(feats))
+
+    grad_conv_bias = tl.sum(tl.where((tap == TAPS)[None, :], grad_conv_weight, 0.0), 1)
+    tl.atomic_add(
+        grad_conv_weight_ptr + channel[:, None] * PAD + tap[None, :],
+        grad_conv_weight,
+        mask=channel_mask[:, None] & (tap < TAPS)[None, :],
     )
-    @triton.jit
-    def _backward_kernel(
-        mel_ptr,
-        conv_weight_ptr,
-        conv_bias_ptr,
-        taps_bin0_ptr,
-        taps_bin1_ptr,
-        grad_output_ptr,
-        grad_conv_weight_ptr,
-        grad_conv_bias_ptr,
-        acc_bin0_ptr,
-        acc_bin1_ptr,
-        grad_depth_bias_ptr,
-        mel_len_ptr,
-        relu_out_len_ptr,
-        out_len_ptr,
-        pad_start,
-        channels,
-        out_time,
-        out_freq,
-        mel_freq,
-        relu_out_freq,
-        batch_size,
-        mel_batch_stride,
-        mel_time_stride,
-        grad_batch_stride,
-        grad_time_stride,
-        grad_freq_stride,
-        TIME_ROWS: tl.constexpr,
-        CHANNEL_BLOCK: tl.constexpr,
-        TILE_SPLITS: tl.constexpr,
-    ):
-        channel = tl.program_id(0) * CHANNEL_BLOCK + tl.arange(0, CHANNEL_BLOCK)
-        channel_mask = channel < channels
-        tap = tl.arange(0, PAD)
-        window_pos = tl.arange(0, PAD)
-        conv_taps, conv_bias, taps_bin0, taps_bin1 = _load_params(
-            conv_weight_ptr, conv_bias_ptr, taps_bin0_ptr, taps_bin1_ptr, channel, channel_mask
-        )
-
-        # Columns 0..TAPS-1 accumulate the conv0 weight gradients, column TAPS accumulates the bias gradient.
-        grad_conv_weight = tl.zeros([CHANNEL_BLOCK, PAD], tl.float32)
-        acc_bin0 = tl.zeros([CHANNEL_BLOCK, PAD], tl.float32)
-        acc_bin1 = tl.zeros([CHANNEL_BLOCK, PAD], tl.float32)
-        grad_depth_bias = tl.zeros([CHANNEL_BLOCK], tl.float32)
-
-        freq_tiles = tl.cdiv(out_freq, NUM_BINS)
-        tiles_per_batch = tl.cdiv(out_time, TIME_ROWS) * freq_tiles
-        for tile in range(tl.program_id(1), batch_size * tiles_per_batch, TILE_SPLITS):
-            batch = tile // tiles_per_batch
-            tile_in_batch = tile % tiles_per_batch
-            first_out_row = (tile_in_batch // freq_tiles) * TIME_ROWS
-            bin0_col = (tile_in_batch % freq_tiles) * NUM_BINS
-            batch_base = batch * mel_batch_stride
-            this_mel_len = tl.load(mel_len_ptr + batch)
-            this_relu_out_len = tl.load(relu_out_len_ptr + batch)
-            this_out_len = tl.load(out_len_ptr + batch)
-
-            # Tiles past the utterance contribute nothing to any gradient.
-            if first_out_row < this_out_len:
-                for step in tl.static_range(TIME_ROWS):
-                    relu_out_row, relu_out_col, pos_ok = _window_cells(
-                        first_out_row + step, bin0_col, this_relu_out_len, relu_out_freq, pad_start
-                    )
-                    feats = _load_window(
-                        mel_ptr,
-                        batch_base,
-                        mel_time_stride,
-                        relu_out_row,
-                        relu_out_col,
-                        pos_ok,
-                        this_mel_len,
-                        mel_freq,
-                        pad_start,
-                    )
-                    # The bias enters conv0 as `bias * 1`, making it a tap whose input is always 1,
-                    # so its gradient is the same sum as any other tap's. Row TAPS of `feats` is
-                    # padding, so ones there produce the bias gradient in column TAPS.
-                    # conv_taps is zero in that row, so the conv0 recompute is unaffected.
-                    feats = tl.where(
-                        (tap == TAPS)[:, None] & pos_ok[None, :], tl.full((1, 1), 1.0, feats.dtype), feats
-                    )
-                    pre_relu = tl.dot(conv_taps, feats) + conv_bias[:, None]
-                    live = pos_ok[None, :] & (pre_relu > 0.0)
-                    relu_out = tl.where(live, pre_relu, 0.0)
-
-                    time_valid = (
-                        channel_mask & (first_out_row + step < out_time) & (first_out_row + step < this_out_len)
-                    )
-                    grad_base = (
-                        grad_output_ptr
-                        + batch * grad_batch_stride
-                        + (first_out_row + step) * grad_time_stride
-                        + bin0_col * grad_freq_stride
-                        + channel
-                    )
-                    grad_bin0 = tl.load(grad_base, mask=time_valid, other=0.0).to(tl.float32)
-                    grad_bin1 = tl.load(
-                        grad_base + grad_freq_stride, mask=time_valid & (bin0_col + 1 < out_freq), other=0.0
-                    ).to(tl.float32)
-
-                    grad_depth_bias += grad_bin0 + grad_bin1
-                    acc_bin0 += grad_bin0[:, None] * relu_out
-                    acc_bin1 += grad_bin1[:, None] * relu_out
-
-                    grad_relu_out = tl.where(
-                        live, grad_bin0[:, None] * taps_bin0 + grad_bin1[:, None] * taps_bin1, 0.0
-                    )
-                    grad_conv_weight += tl.dot(grad_relu_out.to(feats.dtype), tl.trans(feats))
-
-        grad_conv_bias = tl.sum(tl.where((tap == TAPS)[None, :], grad_conv_weight, 0.0), 1)
-        tl.atomic_add(
-            grad_conv_weight_ptr + channel[:, None] * PAD + tap[None, :],
-            grad_conv_weight,
-            mask=channel_mask[:, None] & (tap < TAPS)[None, :],
-        )
-        tl.atomic_add(
-            acc_bin0_ptr + channel[:, None] * PAD + window_pos[None, :], acc_bin0, mask=channel_mask[:, None]
-        )
-        tl.atomic_add(
-            acc_bin1_ptr + channel[:, None] * PAD + window_pos[None, :], acc_bin1, mask=channel_mask[:, None]
-        )
-        tl.atomic_add(grad_conv_bias_ptr + channel, grad_conv_bias, mask=channel_mask)
-        tl.atomic_add(grad_depth_bias_ptr + channel, grad_depth_bias, mask=channel_mask)
+    tl.atomic_add(acc_bin0_ptr + channel[:, None] * PAD + window_pos[None, :], acc_bin0, mask=channel_mask[:, None])
+    tl.atomic_add(acc_bin1_ptr + channel[:, None] * PAD + window_pos[None, :], acc_bin1, mask=channel_mask[:, None])
+    tl.atomic_add(grad_conv_bias_ptr + channel, grad_conv_bias, mask=channel_mask)
+    tl.atomic_add(grad_depth_bias_ptr + channel, grad_depth_bias, mask=channel_mask)
 
 
 def _downsampled_length(length, pad_total):
@@ -575,10 +568,8 @@ def fused_conv_relu_dw(
         ``(output, out_lengths)`` where output is ``(batch, out_time, out_freq, channels)``
 
     Raises:
-        RuntimeError: if triton is unavailable or the inputs are not on a CUDA device.
+        RuntimeError: if the inputs are not on a CUDA device.
     """
-    if not TRITON_AVAILABLE:
-        raise RuntimeError("Triton is required for the fused subsampling kernel")
     if not mel.is_cuda:
         raise RuntimeError("The fused subsampling kernel requires CUDA tensors")
     batch_size, _, mel_time, mel_freq = mel.shape

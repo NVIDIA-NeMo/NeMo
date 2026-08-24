@@ -19,10 +19,12 @@ import torch.nn as nn
 from torch.nn import LayerNorm
 
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
-from nemo.collections.asr.parts.triton.depthwise_conv import dw_conv2d
-from nemo.collections.asr.parts.triton.subsampling import fused_conv_relu_dw
-from nemo.core.utils.optional_libs import TRITON_AVAILABLE
+from nemo.core.utils.optional_libs import TRITON_AVAILABLE, triton_required
 from nemo.utils import logging
+
+if TRITON_AVAILABLE:
+    from nemo.collections.asr.parts.triton.depthwise_conv import dw_conv2d
+    from nemo.collections.asr.parts.triton.subsampling import fused_conv_relu_dw
 
 
 class FeatureStacking(nn.Module):
@@ -425,11 +427,13 @@ class ConvSubsampling(torch.nn.Module):
         # The kernels implement `dw_striding`'s layout, [conv, act] + (sampling_num - 1) x
         # [dw, pw, act], with ReLU baked in; a factor of 2 stops after [conv, act], leaving no
         # depthwise to fuse.
-        if use_triton is None:
-            use_triton = TRITON_AVAILABLE
-        self.conv.fuse_triton = (
-            use_triton and subsampling == 'dw_striding' and self._sampling_num >= 2 and isinstance(activation, nn.ReLU)
-        )
+        supported = subsampling == 'dw_striding' and self._sampling_num >= 2 and isinstance(activation, nn.ReLU)
+        if use_triton and not supported:
+            logging.warning(
+                "use_triton=True was requested, but the fused kernels only cover dw_striding with "
+                "subsampling_factor >= 4 and a ReLU activation, falling back to PyTorch instead."
+            )
+        self.conv.fuse_triton = supported and (TRITON_AVAILABLE if use_triton is None else use_triton)
 
     def get_sampling_frames(self):
         return [1, self.subsampling_factor]
@@ -754,6 +758,7 @@ class MaskedConvSequential(nn.Sequential):
 
         return x, current_lengths, mask
 
+    @triton_required
     def _forward_fused(self, x, current_lengths):
         """The `dw_striding` stack, with conv0 and the depthwise layers as Triton kernels.
 
@@ -780,9 +785,9 @@ class MaskedConvSequential(nn.Sequential):
             *_layer_padding(conv0),
             current_lengths,
         )
+        x = _pointwise_block(x, first_pointwise, activation)
 
         body = self[5:]
-        x = _pointwise_block(x, first_pointwise, activation)
         for i in range(0, len(body), 3):
             depthwise, pointwise, activation = body[i : i + 3]
             # The kernel masks its own output, so it needs the post-stride lengths.

@@ -896,6 +896,8 @@ def build_token_channel(
 
     for supervision in cut.supervisions:
         if supervision.speaker in roles:
+            # TODO: Current multi-turn datasets do not contain the normalized_text field so check will always default to the else branch. Will need to evaluate whether it makes sense to keep this in future.
+            # This code path is used for both multi-turn and single-turn datasets.
             text = supervision.normalized_text if supervision.has_custom("normalized_text") else supervision.text
             text_for_tokens = text
             language = cut.lang if cut.has_custom("lang") else supervision.language

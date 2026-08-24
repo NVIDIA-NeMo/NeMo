@@ -32,43 +32,9 @@ from collections.abc import Iterable
 
 import torch
 from vllm.model_executor.models.nemotron_h_mtp import NemotronHMTP
-
-try:
-    from vllm.model_executor.models.utils import _merge_multimodal_embeddings as _vllm_merge_multimodal_embeddings
-except ImportError:  # pragma: no cover - exercised by monkeypatching the resolved helper
-    _vllm_merge_multimodal_embeddings = None
+from vllm.model_executor.models.utils import _merge_multimodal_embeddings
 
 from nemo.collections.speechlm2.vllm.salm.audio import _pad_to_vocab_size
-
-
-def _flatten_multimodal_embeddings(embeddings) -> torch.Tensor:
-    """Flatten vLLM-style nested embedding tensors on every dimension but the last."""
-    if isinstance(embeddings, torch.Tensor):
-        return embeddings.flatten(0, -2)
-    return torch.cat(tuple(_flatten_multimodal_embeddings(item) for item in embeddings))
-
-
-def _merge_multimodal_embeddings(
-    inputs_embeds: torch.Tensor,
-    multimodal_embeddings,
-    is_multimodal: torch.Tensor,
-) -> torch.Tensor:
-    """Use vLLM's merge helper when available, with a compatible fallback for older releases."""
-    if _vllm_merge_multimodal_embeddings is not None:
-        return _vllm_merge_multimodal_embeddings(inputs_embeds, multimodal_embeddings, is_multimodal)
-
-    mm_embeds_flat = _flatten_multimodal_embeddings(multimodal_embeddings)
-    try:
-        inputs_embeds[is_multimodal] = mm_embeds_flat.to(dtype=inputs_embeds.dtype)
-    except RuntimeError as error:
-        actual_tokens = len(mm_embeds_flat)
-        expected_tokens = is_multimodal.sum().item()
-        if actual_tokens != expected_tokens:
-            raise ValueError(
-                f"Attempted to assign {actual_tokens} multimodal tokens to {expected_tokens} placeholders"
-            ) from error
-        raise ValueError("Error during multimodal embedding index assignment") from error
-    return inputs_embeds
 
 
 def _remap_nemo_mtp_weights(

@@ -20,7 +20,6 @@ weights.
 """
 
 import importlib.util
-import logging
 from types import SimpleNamespace
 
 import pytest
@@ -769,31 +768,6 @@ class TestMTPPlugin:
 
         assert "nemo_speechlm_mtp" in get_args(_spec_mod.MTPModelTypes)
 
-    def test_mtp_patch_keeps_target_plugin_usable_without_vllm_mtp_guard(self, monkeypatch, caplog):
-        """Older vLLM releases should degrade cleanly instead of breaking registration."""
-        import vllm.config.speculative as _spec_mod
-        from vllm.model_executor.models.registry import ModelRegistry
-
-        from nemo.collections.speechlm2.vllm.salm import register
-
-        registered_archs = []
-        original_register_model = ModelRegistry.register_model
-
-        def _record_registration(architecture, model):
-            registered_archs.append(architecture)
-            return original_register_model(architecture, model)
-
-        monkeypatch.setattr(ModelRegistry, "register_model", _record_registration)
-        monkeypatch.delattr(_spec_mod, "MTPModelTypes")
-
-        with caplog.at_level(logging.WARNING, logger="nemo.collections.speechlm2.vllm.salm"):
-            register()
-
-        assert "NeMoSpeechLMForConditionalGeneration" in registered_archs
-        assert "NeMoSpeechLMMTPModel" not in registered_archs
-        assert "NeMoSpeechLMForConditionalGeneration" in ModelRegistry.get_supported_archs()
-        assert "without MTP speculative-decoding support" in caplog.text
-
     def test_patched_override_routes_nemo_mtp_config(self, monkeypatch):
         """hf_config_override should rewrite nemo_speechlm configs with MTP heads."""
         from transformers import AutoConfig
@@ -1050,83 +1024,29 @@ class TestMTPPlugin:
 
         assert torch.equal(result, torch.zeros(2, 2))
 
-    def test_embed_input_ids_fallback_supports_nested_audio_chunks(self, monkeypatch):
-        """Older vLLM releases without the private merge helper retain nested-input behavior."""
-        import torch
-
-        from nemo.collections.speechlm2.vllm.salm import mtp as mtp_module
-
-        monkeypatch.setattr(mtp_module, "_vllm_merge_multimodal_embeddings", None)
-        model = object.__new__(mtp_module.NeMoSpeechLMMTP)
-        model.model = SimpleNamespace(get_input_embeddings=lambda ids: torch.zeros(4, 2))
-        result = model.embed_input_ids(
-            torch.tensor([0, 1, 2, 3]),
-            multimodal_embeddings=[[torch.ones(1, 2) * 3], [torch.ones(1, 2) * 7]],
-            is_multimodal=torch.tensor([True, False, True, False]),
-        )
-
-        assert torch.equal(result[0], torch.ones(2) * 3)
-        assert torch.equal(result[1], torch.zeros(2))
-        assert torch.equal(result[2], torch.ones(2) * 7)
-        assert torch.equal(result[3], torch.zeros(2))
-
-    def test_embed_input_ids_fallback_preserves_all_text_mask_noop(self, monkeypatch):
-        """The compatibility fallback should match vLLM for an all-False mask."""
-        import torch
-
-        from nemo.collections.speechlm2.vllm.salm import mtp as mtp_module
-
-        monkeypatch.setattr(mtp_module, "_vllm_merge_multimodal_embeddings", None)
-        model = object.__new__(mtp_module.NeMoSpeechLMMTP)
-        model.model = SimpleNamespace(get_input_embeddings=lambda ids: torch.zeros(2, 2))
-        result = model.embed_input_ids(
-            torch.tensor([0, 1]),
-            multimodal_embeddings=[torch.ones(1, 2)],
-            is_multimodal=torch.tensor([False, False]),
-        )
-
-        assert torch.equal(result, torch.zeros(2, 2))
-
-    def test_embed_input_ids_fallback_rejects_embedding_count_mismatch(self, monkeypatch):
-        """The compatibility fallback should report mismatched audio and placeholder counts."""
-        import torch
-
-        from nemo.collections.speechlm2.vllm.salm import mtp as mtp_module
-
-        monkeypatch.setattr(mtp_module, "_vllm_merge_multimodal_embeddings", None)
-        model = object.__new__(mtp_module.NeMoSpeechLMMTP)
-        model.model = SimpleNamespace(get_input_embeddings=lambda ids: torch.zeros(2, 2))
-
-        with pytest.raises(ValueError, match="2 multimodal tokens to 1 placeholders"):
-            model.embed_input_ids(
-                torch.tensor([0, 1]),
-                multimodal_embeddings=[torch.ones(2, 2)],
-                is_multimodal=torch.tensor([True, False]),
-            )
-
-    def test_target_weight_split_excludes_only_salm_mtp_and_extra_state(self):
-        """The target loader should retain LLM weights while routing SALM draft weights away."""
+    def test_target_weight_split_excludes_salm_mtp_and_rejects_bare_mtp(self):
+        """The target loader should route SALM draft weights and reject unsupported native names."""
         import torch
 
         from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
 
         perception_tensor = torch.ones(1)
         llm_tensor = torch.ones(2)
-        bare_mtp_tensor = torch.ones(3)
         perception, llm = NeMoSpeechLMForConditionalGeneration._split_perception_llm(
             [
                 ("perception.encoder.weight", perception_tensor),
                 ("llm.mtp.layers.0.weight", torch.ones(4)),
                 ("llm.model.layers.0.weight", llm_tensor),
-                ("mtp.layers.0.weight", bare_mtp_tensor),
                 ("llm.model.layers.0._extra_state", torch.ones(5)),
             ]
         )
 
         assert perception == {"encoder.weight": perception_tensor}
-        assert [name for name, _ in llm] == ["llm.model.layers.0.weight", "mtp.layers.0.weight"]
+        assert [name for name, _ in llm] == ["llm.model.layers.0.weight"]
         assert llm[0][1] is llm_tensor
-        assert llm[1][1] is bare_mtp_tensor
+
+        with pytest.raises(ValueError, match=r"llm\.mtp\.\*"):
+            NeMoSpeechLMForConditionalGeneration._split_perception_llm([("mtp.layers.0.weight", torch.ones(3))])
 
     def test_mtp_weight_remap_uses_vllm_embedding_alias(self):
         """Exported SpeechLM embeddings must pass NemotronHMTP's name filter."""
@@ -1289,6 +1209,15 @@ class TestMTPPlugin:
         assert cfg.image_token_index == base_vocab
         assert "audio_token_index" not in cfg.to_dict()
         assert "image_token_index" not in cfg.to_dict()
+
+    @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
+    def test_legacy_image_token_index_is_validated_after_backbone_load(self):
+        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, image_token_index=131072)
+        assert cfg.image_token_index == 131072
+        assert "image_token_index" not in cfg.to_dict()
+
+        with pytest.raises(ValueError, match="backbone vocabulary boundary"):
+            NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, image_token_index=42)
 
 
 class _FakeTokenizer:

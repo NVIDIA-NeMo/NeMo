@@ -23,17 +23,13 @@ decoder-only LLMs like Qwen3, hybrid Mamba+MoE like NemotronH).
 Backbone-specific behavior is selected at instantiation time.
 """
 
-import logging
-
 _PKG = "nemo.collections.speechlm2.vllm.salm"
-_LOG = logging.getLogger(__name__)
 
 
 def _patch_vllm_for_nemo_speechlm_mtp() -> None:
     """Extend vLLM's speculative-decoding framework to support nemo_speechlm MTP.
 
-    Releases without ``MTPModelTypes`` return without patching so the ordinary
-    SpeechLM target model remains usable. Otherwise, three patches are applied:
+    Three patches are applied on the supported vLLM 0.19+ releases:
 
     1. ``MTPModelTypes`` — the Literal type that guards the MTP detection
        branch in ``SpeculativeConfig.__post_init__`` is extended to include
@@ -52,17 +48,6 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
 
     import vllm.config.speculative as _spec_mod
     from vllm.config.speculative import SpeculativeConfig
-
-    # MTP support was added incrementally across vLLM releases. Keep the
-    # ordinary SpeechLM target-model plugin usable on releases that do not yet
-    # expose this type guard; speculative decoding will remain unavailable and
-    # vLLM will report that if the user tries to enable it.
-    if not hasattr(_spec_mod, "MTPModelTypes"):
-        _LOG.warning(
-            "This vLLM release does not expose MTPModelTypes; NeMo SpeechLM "
-            "will be registered without MTP speculative-decoding support."
-        )
-        return
 
     # Extend vLLM's recognized MTP model types.
     old_args = get_args(_spec_mod.MTPModelTypes)

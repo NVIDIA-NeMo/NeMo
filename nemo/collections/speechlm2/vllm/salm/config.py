@@ -41,8 +41,8 @@ _AUDIO_PLACEHOLDER = "<|audio|>"
 
 # Historical serving-time headroom above the backbone vocabulary. vLLM builds
 # the target and draft embedding tables at this padded size, and the weight
-# loader zero-pads the smaller training tensors to match. ``<|audio|>`` is the
-# first padded ID; the remaining rows are unused.
+# loader zero-pads the smaller training tensors to match. The tokenizer's
+# actual audio-token ID is validated against this bound during export.
 _SPEECHLM_EMBED_EXTRA_ROWS = 10
 
 
@@ -101,6 +101,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         # path; real checkpoint loads replace it below after field validation.
         self.text_config = PretrainedConfig()
         self.is_hybrid = False
+        self._pending_image_token_index = None
 
         super().__init__(**kwargs)
 
@@ -116,6 +117,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             self.pretrained_weights = None
             self.lora = None
             self.encoder_chunk_size_seconds = None
+            self.__dict__.pop("_pending_image_token_index", None)
             return
 
         for name, value in required_fields.items():
@@ -178,6 +180,13 @@ class NeMoSpeechLMConfig(PretrainedConfig):
                 self.text_config.layer_types = ["attention"] * num_layers
 
         self.text_config.vocab_size += _SPEECHLM_EMBED_EXTRA_ROWS
+        pending_image_token_index = self.__dict__.pop("_pending_image_token_index", None)
+        if pending_image_token_index is not None and pending_image_token_index != self.image_token_index:
+            raise ValueError(
+                f"image_token_index={pending_image_token_index!r} does not match the backbone vocabulary "
+                f"boundary {self.image_token_index}. Remove this legacy serialized field; SpeechLM derives "
+                f"the vLLM compatibility value at runtime."
+            )
 
     @property
     def llm_architectures(self) -> list[str]:
@@ -189,11 +198,11 @@ class NeMoSpeechLMConfig(PretrainedConfig):
 
     @property
     def image_token_index(self) -> int | None:
-        """Return the audio placeholder ID expected by vLLM 0.26's MTP proposer.
+        """Return the vocabulary-boundary value expected by vLLM's MTP proposer.
 
-        SpeechLM training appends ``<|audio|>`` directly after the backbone
-        vocabulary. The vision-era vLLM proposer calls this field
-        ``image_token_index`` even for an audio multimodal target.
+        vLLM calls this compatibility field ``image_token_index`` even for an
+        audio multimodal target. Actual audio locations come from vLLM's
+        placeholder ranges; no token-index field is serialized by SpeechLM.
         """
         vocab_size = getattr(self.text_config, "vocab_size", None)
         if vocab_size is None:
@@ -204,8 +213,16 @@ class NeMoSpeechLMConfig(PretrainedConfig):
     def image_token_index(self, value: int | None) -> None:
         """Accept vLLM's runtime target-to-draft copy without serializing it."""
         expected = self.image_token_index
-        if expected is not None and value != expected:
-            raise ValueError(f"image_token_index={value!r} does not match the backbone vocabulary size {expected}.")
+        if expected is None:
+            # Transformers applies unknown config kwargs in its base-class
+            # constructor, before this wrapper has loaded the real backbone.
+            # Defer validation and discard the temporary value afterwards so
+            # it never becomes serialized state.
+            self._pending_image_token_index = value
+        elif value is not None and value != expected:
+            raise ValueError(
+                f"image_token_index={value!r} does not match the backbone vocabulary boundary {expected}."
+            )
 
     @property
     def mtp_hybrid_override_pattern(self) -> str:

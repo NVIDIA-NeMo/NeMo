@@ -11,13 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Unit tests for ``validate_parallelism_compatibility``.
+"""Unit tests for parallelism compatibility validation.
 
-Pure-function tests — no Lightning, no model, no device mesh required.
+Covers the pure ``validate_parallelism_compatibility`` function and the extra model-level
+guards in ``SALMAutomodel._validate_parallelism_compatibility`` that need the loaded LLM's
+config. No real weights are loaded.
 """
 import warnings
+from types import SimpleNamespace
 
 import pytest
+import torch
 
 from nemo.collections.speechlm2.parts.parallel import validate_parallelism_compatibility
 
@@ -171,3 +175,65 @@ def test_unknown_device_capability_warns_not_raises():
         )
     assert len(caught) == 1
     assert "NVTE_FUSED_ATTN" in str(caught[0].message)
+
+
+# Model-level guard: hybrid (linear-attention) backbones reject packed sequences and CP.
+
+
+def _model_with_layer_types(layer_types, cfg, cp_size=1, monkeypatch=None):
+    from omegaconf import DictConfig
+
+    import nemo.collections.speechlm2.parts.parallel as parallel_module
+    from nemo.collections.speechlm2.models import SALMAutomodel
+
+    monkeypatch.setattr(parallel_module, "validate_parallelism_compatibility", lambda **_kwargs: None)
+
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    torch.nn.Module.__init__(model)
+    model.cfg = DictConfig(cfg)
+    model.llm = SimpleNamespace(
+        config=SimpleNamespace(get_text_config=lambda: SimpleNamespace(layer_types=layer_types))
+    )
+    if cp_size > 1:
+
+        class _Mesh:
+            mesh_dim_names = ("cp",)
+
+            def __getitem__(self, name):
+                assert name == "cp"
+                return SimpleNamespace(size=lambda: cp_size)
+
+        model._device_mesh = _Mesh()
+    return model
+
+
+HYBRID_LAYER_TYPES = ["linear_attention", "linear_attention", "linear_attention", "full_attention"]
+
+
+def test_hybrid_backbone_rejects_packed_sequences(monkeypatch):
+    model = _model_with_layer_types(HYBRID_LAYER_TYPES, {"packed_sequences": True}, monkeypatch=monkeypatch)
+    with pytest.raises(ValueError, match="packed_sequences=true"):
+        model._validate_parallelism_compatibility()
+
+
+def test_hybrid_backbone_rejects_context_parallelism(monkeypatch):
+    model = _model_with_layer_types(
+        HYBRID_LAYER_TYPES, {"packed_sequences": False}, cp_size=2, monkeypatch=monkeypatch
+    )
+    with pytest.raises(ValueError, match="cp_size=2"):
+        model._validate_parallelism_compatibility()
+
+
+def test_hybrid_backbone_passes_without_packing_or_cp(monkeypatch):
+    model = _model_with_layer_types(HYBRID_LAYER_TYPES, {"packed_sequences": False}, monkeypatch=monkeypatch)
+    model._validate_parallelism_compatibility()
+
+
+def test_full_attention_backbone_allows_packed_sequences(monkeypatch):
+    model = _model_with_layer_types(["full_attention"] * 4, {"packed_sequences": True}, monkeypatch=monkeypatch)
+    model._validate_parallelism_compatibility()
+
+
+def test_backbone_without_layer_types_is_unaffected(monkeypatch):
+    model = _model_with_layer_types(None, {"packed_sequences": True}, monkeypatch=monkeypatch)
+    model._validate_parallelism_compatibility()

@@ -480,6 +480,18 @@ def test_automodel_mtp_depth_supports_non_nemotron_config_fields():
     )
 
 
+def test_automodel_mtp_depth_reads_nested_text_config():
+    """Multimodal checkpoints such as qwen3_5 declare MTP depth on the nested text config only."""
+    text_config = SimpleNamespace(mtp_num_hidden_layers=1)
+    outer_config = SimpleNamespace(get_text_config=lambda: text_config)
+
+    assert pretrained._automodel_config_mtp_depth(outer_config) == 1
+
+
+def test_automodel_mtp_depth_is_zero_without_any_mtp_fields():
+    assert pretrained._automodel_config_mtp_depth(SimpleNamespace(hidden_size=1024)) == 0
+
+
 def test_automodel_base_load_skips_checkpoint_mtp_for_fresh_head(tmp_path):
     model = SimpleNamespace(config=SimpleNamespace(model_type="nemotron_h"), backbone=object())
 

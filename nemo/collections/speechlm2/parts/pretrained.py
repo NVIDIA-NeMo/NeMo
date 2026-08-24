@@ -234,7 +234,7 @@ def update_perception_output_dim(model):
     helper replaces ``perception.proj`` with a correctly-sized ``nn.Linear``
     when the dimensions disagree.
     """
-    hidden_size = model.llm.config.hidden_size
+    hidden_size = resolve_text_config(model.llm.config).hidden_size
     proj = model.perception.proj
     if isinstance(proj, torch.nn.Linear) and proj.out_features != hidden_size:
         model.perception.proj = torch.nn.Linear(proj.in_features, hidden_size, bias=proj.bias is not None)
@@ -301,7 +301,7 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
             if pretrained_weights or "encoder" not in model.cfg.perception:
                 model.cfg.perception.encoder = asr_cfg.encoder
             if model.llm is not None:
-                hidden_size = model.llm.config.hidden_size
+                hidden_size = resolve_text_config(model.llm.config).hidden_size
                 model.cfg.perception.output_dim = hidden_size
                 # Connectors like MultiLayerProjectionConnector carry their own
                 # output projection via ``modality_adapter.output_dim``; keep it
@@ -755,12 +755,29 @@ def maybe_load_pretrained_models(model: torch.nn.Module):
         init_from_training_checkpoint(model, model.cfg.init_from_checkpoint)
 
 
+def resolve_text_config(config):
+    """Return an HF config's text sub-config, or the config itself when it has none.
+
+    Multimodal checkpoints such as ``qwen3_5`` nest the language-model settings under
+    ``text_config``; ``PretrainedConfig.get_text_config`` returns ``self`` for flat configs.
+    """
+    get_text_config = getattr(config, "get_text_config", None)
+    return get_text_config() if get_text_config is not None else config
+
+
 def _automodel_config_mtp_depth(config) -> int:
-    """Return the physical MTP depth declared by an HF config."""
-    depth = getattr(config, "num_nextn_predict_layers", None)
-    if depth is None:
-        depth = getattr(config, "mtp_num_hidden_layers", 0)
-    return int(depth or 0)
+    """Return the physical MTP depth declared by an HF config.
+
+    Multimodal checkpoints such as ``qwen3_5`` declare the depth on their nested
+    text config, so consult that before the outer config.
+    """
+    for candidate in (resolve_text_config(config), config):
+        depth = getattr(candidate, "num_nextn_predict_layers", None)
+        if depth is None:
+            depth = getattr(candidate, "mtp_num_hidden_layers", None)
+        if depth is not None:
+            return int(depth or 0)
+    return 0
 
 
 _AUTOMODEL_HF_RESOLUTION_KWARGS = {

@@ -40,8 +40,9 @@ _HYBRID_ARCHITECTURES = frozenset(
 _AUDIO_PLACEHOLDER = "<|audio|>"
 
 # Number of extra embedding rows the SpeechLM adds on top of the backbone's
-# native vocab during training: ``<|audio|>`` locator plus headroom for other
-# special tokens and TensorCore-friendly alignment.
+# native vocab during training for special tokens and alignment. New exports
+# record the exact ``<|audio|>`` token ID; legacy exports placed it in the first
+# extra row and fall back to the base vocabulary size.
 _SPEECHLM_EMBED_EXTRA_ROWS = 10
 
 
@@ -73,6 +74,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         pretrained_llm: str | None = None,
         pretrained_asr: str | None = None,
         audio_locator_tag: str | None = None,
+        audio_token_index: int | None = None,
+        image_token_index: int | None = None,
         prompt_format: str | None = None,
         pretrained_weights: bool | None = None,
         lora: dict | None = None,
@@ -90,6 +93,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             perception is None
             and lora is None
             and encoder_chunk_size_seconds is None
+            and audio_token_index is None
+            and image_token_index is None
             and not kwargs
             and all(value is None for value in required_fields.values())
         )
@@ -111,6 +116,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             self.pretrained_llm = None
             self.pretrained_asr = None
             self.audio_locator_tag = None
+            self.audio_token_index = None
             self.prompt_format = None
             self.pretrained_weights = None
             self.lora = None
@@ -176,12 +182,31 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             if num_layers > 0:
                 self.text_config.layer_types = ["attention"] * num_layers
 
-        # vLLM's MTP llm_base_proposer reads image_token_index from the target
-        # model's config to locate multimodal placeholder positions during
-        # speculative decoding. For SpeechLM the <|audio|> token is the first
-        # extra row added above the base backbone vocab.
-        self.image_token_index = self.text_config.vocab_size
-        self.text_config.vocab_size += _SPEECHLM_EMBED_EXTRA_ROWS
+        # New exports persist the exact audio placeholder ID under the
+        # modality-correct name. Accept the historical vLLM field for
+        # compatibility, and keep the base-vocab fallback for older NeMo
+        # checkpoints that persisted neither field and appended <|audio|>
+        # immediately after the backbone vocabulary.
+        base_vocab_size = int(self.text_config.vocab_size)
+        if audio_token_index is not None and image_token_index is not None and audio_token_index != image_token_index:
+            raise ValueError(
+                f"audio_token_index={audio_token_index} conflicts with legacy "
+                f"image_token_index={image_token_index}."
+            )
+        if audio_token_index is None:
+            audio_token_index = image_token_index
+        if audio_token_index is None:
+            audio_token_index = base_vocab_size
+        if isinstance(audio_token_index, bool) or not isinstance(audio_token_index, int):
+            raise ValueError(f"audio_token_index must be an integer, got {audio_token_index!r}.")
+        padded_vocab_size = base_vocab_size + _SPEECHLM_EMBED_EXTRA_ROWS
+        if not 0 <= audio_token_index < padded_vocab_size:
+            raise ValueError(
+                f"audio_token_index={audio_token_index} is outside the SpeechLM embedding table "
+                f"with {padded_vocab_size} rows."
+            )
+        self.audio_token_index = audio_token_index
+        self.text_config.vocab_size = padded_vocab_size
 
     @property
     def llm_architectures(self) -> list[str]:
@@ -190,6 +215,11 @@ class NeMoSpeechLMConfig(PretrainedConfig):
 
     def get_text_config(self, decoder=False) -> PretrainedConfig:
         return self.text_config
+
+    @property
+    def image_token_index(self) -> int | None:
+        """Compatibility alias required by vLLM's EAGLE/MTP proposer."""
+        return self.audio_token_index
 
     @property
     def mtp_hybrid_override_pattern(self) -> str:
@@ -228,6 +258,8 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             "pretrained_llm",
             "pretrained_asr",
             "audio_locator_tag",
+            "audio_token_index",
+            "image_token_index",
             "prompt_format",
             "pretrained_weights",
             "text_config",

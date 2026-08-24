@@ -222,7 +222,7 @@ class NeMoSpeechLMForConditionalGeneration(
                 continue
             if name.startswith("perception."):
                 perception[name[len("perception.") :]] = tensor
-            elif name.startswith("llm.mtp.") or name.startswith("mtp."):
+            elif name.startswith("llm.mtp."):
                 pass  # MTP draft-head weights; loaded by the speculative draft model, not here
             else:
                 llm.append((name, tensor))

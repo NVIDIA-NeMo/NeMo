@@ -102,6 +102,18 @@ def _canonical_torch_dtype_name(dtype: str | torch.dtype) -> str:
 def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[str, Any]:
     """Build the exported root config without mutating the training config."""
     config = OmegaConf.to_container(model.cfg) if isinstance(model.cfg, DictConfig) else deepcopy(model.cfg)
+    mtp_cfg = config.get("mtp")
+    llm_config = getattr(getattr(model, "llm", None), "config", None)
+    actual_mtp_pattern = getattr(llm_config, "mtp_hybrid_override_pattern", None)
+    if isinstance(mtp_cfg, dict) and mtp_cfg.get("enabled", False) and actual_mtp_pattern is not None:
+        if not isinstance(actual_mtp_pattern, str) or not actual_mtp_pattern:
+            raise ValueError(
+                f"Built LLM has invalid mtp_hybrid_override_pattern={actual_mtp_pattern!r}; cannot export it."
+            )
+        # A preserved checkpoint-native MTP head can differ from the recipe's
+        # requested replacement pattern. Persist the pattern of the head that
+        # was actually built so vLLM instantiates the matching physical layers.
+        mtp_cfg["hybrid_override_pattern"] = actual_mtp_pattern
     dtype_name = _canonical_torch_dtype_name(dtype)
     config["dtype"] = dtype_name
     config["torch_dtype"] = dtype_name
@@ -135,13 +147,15 @@ def save_llm_backbone_config(model: torch.nn.Module, output_dir: str | Path) -> 
     llm_config.save_pretrained(str(llm_backbone_dir))
 
 
-def _detect_vllm_architecture(model_cfg: dict) -> str:
-    """Determine the vLLM plugin model class for the checkpoint.
+def _inspect_vllm_backbone(model_cfg: dict) -> tuple[str, int]:
+    """Determine the vLLM plugin class and model embedding vocabulary size.
 
     The SALM plugin registers a single architecture name and selects between
     transformer and hybrid backends at instantiation time, so this function
-    just verifies the backbone config is reachable and returns the unified
-    name; the hybrid-vs-transformer split is handled inside the plugin.
+    verifies the backbone config is reachable and returns the unified name
+    plus the model config's vocabulary size. The latter is authoritative for
+    the embedding-table bound; tokenizer ``vocab_size`` can exclude added
+    tokens and need not equal it.
 
     Raises:
         ValueError: if the HF config can't be loaded or has no 'architectures'.
@@ -160,8 +174,11 @@ def _detect_vllm_architecture(model_cfg: dict) -> str:
     archs = getattr(llm_cfg, "architectures", [])
     if not archs:
         raise ValueError(f"HF config for {pretrained_llm!r} has empty 'architectures'.")
+    vocab_size = getattr(llm_cfg, "vocab_size", None)
+    if isinstance(vocab_size, bool) or not isinstance(vocab_size, int) or vocab_size <= 0:
+        raise ValueError(f"HF config for {pretrained_llm!r} has invalid 'vocab_size': {vocab_size!r}.")
 
-    return "NeMoSpeechLMForConditionalGeneration"
+    return "NeMoSpeechLMForConditionalGeneration", vocab_size
 
 
 def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
@@ -179,6 +196,7 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     """
     from transformers import AutoTokenizer
 
+    from nemo.collections.speechlm2.vllm.salm.config import _SPEECHLM_EMBED_EXTRA_ROWS
     from nemo.utils import logging as LOG
 
     output_dir = Path(output_dir)
@@ -197,13 +215,12 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     llm_backbone_dir = output_dir / LLM_BACKBONE_DIR
     if (llm_backbone_dir / "config.json").exists():
         arch_model_cfg["pretrained_llm"] = str(llm_backbone_dir)
-    arch = _detect_vllm_architecture(arch_model_cfg)
+    arch, base_vocab_size = _inspect_vllm_backbone(arch_model_cfg)
     config_path = output_dir / "config.json"
     config = json.loads(config_path.read_text())
     config["model_type"] = "nemo_speechlm"
     config["architectures"] = [arch]
     config["audio_locator_tag"] = audio_token
-    config_path.write_text(json.dumps(config, indent=2) + "\n")
 
     # 2. Save tokenizer (backbone chat_template carries over via save_pretrained)
     existing = [
@@ -213,9 +230,25 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     ]
     if existing:
         LOG.info("Overwriting existing files in %s: %s", output_dir, existing)
-    tok = AutoTokenizer.from_pretrained(pretrained_llm, trust_remote_code=True)
+    tokenizer_src = model_cfg.get("tokenizer_path") or pretrained_llm
+    tok = AutoTokenizer.from_pretrained(tokenizer_src, trust_remote_code=True)
     if audio_token not in tok.get_vocab():
         tok.add_special_tokens({"additional_special_tokens": [audio_token]})
+    audio_token_id = tok.get_vocab().get(audio_token)
+    if isinstance(audio_token_id, bool) or not isinstance(audio_token_id, int) or audio_token_id < 0:
+        raise ValueError(f"Tokenizer did not assign a valid ID to audio token {audio_token!r}.")
+    padded_vocab_size = base_vocab_size + _SPEECHLM_EMBED_EXTRA_ROWS
+    if audio_token_id >= padded_vocab_size:
+        raise ValueError(
+            f"Audio token ID {audio_token_id} is outside the SpeechLM embedding table with "
+            f"{padded_vocab_size} rows. Reduce the tokenizer's added-token count before training/export."
+        )
+    # Persist the exact placeholder ID under the SALM-specific name. The
+    # runtime config exposes vLLM's historical ``image_token_index`` spelling
+    # as a compatibility property for its EAGLE-style proposer.
+    config.pop("image_token_index", None)
+    config["audio_token_index"] = audio_token_id
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
     tok.save_pretrained(str(output_dir))
     # Newer transformers splits long chat_template into a separate
     # ``chat_template.jinja`` file; inline it back and drop the file.

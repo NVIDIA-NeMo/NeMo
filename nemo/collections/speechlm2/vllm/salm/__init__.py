@@ -23,13 +23,17 @@ decoder-only LLMs like Qwen3, hybrid Mamba+MoE like NemotronH).
 Backbone-specific behavior is selected at instantiation time.
 """
 
+import logging
+
 _PKG = "nemo.collections.speechlm2.vllm.salm"
+_LOG = logging.getLogger(__name__)
 
 
 def _patch_vllm_for_nemo_speechlm_mtp() -> None:
     """Extend vLLM's speculative-decoding framework to support nemo_speechlm MTP.
 
-    Three patches are applied:
+    Releases without ``MTPModelTypes`` return without patching so the ordinary
+    SpeechLM target model remains usable. Otherwise, three patches are applied:
 
     1. ``MTPModelTypes`` — the Literal type that guards the MTP detection
        branch in ``SpeculativeConfig.__post_init__`` is extended to include
@@ -49,6 +53,17 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
     import vllm.config.speculative as _spec_mod
     from vllm.config.speculative import SpeculativeConfig
 
+    # MTP support was added incrementally across vLLM releases. Keep the
+    # ordinary SpeechLM target-model plugin usable on releases that do not yet
+    # expose this type guard; speculative decoding will remain unavailable and
+    # vLLM will report that if the user tries to enable it.
+    if not hasattr(_spec_mod, "MTPModelTypes"):
+        _LOG.warning(
+            "This vLLM release does not expose MTPModelTypes; NeMo SpeechLM "
+            "will be registered without MTP speculative-decoding support."
+        )
+        return
+
     # Extend vLLM's recognized MTP model types.
     old_args = get_args(_spec_mod.MTPModelTypes)
     if "nemo_speechlm_mtp" not in old_args:
@@ -64,8 +79,12 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
                 mtp_cfg = getattr(hf_config, "mtp", None)
                 if not isinstance(mtp_cfg, dict):
                     mtp_cfg = {}
-                n_predict = mtp_cfg.get("num_nextn_predict_layers", 0)
-                if n_predict > 0:
+                # Match SALMAutomodel's training defaults exactly: merely
+                # retaining a recipe depth does not enable MTP, while an enabled
+                # block with no explicit depth constructs one logical head.
+                mtp_enabled = bool(mtp_cfg.get("enabled", False))
+                n_predict = mtp_cfg.get("num_nextn_predict_layers", 1 if mtp_enabled else 0)
+                if mtp_enabled and n_predict > 0:
                     use_repeated_layer = bool(mtp_cfg.get("use_repeated_layer", False))
                     if n_predict > 1 and not use_repeated_layer:
                         raise ValueError(
@@ -82,13 +101,15 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
                             # repeated-layer checkpoint ships one shared head even
                             # when it was trained for multiple next-token positions,
                             # so arbitrary inference K values must be multiples of 1.
-                            "n_predict": 1 if use_repeated_layer else n_predict,
-                            # Physical MTP layers to instantiate. Repeated-layer checkpoints ship
-                            # one shared layer (mtp.layers.0.*) that is reapplied every step, which
-                            # is exactly how the vLLM proposer drives an MTP draft. This also
-                            # shadows the backbone text_config's num_nextn_predict_layers (e.g. 4),
-                            # which would otherwise trip the single-layer assert in
-                            # NemotronHMultiTokenPredictor.
+                            # Consequently vLLM defaults to K=1 when K is omitted;
+                            # callers should set num_speculative_tokens explicitly.
+                            "n_predict": 1,
+                            # Physical MTP prediction steps to instantiate. Repeated-layer checkpoints
+                            # ship one shared step (one mtp.layers.* module per hybrid-pattern character)
+                            # that is reapplied every speculative iteration, exactly as vLLM drives its
+                            # MTP draft. This also shadows the backbone text_config's
+                            # num_nextn_predict_layers (e.g. 4), which would otherwise trip the
+                            # single-step assert in NemotronHMultiTokenPredictor.
                             "num_nextn_predict_layers": 1,
                             "architectures": ["NeMoSpeechLMMTPModel"],
                         }

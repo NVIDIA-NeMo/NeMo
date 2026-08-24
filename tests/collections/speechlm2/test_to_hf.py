@@ -14,12 +14,13 @@
 """Unit tests for ``examples/speechlm2/to_hf.py::prepare_for_vllm``.
 
 The script lives under ``examples/`` (not an importable package), so we load
-it via ``importlib`` and patch ``AutoTokenizer`` / ``_detect_vllm_architecture``
+it via ``importlib`` and patch ``AutoTokenizer`` / ``_inspect_vllm_backbone``
 to avoid any network or real-model dependencies.
 """
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -54,8 +55,10 @@ class _FakeTokenizer:
         split_chat_template=False,
         tokenizer_class="Qwen2Tokenizer",
         eos_token_id=42,
+        base_vocab_size=None,
     ):
         self._vocab = {tok: i for i, tok in enumerate(vocab_tokens)}
+        self.vocab_size = len(self._vocab) if base_vocab_size is None else base_vocab_size
         self._chat_template = chat_template
         self._split_chat_template = split_chat_template
         self._tokenizer_class = tokenizer_class
@@ -130,6 +133,30 @@ class _FakeExportModel:
     llm = type("_FakeLLM", (), {"config": _FakeLLMConfig()})()
 
 
+def test_hf_export_config_persists_built_mtp_pattern_without_mutating_recipe():
+    """A preserved native head's physical pattern must override stale recipe metadata."""
+    model = SimpleNamespace(
+        cfg={"mtp": {"enabled": True, "hybrid_override_pattern": "*"}},
+        llm=SimpleNamespace(config=SimpleNamespace(mtp_hybrid_override_pattern="*E")),
+    )
+
+    config = to_hf._hf_export_config(model, "bfloat16")
+
+    assert config["mtp"]["hybrid_override_pattern"] == "*E"
+    assert model.cfg["mtp"]["hybrid_override_pattern"] == "*"
+
+
+@pytest.mark.parametrize("pattern", ["", 3])
+def test_hf_export_config_rejects_invalid_built_mtp_pattern(pattern):
+    model = SimpleNamespace(
+        cfg={"mtp": {"enabled": True, "hybrid_override_pattern": "*"}},
+        llm=SimpleNamespace(config=SimpleNamespace(mtp_hybrid_override_pattern=pattern)),
+    )
+
+    with pytest.raises(ValueError, match="mtp_hybrid_override_pattern"):
+        to_hf._hf_export_config(model, "bfloat16")
+
+
 def test_save_hf_checkpoint_writes_llm_backbone_config(tmp_path):
     cfg = to_hf.HfExportConfig(
         class_path="fake.Class",
@@ -185,15 +212,41 @@ def test_prepare_for_vllm_missing_audio_locator_tag(tmp_path):
         to_hf.prepare_for_vllm(str(tmp_path), {"pretrained_llm": "fake-model"})
 
 
+def test_inspect_vllm_backbone_returns_model_embedding_vocab():
+    """Exporter bounds must use the model config, not tokenizer.vocab_size."""
+    backbone = SimpleNamespace(architectures=["Qwen2ForCausalLM"], vocab_size=151936)
+    with patch("transformers.AutoConfig.from_pretrained", return_value=backbone):
+        architecture, vocab_size = to_hf._inspect_vllm_backbone({"pretrained_llm": "fake-model"})
+
+    assert architecture == "NeMoSpeechLMForConditionalGeneration"
+    assert vocab_size == 151936
+
+
+@pytest.mark.parametrize("vocab_size", [None, True, 0, -1])
+def test_inspect_vllm_backbone_rejects_invalid_model_vocab(vocab_size):
+    backbone = SimpleNamespace(architectures=["Qwen2ForCausalLM"], vocab_size=vocab_size)
+    with (
+        patch("transformers.AutoConfig.from_pretrained", return_value=backbone),
+        pytest.raises(ValueError, match="vocab_size"),
+    ):
+        to_hf._inspect_vllm_backbone({"pretrained_llm": "fake-model"})
+
+
 # ──────────────────────────────────────────────────────────────────────
-# Happy paths (mock AutoTokenizer + _detect_vllm_architecture)
+# Happy paths (mock AutoTokenizer + _inspect_vllm_backbone)
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _run_prepare(tmp_path, fake_tok, arch="NeMoSpeechLMForConditionalGeneration", llm_arch="Qwen2ForCausalLM"):
+def _run_prepare(
+    tmp_path,
+    fake_tok,
+    arch="NeMoSpeechLMForConditionalGeneration",
+    llm_arch="Qwen2ForCausalLM",
+    backbone_vocab_size=100,
+):
     output_dir = _seed_output_dir(tmp_path, llm_arch=llm_arch)
     with (
-        patch.object(to_hf, "_detect_vllm_architecture", return_value=arch),
+        patch.object(to_hf, "_inspect_vllm_backbone", return_value=(arch, backbone_vocab_size)),
         patch("transformers.AutoTokenizer.from_pretrained", return_value=fake_tok),
     ):
         to_hf.prepare_for_vllm(
@@ -204,12 +257,14 @@ def _run_prepare(tmp_path, fake_tok, arch="NeMoSpeechLMForConditionalGeneration"
 
 
 def test_prepare_for_vllm_patches_config_json(tmp_path):
-    """config.json gets model_type, architectures, and audio_locator_tag."""
+    """config.json gets model metadata and the tokenizer's exact audio-token ID."""
     output_dir = _run_prepare(tmp_path, _FakeTokenizer())
     cfg = json.loads((output_dir / "config.json").read_text())
     assert cfg["model_type"] == "nemo_speechlm"
     assert cfg["architectures"] == ["NeMoSpeechLMForConditionalGeneration"]
     assert cfg["audio_locator_tag"] == AUDIO_TOKEN
+    assert cfg["audio_token_index"] == 0
+    assert "image_token_index" not in cfg
     # Original LLM fields are preserved.
     assert cfg["hidden_size"] == 2048
 
@@ -227,6 +282,67 @@ def test_prepare_for_vllm_skips_add_if_audio_token_already_in_vocab(tmp_path):
     fake_tok = _FakeTokenizer(vocab_tokens=["<|im_start|>", "<|im_end|>", AUDIO_TOKEN])
     _run_prepare(tmp_path, fake_tok)
     assert fake_tok.add_special_tokens_calls == []
+
+
+def test_prepare_for_vllm_records_existing_audio_token_id(tmp_path):
+    """An existing audio token need not sit at the backbone vocabulary boundary."""
+    fake_tok = _FakeTokenizer(vocab_tokens=["<pad>", AUDIO_TOKEN, "<extra>"])
+    output_dir = _run_prepare(tmp_path, fake_tok)
+
+    cfg = json.loads((output_dir / "config.json").read_text())
+    assert cfg["audio_token_index"] == 1
+
+
+def test_prepare_for_vllm_rejects_invalid_audio_token_id(tmp_path):
+    """An invalid tokenizer mapping should fail during export, not at serving time."""
+    fake_tok = _FakeTokenizer(vocab_tokens=[AUDIO_TOKEN])
+    fake_tok._vocab[AUDIO_TOKEN] = -1
+
+    with pytest.raises(ValueError, match="valid ID"):
+        _run_prepare(tmp_path, fake_tok)
+
+
+def test_prepare_for_vllm_rejects_audio_token_outside_padded_embeddings(tmp_path):
+    """The exported placeholder ID must fit the embedding table created by the plugin."""
+    tokens = [f"<extra_{i}>" for i in range(11)] + [AUDIO_TOKEN]
+    fake_tok = _FakeTokenizer(vocab_tokens=tokens, base_vocab_size=1)
+
+    with pytest.raises(ValueError, match="outside the SpeechLM embedding table"):
+        _run_prepare(tmp_path, fake_tok, backbone_vocab_size=1)
+
+
+def test_prepare_for_vllm_uses_model_vocab_bound_not_tokenizer_base_vocab(tmp_path):
+    """Pre-existing added tokens may exceed tokenizer.vocab_size while fitting model embeddings."""
+    tokens = [f"<added_{i}>" for i in range(30)] + [AUDIO_TOKEN]
+    fake_tok = _FakeTokenizer(vocab_tokens=tokens, base_vocab_size=1)
+    output_dir = _run_prepare(tmp_path, fake_tok, backbone_vocab_size=40)
+
+    cfg = json.loads((output_dir / "config.json").read_text())
+    assert cfg["audio_token_index"] == 30
+
+
+def test_prepare_for_vllm_uses_training_tokenizer_path(tmp_path):
+    """Conversion must persist the tokenizer that supplied training token IDs."""
+    output_dir = _seed_output_dir(tmp_path)
+    fake_tok = _FakeTokenizer()
+    with (
+        patch.object(
+            to_hf,
+            "_inspect_vllm_backbone",
+            return_value=("NeMoSpeechLMForConditionalGeneration", 100),
+        ),
+        patch("transformers.AutoTokenizer.from_pretrained", return_value=fake_tok) as load_tokenizer,
+    ):
+        to_hf.prepare_for_vllm(
+            str(output_dir),
+            {
+                "pretrained_llm": "fake-model",
+                "tokenizer_path": "custom-tokenizer",
+                "audio_locator_tag": AUDIO_TOKEN,
+            },
+        )
+
+    load_tokenizer.assert_called_once_with("custom-tokenizer", trust_remote_code=True)
 
 
 def test_prepare_for_vllm_tokenizer_config_normalized(tmp_path):

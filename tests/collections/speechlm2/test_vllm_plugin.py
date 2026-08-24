@@ -79,18 +79,11 @@ class TestNeMoSpeechLMConfig:
         assert cfg.pretrained_llm is None
         assert cfg.pretrained_asr is None
         assert cfg.audio_locator_tag is None
-        assert cfg.audio_token_index is None
         assert cfg.image_token_index is None
         assert cfg.prompt_format is None
         assert cfg.pretrained_weights is None
         assert cfg.llm_architectures == []
         assert cfg.get_text_config() is cfg.text_config
-
-    @pytest.mark.parametrize("field", ["audio_token_index", "image_token_index"])
-    def test_token_index_alone_is_not_default_construction(self, field):
-        """Checkpoint data must not be silently discarded by HF's no-arg path."""
-        with pytest.raises(ValueError, match="pretrained_llm"):
-            NeMoSpeechLMConfig(**{field: 42})
 
     def test_loads_text_config(self):
         """Config should load a text_config from the pretrained LLM."""
@@ -1280,8 +1273,8 @@ class TestMTPPlugin:
         assert cfg.mtp_hybrid_override_pattern == "*"
 
     @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
-    def test_audio_token_index_legacy_fallback_is_base_vocab_size(self):
-        """Legacy exports should fall back to the backbone base vocab size."""
+    def test_image_token_index_is_unserialized_backbone_vocab_boundary(self):
+        """vLLM's compatibility property should identify the first padded row."""
         import importlib
 
         config_mod = importlib.import_module("nemo.collections.speechlm2.vllm.salm.config")
@@ -1289,39 +1282,13 @@ class TestMTPPlugin:
 
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
         base_vocab = cfg.text_config.vocab_size - extra_rows
-        assert cfg.audio_token_index == base_vocab
         assert cfg.image_token_index == base_vocab
-
-    @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
-    def test_audio_token_index_uses_exported_tokenizer_id(self):
-        """New exports should use the tokenizer's exact placeholder ID."""
-        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, audio_token_index=42)
-        assert cfg.audio_token_index == 42
-        assert cfg.image_token_index == 42
-        assert cfg.to_dict()["audio_token_index"] == 42
+        # vLLM 0.26 copies the target value onto the draft config. The setter
+        # accepts that runtime-only assignment without adding serialized state.
+        cfg.image_token_index = base_vocab
+        assert cfg.image_token_index == base_vocab
+        assert "audio_token_index" not in cfg.to_dict()
         assert "image_token_index" not in cfg.to_dict()
-
-    @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
-    def test_legacy_image_token_index_is_accepted_as_vllm_alias(self):
-        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, image_token_index=42)
-        assert cfg.audio_token_index == 42
-        assert cfg.image_token_index == 42
-
-    @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
-    @pytest.mark.parametrize("field", ["audio_token_index", "image_token_index"])
-    @pytest.mark.parametrize("token_index", [True, "42", -1, 131082])
-    def test_audio_token_index_rejects_invalid_type_or_range(self, field, token_index):
-        with pytest.raises(ValueError, match="audio_token_index"):
-            NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, **{field: token_index})
-
-    @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
-    def test_conflicting_audio_and_legacy_image_token_indices_raise(self):
-        with pytest.raises(ValueError, match="conflicts"):
-            NeMoSpeechLMConfig(
-                **_DEFAULT_CONFIG_KWARGS,
-                audio_token_index=42,
-                image_token_index=43,
-            )
 
 
 class _FakeTokenizer:

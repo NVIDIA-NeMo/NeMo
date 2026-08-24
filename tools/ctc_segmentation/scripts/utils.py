@@ -13,6 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Portions adapted from ctc-segmentation:
+# Copyright 2020 Technische Universität München, Dominik Winkelbauer, and Ludwig Kürzinger.
+# Licensed under the Apache License, Version 2.0.
+# Source: https://github.com/lumaku/ctc-segmentation
+
 import logging
 import logging.handlers
 import math

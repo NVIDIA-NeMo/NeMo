@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# _zero_grad_group_helper is adapted from PyTorch:
+# Copyright (c) PyTorch contributors. Licensed under the BSD-3-Clause License.
+# Source: https://github.com/pytorch/pytorch
+
 from contextlib import contextmanager
 
 import torch

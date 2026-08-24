@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# MCQ evaluation logic adapted from VoiceBench, licensed under Apache-2.0.
+# Copyright is held by the VoiceBench authors and contributors.
+# Source: https://github.com/MatthewCYM/VoiceBench
+
 """
 Simplified MCQ (Multiple Choice Question) evaluator for openbookqa and mmsu datasets.
 

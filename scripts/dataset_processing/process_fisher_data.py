@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Portions derived from Patter:
+# Copyright (c) 2018 Ryan Leary. Licensed under the MIT License.
+# Source: https://github.com/ryanleary/patter
+
 # USAGE:
 # python process_fisher_data.py \
 #   --audio_root=<audio (.wav) directory>

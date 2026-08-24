@@ -13,6 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# zero_module is adapted from OpenAI guided-diffusion:
+# Copyright (c) 2021 OpenAI. Licensed under the MIT License.
+# Source: https://github.com/openai/guided-diffusion
+#
+# ConvNeXt1d is adapted from Vocos:
+# Copyright (c) 2023 Charactr Inc. Licensed under the MIT License.
+# Source: https://github.com/gemelo-ai/vocos
+
 import functools
 import math
 from collections.abc import Callable

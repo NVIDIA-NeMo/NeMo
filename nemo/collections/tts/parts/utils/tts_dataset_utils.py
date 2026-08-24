@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# BetaBinomialInterpolator is adapted from NVIDIA Deep Learning Examples:
+# Copyright (c) 2019-present, NVIDIA CORPORATION. Licensed under the BSD-3-Clause License.
+# Source: https://github.com/NVIDIA/DeepLearningExamples
+
 import functools
 import importlib
 import logging

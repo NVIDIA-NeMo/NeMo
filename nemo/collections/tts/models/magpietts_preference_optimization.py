@@ -12,6 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+# Preference-optimization logic is informed by the DPO reference implementation
+# (https://github.com/eric-mitchell/direct-preference-optimization), Apache-2.0,
+# and Hugging Face TRL, Copyright 2020-2026 The HuggingFace Team, Apache-2.0
+# (https://github.com/huggingface/trl).
+
 import copy
 import json
 import os

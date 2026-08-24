@@ -746,6 +746,28 @@ is supported for both CTC and Transducer model variations (or any other kind of 
 conformer as encoder).
 
 
+Fused Subsampling Kernels Config
+--------------------------------
+
+With `Triton <https://triton-lang.org>`_ installed, the ``dw_striding`` pre-encoder of
+:ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>` runs as fused Triton kernels rather than
+separate PyTorch convolutions. Weights and checkpoints are identical either way, so only speed and peak memory change.
+
+The kernels need ``dw_striding``, a ``subsampling_factor`` of 4 or more, a ReLU activation and CUDA inputs. Anything
+else uses the PyTorch path, as do tracing and export. Use ``use_triton`` to control this:
+
+.. code-block:: yaml
+
+   model:
+      # ...
+      encoder:
+        # ...
+        use_triton: false  # null, the default, uses the kernels when Triton is installed
+
+Asking for ``use_triton: true`` on a configuration the kernels do not cover logs a warning and falls back to PyTorch.
+Asking for it without Triton installed raises on the first forward pass that would have used the kernels.
+
+
 .. _Hybrid-Transducer-CTC-Prompt_model__Config:
 
 Hybrid-Transducer-CTC with Prompt Conditioning Configuration

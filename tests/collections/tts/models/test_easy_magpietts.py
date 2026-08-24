@@ -820,6 +820,7 @@ def test_flow_matching_can_optimize_only_oneshot_predictor():
                 "local_flow_matching_hidden_dim": 16,
                 "local_flow_matching_n_layers": 2,
                 "local_flow_matching_time_embedding_dim": 8,
+                "oneshot_separate_context_input_projection": True,
                 "train_oneshot_local_predictor_only": True,
                 "oneshot_quantize_acoustic_feedback": True,
             }
@@ -832,6 +833,7 @@ def test_flow_matching_can_optimize_only_oneshot_predictor():
     assert trainable_names
     assert any(name.startswith("local_flow.") for name in trainable_names)
     assert any(name.startswith("flow_acoustic_in_projection.") for name in trainable_names)
+    assert any(name.startswith("flow_context_acoustic_in_projection.") for name in trainable_names)
     assert any(name.startswith("flow_hidden_condition_projection.") for name in trainable_names)
     assert any(name.startswith("flow_semantic_condition_projection.") for name in trainable_names)
     assert "semantic_history_mask_embedding" in trainable_names
@@ -841,6 +843,7 @@ def test_flow_matching_can_optimize_only_oneshot_predictor():
             (
                 "local_flow.",
                 "flow_acoustic_in_projection.",
+                "flow_context_acoustic_in_projection.",
                 "flow_hidden_condition_projection.",
                 "flow_semantic_condition_projection.",
                 "semantic_history_mask_embedding",
@@ -851,6 +854,39 @@ def test_flow_matching_can_optimize_only_oneshot_predictor():
     )
     optimizer_param_ids = {id(param) for group in model._optimizer_param_groups for param in group["params"]}
     assert optimizer_param_ids == {id(param) for _, param in model.named_parameters() if param.requires_grad}
+
+
+def test_one_shot_can_use_separate_decoder_and_context_input_projections():
+    model = _make_easy_magpie_model(
+        tiny_easy_magpie_cfg(
+            {
+                "local_transformer_type": "flow_matching",
+                "local_flow_matching_hidden_dim": 16,
+                "local_flow_matching_n_layers": 2,
+                "local_flow_matching_time_embedding_dim": 8,
+                "oneshot_separate_context_input_projection": True,
+            }
+        )
+    )
+    semantic_codes = torch.zeros(1, model.num_semantic_codebooks, 2, dtype=torch.long)
+    acoustic_embedding = torch.ones(1, model.acoustic_codec_embedding_dim, 2)
+    with torch.no_grad():
+        model.audio_embeddings[0].weight.zero_()
+        model.flow_context_audio_embeddings[0].weight.zero_()
+        model.audio_in_projection.bias.zero_()
+        model.flow_acoustic_in_projection.weight.fill_(0.25)
+        model.flow_acoustic_in_projection.bias.zero_()
+        model.flow_context_acoustic_in_projection.weight.fill_(0.5)
+        model.flow_context_acoustic_in_projection.bias.zero_()
+
+    decoder_input = model.embed_flow_audio_state(semantic_codes, acoustic_embedding)
+    context_input = model.embed_flow_audio_state(
+        semantic_codes,
+        acoustic_embedding,
+        use_context_projection=True,
+    )
+
+    torch.testing.assert_close(context_input, decoder_input * 2)
 
 
 def test_one_shot_flow_teacher_forcing_uses_previous_continuous_acoustic_embedding():

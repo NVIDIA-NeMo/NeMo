@@ -734,6 +734,15 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             stacked_semantic_dim = self.semantic_codec_embedding_dim * self.frame_stacking_factor
             stacked_acoustic_dim = self.acoustic_codec_embedding_dim * self.frame_stacking_factor
             self.flow_acoustic_in_projection = nn.Linear(stacked_acoustic_dim, cfg.embedding_dim)
+            self.oneshot_separate_context_input_projection = bool(
+                cfg.get("oneshot_separate_context_input_projection", False)
+            )
+            if self.oneshot_separate_context_input_projection:
+                self.flow_context_audio_embeddings = nn.ModuleList(
+                    nn.Embedding(self.num_all_tokens_per_codebook, self.audio_embedding_dim)
+                    for _ in range(self.num_audio_input_codebooks * self.frame_stacking_factor)
+                )
+                self.flow_context_acoustic_in_projection = nn.Linear(stacked_acoustic_dim, cfg.embedding_dim)
             self.semantic_history_mask_embedding = nn.Parameter(torch.zeros(1, 1, cfg.embedding_dim))
             if self.oneshot_quantize_acoustic_feedback:
                 self.acoustic_history_mask_embedding = nn.Parameter(torch.zeros(1, 1, cfg.embedding_dim))
@@ -741,6 +750,9 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             # exact no-op so loading the pretrained backbone does not inject a random residual.
             nn.init.zeros_(self.flow_acoustic_in_projection.weight)
             nn.init.zeros_(self.flow_acoustic_in_projection.bias)
+            if self.oneshot_separate_context_input_projection:
+                nn.init.zeros_(self.flow_context_acoustic_in_projection.weight)
+                nn.init.zeros_(self.flow_context_acoustic_in_projection.bias)
             predictor_hidden_dim = {
                 LocalTransformerType.FLOW: int(cfg.get("local_flow_hidden_dim", 1536)),
                 LocalTransformerType.FLOW_MATCHING: int(cfg.get("local_flow_matching_hidden_dim", 1536)),
@@ -1150,6 +1162,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             trainable_prefixes = (
                 "local_flow.",
                 "flow_acoustic_in_projection.",
+                "flow_context_acoustic_in_projection.",
                 "semantic_history_mask_embedding",
                 "acoustic_history_mask_embedding",
                 "flow_hidden_condition_projection.",
@@ -1197,7 +1210,12 @@ class EasyMagpieTTSInferenceModel(ModelPT):
             codes = codes[:, :, : codes_len.max()]
         return codes, codes_len
 
-    def embed_audio_tokens(self, audio_tokens, codebook_offset: int = 0):
+    def embed_audio_tokens(
+        self,
+        audio_tokens,
+        codebook_offset: int = 0,
+        audio_embeddings: Optional[nn.ModuleList] = None,
+    ):
         # audio_tokens: (B, C, T')
         # Add and average the embeddings of the audio tokens across the codebooks
         """Embed and average audio-code tokens across codebook channels.
@@ -1205,18 +1223,21 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         Args:
             audio_tokens: Audio token IDs shaped ``(B, C, T)``.
             codebook_offset: First embedding-table index for ``audio_tokens``.
+            audio_embeddings: Optional alternate embedding tables for a
+                separately initialized one-shot context-input path.
 
         Returns:
             Audio embeddings shaped ``(B, T, E)``.
         """
-        if codebook_offset < 0 or codebook_offset + audio_tokens.size(1) > len(self.audio_embeddings):
+        embedding_tables = self.audio_embeddings if audio_embeddings is None else audio_embeddings
+        if codebook_offset < 0 or codebook_offset + audio_tokens.size(1) > len(embedding_tables):
             raise ValueError(
                 f"Embedding tables [{codebook_offset}, {codebook_offset + audio_tokens.size(1)}) "
-                f"are unavailable; model has {len(self.audio_embeddings)} tables."
+                f"are unavailable; model has {len(embedding_tables)} tables."
             )
         audio_embedding = None
         for c in range(audio_tokens.size(1)):
-            embedding = self.audio_embeddings[codebook_offset + c](audio_tokens[:, c, :])
+            embedding = embedding_tables[codebook_offset + c](audio_tokens[:, c, :])
             if audio_embedding is None:
                 audio_embedding = embedding
             else:
@@ -1254,6 +1275,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         semantic_codes: torch.Tensor,
         acoustic_embedding: torch.Tensor,
         semantic_history_keep_mask: Optional[torch.Tensor] = None,
+        use_context_projection: bool = False,
     ) -> torch.Tensor:
         """Embed flow states, optionally infilling only their semantic history contribution."""
         if not self.local_transformer_type.is_oneshot:
@@ -1275,7 +1297,14 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         ):
             raise ValueError("Semantic codes and acoustic embeddings must have matching batch and time dimensions.")
 
-        semantic_input = self.embed_audio_tokens(semantic_codes)
+        if use_context_projection and self.oneshot_separate_context_input_projection:
+            semantic_embedding_tables = self.flow_context_audio_embeddings
+            acoustic_projection = self.flow_context_acoustic_in_projection
+        else:
+            semantic_embedding_tables = self.audio_embeddings
+            acoustic_projection = self.flow_acoustic_in_projection
+
+        semantic_input = self.embed_audio_tokens(semantic_codes, audio_embeddings=semantic_embedding_tables)
         if semantic_history_keep_mask is not None:
             expected_mask_shape = (semantic_codes.size(0), semantic_codes.size(2))
             if semantic_history_keep_mask.shape != expected_mask_shape:
@@ -1292,7 +1321,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 semantic_input,
             )
 
-        acoustic_input = self.flow_acoustic_in_projection(acoustic_embedding.transpose(1, 2))
+        acoustic_input = acoustic_projection(acoustic_embedding.transpose(1, 2))
         structural_special = semantic_codes >= self.codebook_size
         special_frame = structural_special.any(dim=1, keepdim=False).unsqueeze(-1)
         acoustic_input = acoustic_input.masked_fill(special_frame, 0.0)
@@ -1385,6 +1414,7 @@ class EasyMagpieTTSInferenceModel(ModelPT):
         semantic_history_keep_mask: Optional[torch.Tensor] = None,
         acoustic_codes: Optional[torch.Tensor] = None,
         acoustic_history_keep_mask: Optional[torch.Tensor] = None,
+        use_context_projection: bool = False,
     ) -> torch.Tensor:
         """Embed a one-shot state continuously or through quantized acoustic token tables."""
         if not self.oneshot_quantize_acoustic_feedback:
@@ -1394,7 +1424,11 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 semantic_codes,
                 acoustic_embedding,
                 semantic_history_keep_mask=semantic_history_keep_mask,
+                use_context_projection=use_context_projection,
             )
+
+        if use_context_projection and self.oneshot_separate_context_input_projection:
+            raise ValueError("Separate context input projection is supported only for continuous acoustic feedback.")
 
         if acoustic_codes is None:
             full_codes = self.quantize_oneshot_acoustic_state(semantic_codes, acoustic_embedding)
@@ -1890,7 +1924,10 @@ class EasyMagpieTTSInferenceModel(ModelPT):
                 if not torch.equal(acoustic_codes_lens, context_audio_codes_lens):
                     raise ValueError("Context semantic and acoustic token lengths must match.")
             context_audio_embedded = self.embed_oneshot_audio_state(
-                context_audio_codes, acoustic_context, acoustic_codes=acoustic_context_codes
+                context_audio_codes,
+                acoustic_context,
+                acoustic_codes=acoustic_context_codes,
+                use_context_projection=True,
             )
         else:
             if self._codec_converter is not None:

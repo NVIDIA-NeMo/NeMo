@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -38,6 +39,42 @@ class _TinyEasyMagpie(nn.Module):
         self.flow_acoustic_in_projection = nn.Linear(3, 4)
         nn.init.zeros_(self.flow_acoustic_in_projection.weight)
         nn.init.zeros_(self.flow_acoustic_in_projection.bias)
+
+
+class _TinyCodecHelper:
+    semantic_rows = torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+
+    def semantic_codes_to_embedding(self, semantic_codes, codes_len):
+        del codes_len
+        rows = self.semantic_rows.to(semantic_codes.device)[semantic_codes[0, 0]]
+        return rows.T.unsqueeze(0)
+
+
+class _TinyProjectionConditionedTarget(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.decoder_type = "nemotron_h"
+        self.decoder = nn.Linear(4, 4)
+        self.num_semantic_codebooks = 1
+        self.frame_stacking_factor = 1
+        self.codebook_size = 3
+        self.num_all_tokens_per_codebook = 7
+        self.semantic_codec_embedding_dim = 2
+        self.acoustic_codec_embedding_dim = 3
+        self.audio_bos_id = 3
+        self.audio_eos_id = 4
+        self.context_audio_bos_id = 5
+        self.context_audio_eos_id = 6
+        self.cfg = SimpleNamespace(embedding_dim=4)
+        self.audio_in_projection = nn.Identity()
+        self.oneshot_separate_context_input_projection = True
+        self.audio_embeddings = nn.ModuleList([nn.Embedding(7, 4)])
+        self.flow_acoustic_in_projection = nn.Linear(3, 4)
+        self.flow_context_audio_embeddings = nn.ModuleList([nn.Embedding(7, 4)])
+        self.flow_context_acoustic_in_projection = nn.Linear(3, 4)
+        self.final_proj = nn.Linear(4, 7)
+        self.local_flow = nn.Linear(4, 3)
+        self._codec_helper = _TinyCodecHelper()
 
 
 def test_seed_model_defers_all_configured_datasets():
@@ -151,3 +188,64 @@ def test_rejects_incompatible_semantic_vocabulary_packing():
 
     with pytest.raises(ValueError, match="not divisible"):
         transfer_compatible_pretrained_state(target, source_state)
+
+
+def test_materializes_projection_conditioned_decoder_and_context_inputs():
+    torch.manual_seed(5)
+    target = _TinyProjectionConditionedTarget()
+    initial_state = copy.deepcopy(target.state_dict())
+    decoder_weight = torch.arange(20, dtype=torch.float32).view(4, 5) / 10
+    context_weight = decoder_weight + 2
+    decoder_bias = torch.arange(4, dtype=torch.float32)
+    context_bias = decoder_bias + 4
+    source_state = {
+        "decoder.weight": torch.randn_like(target.decoder.weight),
+        "decoder.bias": torch.randn_like(target.decoder.bias),
+        "final_proj.weight": torch.randn_like(target.final_proj.weight),
+        "final_proj.bias": torch.randn_like(target.final_proj.bias),
+        "decoder_code_proj.weight": decoder_weight,
+        "decoder_code_proj.bias": decoder_bias,
+        "context_code_proj.weight": context_weight,
+        "context_code_proj.bias": context_bias,
+        "audio_bos_emb": torch.full((4,), 11.0),
+        "audio_eos_emb": torch.full((4,), 12.0),
+        "context_bos_emb": torch.full((4,), 13.0),
+        "context_eos_emb": torch.full((4,), 14.0),
+    }
+
+    report = transfer_compatible_pretrained_state(
+        target,
+        source_state,
+        projection_conditioned_source=True,
+    )
+    state = target.state_dict()
+    semantic_rows = _TinyCodecHelper.semantic_rows
+
+    torch.testing.assert_close(
+        state["audio_embeddings.0.weight"][:3],
+        semantic_rows @ decoder_weight[:, :2].T + decoder_bias,
+    )
+    torch.testing.assert_close(
+        state["flow_context_audio_embeddings.0.weight"][:3],
+        semantic_rows @ context_weight[:, :2].T + context_bias,
+    )
+    torch.testing.assert_close(state["flow_acoustic_in_projection.weight"], decoder_weight[:, 2:])
+    torch.testing.assert_close(state["flow_context_acoustic_in_projection.weight"], context_weight[:, 2:])
+    assert torch.count_nonzero(state["flow_acoustic_in_projection.bias"]) == 0
+    assert torch.count_nonzero(state["flow_context_acoustic_in_projection.bias"]) == 0
+    torch.testing.assert_close(state["audio_embeddings.0.weight"][3], source_state["audio_bos_emb"])
+    torch.testing.assert_close(state["audio_embeddings.0.weight"][4], source_state["audio_eos_emb"])
+    torch.testing.assert_close(state["flow_context_audio_embeddings.0.weight"][5], source_state["context_bos_emb"])
+    torch.testing.assert_close(state["flow_context_audio_embeddings.0.weight"][6], source_state["context_eos_emb"])
+    torch.testing.assert_close(state["audio_embeddings.0.weight"][5:], initial_state["audio_embeddings.0.weight"][5:])
+    torch.testing.assert_close(
+        state["flow_context_audio_embeddings.0.weight"][3:5],
+        initial_state["flow_context_audio_embeddings.0.weight"][3:5],
+    )
+    assert report["projection_conditioned_source"] is True
+    assert report["input_projection_semantic_dim"] == 2
+    assert report["input_projection_acoustic_dim"] == 3
+    assert report["input_projection_special_rows_initialized"] == {
+        "decoder": [3, 4],
+        "context": [5, 6],
+    }

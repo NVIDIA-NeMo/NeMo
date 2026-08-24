@@ -146,7 +146,7 @@ def test_cut_validation_status_filter(cut_example):
 
 def test_cut_speaker_filter_by_speaker(cut_example):
     f = SpeakerFilter(
-        excluded_speaker_ids=["| Language:en Dataset:nvyt2505 Speaker:Zdud2gXLTXY_SPEAKER_02 |"],
+        excluded_speaker_ids=["Zdud2gXLTXY_SPEAKER_02"],
         speaker_fields=["speaker"],
     )
     assert f(cut_example) == False

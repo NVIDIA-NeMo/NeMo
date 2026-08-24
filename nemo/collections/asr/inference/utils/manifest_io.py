@@ -76,6 +76,7 @@ def prepare_audio_data(
             default_biasing_request_cfg = OmegaConf.structured(BiasingRequestItemConfig)
         options = [
             ASRRequestOptions(
+                language_code=record.get("lang", None),
                 biasing_cfg=(
                     BiasingRequestItemConfig(
                         **OmegaConf.to_container(
@@ -84,7 +85,7 @@ def prepare_audio_data(
                     )
                     if "biasing_request" in record
                     else None
-                )
+                ),
             )
             for record in manifest
         ]

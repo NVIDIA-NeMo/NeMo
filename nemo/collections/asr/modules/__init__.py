@@ -39,7 +39,10 @@ from nemo.collections.asr.modules.ggemm_transformer_encoder import GGEMMTransfor
 from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint  # noqa: F401
 from nemo.collections.asr.modules.lstm_decoder import LSTMDecoder  # noqa: F401
 from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerEncoder  # noqa: F401
-from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder  # noqa: F401
+from nemo.collections.asr.modules.parallel_expert_encoder import (  # noqa: F401
+    ParallelExpertEncoder,
+    TransformerCTCDecoder,
+)
 from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import (  # noqa: F401
     GGEMMParallelExpertEncoder,
     GGEMMParallelExpertEncoderPT,
@@ -76,6 +79,7 @@ __all__ = [
     'GGEMMParallelExpertEncoderPT',
     'MoETransformerEncoder',
     'ParallelExpertEncoder',
+    'TransformerCTCDecoder',
     'ConvASRDecoder',
     'ConvASRDecoderClassification',
     'ConvASRDecoderReconstruction',

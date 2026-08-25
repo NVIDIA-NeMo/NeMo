@@ -96,13 +96,13 @@ def get_latency_unit(code: str) -> str:
 
 
 def add_simulstream_fields(
-    cfg_path: str,
-    metrics_log: str,
+    cfg_path: str | Path,
+    metrics_log: str | Path,
     src_lang: str = None,
     tgt_lang: str = None,
     overrides: list = None,
-    reference_manifest: str | None = None,
-    output_manifest: str | None = None,
+    reference_manifest: str | Path | None = None,
+    output_manifest: str | Path | None = None,
 ) -> str:
     """
     Load a NeMo config and add the fields simulstream requires.
@@ -122,7 +122,8 @@ def add_simulstream_fields(
         output_manifest: Optional path to write a NeMo-style prediction manifest.
 
     Returns:
-        Path to the generated config file with the required fields added.
+        Path to the generated config file with the required fields added. 
+        This config can be used to later evaluate performance metrics in SimulStream or OmniSTEval.
     """
     cfg = OmegaConf.load(cfg_path)
 
@@ -142,8 +143,8 @@ def add_simulstream_fields(
         cfg.nmt.target_language = get_language_name(tgt_lang)
 
     if 'type' in cfg:
-        logging.info(f"Config already has 'type' field, using as-is: {cfg_path}")
-        return cfg_path
+        logging.info(f"Config already has 'type' field, assuming it's already prepared for simulstream and using as-is: {cfg_path}")
+        return str(cfg_path)
 
     logging.info(f"Adding simulstream fields to config: {cfg_path}")
 
@@ -178,7 +179,9 @@ def add_simulstream_fields(
     with open(out_path, 'w') as f:
         OmegaConf.save(cfg, f)
 
-    logging.info(f"  Saved config: {out_path}")
+    # Saved alongside script outputs so it can be used to
+    # evaluate performance metrics in SimulStream or OmniSTEval.
+    logging.info(f"  Saved config to: {out_path}")
     return str(out_path)
 
 

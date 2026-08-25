@@ -26,7 +26,7 @@ import yaml
 from nemo.utils import logging
 
 
-def load_manifest_audio_paths(manifest_path: str) -> list[str]:
+def load_manifest_audio_paths(manifest_path: str | Path) -> list[str]:
     """
     Load audio file paths from a NeMo manifest file.
 
@@ -58,55 +58,3 @@ def load_manifest_audio_paths(manifest_path: str) -> list[str]:
 
     logging.info(f"Loaded {len(audio_paths)} audio files from manifest: {manifest_path}")
     return audio_paths
-
-
-def manifest_to_audio_definition(manifest_path: str, output_path: str) -> tuple[Path, Path, Path]:
-    """
-    Create simulstream audio definition YAML from a NeMo manifest, along with plaintext
-    reference/transcript files. This is needed for simulstream's score/latency metrics evaluation.
-
-    Args:
-        manifest_path: Path to NeMo manifest file.
-        output_path: Directory to write the generated files into.
-
-    Returns:
-        Tuple of (audio_definitions.yaml, references.txt, transcripts.txt) paths.
-    """
-    audio_defs = []
-    references = []
-    transcripts = []
-
-    with open(manifest_path, 'r', encoding='utf-8') as f:
-        for line_num, line in enumerate(f, 1):
-            if not line.strip():
-                continue
-            data = json.loads(line.strip())
-
-            audio_path = data['audio_filepath']
-            if not audio_path:
-                raise ValueError(
-                    f"Empty or missing 'audio_filepath' on line {line_num} of manifest: {manifest_path}"
-                )
-            duration = data.get('duration', 0.0)
-            audio_defs.append({'wav': audio_path, 'offset': 0.0, 'duration': float(duration) if duration else 0.0})
-
-            transcripts.append(data.get('text', ''))
-            references.append(data.get('answer', ''))
-
-    output_dir = Path(output_path)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    audio_def_file = output_dir / 'audio_definitions.yaml'
-    with open(audio_def_file, 'w', encoding='utf-8') as f:
-        yaml.dump(audio_defs, f, default_flow_style=False, allow_unicode=True)
-
-    refs_file = output_dir / 'references.txt'
-    with open(refs_file, 'w', encoding='utf-8') as f:
-        f.writelines(ref + '\n' for ref in references)
-
-    trans_file = output_dir / 'transcripts.txt'
-    with open(trans_file, 'w', encoding='utf-8') as f:
-        f.writelines(trans + '\n' for trans in transcripts)
-
-    logging.info(f"Created simulstream audio definition files in: {output_dir}")
-    return audio_def_file, refs_file, trans_file

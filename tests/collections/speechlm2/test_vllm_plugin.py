@@ -43,6 +43,11 @@ _DEFAULT_CONFIG_KWARGS = {
 }
 
 
+def _identity_hf_config_override(hf_config):
+    """Pickleable target override for vLLM's composed-override API."""
+    return hf_config
+
+
 @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
 class TestNeMoSpeechLMConfig:
     """Tests for NeMoSpeechLMConfig."""
@@ -711,6 +716,15 @@ class TestMTPPlugin:
     """Tests for NeMo SpeechLM MTP speculative-decoding support."""
 
     @pytest.fixture(autouse=True)
+    def restore_original_override(self):
+        """Keep the process-local fallback hook isolated between tests."""
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
+        original_override = salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE
+        yield
+        salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = original_override
+
+    @pytest.fixture(autouse=True)
     def mock_backbone_config(self, monkeypatch):
         """Keep registration tests independent of Hugging Face network access."""
         if not _HAS_CONFIG:
@@ -789,6 +803,76 @@ class TestMTPPlugin:
         assert result.n_predict == 1
         assert result.num_nextn_predict_layers == 1
 
+    def test_patched_override_is_pickleable_for_spawned_engine(self, monkeypatch):
+        """The callable retained on draft ModelConfig must survive multiprocessing spawn."""
+        import pickle
+
+        from transformers import AutoConfig
+        from vllm.config.speculative import SpeculativeConfig
+
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
+        from nemo.collections.speechlm2.vllm.salm import register
+
+        monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
+        register()
+
+        restored = pickle.loads(pickle.dumps(SpeculativeConfig.hf_config_override))
+        assert restored is salm_module._nemo_speechlm_mtp_hf_config_override
+
+        overrides = [restored]
+        if hasattr(SpeculativeConfig, "compose_draft_hf_overrides"):
+            composed = SpeculativeConfig.compose_draft_hf_overrides(_identity_hf_config_override)
+            assert composed is not SpeculativeConfig.hf_config_override
+            overrides.append(pickle.loads(pickle.dumps(composed)))
+
+        for override in overrides:
+            hf_cfg = self._HFConfigLike(
+                model_type="nemo_speechlm",
+                mtp={"enabled": True, "num_nextn_predict_layers": 4, "use_repeated_layer": True},
+            )
+            result = override(hf_cfg)
+            assert result.model_type == "nemo_speechlm_mtp"
+            assert result.n_predict == 1
+
+    def test_patched_override_lazily_captures_native_hook_in_spawn_child(self, monkeypatch):
+        """A fresh spawn import should delegate unrelated configs to vLLM's native hook."""
+        from vllm.config.speculative import SpeculativeConfig
+
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
+        original_calls = []
+
+        def _recording_native(cfg):
+            original_calls.append(cfg)
+            return cfg
+
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
+        monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_recording_native))
+
+        hf_cfg = self._HFConfigLike(model_type="unrelated")
+        result = salm_module._nemo_speechlm_mtp_hf_config_override(hf_cfg)
+
+        assert result is hf_cfg
+        assert original_calls == [hf_cfg]
+        assert salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is _recording_native
+
+    def test_patched_override_rejects_missing_native_hook(self, monkeypatch):
+        """A corrupted install must fail clearly instead of recursing into our override."""
+        from vllm.config.speculative import SpeculativeConfig
+
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
+        monkeypatch.setattr(
+            SpeculativeConfig,
+            "hf_config_override",
+            staticmethod(salm_module._nemo_speechlm_mtp_hf_config_override),
+        )
+
+        with pytest.raises(RuntimeError, match="without preserving vLLM's original hook"):
+            salm_module._nemo_speechlm_mtp_hf_config_override(self._HFConfigLike(model_type="unrelated"))
+
     def test_patched_override_enabled_mtp_defaults_to_one_head(self, monkeypatch):
         """An enabled training block without an explicit depth constructs one head."""
         from transformers import AutoConfig
@@ -830,6 +914,8 @@ class TestMTPPlugin:
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
 
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
         from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
@@ -839,6 +925,7 @@ class TestMTPPlugin:
             original_calls.append(cfg)
             return cfg
 
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
         monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_recording_orig))
         register()
 
@@ -852,6 +939,8 @@ class TestMTPPlugin:
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
 
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
         from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
@@ -861,6 +950,7 @@ class TestMTPPlugin:
             original_calls.append(cfg)
             return cfg
 
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
         monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_recording_orig))
         register()
 
@@ -878,6 +968,8 @@ class TestMTPPlugin:
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
 
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
         from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
@@ -887,6 +979,7 @@ class TestMTPPlugin:
             original_calls.append(cfg)
             return cfg
 
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
         monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_recording_orig))
         register()
 
@@ -929,6 +1022,40 @@ class TestMTPPlugin:
         register()
 
         assert SpeculativeConfig.hf_config_override is first_override
+
+    def test_mtp_override_reregistration_preserves_first_native_hook(self, monkeypatch):
+        """A later wrapper that delegates to us must not become our fallback and recurse."""
+        from transformers import AutoConfig
+        from vllm.config.speculative import SpeculativeConfig
+
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
+        from nemo.collections.speechlm2.vllm.salm import register
+
+        monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
+        native_calls = []
+
+        def _recording_native(cfg):
+            native_calls.append(cfg)
+            return cfg
+
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
+        monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_recording_native))
+        register()
+        first_override = SpeculativeConfig.hf_config_override
+
+        def _third_party_wrapper(cfg):
+            return first_override(cfg)
+
+        monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_third_party_wrapper))
+        register()
+
+        hf_cfg = self._HFConfigLike(model_type="unrelated")
+        result = SpeculativeConfig.hf_config_override(hf_cfg)
+
+        assert result is hf_cfg
+        assert native_calls == [hf_cfg]
+        assert salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is _recording_native
 
     def test_embed_input_ids_text_only(self):
         """embed_input_ids with no audio embeddings should return plain text embeddings."""

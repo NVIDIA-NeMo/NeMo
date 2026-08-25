@@ -41,8 +41,10 @@ _AUDIO_PLACEHOLDER = "<|audio|>"
 
 # Historical serving-time headroom above the backbone vocabulary. vLLM builds
 # the target and draft embedding tables at this padded size, and the weight
-# loader zero-pads the smaller training tensors to match. The tokenizer's
-# actual audio-token ID is validated against this bound during export.
+# loader zero-pads the smaller training tensors to match. ``prepare_for_vllm``
+# validates the tokenizer's audio-token ID against this bound during export;
+# the default export flow treats a validation failure as non-fatal and leaves
+# an HF-only checkpoint.
 _SPEECHLM_EMBED_EXTRA_ROWS = 10
 
 
@@ -229,7 +231,9 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         """Hybrid layer pattern for MTP heads, consumed by NemotronHMultiTokenPredictor.
 
         Reads from the ``mtp.hybrid_override_pattern`` field in config.json.
-        '*' means all-attention; 'M' means all-Mamba2.
+        vLLM supports any sequence of ``"*"`` (attention) and ``"E"`` (MoE),
+        with one physical MTP layer module instantiated per character. Other
+        characters are rejected by vLLM during model construction.
         """
         mtp_cfg = self.__dict__.get("mtp") or {}
         return mtp_cfg.get("hybrid_override_pattern", "*") if isinstance(mtp_cfg, dict) else "*"

@@ -332,16 +332,11 @@ def main(cfg: HfExportConfig) -> None:
     if is_distributed:
         strategy = setup_distributed_from_config(strategy_cfg)
 
-        # Don't call configure_model() inside __init__ — we set device_mesh first.
+        # Don't call configure_model() inside __init__ — we set the distributed setup first.
         model_cfg["init_configure_model"] = False
-        model = cls(model_cfg)
-        model.configure_model(
-            device_mesh=strategy.device_mesh,
-            distributed_config=strategy.distributed_config,
-            moe_config=strategy.moe_config,
-            moe_mesh=strategy.moe_mesh,
-        )
         model_cfg["pretrained_weights"] = False
+        model = cls(model_cfg)
+        model.configure_model(distributed_setup=strategy.distributed_setup)
 
         load_checkpoint(model, cfg.ckpt_path, weights_only=cfg.weights_only)
 
@@ -357,10 +352,10 @@ def main(cfg: HfExportConfig) -> None:
         dist.destroy_process_group()
     else:
         model_cfg["init_configure_model"] = True
+        model_cfg["pretrained_weights"] = False
         model = cls(model_cfg)
         load_checkpoint(model, cfg.ckpt_path, weights_only=cfg.weights_only)
         model = model.to(str_to_dtype(cfg.dtype))
-        model_cfg["pretrained_weights"] = False
         model.save_pretrained(cfg.output_dir, config=_hf_export_config(model, cfg.dtype))
         if cfg.prepare_vllm:
             save_llm_backbone_config(model, cfg.output_dir)

@@ -232,6 +232,38 @@ def test_invalid_mtp_training_mode_fails_before_loading(monkeypatch):
         SALMAutomodel.configure_model(model)
 
 
+@pytest.mark.parametrize(
+    ("mtp_overrides", "error_match"),
+    [
+        ({"training_mode": "joint", "loss_type": "lk"}, "requires mtp.training_mode='head_only'"),
+        ({"training_mode": "head_only", "loss_type": "lk", "lk_lambda": 1.1}, "mtp.lk_lambda"),
+        ({"training_mode": "head_only", "loss_type": "unknown"}, "mtp.loss_type"),
+    ],
+)
+def test_invalid_mtp_lk_config_fails_before_loading(monkeypatch, mtp_overrides, error_match):
+    from omegaconf import DictConfig
+
+    model = _bare_model()
+    model.cfg = DictConfig(
+        {
+            "pretrained_llm": "unused",
+            "pretrained_asr": "unused",
+            "mtp": {"enabled": True, **mtp_overrides},
+        }
+    )
+    model._trainer = None
+    model._use_fsdp = False
+    model._use_tp = False
+    monkeypatch.setattr(
+        salm_module,
+        "load_pretrained_automodel_llm",
+        lambda *_args, **_kwargs: pytest.fail("invalid LK config must fail before loading"),
+    )
+
+    with pytest.raises(ValueError, match=error_match):
+        SALMAutomodel.configure_model(model)
+
+
 def test_repeated_layer_settings_reach_native_mtp_constructor(monkeypatch):
     """Reload preserves logical MTP depth when the checkpoint stores one physical repeated layer."""
     from omegaconf import DictConfig
@@ -636,6 +668,347 @@ def test_iter_mtp_depth_targets_masks_trailing_and_packed_boundaries():
     torch.testing.assert_close(targets[1], torch.tensor([12, -100, -100, -100, -100]))
 
 
+def test_mtp_lk_loss_matches_forward_kl_tv_and_detaches_teacher():
+    vocab_size = 4
+    model = torch.nn.Module()
+    model.lm_head = torch.nn.Linear(vocab_size, vocab_size, bias=False)
+    with torch.no_grad():
+        model.lm_head.weight.copy_(torch.eye(vocab_size))
+
+    teacher_logits = torch.tensor(
+        [
+            [3.0, 1.0, -1.0, 0.0],
+            [0.0, 2.0, 1.0, -2.0],
+            [-1.0, 0.0, 3.0, 1.0],
+            [1.0, -2.0, 0.0, 2.0],
+        ],
+        requires_grad=True,
+    )
+    draft_hidden = torch.zeros_like(teacher_logits, requires_grad=True)
+    labels = torch.arange(teacher_logits.shape[0])
+    lk_lambda = 0.25
+    scaling_factor = 0.2
+
+    output = mtp_module.calculate_mtp_lk_loss(
+        mtp_per_depth_h=[draft_hidden],
+        teacher_logits=teacher_logits,
+        labels=labels,
+        model=model,
+        scaling_factor=scaling_factor,
+        lk_lambda=lk_lambda,
+    )
+
+    teacher_log_probs = torch.log_softmax(teacher_logits[1:].detach(), dim=-1)
+    draft_log_probs = torch.log_softmax(draft_hidden[:-1], dim=-1)
+    teacher_probs = teacher_log_probs.exp()
+    draft_probs = draft_log_probs.exp()
+    expected_kl = (teacher_probs * (teacher_log_probs - draft_log_probs)).sum() / labels.numel()
+    expected_tv = 0.5 * (teacher_probs - draft_probs).abs().sum() / labels.numel()
+    expected = scaling_factor * (lk_lambda * expected_kl + (1.0 - lk_lambda) * expected_tv)
+
+    torch.testing.assert_close(output.per_depth_kl[0], expected_kl)
+    torch.testing.assert_close(output.per_depth_tv[0], expected_tv)
+    torch.testing.assert_close(output.loss, expected)
+    output.loss.backward()
+    assert teacher_logits.grad is None
+    assert draft_hidden.grad is not None
+
+
+def test_mtp_lk_loss_matches_reference_for_multiple_depths():
+    vocab_size = 4
+    model = torch.nn.Module()
+    model.lm_head = torch.nn.Linear(vocab_size, vocab_size, bias=False)
+    with torch.no_grad():
+        model.lm_head.weight.copy_(torch.eye(vocab_size))
+
+    torch.manual_seed(7)
+    teacher_logits = torch.randn(6, vocab_size)
+    draft_hidden = [
+        torch.randn_like(teacher_logits, requires_grad=True),
+        torch.randn_like(teacher_logits, requires_grad=True),
+    ]
+    labels = torch.arange(teacher_logits.shape[0])
+    lk_lambda = 0.4
+    scaling_factor = 0.3
+
+    output = mtp_module.calculate_mtp_lk_loss(
+        mtp_per_depth_h=draft_hidden,
+        teacher_logits=teacher_logits,
+        labels=labels,
+        model=model,
+        scaling_factor=scaling_factor,
+        lk_lambda=lk_lambda,
+    )
+
+    expected_depth_losses = []
+    for depth, hidden in enumerate(draft_hidden, start=1):
+        teacher_log_probs = torch.log_softmax(teacher_logits[depth:], dim=-1)
+        draft_log_probs = torch.log_softmax(hidden[:-depth], dim=-1)
+        teacher_probs = teacher_log_probs.exp()
+        draft_probs = draft_log_probs.exp()
+        expected_kl = (teacher_probs * (teacher_log_probs - draft_log_probs)).sum() / labels.numel()
+        expected_tv = 0.5 * (teacher_probs - draft_probs).abs().sum() / labels.numel()
+        expected_depth_losses.append(lk_lambda * expected_kl + (1.0 - lk_lambda) * expected_tv)
+        torch.testing.assert_close(output.per_depth_kl[depth - 1], expected_kl)
+        torch.testing.assert_close(output.per_depth_tv[depth - 1], expected_tv)
+
+    torch.testing.assert_close(output.loss, scaling_factor * torch.stack(expected_depth_losses).mean())
+    output.loss.backward()
+    assert all(hidden.grad is not None for hidden in draft_hidden)
+
+
+def test_mtp_lk_projects_only_vocab_bounded_chunks(monkeypatch):
+    class _RecordingLMHead(torch.nn.Linear):
+        def __init__(self):
+            super().__init__(4, 4, bias=False)
+            self.rows_per_call = []
+
+        def forward(self, hidden):
+            self.rows_per_call.append(hidden.shape[0])
+            return super().forward(hidden)
+
+    model = torch.nn.Module()
+    model.lm_head = _RecordingLMHead()
+    teacher_logits = torch.randn(6, 4)
+    draft_hidden = torch.randn(6, 4, requires_grad=True)
+    monkeypatch.setattr(mtp_module, "_LK_MAX_CHUNK_ELEMENTS", 8)
+
+    output = mtp_module.calculate_mtp_lk_loss(
+        mtp_per_depth_h=[draft_hidden],
+        teacher_logits=teacher_logits,
+        labels=torch.arange(6),
+        model=model,
+        scaling_factor=1.0,
+        lk_lambda=0.5,
+    )
+
+    assert model.lm_head.rows_per_call == [2, 2, 1]
+    output.loss.backward()
+    assert max(model.lm_head.rows_per_call) == 2
+    assert draft_hidden.grad is not None
+
+
+def test_mtp_lk_loss_aligns_teacher_without_crossing_packed_boundaries():
+    vocab_size = 3
+    model = torch.nn.Module()
+    model.lm_head = torch.nn.Linear(vocab_size, vocab_size, bias=False)
+    with torch.no_grad():
+        model.lm_head.weight.copy_(torch.eye(vocab_size))
+
+    teacher_logits = torch.randn(5, vocab_size)
+    draft_hidden = torch.randn_like(teacher_logits, requires_grad=True)
+    with torch.no_grad():
+        draft_hidden[0] = teacher_logits[1]
+        draft_hidden[1] = teacher_logits[2]
+        draft_hidden[3] = teacher_logits[4]
+
+    output = mtp_module.calculate_mtp_lk_loss(
+        mtp_per_depth_h=[draft_hidden],
+        teacher_logits=teacher_logits,
+        labels=torch.arange(5),
+        model=model,
+        scaling_factor=1.0,
+        lk_lambda=0.5,
+        cu_seqlens=torch.tensor([0, 3, 5], dtype=torch.int32),
+    )
+
+    torch.testing.assert_close(output.loss, torch.tensor(0.0), atol=1e-7, rtol=0.0)
+
+
+def _run_fsdp_lk_with_uneven_valid_rows(rank, world_size, init_file):
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import fully_shard
+
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        mesh = init_device_mesh("cpu", (world_size,), mesh_dim_names=("dp",))
+
+        class _TinyModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.mtp = torch.nn.Linear(7, 7)
+                self.lm_head = torch.nn.Linear(7, 13, bias=False)
+
+            def forward(self, inputs):
+                return self.mtp(inputs), self.lm_head(inputs).detach()
+
+        model = _TinyModel()
+        model.lm_head.requires_grad_(False)
+        fully_shard(model.lm_head, mesh=mesh, reshard_after_forward=False)
+        fully_shard(model, mesh=mesh, reshard_after_forward=False)
+
+        torch.manual_seed(23)
+        draft_hidden, teacher_logits = model(torch.randn(2, 6, 7))
+        labels = torch.full((2, 6), -100, dtype=torch.long) if rank == 0 else torch.arange(12).reshape(2, 6)
+        mtp_module._LK_MAX_CHUNK_ELEMENTS = 26
+
+        output = mtp_module.calculate_mtp_lk_loss(
+            mtp_per_depth_h=[draft_hidden],
+            teacher_logits=teacher_logits,
+            labels=labels,
+            model=model,
+            scaling_factor=0.3,
+            lk_lambda=0.4,
+            num_label_tokens=12,
+            projection_sync_group=torch.distributed.group.WORLD,
+        )
+        output.loss.backward()
+        assert model.mtp.weight.grad is not None
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+def test_fsdp_lk_supports_rank_with_no_valid_rows(tmp_path):
+    import time
+
+    if not torch.distributed.is_available() or not torch.distributed.is_gloo_available():
+        pytest.skip("Gloo distributed backend is unavailable")
+
+    world_size = 2
+    process_context = torch.multiprocessing.spawn(
+        _run_fsdp_lk_with_uneven_valid_rows,
+        args=(world_size, str(tmp_path / "fsdp_init")),
+        nprocs=world_size,
+        join=False,
+    )
+    deadline = time.monotonic() + 20
+    while not process_context.join(timeout=max(0.0, deadline - time.monotonic())):
+        if time.monotonic() < deadline:
+            continue
+        for process in process_context.processes:
+            process.terminate()
+        for process in process_context.processes:
+            process.join(timeout=5)
+        pytest.fail("FSDP LK loss hung with uneven valid-token counts across ranks")
+
+
+def _run_context_parallel_lk_reference(rank, world_size, init_file):
+    import sys
+
+    partitions = (
+        torch.tensor([0, 1, 6, 7], dtype=torch.int32),
+        torch.tensor([2, 3, 4, 5], dtype=torch.int32),
+    )
+
+    def _partition_indices(_cu_seqlens, _total_tokens, _cp_size, cp_rank):
+        return partitions[cp_rank]
+
+    sys.modules["transformer_engine_torch"] = SimpleNamespace(thd_get_partitioned_indices=_partition_indices)
+    torch.distributed.init_process_group(
+        "gloo",
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        vocab_size = 4
+        torch.manual_seed(17)
+        teacher_logits = torch.randn(8, vocab_size)
+        draft_hidden = torch.randn(8, vocab_size)
+        model = torch.nn.Module()
+        model.lm_head = torch.nn.Linear(vocab_size, vocab_size, bias=False)
+        with torch.no_grad():
+            model.lm_head.weight.copy_(torch.eye(vocab_size))
+
+        full_targets = torch.tensor([0, 0, 0, 0, 0, 0, 0, -100])
+        reference = mtp_module.calculate_mtp_lk_loss(
+            mtp_per_depth_h=[draft_hidden],
+            teacher_logits=teacher_logits,
+            labels=torch.arange(8),
+            model=model,
+            scaling_factor=0.3,
+            lk_lambda=0.4,
+            num_label_tokens=8,
+            mtp_per_depth_targets=[full_targets],
+        )
+
+        partition = partitions[rank]
+        local_targets = torch.where(partition < 7, 0, -100)
+        actual = mtp_module.calculate_mtp_lk_loss(
+            mtp_per_depth_h=[draft_hidden.index_select(0, partition.long())],
+            teacher_logits=teacher_logits.index_select(0, partition.long()),
+            labels=torch.arange(partition.numel()),
+            model=model,
+            scaling_factor=0.3,
+            lk_lambda=0.4,
+            num_label_tokens=8,
+            cu_seqlens=torch.tensor([0, 8], dtype=torch.int32),
+            mtp_per_depth_targets=[local_targets],
+            context_parallel_group=torch.distributed.group.WORLD,
+        )
+
+        reduced = torch.stack((actual.per_depth_kl[0], actual.per_depth_tv[0], actual.loss))
+        torch.distributed.all_reduce(reduced)
+        expected = torch.stack((reference.per_depth_kl[0], reference.per_depth_tv[0], reference.loss))
+        torch.testing.assert_close(reduced, expected)
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+def test_context_parallel_lk_matches_single_rank_reference(tmp_path):
+    if not torch.distributed.is_available() or not torch.distributed.is_gloo_available():
+        pytest.skip("Gloo distributed backend is unavailable")
+
+    world_size = 2
+    torch.multiprocessing.spawn(
+        _run_context_parallel_lk_reference,
+        args=(world_size, str(tmp_path / "cp_init")),
+        nprocs=world_size,
+        join=True,
+    )
+
+
+def test_context_parallel_teacher_exchange_preserves_local_output_order(monkeypatch):
+    import sys
+
+    global_logits = torch.arange(8, dtype=torch.float32).unsqueeze(-1)
+    rank_zero_partition = torch.tensor([0, 1, 6, 7], dtype=torch.int32)
+    rank_one_partition = torch.tensor([2, 3, 4, 5], dtype=torch.int32)
+    local_logits = global_logits.index_select(0, rank_zero_partition.long())
+
+    def _partition_indices(_cu_seqlens, _total_tokens, _cp_size, cp_rank):
+        return rank_zero_partition if cp_rank == 0 else rank_one_partition
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformer_engine_torch",
+        SimpleNamespace(thd_get_partitioned_indices=_partition_indices),
+    )
+    monkeypatch.setattr(mtp_module.dist, "get_world_size", lambda _group: 2)
+    monkeypatch.setattr(mtp_module.dist, "get_rank", lambda _group: 0)
+    collective_call = {"value": 0}
+
+    def _all_to_all_single(output, input, **_kwargs):
+        collective_call["value"] += 1
+        if collective_call["value"] == 1:
+            torch.testing.assert_close(input, torch.tensor([2, 1]))
+            output.zero_()
+        elif collective_call["value"] == 2:
+            torch.testing.assert_close(input, torch.tensor([1, 3, 0]))
+            assert output.numel() == 0
+        else:
+            assert collective_call["value"] == 3
+            assert input.numel() == 0
+            output.copy_(global_logits[torch.tensor([1, 7, 2])])
+
+    monkeypatch.setattr(mtp_module.dist, "all_to_all_single", _all_to_all_single)
+
+    aligned = mtp_module._exchange_context_parallel_teacher_logits(
+        local_logits,
+        valid=torch.tensor([True, True, True, False]),
+        depth=1,
+        cu_seqlens=torch.tensor([0, 8], dtype=torch.int32),
+        group=object(),
+    )
+
+    torch.testing.assert_close(aligned, global_logits[torch.tensor([1, 2, 7, 0])])
+
+
 def test_training_step_forwards_packed_cu_seqlens_to_mtp_loss(monkeypatch):
     class _Perception(torch.nn.Module):
         def __init__(self):
@@ -694,6 +1067,87 @@ def test_training_step_forwards_packed_cu_seqlens_to_mtp_loss(monkeypatch):
 
     assert captured_kwargs["mtp_per_depth_targets"] is mtp_per_depth_targets
     assert captured_kwargs["cu_seqlens"] is None
+
+
+def test_training_step_routes_head_only_lk_to_backbone_teacher(monkeypatch):
+    class _Perception(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.preprocessor = torch.nn.Identity()
+            self.encoder = torch.nn.Identity()
+
+    class _LLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Dropout())
+            self.lm_head = torch.nn.Sequential(torch.nn.Dropout(), torch.nn.Linear(4, 8))
+            self.mtp = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Dropout())
+
+    model = _bare_model()
+    model.perception = _Perception()
+    model.llm = _LLM()
+    model.llm.requires_grad_(False)
+    model.llm.mtp.requires_grad_(True)
+    model.train()
+    model.lss_loss = None
+    model._mtp_loss_type = "lk"
+    model._mtp_lk_lambda = 0.4
+    model._mtp_loss_scaling_factor = 0.1
+    model._trainer = None
+    model.tokenizer = type("Tokenizer", (), {"pad": -1, "unk_id": None})()
+    dp_group = SimpleNamespace(size=lambda: 1)
+    model._get_moe_dp_group = lambda: dp_group
+    model.log = lambda *_args, **_kwargs: None
+    model.log_dict = lambda *_args, **_kwargs: None
+    model.maybe_log_moe_metrics = lambda _batch_idx: None
+
+    cu_seqlens = torch.tensor([0, 3, 5], dtype=torch.int32)
+    mtp_targets = [torch.tensor([1, 2, -100, 4, -100])]
+    inputs = {
+        "input_embeds": torch.zeros(5, 4),
+        "attention_mask": None,
+        "target_ids": torch.tensor([0, 1, 2, 3, 4]),
+        "mtp_per_depth_targets": mtp_targets,
+        "llm_kwargs": {"cu_seqlens": cu_seqlens},
+        "num_tokens": 5,
+        "num_examples": 2,
+    }
+    teacher_logits = torch.zeros(1, 5, 8)
+    model.prepare_inputs = lambda _batch: inputs
+    model.forward = lambda *_args, **_kwargs: {
+        "logits": teacher_logits,
+        "mtp_per_depth_h": [torch.zeros(1, 5, 4)],
+    }
+    captured_kwargs = {}
+
+    def _calculate_mtp_lk_loss(**kwargs):
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(
+            loss=torch.tensor(0.25),
+            per_depth_losses=[torch.tensor(2.5)],
+            per_depth_kl=[torch.tensor(1.5)],
+            per_depth_tv=[torch.tensor(3.5)],
+        )
+
+    monkeypatch.setattr(salm_module, "calculate_mtp_lk_loss", _calculate_mtp_lk_loss)
+    monkeypatch.setattr(
+        salm_module,
+        "calculate_mtp_loss_with_per_depth",
+        lambda *_args, **_kwargs: pytest.fail("LK training must not call the cross-entropy MTP loss"),
+    )
+
+    model._training_step_batch({"input_ids": torch.tensor([[1, 2, 3, 4, 5]])}, batch_idx=0)
+
+    assert model.llm.training
+    assert not model.llm.model.training
+    assert not model.llm.lm_head.training
+    assert model.llm.mtp.training
+    assert not model.perception.training
+    assert captured_kwargs["teacher_logits"] is teacher_logits
+    assert captured_kwargs["mtp_per_depth_targets"] is mtp_targets
+    assert captured_kwargs["cu_seqlens"] is cu_seqlens
+    assert captured_kwargs["lk_lambda"] == 0.4
+    assert captured_kwargs["projection_sync_group"] is dp_group
 
 
 def test_mtp_validation_forward_uses_and_restores_native_gate():

@@ -777,6 +777,7 @@ class TestMTPPlugin:
     def test_patched_override_routes_nemo_mtp_config(self, monkeypatch):
         """hf_config_override should rewrite nemo_speechlm configs with MTP heads."""
         from transformers import AutoConfig
+
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
 
@@ -856,6 +857,7 @@ class TestMTPPlugin:
     def test_patched_override_enabled_mtp_defaults_to_one_head(self, monkeypatch):
         """An enabled training block without an explicit depth constructs one head."""
         from transformers import AutoConfig
+
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
 
@@ -869,6 +871,7 @@ class TestMTPPlugin:
     def test_patched_override_repeated_layer_exposes_one_reusable_head(self, monkeypatch):
         """Repeated-layer training depth must not constrain inference-time K."""
         from transformers import AutoConfig
+
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
 
@@ -955,6 +958,7 @@ class TestMTPPlugin:
     def test_patched_override_multi_head_without_repeated_layer_raises(self, monkeypatch):
         """hf_config_override should raise for multi-head checkpoints without use_repeated_layer."""
         from transformers import AutoConfig
+
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
 
@@ -968,6 +972,7 @@ class TestMTPPlugin:
     def test_mtp_override_registration_is_idempotent(self, monkeypatch):
         """register() should not repeatedly wrap the config override."""
         from transformers import AutoConfig
+
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
         first_override = SpeculativeConfig.hf_config_override

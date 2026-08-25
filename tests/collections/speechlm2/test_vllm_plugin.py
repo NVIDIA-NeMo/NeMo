@@ -117,9 +117,7 @@ class TestNeMoSpeechLMConfig:
     )
     def test_is_hybrid_backend_helper(self, architectures, expected_is_hybrid):
         """``_is_hybrid_backend`` should match the documented hybrid allow-list."""
-        from nemo.collections.speechlm2.vllm.salm.config import _is_hybrid_backend
-
-        assert _is_hybrid_backend(architectures) is expected_is_hybrid
+        assert _config_module._is_hybrid_backend(architectures) is expected_is_hybrid
 
     @pytest.mark.parametrize(
         "backbone_archs, expected_is_hybrid",

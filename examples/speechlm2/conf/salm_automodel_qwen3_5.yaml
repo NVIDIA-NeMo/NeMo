@@ -1,11 +1,3 @@
-# SALM with a Qwen3.5 LLM backbone.
-#
-# Qwen/Qwen3.5-0.8B is a natively multimodal checkpoint (architectures:
-# Qwen3_5ForConditionalGeneration). Loading it as a causal LM yields a
-# Qwen3_5ForCausalLM, whose _keys_to_ignore_on_load_unexpected drops the vision
-# tower (model.visual.*) and the MTP tensors (mtp.*) automatically -- only the
-# text backbone is kept. Requires a transformers build that ships
-# `transformers/models/qwen3_5/` (>= 5.x); no trust_remote_code is needed.
 model:
   # Every name/path here starting with 'pretrained' is used to initialize the model weights.
   pretrained_llm: Qwen/Qwen3.5-0.8B
@@ -33,9 +25,12 @@ model:
     - "^perception\\.encoder(_multilayer\\.encoder)?\\..+$"
   prevent_freeze_params: []  # Use to make specific submodules trainable; overrides freeze_params
 
-  # Multi-Token Prediction is opt-in. It must stay disabled for this backbone: the checkpoint
-  # ships `mtp.*` weights for inference engines, but transformers has no Qwen3.5 MTP head, so
-  # those tensors are dropped on load and there is nothing to train.
+  # Multi-Token Prediction is opt-in. Some LLM checkpoints include native MTP
+  # weights; they are restored when enabled and skipped entirely when disabled.
+  # For a base checkpoint without MTP weights, enabling this block initializes a
+  # fresh head before Automodel parallelizes and loads the backbone weights. Add
+  # "^llm\\.mtp\\..+$" to
+  # prevent_freeze_params when the broad LLM freeze pattern above is active.
   mtp:
     enabled: false
     training_mode: joint  # joint preserves the recipe freeze policy; head_only trains only llm.mtp
@@ -72,7 +67,7 @@ model:
   # MoE auxiliary load balancing loss coefficient. Set > 0 to enable.
   # Gradients are injected automatically during backward — does not change reported CE loss.
   # Typical range: 0.001 - 0.01.
-  aux_loss_coeff: 0.0  # MoE-only; Qwen3.5-0.8B is dense
+  aux_loss_coeff: 0.0
 
   # MoE router/gate trainability. When true, unfreezes Gate.weight so the
   # router can adapt to the new data distribution during fine-tuning.
@@ -81,7 +76,7 @@ model:
 
   # MoE expert balance/utilization metrics logging.
   moe_metrics:
-    enabled: false  # Qwen3.5-0.8B is dense, not MoE
+    enabled: false
     mode: brief            # "brief" or "detailed" (adds per-layer breakdowns)
     detailed_every_steps: null  # null = every step when mode=detailed
     top_k_experts: 5       # top/bottom utilization experts to report
@@ -101,9 +96,6 @@ model:
   # selects installed kernels by default; pin dispatcher=torch for a portable setup.
   # TODO (Dongji): This is a temporary release unblock. Remove the override once
   # BackendConfig checks NVLINK/NVSHMEM topology before selecting DeepEP.
-  # Automodel backend dispatch (attention/linear/rms_norm kernels). Left unset here so
-  # Automodel picks its defaults; note that only the 6 full-attention layers are affected --
-  # the GatedDeltaNet layers use their own causal_conv1d/fla kernels and are CUDA-only.
   # automodel_backend:
   #   attn: te                  # "te" | "sdpa" | "flex"
   #   linear: te                # "torch" | "te"
@@ -117,7 +109,7 @@ model:
 
   perception:
     target: nemo.collections.speechlm2.modules.perception.AudioPerceptionModule
-    output_dim: 1024  # Qwen3.5-0.8B text_config.hidden_size
+    output_dim: 1024
     modality_adapter:
       _target_: nemo.collections.speechlm2.modules.perception.IdentityConnector
       d_model: 1024
@@ -177,12 +169,8 @@ trainer:
     dp_replicate_size: 1  # HSDP replication group size (>1 enables hybrid sharding)
     tp_size: 1          # Tensor parallel size
     pp_size: 1          # Pipeline parallel size
-    # Qwen3.5 is hybrid-attention: 18 of its 24 layers are recurrent GatedDeltaNet
-    # "linear_attention" layers. Those cannot be split along the sequence dimension and have
-    # no cu_seqlens contract, so cp_size must stay 1 and `model.packed_sequences` must stay
-    # off -- SALMAutomodel raises at fit/validation start otherwise.
     cp_size: 1          # Context parallel size
-    ep_size: 1          # Expert parallel size (for MoE models); Qwen3.5-0.8B is dense
+    ep_size: 1          # Expert parallel size (for MoE models)
 
     # --- Activation checkpointing ---
     # Two independent knobs: one for the LLM, one for the perception encoder.
@@ -252,7 +240,7 @@ data:
             cuts_path: ???  # needs to be set
             audio_locator_tag: ${model.audio_locator_tag}
             tags:
-              # Uncomment below line to include a system prompt (Qwen3.5 supports the system role).
+              # Uncomment below line to include a system prompt for supported models (e.g. Llama; not Qwen).
               # system_prompt: "some system prompt"
               context: "Transcribe the following:"
     sample_rate: 16000

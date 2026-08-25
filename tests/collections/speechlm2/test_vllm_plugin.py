@@ -25,9 +25,11 @@ from types import SimpleNamespace
 import pytest
 
 try:
-    from nemo.collections.speechlm2.vllm.salm import config as _config_module
+    import nemo.collections.speechlm2.vllm.salm as _salm_module
+    import nemo.collections.speechlm2.vllm.salm.config as _config_module
 
     NeMoSpeechLMConfig = _config_module.NeMoSpeechLMConfig
+    register = _salm_module.register
 
     _HAS_CONFIG = True
 except (ImportError, RuntimeError):
@@ -648,8 +650,6 @@ class TestPluginRegistration:
         """register() should add nemo_speechlm to vLLM's config registry."""
         from transformers import AutoConfig
 
-        from nemo.collections.speechlm2.vllm.salm import register
-
         monkeypatch.setattr(
             AutoConfig, "from_pretrained", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError())
         )
@@ -668,8 +668,6 @@ class TestPluginRegistration:
         """
         from transformers import AutoConfig
 
-        from nemo.collections.speechlm2.vllm.salm import register
-
         monkeypatch.setattr(
             AutoConfig, "from_pretrained", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError())
         )
@@ -686,8 +684,6 @@ class TestPluginRegistration:
     def test_register_does_not_patch_fast_tokenizer(self, monkeypatch):
         from transformers import AutoConfig, PreTrainedTokenizerFast
 
-        from nemo.collections.speechlm2.vllm.salm import register
-
         monkeypatch.setattr(
             AutoConfig, "from_pretrained", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError())
         )
@@ -700,8 +696,6 @@ class TestPluginRegistration:
         from unittest.mock import Mock
 
         from transformers import AutoConfig
-
-        from nemo.collections.speechlm2.vllm.salm import register
 
         from_pretrained = Mock(side_effect=AssertionError("register() must not load remote backbone configs"))
         monkeypatch.setattr(AutoConfig, "from_pretrained", from_pretrained)
@@ -759,8 +753,6 @@ class TestMTPPlugin:
         from transformers import AutoConfig
         from vllm.model_executor.models.registry import ModelRegistry
 
-        from nemo.collections.speechlm2.vllm.salm import register
-
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
 
         register()
@@ -774,8 +766,6 @@ class TestMTPPlugin:
         import vllm.config.speculative as _spec_mod
         from transformers import AutoConfig
 
-        from nemo.collections.speechlm2.vllm.salm import register
-
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
 
         register()
@@ -786,8 +776,6 @@ class TestMTPPlugin:
         """hf_config_override should rewrite nemo_speechlm configs with MTP heads."""
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
-
-        from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
@@ -811,8 +799,6 @@ class TestMTPPlugin:
         from vllm.config.speculative import SpeculativeConfig
 
         import nemo.collections.speechlm2.vllm.salm as salm_module
-
-        from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
@@ -878,8 +864,6 @@ class TestMTPPlugin:
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
 
-        from nemo.collections.speechlm2.vllm.salm import register
-
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
 
@@ -894,8 +878,6 @@ class TestMTPPlugin:
         """Repeated-layer training depth must not constrain inference-time K."""
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
-
-        from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
@@ -915,8 +897,6 @@ class TestMTPPlugin:
         from vllm.config.speculative import SpeculativeConfig
 
         import nemo.collections.speechlm2.vllm.salm as salm_module
-
-        from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         original_calls = []
@@ -940,8 +920,6 @@ class TestMTPPlugin:
         from vllm.config.speculative import SpeculativeConfig
 
         import nemo.collections.speechlm2.vllm.salm as salm_module
-
-        from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         original_calls = []
@@ -970,8 +948,6 @@ class TestMTPPlugin:
 
         import nemo.collections.speechlm2.vllm.salm as salm_module
 
-        from nemo.collections.speechlm2.vllm.salm import register
-
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         original_calls = []
 
@@ -997,8 +973,6 @@ class TestMTPPlugin:
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
 
-        from nemo.collections.speechlm2.vllm.salm import register
-
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
 
@@ -1014,8 +988,6 @@ class TestMTPPlugin:
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
 
-        from nemo.collections.speechlm2.vllm.salm import register
-
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
         first_override = SpeculativeConfig.hf_config_override
@@ -1029,8 +1001,6 @@ class TestMTPPlugin:
         from vllm.config.speculative import SpeculativeConfig
 
         import nemo.collections.speechlm2.vllm.salm as salm_module
-
-        from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         native_calls = []

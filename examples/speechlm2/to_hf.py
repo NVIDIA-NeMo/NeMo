@@ -102,6 +102,9 @@ def _canonical_torch_dtype_name(dtype: str | torch.dtype) -> str:
 def _hf_export_config(model: torch.nn.Module, dtype: str | torch.dtype) -> dict[str, Any]:
     """Build the exported root config without mutating the training config."""
     config = OmegaConf.to_container(model.cfg) if isinstance(model.cfg, DictConfig) else deepcopy(model.cfg)
+    # Remote-code trust is a runtime security decision. Do not persist a
+    # training-time opt-in in checkpoints that may be loaded by another user.
+    config.pop("trust_remote_code", None)
     mtp_cfg = config.get("mtp")
     llm_config = getattr(getattr(model, "llm", None), "config", None)
     actual_mtp_pattern = getattr(llm_config, "mtp_hybrid_override_pattern", None)

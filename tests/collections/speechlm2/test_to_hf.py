@@ -146,6 +146,15 @@ def test_hf_export_config_persists_built_mtp_pattern_without_mutating_recipe():
     assert model.cfg["mtp"]["hybrid_override_pattern"] == "*"
 
 
+def test_hf_export_config_does_not_persist_remote_code_trust():
+    model = SimpleNamespace(cfg={"trust_remote_code": True})
+
+    config = to_hf._hf_export_config(model, "bfloat16")
+
+    assert "trust_remote_code" not in config
+    assert model.cfg["trust_remote_code"] is True
+
+
 def test_hf_export_config_persists_built_non_repeated_mtp_depth():
     """A preserved native head's actual depth must override stale recipe metadata."""
     model = SimpleNamespace(

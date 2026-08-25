@@ -122,7 +122,7 @@ def add_simulstream_fields(
         output_manifest: Optional path to write a NeMo-style prediction manifest.
 
     Returns:
-        Path to the generated config file with the required fields added. 
+        Path to the generated config file with the required fields added.
         This config can be used to later evaluate performance metrics in SimulStream or OmniSTEval.
     """
     cfg = OmegaConf.load(cfg_path)
@@ -143,7 +143,9 @@ def add_simulstream_fields(
         cfg.nmt.target_language = get_language_name(tgt_lang)
 
     if 'type' in cfg:
-        logging.info(f"Config already has 'type' field, assuming it's already prepared for simulstream and using as-is: {cfg_path}")
+        logging.info(
+            f"Config already has 'type' field, assuming it's already prepared for simulstream and using as-is: {cfg_path}"
+        )
         return str(cfg_path)
 
     logging.info(f"Adding simulstream fields to config: {cfg_path}")

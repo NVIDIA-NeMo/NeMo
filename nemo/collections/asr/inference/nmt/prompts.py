@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import re
+import textwrap
 from abc import ABC, abstractmethod
 
 
@@ -107,15 +108,17 @@ class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
     Speech Translation" (https://aclanthology.org/2026.iwslt-1.23.pdf).
     """
 
-    SYSTEM_MESSAGE = (
-        "You are a professional machine translation assistant.\n"
-        "Translate the input text into the target language.\n"
-        "- Output only the translation.\n"
-        "- Do not complete or extend the text.\n"
-        "- The input may be incomplete; preserve incompleteness.\n"
-        "- Do not infer missing content.\n"
-        "- Stop immediately after translating.\n"
-        "- Preserve named entities, numbers, punctuation, and formatting."
+    SYSTEM_MESSAGE = textwrap.dedent(
+        """\
+        You are a professional machine translation assistant.
+        Translate the input text into the target language.
+        - Output only the translation.
+        - Do not complete or extend the text.
+        - The input may be incomplete; preserve incompleteness.
+        - Do not infer missing content.
+        - Stop immediately after translating.
+        - Preserve named entities, numbers, punctuation, and formatting.\
+        """
     )
 
     # Empty think block appended so model goes straight to answer (enable_thinking=False behavior)

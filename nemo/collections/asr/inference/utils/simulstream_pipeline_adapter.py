@@ -41,6 +41,8 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
+from nemo.collections.asr.inference.streaming.framing.request import Frame
+from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.context_biasing.boosting_graph_batched import BoostingTreeModelConfig
@@ -283,9 +285,6 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         Returns:
             IncrementalOutput: Streaming results (partial/final ASR + translation)
         """
-        from nemo.collections.asr.inference.streaming.framing.request import Frame
-        from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
-
         if audio.ndim > 1:
             raise ValueError("Simulstream processes only one audio at a time (batch size 1).")
 
@@ -326,10 +325,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         self._final_transcript_acc += step_output.final_transcript or ""
         self._final_translation_acc += step_output.final_translation or ""
         self._last_partial_transcript = step_output.partial_transcript or ""
-        if step_output.final_translation:
-            self._last_partial_translation = step_output.final_translation
-        elif step_output.partial_translation:
-            self._last_partial_translation = step_output.partial_translation
+        self._last_partial_translation = step_output.partial_translation or ""
 
         result = self._convert_to_incremental_output(step_output, previous_transcript)
 

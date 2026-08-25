@@ -29,9 +29,13 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import IPA
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    _sample_probability_range,
     beta_binomial_prior_distribution,
+    has_phoneme_text_spans,
     normalize_volume,
+    partially_phonemize_text,
     stack_tensors,
+    tokenize_text_with_phoneme_spans,
 )
 from nemo.core.classes.common import safe_instantiate
 from nemo.utils import logging
@@ -150,6 +154,13 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         text_context_remapping_prob: float = 0.0,
         phoneme_tokenizer_config: DictConfig = None,
         ignore_phoneme_languages: List[str] = None,
+        enable_phoneme_text_input: bool = False,
+        text_phoneme_token_offset: int = None,
+        partial_phoneme_text_prob: float = 0.0,
+        partial_phoneme_portion_min: float = 0.25,
+        partial_phoneme_portion_max: float = 0.75,
+        phoneme_text_bop_marker: str = "<bop>",
+        phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
         source_sample_rate: int = 16000,
         input_roles: List[str] = ["user", "User"],
@@ -183,6 +194,13 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.text_context_remapping_prob = text_context_remapping_prob
         self.phoneme_tokenizer_config = phoneme_tokenizer_config
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
+        self.enable_phoneme_text_input = enable_phoneme_text_input
+        self.text_phoneme_token_offset = text_phoneme_token_offset
+        self.partial_phoneme_text_prob = partial_phoneme_text_prob
+        self.partial_phoneme_portion_min = partial_phoneme_portion_min
+        self.partial_phoneme_portion_max = partial_phoneme_portion_max
+        self.phoneme_text_bop_marker = phoneme_text_bop_marker
+        self.phoneme_text_eop_marker = phoneme_text_eop_marker
         self.add_language_to_context_text = add_language_to_context_text
 
         self.source_sample_rate = source_sample_rate
@@ -313,6 +331,16 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             eos_id=self.eos_id,
             bos_id=self.bos_id,
             interruption_token_id=self.interruption_token_id,
+            phoneme_tokenizer=self.phoneme_tokenizer,
+            enable_phoneme_text_input=self.enable_phoneme_text_input,
+            text_phoneme_token_offset=self.text_phoneme_token_offset,
+            partial_phoneme_text_prob=self.partial_phoneme_text_prob,
+            partial_phoneme_portion_min=self.partial_phoneme_portion_min,
+            partial_phoneme_portion_max=self.partial_phoneme_portion_max,
+            phoneme_text_bop_marker=self.phoneme_text_bop_marker,
+            phoneme_text_eop_marker=self.phoneme_text_eop_marker,
+            ignore_phoneme_languages=self.ignore_phoneme_languages,
+            apply_partial_phoneme_text=self.dataset_type == 'train',
         )
         source_tokens, source_token_lens = collate_token_channel(
             cuts,
@@ -768,6 +796,16 @@ def collate_token_channel(
     eos_id: int = None,
     bos_id: int = None,
     interruption_token_id: int = None,
+    phoneme_tokenizer=None,
+    enable_phoneme_text_input: bool = False,
+    text_phoneme_token_offset: int = None,
+    partial_phoneme_text_prob: float = 0.0,
+    partial_phoneme_portion_min: float = 0.25,
+    partial_phoneme_portion_max: float = 0.75,
+    phoneme_text_bop_marker: str = "<bop>",
+    phoneme_text_eop_marker: str = "<eop>",
+    ignore_phoneme_languages: list[str] = None,
+    apply_partial_phoneme_text: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build and collate token channels aligned to the audio frame grid."""
     tokens = []
@@ -786,6 +824,16 @@ def collate_token_channel(
                 interruption_token_id,
                 add_text_bos,
                 tok_name,
+                phoneme_tokenizer,
+                enable_phoneme_text_input,
+                text_phoneme_token_offset,
+                partial_phoneme_text_prob,
+                partial_phoneme_portion_min,
+                partial_phoneme_portion_max,
+                phoneme_text_bop_marker,
+                phoneme_text_eop_marker,
+                ignore_phoneme_languages,
+                apply_partial_phoneme_text,
             )
         )
     token_lens = torch.tensor([len(tt) for tt in tokens])
@@ -831,6 +879,16 @@ def build_token_channel(
     interruption_token_id: int = -4,
     add_text_bos: bool = True,
     tokenizer_name: str = "english_phoneme",
+    phoneme_tokenizer=None,
+    enable_phoneme_text_input: bool = False,
+    text_phoneme_token_offset: int = None,
+    partial_phoneme_text_prob: float = 0.0,
+    partial_phoneme_portion_min: float = 0.25,
+    partial_phoneme_portion_max: float = 0.75,
+    phoneme_text_bop_marker: str = "<bop>",
+    phoneme_text_eop_marker: str = "<eop>",
+    ignore_phoneme_languages: list[str] = None,
+    apply_partial_phoneme_text: bool = False,
 ) -> torch.Tensor:
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
@@ -838,15 +896,47 @@ def build_token_channel(
 
     for supervision in cut.supervisions:
         if supervision.speaker in roles:
-            text = supervision.text
-
-            if hasattr(tokenizer, "encode"):
-                try:
-                    raw_ids = tokenizer.encode(text=text, tokenizer_name=tokenizer_name)
-                except TypeError:
-                    raw_ids = tokenizer.encode(text)
-            else:
-                raw_ids = tokenizer.text_to_ids(text)
+            # TODO: Current multi-turn datasets do not contain the normalized_text field so check will always default to the else branch. Will need to evaluate whether it makes sense to keep this in future.
+            # This code path is used for both multi-turn and single-turn datasets.
+            text = supervision.normalized_text if supervision.has_custom("normalized_text") else supervision.text
+            text_for_tokens = text
+            language = cut.lang if cut.has_custom("lang") else supervision.language
+            if (
+                apply_partial_phoneme_text
+                and enable_phoneme_text_input
+                and partial_phoneme_text_prob > 0.0
+                and language not in (ignore_phoneme_languages or [])
+                and supervision.has_custom("ipa_alignment")
+                and not has_phoneme_text_spans(
+                    text,
+                    bop_marker=phoneme_text_bop_marker,
+                    eop_marker=phoneme_text_eop_marker,
+                )
+                and random.random() < partial_phoneme_text_prob
+            ):
+                sampled_portion = _sample_probability_range(
+                    "partial_phoneme_portion",
+                    partial_phoneme_portion_min,
+                    partial_phoneme_portion_max,
+                )
+                text_for_tokens = partially_phonemize_text(
+                    text=text,
+                    ipa_alignment=supervision.ipa_alignment,
+                    partial_phoneme_portion=sampled_portion,
+                    full_ipa_text=_get_supervision_ipa_text(supervision),
+                    bop_marker=phoneme_text_bop_marker,
+                    eop_marker=phoneme_text_eop_marker,
+                )
+            raw_ids = tokenize_text_with_phoneme_spans(
+                text_tokenizer=tokenizer,
+                text_str=text_for_tokens,
+                tokenizer_name=tokenizer_name,
+                enable_phoneme_text_input=enable_phoneme_text_input,
+                phoneme_tokenizer=phoneme_tokenizer,
+                text_phoneme_token_offset=text_phoneme_token_offset,
+                bop_marker=phoneme_text_bop_marker,
+                eop_marker=phoneme_text_eop_marker,
+            )
 
             if add_text_bos:
                 text_ids = torch.as_tensor([bos_id] + raw_ids + [eos_id])

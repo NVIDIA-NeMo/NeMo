@@ -48,15 +48,24 @@ from typing import Optional
 import click
 from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, write_index_pack
 from lhotse.indexing import index_file_path
-from omegaconf import DictConfig, ListConfig, OmegaConf
+from nemo.collections.common.data.lhotse.indexed_adapters import (
+    validate_wds_v2_tar_index,
+    wds_v2_index_path,
+)
+from omegaconf import DictConfig, ListConfig
+from scripts.dataloading._sharegpt_route_cli import ensure_sharegpt_route
+from scripts.dataloading._sharegpt_route_config import discover_sharegpt_route_specs
 from scripts.dataloading.build_indexes import (
     _NO_INDEX_TYPES,
     _TRANSFORM_TYPES,
     JSONL,
     NEMO_TAR,
+    WDS_TAR_V2,
+    _discover_share_gpt_webdataset,
     _expand_jsonl,
     _expand_tars,
     _flatten_path_spec,
+    _load_input_cfg,
     _resolve_input_cfg,
 )
 
@@ -164,7 +173,9 @@ def _read_raw_tar_sentinel(idx_path: Path) -> tuple[int, os.stat_result]:
 def _repair_local_native_tar_sidecar(path: str, repair_root) -> Path:
     if _is_remote_path(path):
         raise ValueError(f"Refusing to repair non-local native tar source: {path}")
-    from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
+    from nemo.collections.common.data.lhotse.indexed_adapters import (
+        create_tar_index as create_nemo_tar_index,
+    )
 
     repair_idx = _resolve_local_sidecar(path, repair_root)
     repair_idx.parent.mkdir(parents=True, exist_ok=True)
@@ -308,6 +319,33 @@ def _preflight_native_tar_sidecars(
             validated.add(path)
     return source_size_overrides, index_path_overrides
 
+def _preflight_wds_v2_sidecars(collections, indexes_root) -> dict[str, Path]:
+    index_path_overrides = {}
+    validated = set()
+    for collection in collections:
+        if collection.kind != WDS_TAR_V2 or not collection.offsets_required:
+            continue
+        for path in collection.paths:
+            path = str(path)
+            if path in validated:
+                continue
+            idx_path = wds_v2_index_path(path, indexes_root)
+            validate_wds_v2_tar_index(path, idx_path=idx_path)
+            index_path_overrides[path] = idx_path
+            validated.add(path)
+    return index_path_overrides
+
+
+def _path_only_source_sizes(collections) -> dict[str, int]:
+    """Capture live sizes so path-only pack segments remain reusable safely."""
+    return {
+        str(path): _source_size(str(path))
+        for collection in collections
+        if not collection.offsets_required
+        for path in collection.paths
+    }
+
+
 
 def _discover_paths_collections(
     raw_paths,
@@ -416,13 +454,15 @@ def _expand_flat_native_pairs(manifest_specs, tar_specs) -> tuple[list[str], lis
 def discover_pack_collections(
     entry,
     collections: Optional[list[IndexPackCollectionSpec]] = None,
+    *,
+    data_blend_dir: str | Path | None = None,
 ) -> list[IndexPackCollectionSpec]:
     """Discover ordered, runtime-addressable collections in one input_cfg."""
     if collections is None:
         collections = []
     if isinstance(entry, (list, ListConfig)):
         for item in entry:
-            discover_pack_collections(item, collections)
+            discover_pack_collections(item, collections, data_blend_dir=data_blend_dir)
         return collections
     if not isinstance(entry, (dict, DictConfig)):
         return collections
@@ -433,19 +473,19 @@ def discover_pack_collections(
 
     if typ is None:
         for value in entry.values():
-            discover_pack_collections(value, collections)
+            discover_pack_collections(value, collections, data_blend_dir=data_blend_dir)
         return collections
 
     if typ == "group":
-        sub = _resolve_input_cfg(entry.get("input_cfg"))
+        sub = _resolve_input_cfg(entry.get("input_cfg"), data_blend_dir)
         if sub is not None:
-            discover_pack_collections(sub, collections)
+            discover_pack_collections(sub, collections, data_blend_dir=data_blend_dir)
         return collections
 
     if typ in _TRANSFORM_TYPES:
-        sub = _resolve_input_cfg(entry.get("input_cfg"))
+        sub = _resolve_input_cfg(entry.get("input_cfg"), data_blend_dir)
         if sub is not None:
-            discover_pack_collections(sub, collections)
+            discover_pack_collections(sub, collections, data_blend_dir=data_blend_dir)
             return collections
         if entry.get("manifest_filepath") is None:
             return collections
@@ -456,16 +496,77 @@ def discover_pack_collections(
         "multimodal_conversation",
         "nemotron_text_converation",
         "share_gpt",
+        "share_gpt_webdataset",
         *_TRANSFORM_TYPES,
     }
     if typ not in supported:
         raise NotImplementedError(f"idxpack conversion does not support dataset type {typ!r}.")
 
+
+    if typ == "share_gpt_webdataset":
+        version = int(entry.get("wds_sample_index_version", 1))
+        if version != 2:
+            raise NotImplementedError(
+                "Packed share_gpt_webdataset requires wds_sample_index_version: 2; "
+                f"got {version}."
+            )
+        jobs = []
+        data_dir = entry.get("data_dir")
+        if data_dir is None:
+            raise ValueError("Packed WDS v2 requires share_gpt_webdataset.data_dir")
+        _discover_share_gpt_webdataset(
+            data_dir,
+            jobs,
+            None,
+            index_version=version,
+        )
+        _add_collection(
+            collections,
+            role="wds_tar",
+            kind=WDS_TAR_V2,
+            source_spec=data_dir,
+            paths=[job.path for job in jobs if job.kind == WDS_TAR_V2],
+        )
+        return collections
     if (
         typ in {"nemo", "nemo_tarred", "multimodal_conversation", "share_gpt", *_TRANSFORM_TYPES}
         and entry.get("manifest_filepath") is not None
     ):
         raw = entry.get("manifest_filepath")
+        collection_mode = typ == "share_gpt" and entry.get("tar_lookup_mode") == "collection"
+        if collection_mode:
+            route = entry.get("tar_routing_filepath")
+            legacy_route = entry.get("tar_routing_index")
+            if route and legacy_route and str(route) != str(legacy_route):
+                raise ValueError("tar_routing_filepath and tar_routing_index disagree")
+            route = route or legacy_route
+            if not isinstance(route, (str, Path)) or not str(route).endswith(".sgroute"):
+                raise ValueError(
+                    "Packed ShareGPT collection mode requires tar_routing_filepath "
+                    "with the .sgroute suffix."
+                )
+            _require_scalar_or_flat_path_list(raw, "manifest_filepath")
+            raw_tars = entry.get("tarred_audio_filepaths")
+            if raw_tars is None:
+                raise ValueError("Packed ShareGPT collection mode requires tarred_audio_filepaths.")
+            _require_scalar_or_flat_path_list(raw_tars, "tarred_audio_filepaths")
+            manifests = _expand_jsonl(raw)
+            tars = _expand_tars(raw_tars)
+            _add_collection(
+                collections,
+                role="manifest",
+                kind=JSONL,
+                source_spec=raw,
+                paths=manifests,
+            )
+            _add_collection(
+                collections,
+                role="tar_collection",
+                kind=NEMO_TAR,
+                source_spec=raw_tars,
+                paths=tars,
+            )
+            return collections
         if typ in {"multimodal_conversation", "share_gpt"}:
             _require_scalar_spec(raw, "manifest_filepath")
         else:
@@ -533,6 +634,12 @@ def discover_pack_collections(
         "build_indexes.py --force before conversion."
     ),
 )
+@click.option(
+    "--data-blend-dir",
+    type=click.Path(file_okay=False),
+    default=None,
+    help="Resolve ${data_blend_dir} in nested input_cfg references.",
+)
 @click.option("--overwrite", is_flag=True, help="Atomically replace an existing output pack.")
 @click.option(
     "--native-tar-paths-only",
@@ -565,6 +672,7 @@ def main(
     input_cfg: str,
     output: str,
     indexes_root: Optional[str],
+    data_blend_dir: Optional[str],
     overwrite: bool,
     native_tar_paths_only: bool,
     accept_trailing_zero_tar_padding: bool,
@@ -577,9 +685,16 @@ def main(
     A stale sentinel must be rebuilt with build_indexes.py --force.
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    config = OmegaConf.load(input_cfg)
-    collections = discover_pack_collections(config)
+    config = _load_input_cfg(input_cfg, data_blend_dir)
+    collections = discover_pack_collections(config, data_blend_dir=data_blend_dir)
+    route_specs = discover_sharegpt_route_specs(config, data_blend_dir=data_blend_dir)
     if native_tar_paths_only:
+        if any(collection.role == "tar_collection" for collection in collections):
+            raise click.ClickException(
+                "ShareGPT collection mode requires offset-bearing tar_collection indexes; "
+                "--native-tar-paths-only is not allowed."
+            )
+
         collections = [
             (
                 replace(collection, offsets_required=False)
@@ -604,6 +719,23 @@ def main(
             accept_trailing_zero_padding=accept_trailing_zero_tar_padding,
             repair_stale_local_sidecars_root=repair_stale_local_native_tar_sidecars_root,
         )
+        source_size_overrides.update(_path_only_source_sizes(collections))
+        wds_index_paths = _preflight_wds_v2_sidecars(collections, indexes_root)
+        index_path_overrides.update(wds_index_paths)
+        for route_spec in route_specs:
+            route_path = Path(route_spec.route_path)
+            if not route_path.is_absolute():
+                route_path = Path(output).parent / route_path
+            ensure_sharegpt_route(
+                route_path,
+                manifest_paths=route_spec.manifest_paths,
+                tar_paths=route_spec.tar_paths,
+                manifest_specs=route_spec.manifest_specs,
+                indexes_root=indexes_root,
+                audio_prefix_map=route_spec.audio_prefix_map,
+                audio_placeholders=route_spec.audio_placeholders,
+                build_if_missing=True,
+            )
         write_index_pack(
             output,
             collections,

@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
+
+import numpy as np
 import pytest
+import soundfile as sf
 import torch
-from lhotse import CutSet, SupervisionSegment
+from lhotse import CutSet, Recording, SupervisionSegment, fastcopy
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 import nemo.collections.speechlm2.data.salm_dataset as salm_dataset_module
@@ -26,6 +30,65 @@ from nemo.collections.speechlm2.parts.encoder_chunking import _split_spk_targets
 class _Tokenizer:
     pad = 0
     unk_id = 1
+
+
+@pytest.mark.unit
+def test_multispeaker_targets_precede_in_memory_audio_drop(monkeypatch):
+    audio = io.BytesIO()
+    sf.write(audio, np.zeros((640, 2), dtype=np.float32), 16000, format="WAV")
+    cut = Recording.from_bytes(audio.getvalue(), recording_id="native-wds").to_cut()
+    cut = fastcopy(
+        cut,
+        custom={
+            "_source_read_key": "/data/shard-0.tar#sample-0",
+            "_source_range_bytes": len(audio.getvalue()),
+        },
+    )
+    conversation = NeMoMultimodalConversation(
+        id="example-0",
+        turns=[
+            AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>"),
+            TextTurn(role="assistant", value="hello"),
+        ],
+        token_equivalent_duration=0.01,
+    )
+    conversation.input_ids = torch.tensor([7, 8], dtype=torch.long)
+    conversation.mask = torch.tensor([False, True])
+    conversations = CutSet([conversation])
+
+    def fake_audio_collate(conversations_arg, *args, **kwargs):
+        return torch.zeros(1, 640), torch.tensor([640]), conversations_arg
+
+    def fake_speaker_activity_from_cut(materialized_cut, **kwargs):
+        assert materialized_cut.load_audio().shape == (1, 640)
+        return torch.zeros(4, 2)
+
+    monkeypatch.setattr(
+        salm_dataset_module,
+        "collate_conversation_audio_fault_tolerant",
+        fake_audio_collate,
+    )
+    monkeypatch.setattr(
+        salm_dataset_module,
+        "speaker_activity_from_cut",
+        fake_speaker_activity_from_cut,
+    )
+    dataset = salm_dataset_module.SALMDataset(
+        tokenizer=_Tokenizer(),
+        multispeaker_cfg={
+            "num_speakers": 2,
+            "sample_rate": 16000,
+            "window_stride": 0.01,
+            "subsampling_factor": 1,
+        },
+    )
+
+    batch = dataset[conversations]
+
+    assert torch.all(batch["spk_targets"] == -1.0)
+    (returned_cut,) = next(iter(batch["conversations"])).list_cuts()
+    assert returned_cut.recording.sources[0].type == "shar"
+    assert returned_cut.custom["_source_read_key"] == "/data/shard-0.tar#sample-0"
 
 
 @pytest.mark.unit

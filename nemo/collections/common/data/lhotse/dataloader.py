@@ -286,6 +286,13 @@ class LhotseDataLoadingConfig:
     # Explicitly set on an owning input_cfg entry, normally relative to
     # index_pack_root. Declaring a pack is strict: missing packs are errors.
     index_pack: Optional[str] = None
+    # One-based JSONL rows approved for deterministic exclusion from indexed
+    # ShareGPT datasets. The line-set digest is computed over the canonical
+    # compact JSON list plus a trailing newline. The audit digest binds the
+    # exception to an external immutable approval artifact.
+    excluded_manifest_lines: Any = None
+    excluded_manifest_lines_sha256: Optional[str] = None
+    approved_exclusion_audit_sha256: Optional[str] = None
 
     # When True, build the dataloader with ``torchdata.stateful_dataloader.StatefulDataLoader``
     # instead of ``torch.utils.data.DataLoader``. Combined with a checkpointable lhotse sampler

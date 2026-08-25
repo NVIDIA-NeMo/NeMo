@@ -467,9 +467,12 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
         NeMoMultimodalConversationShareGPTJsonlAdapter(
             manifest_filepath=config.manifest_filepath,
             tarred_audio_filepaths=config.get("tarred_audio_filepaths"),
+            tar_lookup_mode=config.get("tar_lookup_mode"),
+            tar_routing_filepath=config.get("tar_routing_filepath", config.get("tar_routing_index")),
             audio_locator_tag=config.audio_locator_tag,
             audio_placeholders=config.audio_placeholders,
             audio_root=config.get("audio_root"),
+            audio_path_prefix_map=config.get("audio_path_prefix_map"),
             token_equivalent_duration=config.get("token_equivalent_duration"),
             shuffle_shards=config.shuffle,
             shard_seed=config.shard_seed,
@@ -479,6 +482,9 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             index_pack=_resolve_index_pack(config),
             index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
             skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+            excluded_manifest_lines=config.get("excluded_manifest_lines"),
+            excluded_manifest_lines_sha256=config.get("excluded_manifest_lines_sha256"),
+            approved_exclusion_audit_sha256=config.get("approved_exclusion_audit_sha256"),
         )
     )
     if not config.get("force_finite", False):
@@ -499,6 +505,9 @@ def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
             shard_seed=config.shard_seed,
             indexed=config.get("indexed", False),
             indexes_root=config.get("indexes_root", None),
+            wds_sample_index_version=config.get("wds_sample_index_version", 1),
+            index_pack=_resolve_index_pack(config),
+            index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
         )
     )
     # When force_finite is False (default), repeat the dataset infinitely so that

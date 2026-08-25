@@ -255,6 +255,10 @@ def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(tmp_
             }
         )
     )
+    remote_sizes = {
+        path: 10_000 + index for index, path in enumerate(declared_tar_paths)
+    }
+    monkeypatch.setattr(converter, "_source_size", remote_sizes.__getitem__)
     output = tmp_path / "flat-lists.idxpack"
     result = CliRunner().invoke(
         main,
@@ -273,6 +277,9 @@ def test_flat_native_lists_use_aggregate_pack_and_preserve_positional_pairs(tmp_
         assert manifest_collection.sequence_count == 3
         assert tar_collection.sequence_count == 3
         assert [tar_collection.path_for_shard(idx) for idx in range(3)] == declared_tar_paths
+        assert [tar_collection.source_size_for_shard(idx) for idx in range(3)] == [
+            remote_sizes[path] for path in declared_tar_paths
+        ]
 
     monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
     config = OmegaConf.create(

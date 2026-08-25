@@ -26,6 +26,7 @@ every (rank in range(world_size)) instance, and asserts:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tarfile
@@ -435,6 +436,70 @@ def test_sharegpt_jsonl_adapter_indexed_partition(sharegpt_conversation_jsonl, w
 
     per_rank, union = _collect_disjoint_per_rank(build, world_size)
     assert len(union) == N_CUTS
+
+
+def test_sharegpt_jsonl_adapter_approved_exclusions_are_logical_and_resumable(
+    sharegpt_conversation_jsonl,
+):
+    excluded_lines = [2, 5, 20]
+    line_digest = hashlib.sha256(
+        (json.dumps(excluded_lines, separators=(",", ":")) + "\n").encode()
+    ).hexdigest()
+
+    def build(lines=excluded_lines, digest=line_digest):
+        return text_adapters.NeMoMultimodalConversationShareGPTJsonlAdapter(
+            manifest_filepath=[str(sharegpt_conversation_jsonl)],
+            audio_locator_tag="<audio>",
+            audio_placeholders=["<audio>"],
+            token_equivalent_duration=0.08,
+            indexed=True,
+            excluded_manifest_lines=lines,
+            excluded_manifest_lines_sha256=digest,
+            approved_exclusion_audit_sha256="a" * 64,
+        )
+
+    expected = [
+        f"sgpt-{idx:04d}"
+        for idx in range(N_CUTS)
+        if idx + 1 not in excluded_lines
+    ]
+    adapter = build()
+    assert len(adapter) == N_CUTS - len(excluded_lines)
+    assert adapter[0].id == "sgpt-0000"
+    assert adapter[1].id == "sgpt-0002"
+    assert adapter[-1].id == "sgpt-0018"
+
+    stream = iter(adapter)
+    prefix = [next(stream).id for _ in range(7)]
+    state = adapter.state_dict()
+    restored = build()
+    restored.load_state_dict(state)
+    assert prefix + [item.id for item in restored] == expected
+
+    changed = build(lines=[2, 6, 20], digest=hashlib.sha256(b"[2,6,20]\n").hexdigest())
+    with pytest.raises(ValueError, match="exclusion set changed across resume"):
+        changed.load_state_dict(state)
+
+
+def test_sharegpt_jsonl_adapter_approved_exclusions_validate_provenance(
+    sharegpt_conversation_jsonl,
+):
+    common = {
+        "manifest_filepath": [str(sharegpt_conversation_jsonl)],
+        "audio_locator_tag": "<audio>",
+        "audio_placeholders": ["<audio>"],
+        "token_equivalent_duration": 0.08,
+        "indexed": True,
+        "excluded_manifest_lines": [2],
+    }
+    with pytest.raises(ValueError, match="approved_exclusion_audit_sha256"):
+        text_adapters.NeMoMultimodalConversationShareGPTJsonlAdapter(**common)
+    with pytest.raises(ValueError, match="does not match"):
+        text_adapters.NeMoMultimodalConversationShareGPTJsonlAdapter(
+            **common,
+            excluded_manifest_lines_sha256="0" * 64,
+            approved_exclusion_audit_sha256="a" * 64,
+        )
 
 
 # ---------------------------------------------------------------------------

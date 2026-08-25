@@ -75,6 +75,11 @@ class SALMDataset(torch.utils.data.Dataset):
             retained conversation, the batch contains a scalar
             ``packing_efficiency`` equal to the measured token sum divided by
             this budget.
+        strict_audio_loading (bool):
+            Validation-only mode that re-raises audio collation errors and
+            rejects conversations or audio items dropped or reordered by the
+            fault-tolerant collator. Defaults to ``False`` so production
+            training retains its existing fault-tolerant behavior.
 
             [ SOT Example for overlapping speakers ]
             Speaker-parallel transcription as a timeline:
@@ -115,11 +120,13 @@ class SALMDataset(torch.utils.data.Dataset):
         multispeaker_cfg: dict | None = None,
         pack_audio: bool = False,
         batch_tokens: int | None = None,
+        strict_audio_loading: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.pad_id = get_pad_id(tokenizer)
         self.pack_audio = bool(pack_audio)
         self.batch_tokens = int(batch_tokens) if batch_tokens is not None else None
+        self.strict_audio_loading = bool(strict_audio_loading)
         if self.batch_tokens is not None and self.batch_tokens <= 0:
             raise ValueError(f"batch_tokens must be positive, got {self.batch_tokens}")
         # Setting USE_AIS_GET_BATCH=true makes the loader issue a single AIStore GetBatch
@@ -144,6 +151,14 @@ class SALMDataset(torch.utils.data.Dataset):
         # Note: the function call below may filter out some or all conversations due to audio loading issues.
         # If all conversations are filtered out, we'll return None, and expect users to wrap this dataset
         # in ``nemo.collections.common.data.fallback.FallbackDataset`` to use the previous mini-batch instead.
+        if self.strict_audio_loading:
+            requested_conversation_ids = tuple(conversation.id for conversation in conversations)
+            requested_audio_cut_ids = tuple(
+                cut.id for conversation in conversations for cut in conversation.list_cuts()
+            )
+        else:
+            requested_conversation_ids = requested_audio_cut_ids = ()
+
         try:
             if self.pack_audio:
                 packed_audio_samples, audio_cu_seqlens, audio_lens, conversations = (
@@ -159,8 +174,30 @@ class SALMDataset(torch.utils.data.Dataset):
                 )
                 audio_inputs = {"audios": audios}
         except Exception as e:
+            if self.strict_audio_loading:
+                raise
             logging.warning(f"Error collating conversations: {e}")
             return None
+        if self.strict_audio_loading:
+            materialized_conversation_ids = tuple(conversation.id for conversation in conversations)
+            if materialized_conversation_ids != requested_conversation_ids:
+                raise RuntimeError(
+                    "Strict SALM validation dropped or reordered conversations: "
+                    f"requested={len(requested_conversation_ids)} "
+                    f"materialized={len(materialized_conversation_ids)}"
+                )
+            materialized_audio_cut_ids = tuple(
+                cut.id for conversation in conversations for cut in conversation.list_cuts()
+            )
+            if (
+                materialized_audio_cut_ids != requested_audio_cut_ids
+                or len(audio_lens) != len(requested_audio_cut_ids)
+            ):
+                raise RuntimeError(
+                    "Strict SALM validation dropped or reordered audio items: "
+                    f"requested={len(requested_audio_cut_ids)} "
+                    f"materialized={len(audio_lens)}"
+                )
         if not conversations:
             return None
         batch = {
@@ -170,7 +207,12 @@ class SALMDataset(torch.utils.data.Dataset):
             "loss_mask": left_collate_vectors(
                 [getattr(c, "mask", torch.empty(0)) for c in conversations], padding_value=0
             ).to(torch.bool),
-            "conversations": drop_in_memory_data(conversations),
+            # Keep decoded in-memory audio available until auxiliary targets
+            # are materialized. Native ShareGPT WDS cuts intentionally use
+            # memory-backed recordings; dropping them first replaces their
+            # sources with unresolved Shar placeholders, and multichannel
+            # downmixing in SALMMultiSpeakerProcessor then cannot load audio.
+            "conversations": conversations,
         }
         if self.batch_tokens is not None:
             sampled_lengths = [getattr(conversation, "num_tokens", None) for conversation in conversations]
@@ -181,6 +223,7 @@ class SALMDataset(torch.utils.data.Dataset):
                 )
         if self.multispeaker_processor is not None:
             self.multispeaker_processor(batch)
+        batch["conversations"] = drop_in_memory_data(conversations)
         return batch
 
 

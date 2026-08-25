@@ -354,11 +354,99 @@ def test_multimodal_conversation_input_sharegpt_list_audio_paths(tmp_path):
     assert single_audio[0].cut.duration == 1.0
     assert single_audio[0].cut.load_audio().shape == (1, 16000)
 
-    assert [type(t) for t in multi.turns] == [TextTurn, AudioTurn, AudioTurn, TextTurn, TextTurn]
+    assert [type(t) for t in multi.turns] == [
+        TextTurn,
+        AudioTurn,
+        AudioTurn,
+        TextTurn,
+        TextTurn,
+    ]
     assert multi.turns[0].value == "Compare"
     assert multi.turns[3].value == "now"
     multi_audio = [t for t in multi.turns if isinstance(t, AudioTurn)]
     assert [t.cut.duration for t in multi_audio] == [1.5, 2.0]
+
+
+def test_multimodal_conversation_input_sharegpt_speech_alias_and_precedence(tmp_path):
+    manifest_path = tmp_path / "sharegpt_speech_alias_manifest.jsonl"
+    dummy_recording(0, 1.0, with_data=True).to_cut().save_audio(tmp_path / "sound.wav")
+    dummy_recording(1, 1.5, with_data=True).to_cut().save_audio(
+        tmp_path / "speech_a.wav"
+    )
+    dummy_recording(2, 2.0, with_data=True).to_cut().save_audio(
+        tmp_path / "speech_b.wav"
+    )
+    lhotse.serialization.save_to_jsonl(
+        [
+            {
+                "id": "speech_list",
+                "speech": ["speech_a.wav", "speech_b.wav"],
+                "conversations": [
+                    {"from": "human", "value": "Compare <speech>"},
+                    {"from": "gpt", "value": "done"},
+                ],
+            },
+            {
+                "id": "sound_precedes_speech",
+                "sound": "sound.wav",
+                "speech": "speech_a.wav",
+                "ori_sound": "speech_b.wav",
+                "conversations": [
+                    {"from": "human", "value": "Listen <sound>"},
+                    {"from": "gpt", "value": "done"},
+                ],
+            },
+        ],
+        manifest_path,
+    )
+
+    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
+        manifest_filepath=manifest_path,
+        audio_locator_tag="[audio]",
+        audio_placeholders=["<sound>", "<speech>"],
+    )
+
+    speech_list, precedence = list(adapter)
+    speech_audio = [turn for turn in speech_list.turns if isinstance(turn, AudioTurn)]
+    assert [turn.cut.duration for turn in speech_audio] == [1.5, 2.0]
+    precedence_audio = [
+        turn for turn in precedence.turns if isinstance(turn, AudioTurn)
+    ]
+    assert [turn.cut.duration for turn in precedence_audio] == [1.0]
+
+
+def test_multimodal_conversation_input_sharegpt_audio_path_prefix_map(tmp_path):
+    manifest_path = tmp_path / "sharegpt_prefix_map_manifest.jsonl"
+    mirror_root = tmp_path / "mirror"
+    mirror_root.mkdir()
+    dummy_recording(0, 1.25, with_data=True).to_cut().save_audio(
+        mirror_root / "clip.wav"
+    )
+    lhotse.serialization.save_to_jsonl(
+        [
+            {
+                "id": "mapped_absolute_path",
+                "sound": "/source/site-a/root/clip.wav",
+                "conversations": [
+                    {"from": "human", "value": "Listen <sound>"},
+                    {"from": "gpt", "value": "done"},
+                ],
+            }
+        ],
+        manifest_path,
+    )
+
+    adapter = NeMoMultimodalConversationShareGPTJsonlAdapter(
+        manifest_filepath=manifest_path,
+        audio_locator_tag="[audio]",
+        audio_placeholders=["<sound>"],
+        audio_path_prefix_map={"/source/site-a/root": str(mirror_root)},
+    )
+
+    (conversation,) = list(adapter)
+    (audio_turn,) = [turn for turn in conversation.turns if isinstance(turn, AudioTurn)]
+    assert audio_turn.cut.duration == 1.25
+    assert audio_turn.cut.load_audio().shape == (1, 20000)
 
 
 def test_multimodal_conversation_input_sharegpt_nested_audio_path_list_raises(tmp_path):

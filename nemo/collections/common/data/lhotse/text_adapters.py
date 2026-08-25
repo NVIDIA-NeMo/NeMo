@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import hashlib
 import json
 import logging
 import math
@@ -20,7 +21,7 @@ import tarfile
 from collections import deque
 from dataclasses import dataclass
 from itertools import groupby
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterator, Literal, Optional, Sequence, Union
 
 import numpy as np
@@ -35,7 +36,7 @@ from lhotse.dataset.dataloading import resolve_seed
 from lhotse.dataset.input_strategies import _get_executor
 from lhotse.serialization import load_jsonl, open_best
 from lhotse.shar import AudioTarWriter, JsonlShardWriter
-from lhotse.utils import Pathlike, compute_num_samples, is_valid_url
+from lhotse.utils import Pathlike, compute_num_samples, fastcopy, is_valid_url
 
 from nemo.collections.common.data.lhotse._compat import (
     IteratorNode,
@@ -43,13 +44,18 @@ from nemo.collections.common.data.lhotse._compat import (
     attach_graph_origin,
     normalize_graph_token,
 )
+from nemo.collections.common.data.lhotse.audio_path_resolver import AudioPathPrefixMap
 from nemo.collections.common.data.lhotse.indexed_adapters import (
+    IndexedTarSampleBundleReader,
     IndexedTarMemberReader,
     IndexedTarSampleReader,
+    PackedTarSampleBundleReader,
     PackedTarMemberReader,
     _split_json_audio_pair,
+    wds_v2_index_path,
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
+from nemo.collections.common.data.lhotse.wds_catalog import discover_webdataset_shards
 from nemo.collections.common.data.prompt_fn import apply_prompt_format_fn, registered_prompt_format_fn
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
@@ -1634,7 +1640,10 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     audio_locator_tag: str
     audio_placeholders: Union[str, list[str]] = None
     tarred_audio_filepaths: str | list[str] = None
+    tar_lookup_mode: str | None = None
+    tar_routing_filepath: Pathlike | None = None
     audio_root: str | None = None
+    audio_path_prefix_map: dict[str, str] | None = None
     token_equivalent_duration: float = None
     shuffle_shards: bool = False
     shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
@@ -1644,10 +1653,37 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     index_pack: Optional[Pathlike] = None
     index_pack_max_open_files: int = 32
     skip_missing_manifest_entries: bool = False
+    excluded_manifest_lines: Sequence[int] | None = None
+    excluded_manifest_lines_sha256: str | None = None
+    approved_exclusion_audit_sha256: str | None = None
 
     def __post_init__(self):
         raw_manifest_filepath = self.manifest_filepath
+        raw_tarred_audio_filepaths = self.tarred_audio_filepaths
+        if self.tar_lookup_mode not in (None, "paired", "collection"):
+            raise ValueError(
+                f"Unsupported tar_lookup_mode={self.tar_lookup_mode!r}; expected 'paired' or 'collection'."
+            )
+        if self.tar_lookup_mode is None and self.tarred_audio_filepaths is not None:
+            self.tar_lookup_mode = "paired"
+        if self.tar_lookup_mode == "collection":
+            if not self.indexed:
+                raise ValueError("tar_lookup_mode='collection' requires indexed=true.")
+            if self.tarred_audio_filepaths is None:
+                raise ValueError("tar_lookup_mode='collection' requires tarred_audio_filepaths.")
+            if self.tar_routing_filepath is None:
+                raise ValueError("tar_lookup_mode='collection' requires tar_routing_filepath.")
+            route_path = Path(self.tar_routing_filepath)
+            if not route_path.is_absolute():
+                if self.index_pack is not None:
+                    route_path = Path(self.index_pack).parent / route_path
+                elif self.indexes_root is not None:
+                    route_path = Path(self.indexes_root) / route_path
+                else:
+                    raise ValueError("Relative tar_routing_filepath requires index_pack or indexes_root.")
+            self.tar_routing_filepath = route_path
         self.audio_placeholders = _normalize_audio_placeholders(self.audio_placeholders)
+        self._audio_path_prefix_mapper = AudioPathPrefixMap(self.audio_path_prefix_map)
         self.epoch = 0
         self._cuts_readers: list = []
         self._tar_readers: list = []
@@ -1655,16 +1691,90 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         self._total_len = 0
         self._iter_state = PartitionedIndexedIterator()
         if self.indexed and self.index_pack is not None:
-            self._init_packed(raw_manifest_filepath)
+            self._init_packed(raw_manifest_filepath, raw_tarred_audio_filepaths)
+            self._configure_manifest_exclusions()
             return
         self.manifest_filepath = expand_sharded_filepaths(raw_manifest_filepath)
         if self.tarred_audio_filepaths is not None:
             self.tarred_audio_filepaths = expand_sharded_filepaths(self.tarred_audio_filepaths)
-            assert len(self.manifest_filepath) == len(
-                self.tarred_audio_filepaths
-            ), f"{len(self.manifest_filepath)} != {len(self.tarred_audio_filepaths)}"
+            if self.tar_lookup_mode == "paired":
+                assert len(self.manifest_filepath) == len(
+                    self.tarred_audio_filepaths
+                ), f"{len(self.manifest_filepath)} != {len(self.tarred_audio_filepaths)}"
         if self.indexed:
-            self._init_indexed()
+            self._init_indexed(raw_manifest_filepath)
+        self._configure_manifest_exclusions()
+
+    @staticmethod
+    def _manifest_line_set_sha256(lines: Sequence[int]) -> str:
+        payload = json.dumps(list(lines), separators=(",", ":")) + "\n"
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    def _configure_manifest_exclusions(self) -> None:
+        """Remove approved rows from the logical indexed sample domain.
+
+        The configuration uses one-based JSONL line numbers for direct auditability.
+        We map logical graph tokens to the remaining physical rows before any audio
+        I/O, so every rank and a restored iterator observe the same sample domain.
+        """
+
+        raw_lines = [] if self.excluded_manifest_lines is None else list(self.excluded_manifest_lines)
+        if raw_lines and not self.indexed:
+            raise ValueError("excluded_manifest_lines requires indexed=true.")
+        if any(isinstance(line, bool) or not isinstance(line, int) for line in raw_lines):
+            raise TypeError("excluded_manifest_lines must contain one-based integer line numbers.")
+        lines = tuple(sorted(raw_lines))
+        if len(lines) != len(set(lines)):
+            raise ValueError("excluded_manifest_lines must not contain duplicates.")
+        if any(line < 1 for line in lines):
+            raise ValueError("excluded_manifest_lines must contain positive one-based line numbers.")
+        source_total_len = self._total_len
+        if lines and lines[-1] > source_total_len:
+            raise ValueError(
+                f"excluded_manifest_lines contains line {lines[-1]}, but the indexed source has "
+                f"only {source_total_len} rows."
+            )
+        digest = self._manifest_line_set_sha256(lines)
+        if self.excluded_manifest_lines_sha256 is not None:
+            expected = str(self.excluded_manifest_lines_sha256).lower()
+            if expected != digest:
+                raise ValueError(
+                    "excluded_manifest_lines_sha256 does not match the canonical line set: "
+                    f"expected={expected}, actual={digest}."
+                )
+        if self.approved_exclusion_audit_sha256 is not None:
+            audit_digest = str(self.approved_exclusion_audit_sha256).lower()
+            if len(audit_digest) != 64 or any(ch not in "0123456789abcdef" for ch in audit_digest):
+                raise ValueError("approved_exclusion_audit_sha256 must be a lowercase SHA-256 digest.")
+            self.approved_exclusion_audit_sha256 = audit_digest
+        elif lines:
+            raise ValueError(
+                "excluded_manifest_lines requires approved_exclusion_audit_sha256 provenance."
+            )
+        self._source_total_len = source_total_len
+        self._excluded_manifest_lines = lines
+        self._excluded_physical_indexes = tuple(line - 1 for line in lines)
+        self._excluded_manifest_lines_sha256 = digest
+        self._total_len = source_total_len - len(lines)
+        if lines:
+            logging.warning(
+                "Applying approved deterministic ShareGPT manifest exclusions before audio I/O: "
+                f"excluded_rows={len(lines)} source_rows={source_total_len} "
+                f"effective_rows={self._total_len} line_set_sha256={digest} "
+                f"audit_sha256={self.approved_exclusion_audit_sha256}."
+            )
+
+    def _logical_to_physical_index(self, logical_idx: int) -> int:
+        if logical_idx < 0:
+            logical_idx += self._total_len
+        if logical_idx < 0 or logical_idx >= self._total_len:
+            raise IndexError(logical_idx)
+        physical_idx = logical_idx
+        for excluded_idx in self._excluded_physical_indexes:
+            if excluded_idx > physical_idx:
+                break
+            physical_idx += 1
+        return physical_idx
 
     @property
     def is_checkpointable(self) -> bool:
@@ -1678,7 +1788,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     def has_constant_time_access(self) -> bool:
         return self.indexed
 
-    def _init_indexed(self) -> None:
+    def _init_indexed(self, source_spec) -> None:
         from lhotse.indexing import IndexedJsonlReader, index_file_path
 
         if self.slice_length is not None:
@@ -1688,18 +1798,28 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         for p in self.manifest_filepath:
             self._cuts_readers.append(IndexedJsonlReader(p, index_path=index_file_path(p, self.indexes_root)))
         if self.tarred_audio_filepaths is not None:
-            from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
-
-            for p in self.tarred_audio_filepaths:
-                self._tar_readers.append(IndexedTarMemberReader(p, idx_path=index_file_path(p, self.indexes_root)))
+            if self.tar_lookup_mode == "collection":
+                self._collection_tar_readers = [
+                    IndexedTarMemberReader(
+                        p,
+                        idx_path=index_file_path(p, self.indexes_root),
+                        auto_create_index=False,
+                    )
+                    for p in self.tarred_audio_filepaths
+                ]
+            else:
+                for p in self.tarred_audio_filepaths:
+                    self._tar_readers.append(IndexedTarMemberReader(p, idx_path=index_file_path(p, self.indexes_root)))
         cum = 0
         self._cum_lens.append(cum)
         for r in self._cuts_readers:
             cum += len(r)
             self._cum_lens.append(cum)
         self._total_len = cum
+        if self.tar_lookup_mode == "collection":
+            self._init_collection_route(source_spec)
 
-    def _init_packed(self, source_spec) -> None:
+    def _init_packed(self, source_spec, tar_source_spec) -> None:
         from lhotse.index_pack import index_pack_collection_key, open_index_pack
         from lhotse.packed_lazy import LazyPackedManifestIterator
 
@@ -1707,10 +1827,10 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             raise ValueError(
                 "NeMoMultimodalConversationShareGPTJsonlAdapter(indexed=True) " "does not support slice_length."
             )
-        if self.tarred_audio_filepaths is not None:
+        if self.tarred_audio_filepaths is not None and self.tar_lookup_mode != "collection":
             raise ValueError(
                 "Packed ShareGPT currently supports JSONL manifests with "
-                "direct/remote audio paths, not paired audio tar files."
+                "direct/remote audio paths or tar_lookup_mode='collection', not paired audio tar files."
             )
         pack = open_index_pack(self.index_pack)
         key = index_pack_collection_key("manifest", "jsonl", source_spec)
@@ -1723,6 +1843,84 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         self._cuts_readers = [self._packed_source]
         self._cum_lens = [0, len(self._packed_source)]
         self._total_len = len(self._packed_source)
+        if self.tar_lookup_mode == "collection":
+            tar_key = index_pack_collection_key("tar_collection", "nemo_tar", tar_source_spec)
+            tar_collection = pack.collection(tar_key)
+            if not tar_collection.offsets_required:
+                raise ValueError("ShareGPT collection routing requires an offset-bearing tar collection.")
+            self._packed_collection_tar_reader = PackedTarMemberReader(
+                tar_collection, max_open_files=self.index_pack_max_open_files
+            )
+            self._collection_tar_readers = self._packed_collection_tar_reader
+            self._init_collection_route(source_spec)
+
+    def _init_collection_route(self, manifest_source_spec) -> None:
+        from nemo.collections.common.data.lhotse.sharegpt_tar_routing import (
+            ShareGptTarRoutingIndex,
+            canonical_audio_prefix_map_digest,
+            ordered_manifest_source_identity_digest,
+            ordered_manifest_spec_path_digest,
+            ordered_tar_catalog_digest,
+            validate_sharegpt_tar_routing_index,
+        )
+
+        if hasattr(self, "_packed_source"):
+            manifest_collection = self._packed_source.collection
+            manifest_paths = [
+                manifest_collection.path_for_shard(shard_index)
+                for shard_index in range(manifest_collection.sequence_count)
+            ]
+            tar_collection = self._packed_collection_tar_reader.collection
+            with ShareGptTarRoutingIndex(self.tar_routing_filepath) as routing:
+                tar_count = routing.header.tar_shard_count
+            if tar_collection.sequence_count != tar_count:
+                raise ValueError(
+                    f"ShareGPT tar collection has {tar_collection.sequence_count} shards but "
+                    f"the routing index declares {tar_count}."
+                )
+        else:
+            manifest_paths = list(self.manifest_filepath)
+            tar_count = len(self._collection_tar_readers)
+        tar_paths = (
+            [
+                self._packed_collection_tar_reader.collection.path_for_shard(shard_index)
+                for shard_index in range(tar_count)
+            ]
+            if hasattr(self, "_packed_source")
+            else list(self.tarred_audio_filepaths)
+        )
+        raw_specs = (
+            [manifest_source_spec]
+            if isinstance(manifest_source_spec, (str, os.PathLike))
+            else list(manifest_source_spec)
+        )
+        manifest_specs = [
+            os.fspath(spec)
+            for spec in raw_specs
+            for _ in expand_sharded_filepaths(spec)
+        ]
+        if len(manifest_specs) != len(manifest_paths):
+            raise ValueError(
+                f"ShareGPT manifest source spec expands to {len(manifest_specs)} shards but "
+                f"the indexed collection contains {len(manifest_paths)}."
+            )
+        validate_sharegpt_tar_routing_index(
+            self.tar_routing_filepath,
+            expected_manifest_row_count=self._total_len,
+            expected_manifest_spec_path_digest=ordered_manifest_spec_path_digest(
+                manifest_paths, manifest_specs
+            ),
+            expected_manifest_source_identity_digest=ordered_manifest_source_identity_digest(
+                manifest_paths
+            ),
+            expected_tar_shard_count=tar_count,
+            expected_tar_catalog_digest=ordered_tar_catalog_digest(tar_paths),
+            expected_audio_prefix_map_digest=canonical_audio_prefix_map_digest(
+                self._audio_path_prefix_mapper.mapping
+            ),
+            offset_bearing_tar_collections=True,
+        )
+        self._collection_route = ShareGptTarRoutingIndex(self.tar_routing_filepath)
 
     def __len__(self) -> int:
         if self.indexed:
@@ -1740,19 +1938,80 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         raise IndexError(idx)
 
     def state_dict(self) -> dict:
-        return {**self._iter_state.state_dict(), "epoch": self.epoch} if self.indexed else {}
+        if not self.indexed:
+            return {}
+        state = {**self._iter_state.state_dict(), "epoch": self.epoch}
+        if self._excluded_manifest_lines:
+            state.update(
+                {
+                    "excluded_manifest_lines_sha256": self._excluded_manifest_lines_sha256,
+                    "approved_exclusion_audit_sha256": self.approved_exclusion_audit_sha256,
+                }
+            )
+        return state
 
     def load_state_dict(self, sd: dict) -> None:
         if not self.indexed:
             return
+        restored_digest = sd.get("excluded_manifest_lines_sha256")
+        if self._excluded_manifest_lines and restored_digest != self._excluded_manifest_lines_sha256:
+            raise ValueError(
+                "ShareGPT manifest exclusion set changed across resume: "
+                f"checkpoint={restored_digest!r}, current={self._excluded_manifest_lines_sha256!r}."
+            )
+        restored_audit = sd.get("approved_exclusion_audit_sha256")
+        if self._excluded_manifest_lines and restored_audit != self.approved_exclusion_audit_sha256:
+            raise ValueError(
+                "ShareGPT exclusion audit changed across resume: "
+                f"checkpoint={restored_audit!r}, current={self.approved_exclusion_audit_sha256!r}."
+            )
+        if not self._excluded_manifest_lines and (restored_digest is not None or restored_audit is not None):
+            raise ValueError(
+                "Checkpoint contains ShareGPT exclusions but the current config does not."
+            )
         self._iter_state.load_state_dict(sd)
         self.epoch = sd.get("epoch", 0)
 
     def _build_one(
-        self, data: dict, shard_idx: int, manifest_path: str | None = None
+        self,
+        data: dict,
+        shard_idx: int,
+        manifest_path: str | None = None,
+        route_row_idx: int | None = None,
     ) -> NeMoMultimodalConversation | None:
         try:
             conversations = _ShareGPTConversationParser(self.audio_placeholders, data).transform()
+            if self.tar_lookup_mode == "collection":
+                if route_row_idx is None:
+                    raise RuntimeError("Collection-routed ShareGPT access requires a global manifest row index.")
+                routes = self._collection_route.routes_for_row(route_row_idx)
+                used_route_indexes: set[int] = set()
+
+                def resolve_collection_cut(turn):
+                    route_index = int(turn.get("audio_path_index", 0))
+                    if route_index >= len(routes):
+                        raise ValueError(
+                            f"ShareGPT route row {route_row_idx} has {len(routes)} records but audio path index "
+                            f"{route_index} was requested."
+                        )
+                    used_route_indexes.add(route_index)
+                    return self._resolve_cut_from_collection(turn, routes[route_index])
+
+                turns = _ShareGPTConversationParser.create_turns(
+                    self.audio_locator_tag,
+                    conversations,
+                    resolve_collection_cut,
+                )
+                if used_route_indexes != set(range(len(routes))):
+                    raise ValueError(
+                        f"ShareGPT route row {route_row_idx} contains unused records: "
+                        f"used={sorted(used_route_indexes)}, total={len(routes)}."
+                    )
+                return NeMoMultimodalConversation(
+                    id=data.get("id", "missing-example-id"),
+                    turns=turns,
+                    token_equivalent_duration=self.token_equivalent_duration,
+                )
             if self._tar_readers:
                 tar_reader = self._tar_readers[shard_idx]
                 tar_path = self.tarred_audio_filepaths[shard_idx]
@@ -1786,6 +2045,41 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             )
             return None
 
+    def _resolve_cut_from_collection(self, turn, route):
+        if hasattr(self, "_packed_collection_tar_reader"):
+            (member_name, audio_bytes), location = self._packed_collection_tar_reader.read_shard_with_location(
+                route.tar_shard_index, route.tar_member_local_index
+            )
+            source_range_bytes = location.end - location.start
+            source_read_key = f"{location.path}@{location.start}:{location.end}"
+        else:
+            reader = self._collection_tar_readers[route.tar_shard_index]
+            member_name, audio_bytes = reader[route.tar_member_local_index]
+            source_start = int(reader.offsets[route.tar_member_local_index])
+            source_end = int(reader.offsets[route.tar_member_local_index + 1])
+            source_range_bytes = source_end - source_start
+            source_read_key = f"{reader.data_path}@{source_start}:{source_end}"
+        requested = os.fspath(
+            _ShareGPTConversationParser.expect_one_audio_path(
+                turn["value"], sample_id=turn.get("id", "?"), context="collection audio turn value"
+            )
+        )
+        if requested != member_name and PurePosixPath(requested).name != PurePosixPath(member_name).name:
+            raise ValueError(
+                f"ShareGPT tar route resolved requested audio {requested!r} to mismatched member {member_name!r}."
+            )
+        recording = Recording.from_bytes(audio_bytes, recording_id=PurePosixPath(member_name).stem)
+        cut = fastcopy(
+            recording.to_cut(),
+            custom={
+                "_source_codec": PurePosixPath(member_name).suffix.lower().removeprefix(".") or None,
+                "_source_range_bytes": source_range_bytes,
+                "_source_read_key": source_read_key,
+            },
+        )
+        cut = cut.truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+        return cut.with_id(self._make_cut_id(cut, {**turn, "value": member_name}))
+
     def _resolve_cut_from_indexed_tar(self, turn, tar_reader, tar_path):
         import io as _io
 
@@ -1816,19 +2110,21 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             raise NotImplementedError(
                 "NeMoMultimodalConversationShareGPTJsonlAdapter only supports __getitem__ when indexed=True."
             )
-        idx = int(normalize_graph_token(token))
-        shard_idx, local_idx = self._resolve(idx)
+        logical_idx = int(normalize_graph_token(token))
+        physical_idx = self._logical_to_physical_index(logical_idx)
+        shard_idx, local_idx = self._resolve(physical_idx)
         if hasattr(self, "_packed_source"):
             data, location = self._packed_source.read_with_location(local_idx)
-            convo = self._build_one(data, shard_idx, location.path)
+            convo = self._build_one(data, shard_idx, location.path, route_row_idx=physical_idx)
         else:
             data = self._cuts_readers[shard_idx][local_idx]
-            convo = self._build_one(data, shard_idx)
+            convo = self._build_one(data, shard_idx, route_row_idx=physical_idx)
         if convo is None:
             raise IndexError(
-                f"ShareGPT sample at global index {idx} is not decodable; cannot satisfy random-access __getitem__."
+                f"ShareGPT sample at logical index {logical_idx} (physical index {physical_idx}) is not decodable; "
+                "cannot satisfy random-access __getitem__."
             )
-        return attach_graph_origin(convo, idx)
+        return attach_graph_origin(convo, logical_idx)
 
     def __iter__(self) -> Iterator[NeMoMultimodalConversation]:
         if self.indexed:
@@ -1840,17 +2136,18 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             yield from self._iter_jsonl()
 
     def _iter_indexed_node(self) -> Iterator[NeMoMultimodalConversation]:
-        for global_idx in self._iter_state.iterate(self._total_len):
-            shard_idx, local_idx = self._resolve(global_idx)
+        for logical_idx in self._iter_state.iterate(self._total_len):
+            physical_idx = self._logical_to_physical_index(logical_idx)
+            shard_idx, local_idx = self._resolve(physical_idx)
             if hasattr(self, "_packed_source"):
                 data, location = self._packed_source.read_with_location(local_idx)
-                convo = self._build_one(data, shard_idx, location.path)
+                convo = self._build_one(data, shard_idx, location.path, route_row_idx=physical_idx)
             else:
                 data = self._cuts_readers[shard_idx][local_idx]
-                convo = self._build_one(data, shard_idx)
+                convo = self._build_one(data, shard_idx, route_row_idx=physical_idx)
             if convo is None:
                 continue
-            attach_graph_origin(convo, global_idx)
+            attach_graph_origin(convo, logical_idx)
             yield convo
         self.epoch += 1
 
@@ -1870,6 +2167,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 turn["value"], sample_id=turn.get("id", "?"), context="audio turn value"
             )
         )
+        audio_path = self._audio_path_prefix_mapper.resolve(audio_path)
         turn_for_id = {**turn, "value": audio_path}
         if is_valid_url(audio_path):
             data = open_best(audio_path, "rb").read()
@@ -2017,25 +2315,31 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
     shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
     indexed: bool = False
     indexes_root: Optional[Pathlike] = None
+    wds_sample_index_version: int = 1
+    index_pack: Optional[Pathlike] = None
+    index_pack_max_open_files: int = 32
 
     def __post_init__(self):
-        import json as _json
-
-        meta_path = Path(self.data_dir) / "wids-meta.json"
-        if meta_path.exists():
-            with open(meta_path) as f:
-                meta = _json.load(f)
-            self._shard_paths = [str(Path(self.data_dir) / s["url"]) for s in meta["shardlist"]]
-        else:
-            self._shard_paths = sorted(str(p) for p in Path(self.data_dir).rglob("*.tar"))
-            if not self._shard_paths:
-                raise FileNotFoundError(f"No wids-meta.json and no .tar files found under {self.data_dir}")
+        if self.wds_sample_index_version not in (1, 2):
+            raise ValueError(f"Unsupported wds_sample_index_version={self.wds_sample_index_version}; expected 1 or 2.")
+        if self.wds_sample_index_version == 2 and not self.indexed:
+            raise ValueError("wds_sample_index_version=2 requires indexed=true; sequential fallback is unsupported.")
+        if self.index_pack is not None and not self.indexed:
+            raise ValueError("Declaring index_pack requires indexed=true.")
         self.audio_placeholders = _normalize_audio_placeholders(self.audio_placeholders)
         self.epoch = 0
         self._tar_readers: list = []
         self._cum_lens: list[int] = []
         self._total_len = 0
         self._iter_state = PartitionedIndexedIterator()
+        if self.index_pack is not None:
+            self._init_packed(self.data_dir)
+            return
+
+        self._shard_paths = discover_webdataset_shards(
+            self.data_dir,
+            require_catalog=self.wds_sample_index_version == 2,
+        )
         if self.indexed:
             self._init_indexed()
 
@@ -2055,13 +2359,31 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
         from lhotse.indexing import index_file_path
 
         for p in self._shard_paths:
-            self._tar_readers.append(IndexedTarSampleReader(p, idx_path=index_file_path(p, self.indexes_root)))
+            if self.wds_sample_index_version == 2:
+                self._tar_readers.append(
+                    IndexedTarSampleBundleReader(p, idx_path=wds_v2_index_path(p, self.indexes_root))
+                )
+            else:
+                self._tar_readers.append(IndexedTarSampleReader(p, idx_path=index_file_path(p, self.indexes_root)))
         cum = 0
         self._cum_lens.append(cum)
         for r in self._tar_readers:
             cum += len(r)
             self._cum_lens.append(cum)
         self._total_len = cum
+
+    def _init_packed(self, source_spec) -> None:
+        from lhotse.index_pack import index_pack_collection_key, open_index_pack
+
+        if self.wds_sample_index_version != 2:
+            raise ValueError("Packed ShareGPT WebDataset requires wds_sample_index_version=2.")
+        pack = open_index_pack(self.index_pack)
+        key = index_pack_collection_key("wds_tar", "wds_tar_v2", source_spec)
+        reader = PackedTarSampleBundleReader(pack.collection(key), max_open_files=self.index_pack_max_open_files)
+        self._packed_source = reader
+        self._tar_readers = [reader]
+        self._cum_lens = [0, len(reader)]
+        self._total_len = len(reader)
 
     def __len__(self) -> int:
         if self.indexed:
@@ -2094,8 +2416,11 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
             )
         idx = int(normalize_graph_token(token))
         shard_idx, local_idx = self._resolve(idx)
-        json_data, audio_bytes, audio_name = self._tar_readers[shard_idx][local_idx]
-        convo = self._yield_from_sample(json_data, audio_bytes, audio_name)
+        sample = self._tar_readers[shard_idx][local_idx]
+        if self.wds_sample_index_version == 2:
+            convo = self._yield_from_sample_bundle(sample)
+        else:
+            convo = self._yield_from_sample(*sample)
         return attach_graph_origin(convo, idx)
 
     def __iter__(self) -> Iterator[NeMoMultimodalConversation]:
@@ -2107,8 +2432,11 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
     def _iter_indexed_node(self) -> Iterator[NeMoMultimodalConversation]:
         for global_idx in self._iter_state.iterate(self._total_len):
             shard_idx, local_idx = self._resolve(global_idx)
-            json_data, audio_bytes, audio_name = self._tar_readers[shard_idx][local_idx]
-            convo = self._yield_from_sample(json_data, audio_bytes, audio_name)
+            sample = self._tar_readers[shard_idx][local_idx]
+            if self.wds_sample_index_version == 2:
+                convo = self._yield_from_sample_bundle(sample)
+            else:
+                convo = self._yield_from_sample(*sample)
             attach_graph_origin(convo, global_idx)
             yield convo
         self.epoch += 1
@@ -2127,6 +2455,83 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
                 self.audio_locator_tag,
                 conversations,
                 lambda t: base_cut.truncate(offset=t.get("offset", 0.0), duration=t.get("duration")),
+            ),
+            token_equivalent_duration=self.token_equivalent_duration,
+        )
+
+    def _yield_from_sample_bundle(self, bundle):
+        member_names = [member.name for member in bundle.audio_members]
+        if len(member_names) != len(set(member_names)):
+            raise ValueError(f"WDS sample {bundle.sample_key!r} contains duplicate audio member names.")
+        members_by_name = {member.name: member for member in bundle.audio_members}
+        members_by_basename: dict[str, list] = {}
+        for member in bundle.audio_members:
+            members_by_basename.setdefault(PurePosixPath(member.name).name, []).append(member)
+
+        fallback = bundle.audio_members[0].name if len(bundle.audio_members) == 1 else None
+        conversations = _ShareGPTConversationParser(
+            self.audio_placeholders, bundle.json_data, audio_path_fallback=fallback
+        ).transform()
+        resolved_member_indexes: dict[str, int] = {}
+        decoded_cuts = {}
+
+        def resolve_cut(turn):
+            requested = os.fspath(
+                _ShareGPTConversationParser.expect_one_audio_path(
+                    turn["value"], sample_id=bundle.sample_key, context="WDS audio turn value"
+                )
+            )
+            member = members_by_name.get(requested)
+            if member is None:
+                basename = PurePosixPath(requested).name
+                candidates = members_by_basename.get(basename, [])
+                if not candidates:
+                    if len(bundle.audio_members) == 1:
+                        # Legacy conventional WDS often preserves the original
+                        # source path in JSON while renaming the sole payload to
+                        # ``<sample-key>.<codec>`` inside the tar.  With exactly
+                        # one payload this binding is deterministic; multi-audio
+                        # samples remain strict below.
+                        (member,) = bundle.audio_members
+                    else:
+                        raise ValueError(
+                            f"WDS sample {bundle.sample_key!r} is missing audio member {requested!r}; "
+                            f"available members are {sorted(member_names)!r}."
+                        )
+                elif len(candidates) > 1:
+                    raise ValueError(
+                        f"WDS sample {bundle.sample_key!r} has ambiguous audio member basename {basename!r}: "
+                        f"{sorted(candidate.name for candidate in candidates)!r}."
+                    )
+                else:
+                    (member,) = candidates
+
+            audio_path_index = int(turn.get("audio_path_index", 0))
+            previous_index = resolved_member_indexes.get(member.name)
+            if previous_index is not None and previous_index != audio_path_index:
+                raise ValueError(
+                    f"WDS sample {bundle.sample_key!r} resolves multiple declared audio paths to duplicate "
+                    f"member {member.name!r}."
+                )
+            resolved_member_indexes[member.name] = audio_path_index
+            cut = decoded_cuts.get(member.name)
+            if cut is None:
+                recording_id = f"{bundle.sample_key}-{PurePosixPath(member.name).stem}"
+                cut = Recording.from_bytes(member.data, recording_id=recording_id).to_cut()
+                custom = {"_source_codec": PurePosixPath(member.name).suffix.lower().removeprefix(".") or None}
+                if bundle.source_range_bytes is not None:
+                    custom["_source_range_bytes"] = bundle.source_range_bytes
+                    custom["_source_read_key"] = f"{bundle.source_path or '<unknown>'}#{bundle.sample_key}"
+                cut = fastcopy(cut, custom=custom)
+                decoded_cuts[member.name] = cut
+            return cut.truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+
+        return NeMoMultimodalConversation(
+            id=bundle.json_data.get("id", bundle.sample_key),
+            turns=_ShareGPTConversationParser.create_turns(
+                self.audio_locator_tag,
+                conversations,
+                resolve_cut,
             ),
             token_equivalent_duration=self.token_equivalent_duration,
         )
@@ -2275,7 +2680,7 @@ class _ShareGPTConversationParser:
     """Normalize ShareGPT multimodal records for the conversation adapters.
 
     ShareGPT audio examples are intentionally loose: audio paths may be stored
-    in ``sound`` or ``ori_sound``, may be scalar or list-valued, and placement
+    in ``sound``, ``speech``, or ``ori_sound``, may be scalar or list-valued, and placement
     in the text is expressed with placeholders such as ``<sound>``. This class
     owns those conventions and emits the flat internal turn dictionaries shared
     by the JSONL and WebDataset adapters.
@@ -2285,8 +2690,17 @@ class _ShareGPTConversationParser:
         self.placeholders = placeholders
         self.data = data
         self.sample_id = data.get("id", "?")
-        audio_path_value = data.get("sound") or data.get("ori_sound") or audio_path_fallback
-        self.audio_paths = self.normalize_audio_paths(audio_path_value, sample_id=self.sample_id, field_name="sound")
+        audio_path_value = audio_path_fallback
+        audio_path_field = "fallback"
+        for candidate in ("sound", "speech", "ori_sound"):
+            candidate_value = data.get(candidate)
+            if candidate_value not in (None, "", []):
+                audio_path_value = candidate_value
+                audio_path_field = candidate
+                break
+        self.audio_paths = self.normalize_audio_paths(
+            audio_path_value, sample_id=self.sample_id, field_name=audio_path_field
+        )
 
     def transform(self) -> list[dict]:
         """Convert one raw ShareGPT sample into text/audio turn dictionaries.
@@ -2327,7 +2741,7 @@ class _ShareGPTConversationParser:
                 if not self.audio_paths:
                     raise ValueError(
                         f"Conversation turn contains audio placeholder '{found}' but no audio path was found in "
-                        f"'sound', 'ori_sound' fields or fallback for sample id={self.sample_id}"
+                        f"'sound', 'speech', 'ori_sound' fields or fallback for sample id={self.sample_id}"
                     )
 
                 if len(self.audio_paths) > 1 and placeholder_count == 1:
@@ -2343,6 +2757,7 @@ class _ShareGPTConversationParser:
                         "type": "audio",
                         "from": role.title(),
                         "value": self.audio_paths[path_idx],
+                        "audio_path_index": path_idx,
                         "duration": self.audio_turn_field(turn, "duration", path_idx, self.sample_id),
                         "offset": self.audio_turn_field(turn, "offset", path_idx, self.sample_id, default=0.0),
                     }

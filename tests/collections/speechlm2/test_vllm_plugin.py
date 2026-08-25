@@ -36,6 +36,11 @@ except (ImportError, RuntimeError):
     _HAS_CONFIG = False
 
 _HAS_VLLM = importlib.util.find_spec("vllm") is not None
+if _HAS_VLLM:
+    import vllm.config.speculative as _spec_mod
+
+    SpeculativeConfig = _spec_mod.SpeculativeConfig
+
 _DEFAULT_CONFIG_KWARGS = {
     "pretrained_llm": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "pretrained_asr": "nvidia/canary-1b-v2",
@@ -761,7 +766,6 @@ class TestMTPPlugin:
         """register() should add 'nemo_speechlm_mtp' to vLLM's MTPModelTypes Literal."""
         from typing import get_args
 
-        import vllm.config.speculative as _spec_mod
         from transformers import AutoConfig
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
@@ -773,8 +777,6 @@ class TestMTPPlugin:
     def test_patched_override_routes_nemo_mtp_config(self, monkeypatch):
         """hf_config_override should rewrite nemo_speechlm configs with MTP heads."""
         from transformers import AutoConfig
-        from vllm.config.speculative import SpeculativeConfig
-
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
 
@@ -794,8 +796,6 @@ class TestMTPPlugin:
         import pickle
 
         from transformers import AutoConfig
-        from vllm.config.speculative import SpeculativeConfig
-
         import nemo.collections.speechlm2.vllm.salm as salm_module
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
@@ -821,8 +821,6 @@ class TestMTPPlugin:
 
     def test_patched_override_lazily_captures_native_hook_in_spawn_child(self, monkeypatch):
         """A fresh spawn import should delegate unrelated configs to vLLM's native hook."""
-        from vllm.config.speculative import SpeculativeConfig
-
         import nemo.collections.speechlm2.vllm.salm as salm_module
 
         original_calls = []
@@ -843,8 +841,6 @@ class TestMTPPlugin:
 
     def test_patched_override_rejects_missing_native_hook(self, monkeypatch):
         """A corrupted install must fail clearly instead of recursing into our override."""
-        from vllm.config.speculative import SpeculativeConfig
-
         import nemo.collections.speechlm2.vllm.salm as salm_module
 
         monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
@@ -860,8 +856,6 @@ class TestMTPPlugin:
     def test_patched_override_enabled_mtp_defaults_to_one_head(self, monkeypatch):
         """An enabled training block without an explicit depth constructs one head."""
         from transformers import AutoConfig
-        from vllm.config.speculative import SpeculativeConfig
-
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
 
@@ -875,8 +869,6 @@ class TestMTPPlugin:
     def test_patched_override_repeated_layer_exposes_one_reusable_head(self, monkeypatch):
         """Repeated-layer training depth must not constrain inference-time K."""
         from transformers import AutoConfig
-        from vllm.config.speculative import SpeculativeConfig
-
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
 
@@ -892,8 +884,6 @@ class TestMTPPlugin:
     def test_patched_override_no_mtp_falls_through(self, monkeypatch):
         """hf_config_override should not alter non-MTP configs."""
         from transformers import AutoConfig
-        from vllm.config.speculative import SpeculativeConfig
-
         import nemo.collections.speechlm2.vllm.salm as salm_module
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
@@ -915,8 +905,6 @@ class TestMTPPlugin:
     def test_patched_override_depth_without_enabled_flag_falls_through(self, monkeypatch):
         """A retained recipe depth must not enable a head that training did not construct."""
         from transformers import AutoConfig
-        from vllm.config.speculative import SpeculativeConfig
-
         import nemo.collections.speechlm2.vllm.salm as salm_module
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
@@ -942,8 +930,6 @@ class TestMTPPlugin:
     def test_patched_override_explicitly_disabled_mtp_falls_through(self, monkeypatch):
         """An exported recipe depth must not override mtp.enabled=false."""
         from transformers import AutoConfig
-        from vllm.config.speculative import SpeculativeConfig
-
         import nemo.collections.speechlm2.vllm.salm as salm_module
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
@@ -969,8 +955,6 @@ class TestMTPPlugin:
     def test_patched_override_multi_head_without_repeated_layer_raises(self, monkeypatch):
         """hf_config_override should raise for multi-head checkpoints without use_repeated_layer."""
         from transformers import AutoConfig
-        from vllm.config.speculative import SpeculativeConfig
-
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
 
@@ -984,8 +968,6 @@ class TestMTPPlugin:
     def test_mtp_override_registration_is_idempotent(self, monkeypatch):
         """register() should not repeatedly wrap the config override."""
         from transformers import AutoConfig
-        from vllm.config.speculative import SpeculativeConfig
-
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))
         register()
         first_override = SpeculativeConfig.hf_config_override
@@ -996,8 +978,6 @@ class TestMTPPlugin:
     def test_mtp_override_reregistration_preserves_first_native_hook(self, monkeypatch):
         """A later wrapper that delegates to us must not become our fallback and recurse."""
         from transformers import AutoConfig
-        from vllm.config.speculative import SpeculativeConfig
-
         import nemo.collections.speechlm2.vllm.salm as salm_module
 
         monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()))

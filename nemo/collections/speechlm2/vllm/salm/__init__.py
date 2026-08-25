@@ -82,9 +82,9 @@ def _nemo_speechlm_mtp_hf_config_override(hf_config):
         # A spawn child can import this module while unpickling the function
         # without running the vLLM plugin hook first. In that case the class
         # still exposes its native override, which is safe to capture lazily.
-        from vllm.config.speculative import SpeculativeConfig
+        import vllm.config.speculative as _spec_mod
 
-        current_override = SpeculativeConfig.hf_config_override
+        current_override = _spec_mod.SpeculativeConfig.hf_config_override
         if current_override is _nemo_speechlm_mtp_hf_config_override:
             raise RuntimeError("NeMo SpeechLM MTP override was installed without preserving vLLM's original hook.")
         _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = current_override
@@ -115,7 +115,6 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
     from typing import Literal, get_args
 
     import vllm.config.speculative as _spec_mod
-    from vllm.config.speculative import SpeculativeConfig
 
     # Extend vLLM's recognized MTP model types.
     old_args = get_args(_spec_mod.MTPModelTypes)
@@ -123,7 +122,7 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
         _spec_mod.MTPModelTypes = Literal[old_args + ("nemo_speechlm_mtp",)]
 
     # Route SpeechLM MTP checkpoints through SpeculativeConfig.hf_config_override.
-    current_override = SpeculativeConfig.hf_config_override
+    current_override = _spec_mod.SpeculativeConfig.hf_config_override
     if not getattr(current_override, "_nemo_speechlm_mtp_override", False):
         global _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE
         # Preserve the first native hook for the lifetime of this process.
@@ -131,7 +130,7 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
         # wrapper that already delegates to us, creating an override cycle.
         if _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is None:
             _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = current_override
-        SpeculativeConfig.hf_config_override = staticmethod(_nemo_speechlm_mtp_hf_config_override)
+        _spec_mod.SpeculativeConfig.hf_config_override = staticmethod(_nemo_speechlm_mtp_hf_config_override)
 
     # Register the SpeechLM MTP draft architecture with vLLM.
     from vllm.model_executor.models.registry import ModelRegistry

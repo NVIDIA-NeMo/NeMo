@@ -123,20 +123,23 @@ class ConcatDataset(IterableDataset):
             max_elements = len(range(wid, self.length, wnum))
 
         if self.kind == 'map':
+            datasets = []
             for idx in range(len(self.datasets)):
                 start_idx = (len(self.datasets[idx]) // self.world_size) * self.global_rank
                 end_idx = start_idx + (len(self.datasets[idx]) // self.world_size)
                 if self.global_rank == self.world_size - 1:
                     end_idx = len(self.datasets[idx])
                 indices = range(start_idx + wid, end_idx, wnum)
-                self.datasets[idx] = pt_data.Subset(self.datasets[idx], indices)
+                datasets.append(pt_data.Subset(self.datasets[idx], indices))
+        else:
+            datasets = self.datasets
 
-        for idx, dataset in enumerate(self.datasets):
+        for idx, dataset in enumerate(datasets):
             iterable = self.get_iterable(dataset)
             self.iterables[idx] = iterable
 
         n = 0
-        ind_gen = self.index_generator(self.datasets, **self.sampling_kwargs)
+        ind_gen = self.index_generator(datasets, **self.sampling_kwargs)
         while n < max_elements:
             n += 1
             try:
@@ -146,10 +149,10 @@ class ConcatDataset(IterableDataset):
             try:
                 val = next(self.iterables[ind])
                 if self.kind == 'map':
-                    val = self.datasets[ind][val]
+                    val = datasets[ind][val]
                 yield val
             except StopIteration:
-                self.iterables[ind] = self.get_iterable(self.datasets[ind])
+                self.iterables[ind] = self.get_iterable(datasets[ind])
                 n -= 1
 
     def __len__(self):

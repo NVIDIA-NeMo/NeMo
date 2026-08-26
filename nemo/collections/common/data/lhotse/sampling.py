@@ -75,12 +75,18 @@ class MultimodalSamplingConstraint(SamplingConstraint):
     _internal = None
 
     def __post_init__(self):
-        constraint_cls = PackedTokenConstraint if self.use_packed_sequence_sampling else TokenConstraint
-        self._internal = constraint_cls(
-            max_tokens=self.batch_tokens,
-            max_examples=self.batch_size,
-            quadratic_length=self.quadratic_factor,
-        )
+        if self.use_packed_sequence_sampling:
+            self._internal = PackedTokenConstraint(
+                batch_tokens=self.batch_tokens,
+                max_examples=self.batch_size,
+                quadratic_length=self.quadratic_factor,
+            )
+        else:
+            self._internal = TokenConstraint(
+                max_tokens=self.batch_tokens,
+                max_examples=self.batch_size,
+                quadratic_length=self.quadratic_factor,
+            )
 
     def add(self, example: Any) -> None:
         num_tokens = self.measure_length(example)
@@ -101,7 +107,8 @@ class MultimodalSamplingConstraint(SamplingConstraint):
         if self._internal.max_examples is not None and self._internal.num_examples + 1 > self._internal.max_examples:
             return True
         return (
-            self._internal.max_tokens is not None and self._internal.current + num_tokens > self._internal.max_tokens
+            self._internal.batch_tokens is not None
+            and self._internal.current + self._internal.budget_length(num_tokens) > self._internal.batch_tokens
         )
 
     def reached_limit(self) -> bool:
@@ -110,7 +117,13 @@ class MultimodalSamplingConstraint(SamplingConstraint):
             raise RuntimeError("reached_limit() is only valid for packed sequence sampling")
         if self._internal.max_examples is not None and self._internal.num_examples >= self._internal.max_examples:
             return True
-        return self._internal.max_tokens is not None and self._internal.current >= self._internal.max_tokens
+        return self._internal.batch_tokens is not None and self._internal.current >= self._internal.batch_tokens
+
+    def measure_packing_length(self, example: Any) -> int:
+        """Measure one example against the packed batch's effective token budget."""
+        if not self.use_packed_sequence_sampling:
+            raise RuntimeError("measure_packing_length() is only valid for packed sequence sampling")
+        return self._internal.budget_length(self.measure_length(example))
 
     def reset(self) -> None:
         self._internal.reset()
@@ -168,31 +181,64 @@ class MultimodalSamplingConstraint(SamplingConstraint):
 
 
 @dataclass
-class PackedTokenConstraint(TokenConstraint):
+class PackedTokenConstraint(SamplingConstraint):
     """Token constraint for batches that remain packed through the model.
 
     Generic TokenConstraint budgets padded work as num_examples times the
     longest example. For THD/packed execution, useful work and activation
-    storage instead scale with the sum of per-example lengths, already tracked
-    in current. Candidate-aware batching enforces the hard limit using the
-    actual next example; the current mean remains only as an end-of-stream
-    fullness heuristic for drop-last behavior.
+    storage instead scale with the sum of per-example lengths. ``batch_tokens``
+    remains a hard raw-token cap, while the optional example-count and
+    quadratic-compute limits preserve the public ``batch_size`` and
+    ``quadratic_factor`` configuration semantics. Candidate-aware batching
+    enforces all configured limits; the current mean remains only as an
+    end-of-stream fullness heuristic for drop-last behavior.
     """
+
+    batch_tokens: int | None = None
+    max_examples: int | None = None
+    current: int = 0
+    num_examples: int = 0
+    quadratic_length: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.batch_tokens is not None and self.batch_tokens <= 0:
+            raise ValueError(f"batch_tokens must be positive or null (got {self.batch_tokens})")
+        if self.max_examples is not None and self.max_examples <= 0:
+            raise ValueError(f"batch_size must be positive or null (got {self.max_examples})")
+        if self.quadratic_length is not None and self.quadratic_length <= 0:
+            raise ValueError(f"quadratic_factor must be positive or null (got {self.quadratic_length})")
+
+    def budget_length(self, size: float) -> int:
+        """Return the conservative integral cost used by exact subset packing."""
+        if self.quadratic_length is None:
+            return math.ceil(size)
+        return math.ceil(size + size**2 / self.quadratic_length)
+
+    def add(self, example: Any) -> None:
+        self.current += self.budget_length(self.measure_length(example))
+        self.num_examples += 1
 
     def exceeded(self) -> bool:
         if self.max_examples is not None and self.num_examples > self.max_examples:
             return True
-        return self.max_tokens is not None and self.current > self.max_tokens
+        return self.batch_tokens is not None and self.current > self.batch_tokens
 
     def close_to_exceeding(self) -> bool:
         if self.max_examples is not None and self.num_examples >= self.max_examples:
             return True
-        if self.max_tokens is None:
+        if self.batch_tokens is None:
             return False
         if self.num_examples == 0:
             return False
         mean_length = self.current / self.num_examples
-        return self.current + mean_length > self.max_tokens
+        return self.current + mean_length > self.batch_tokens
+
+    def reset(self) -> None:
+        self.current = 0
+        self.num_examples = 0
+
+    def measure_length(self, example: Any) -> float:
+        return example.num_tokens
 
 
 @dataclass
@@ -235,7 +281,10 @@ class FixedBucketBatchSizeConstraint2D(FixedBucketBatchSizeConstraint):
         if example_len is None:
             example_len = self.measure_length(example)
         return find_smallest_bucket(
-            self.max_seq_len_buckets, example_len, strict=self.strict_2d, max_ratio=self.max_ratio
+            self.max_seq_len_buckets,
+            example_len,
+            strict=self.strict_2d,
+            max_ratio=self.max_ratio,
         )
 
 

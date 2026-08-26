@@ -12,12 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import random
 from collections.abc import Sequence
+from itertools import islice
 from typing import Any
 
+import torch
 from lhotse import CutSet
-from lhotse.dataset import DynamicCutSampler
+from lhotse.dataset import DynamicBucketingSampler, DynamicCutSampler
+from lhotse.dataset.dataloading import resolve_seed
 from lhotse.dataset.sampling.dynamic import DurationBatcher, Filter
+from lhotse.dataset.sampling.dynamic_bucketing import BucketSelectionState, DynamicBucketer
 from lhotse.lazy import get_graph_origin, resolve_iterator_source
 
 
@@ -56,7 +61,6 @@ def _select_best_fit_indices(lengths: Sequence[int], capacity: int, max_items: i
         raise ValueError(f"max_items must be non-negative (got {max_items})")
 
     # Count-aware reachability is only needed when batch_size is configured.
-    # Packed training normally leaves it null and takes the faster path above.
     layers = [1] + [0] * max_items
     prefixes = [tuple(layers)]
     for item_index, length in enumerate(lengths):
@@ -88,7 +92,7 @@ class ExactTokenBatcher(DurationBatcher):
         super().__init__(*args, **kwargs)
         if packing_buffer_size <= 0:
             raise ValueError(
-                "shuffle_buffer_size must be a positive packing-buffer size " f"(got {packing_buffer_size})"
+                "packing_buffer_size must be a positive packing-buffer size " f"(got {packing_buffer_size})"
             )
         self.packing_buffer_size = packing_buffer_size
         self._source_exhausted = False
@@ -118,25 +122,36 @@ class ExactTokenBatcher(DurationBatcher):
         integer_length = int(length)
         if integer_length != length:
             raise ValueError("Packed sequence sampling requires integer token lengths, " f"but measured {length!r}.")
+        if integer_length <= 0:
+            raise ValueError("Packed sequence sampling requires positive token lengths, " f"but measured {length!r}.")
         return integer_length
 
+    def _measure_budget_length(self, example_or_tuple) -> int:
+        measured = self._measured_example(example_or_tuple)
+        measure_packing_length = getattr(self.constraint, "measure_packing_length", None)
+        return (
+            measure_packing_length(measured)
+            if callable(measure_packing_length)
+            else self._measure_integer_length(example_or_tuple)
+        )
+
     def _limits(self) -> tuple[int, int | None]:
-        max_tokens = getattr(self.constraint, "batch_tokens", None)
+        batch_tokens = getattr(self.constraint, "batch_tokens", None)
         max_examples = getattr(self.constraint, "batch_size", None)
-        if max_tokens is None:
+        if batch_tokens is None:
             internal = getattr(self.constraint, "_internal", None)
-            max_tokens = getattr(internal, "max_tokens", None)
+            batch_tokens = getattr(internal, "batch_tokens", None)
             max_examples = getattr(internal, "max_examples", max_examples)
-        if max_tokens is None:
+        if batch_tokens is None:
             raise ValueError("Packed sequence sampling requires batch_tokens to define the exact token cap.")
-        max_tokens = int(max_tokens)
-        if max_tokens <= 0:
-            raise ValueError(f"batch_tokens must be positive (got {max_tokens})")
+        batch_tokens = int(batch_tokens)
+        if batch_tokens <= 0:
+            raise ValueError(f"batch_tokens must be positive (got {batch_tokens})")
         if max_examples is not None:
             max_examples = int(max_examples)
             if max_examples <= 0:
                 raise ValueError(f"batch_size must be positive or null (got {max_examples})")
-        return max_tokens, max_examples
+        return batch_tokens, max_examples
 
     def _discard(self, examples) -> None:
         try:
@@ -150,19 +165,30 @@ class ExactTokenBatcher(DurationBatcher):
             raise StopIteration()
 
         pool = list(self.reuse_cuts_buffer)
-        lengths = [self._measure_integer_length(example) for example in pool]
-        max_tokens, max_examples = self._limits()
+        raw_lengths = [self._measure_integer_length(example) for example in pool]
+        budget_lengths = [self._measure_budget_length(example) for example in pool]
+        batch_tokens, max_examples = self._limits()
 
-        anchor_length = lengths[0]
-        if anchor_length > max_tokens:
+        anchor_length = raw_lengths[0]
+        anchor_budget = budget_lengths[0]
+        if anchor_length > batch_tokens:
             raise ValueError(
                 f"An individual example ({anchor_length} tokens) exceeds "
-                f"batch_tokens={max_tokens}. Set max_tokens less than or equal "
+                f"batch_tokens={batch_tokens}. Set max_tokens less than or equal "
                 "to batch_tokens so it is filtered before batching."
+            )
+        if anchor_budget > batch_tokens:
+            raise ValueError(
+                f"An individual example's effective packed budget ({anchor_budget} tokens) exceeds "
+                f"batch_tokens={batch_tokens}; increase batch_tokens or quadratic_factor."
             )
 
         remaining_items = None if max_examples is None else max_examples - 1
-        tail_indices = _select_best_fit_indices(lengths[1:], max_tokens - anchor_length, max_items=remaining_items)
+        tail_indices = _select_best_fit_indices(
+            budget_lengths[1:],
+            batch_tokens - anchor_budget,
+            max_items=remaining_items,
+        )
         selected_indices = {0, *(index + 1 for index in tail_indices)}
         examples = [example for index, example in enumerate(pool) if index in selected_indices]
         deferred = [example for index, example in enumerate(pool) if index not in selected_indices]
@@ -181,6 +207,307 @@ class ExactTokenBatcher(DurationBatcher):
             raise StopIteration()
 
         return self._detuplify(examples)
+
+
+class PackedSequenceDynamicBucketer(DynamicBucketer):
+    """Dynamic bucketer that best-fit packs a bounded pool in one bucket.
+
+    ``buffer_size`` remains the global occupancy across all buckets, while
+    ``packing_buffer_size`` bounds the subset-sum lookahead inside the bucket
+    selected for the next batch. The oldest item is always the anchor, which
+    guarantees that best-fit backfilling cannot starve a difficult example.
+
+    This class intentionally extends Lhotse's bucketer rather than copying its
+    queue/checkpoint implementation. Its iteration loop mirrors the small
+    commit/refill portion of :class:`DynamicBucketer` because upstream does not
+    expose a hook for replacing ``DurationBatcher``.
+    """
+
+    def __init__(self, *args, packing_buffer_size: int, **kwargs):
+        super().__init__(*args, **kwargs)
+        if packing_buffer_size <= 0:
+            raise ValueError(f"packing_buffer_size must be positive (got {packing_buffer_size})")
+        self.packing_buffer_size = packing_buffer_size
+
+    @staticmethod
+    def _measured_example(example_or_tuple):
+        return example_or_tuple[0] if isinstance(example_or_tuple, tuple) else example_or_tuple
+
+    @staticmethod
+    def _detuplify(examples):
+        if isinstance(examples[0], tuple):
+            if len(examples[0]) == 1:
+                return CutSet.from_cuts(example[0] for example in examples)
+            tuple_of_example_lists = list(zip(*examples))
+            return tuple(CutSet.from_cuts(items) for items in tuple_of_example_lists)
+        return CutSet.from_cuts(examples)
+
+    def _measure_integer_length(self, example_or_tuple) -> int:
+        length = self.constraint.measure_length(self._measured_example(example_or_tuple))
+        integer_length = int(length)
+        if integer_length != length:
+            raise ValueError("Packed sequence sampling requires integer token lengths, " f"but measured {length!r}.")
+        if integer_length <= 0:
+            raise ValueError("Packed sequence sampling requires positive token lengths, " f"but measured {length!r}.")
+        return integer_length
+
+    def _measure_budget_length(self, example_or_tuple) -> int:
+        measured = self._measured_example(example_or_tuple)
+        measure_packing_length = getattr(self.constraint, "measure_packing_length", None)
+        return (
+            measure_packing_length(measured)
+            if callable(measure_packing_length)
+            else self._measure_integer_length(example_or_tuple)
+        )
+
+    def _limits(self) -> tuple[int, int | None]:
+        batch_tokens = getattr(self.constraint, "batch_tokens", None)
+        max_examples = getattr(self.constraint, "batch_size", None)
+        if batch_tokens is None:
+            internal = getattr(self.constraint, "_internal", None)
+            batch_tokens = getattr(internal, "batch_tokens", None)
+            max_examples = getattr(internal, "max_examples", max_examples)
+        if batch_tokens is None:
+            raise ValueError("Packed sequence sampling requires batch_tokens to define the exact token cap.")
+        batch_tokens = int(batch_tokens)
+        if batch_tokens <= 0:
+            raise ValueError(f"batch_tokens must be positive (got {batch_tokens})")
+        if max_examples is not None:
+            max_examples = int(max_examples)
+            if max_examples <= 0:
+                raise ValueError(f"batch_size must be positive or null (got {max_examples})")
+        return batch_tokens, max_examples
+
+    def _plan_batch(self, bucket, *, randomize_tail: bool) -> tuple[list[int], list[Any]]:
+        with bucket.mutex:
+            bucket_size = len(bucket.queue)
+            if bucket_size == 0:
+                raise StopIteration()
+            if randomize_tail:
+                # random.sample(range(...), k) is O(k) in the bounded
+                # lookahead size instead of shuffling the whole bucket.
+                tail_indices = self.rng.sample(
+                    range(1, bucket_size),
+                    k=min(self.packing_buffer_size - 1, bucket_size - 1),
+                )
+                candidate_indices = [0, *tail_indices]
+                candidates = [bucket.queue[index] for index in candidate_indices]
+            else:
+                candidates = list(islice(bucket.queue, self.packing_buffer_size))
+                candidate_indices = list(range(len(candidates)))
+
+        # Preserve a FIFO anchor for starvation resistance. In shuffle mode,
+        # draw the remaining lookahead candidates from the whole bucket; the
+        # deterministic prefix is retained as a fullness fallback below.
+        raw_lengths = [self._measure_integer_length(example) for example in candidates]
+        budget_lengths = [self._measure_budget_length(example) for example in candidates]
+        batch_tokens, max_examples = self._limits()
+        if raw_lengths[0] > batch_tokens:
+            raise ValueError(
+                f"An individual example ({raw_lengths[0]} tokens) exceeds "
+                f"batch_tokens={batch_tokens}. Set max_tokens less than or equal "
+                "to batch_tokens so it is filtered before batching."
+            )
+        if budget_lengths[0] > batch_tokens:
+            raise ValueError(
+                f"An individual example's effective packed budget ({budget_lengths[0]} tokens) exceeds "
+                f"batch_tokens={batch_tokens}; increase batch_tokens or quadratic_factor."
+            )
+
+        remaining_items = None if max_examples is None else max_examples - 1
+        tail_selection = _select_best_fit_indices(
+            budget_lengths[1:],
+            batch_tokens - budget_lengths[0],
+            max_items=remaining_items,
+        )
+        selected_positions = [0, *(index + 1 for index in tail_selection)]
+        selected_indices = [candidate_indices[position] for position in selected_positions]
+        examples = [candidates[position] for position in selected_positions]
+        return selected_indices, examples
+
+    def _batch_is_full(self, examples) -> bool:
+        constraint = self.constraint.copy()
+        constraint.reset()
+        for example in examples:
+            constraint.add(self._measured_example(example))
+        if constraint.exceeded():
+            raise AssertionError("Best-fit packed batch exceeded its configured constraint.")
+        return constraint.close_to_exceeding()
+
+    def _is_ready(self, bucket) -> bool:
+        if bucket.qsize() == 0:
+            return False
+        _, examples = self._plan_batch(bucket, randomize_tail=False)
+        return self._batch_is_full(examples)
+
+    def _collect_packed_batch(self, bucket) -> tuple[list[int], Any]:
+        selected_indices, examples = self._plan_batch(bucket, randomize_tail=self.shuffle)
+        if self.shuffle and not self._batch_is_full(examples):
+            # Bucket selection established readiness from its deterministic
+            # prefix. A random bounded pool may be unusually sparse; fall back
+            # to that prefix instead of emitting an avoidably partial batch.
+            fallback_indices, fallback_examples = self._plan_batch(bucket, randomize_tail=False)
+            if self._batch_is_full(fallback_examples):
+                selected_indices, examples = fallback_indices, fallback_examples
+        return selected_indices, self._detuplify(examples)
+
+    def __iter__(self):
+        self.cuts_iter = iter(self.cuts)
+        if self._saved_state is not None:
+            state = self._restore_from_saved_state()
+            self._selection_state = state
+            if self.concurrent:
+                # Indexed restore reconstructs the buffered queues and resumes
+                # the source after them. Restart the producer so restored
+                # buffers continue to replenish as they are consumed.
+                self._source_exhausted = False
+                self._start_data_producer_thread()
+                self._maybe_wait_for_producer()
+        else:
+            if self.concurrent:
+                self._source_exhausted = False
+                self._start_data_producer_thread()
+                self._maybe_wait_for_producer()
+            else:
+                self._collect_cuts_in_buckets(self.buffer_size)
+            state = BucketSelectionState(
+                bucket_rng=self.bucket_rng,
+                num_buckets=len(self.buckets),
+                world_size=self.world_size,
+            )
+            self._selection_state = state
+
+        try:
+            while True:
+                sampling_bucket = self._select_bucket(self._selection_state)
+                selected_indices, batch = self._collect_packed_batch(sampling_bucket)
+                # Commit arbitrary queue removals before yielding so state_dict
+                # always describes the next batch, including indexed O(1) resume.
+                with sampling_bucket.mutex:
+                    for index in sorted(selected_indices, reverse=True):
+                        del sampling_bucket.queue[index]
+                batch_size = len(selected_indices)
+                stop_after_yield = False
+                if self.concurrent:
+                    try:
+                        self._maybe_wait_for_producer()
+                    except StopIteration:
+                        stop_after_yield = True
+                else:
+                    try:
+                        self._collect_cuts_in_buckets(batch_size)
+                    except StopIteration:
+                        stop_after_yield = True
+                yield batch
+                if stop_after_yield:
+                    break
+        except StopIteration:
+            pass
+        finally:
+            if self.concurrent and self._producer_thread is not None:
+                if self._producer_thread.is_alive():
+                    self._source_exhausted = True
+                    self._producer_thread.join()
+                self._producer_thread = None
+            self.cuts_iter = None
+
+
+class PackedSequenceDynamicBucketingSampler(DynamicBucketingSampler):
+    """DynamicBucketingSampler with bounded best-fit packed batches.
+
+    The subclass relies on the parent sampler's iterator initialization and
+    checkpoint fields because Lhotse currently hardcodes its bucketer class.
+    Bucket queues, RNG, synchronized bucket selection, filters, tuple inputs,
+    and indexed graph tokens are all still owned by upstream Lhotse.
+    """
+
+    def __init__(self, *args, packing_buffer_size: int = 128, **kwargs):
+        if packing_buffer_size <= 0:
+            raise ValueError(f"packing_buffer_size must be positive (got {packing_buffer_size})")
+        super().__init__(*args, **kwargs)
+        self.packing_buffer_size = packing_buffer_size
+
+    def state_dict(self) -> dict[str, Any]:
+        bucketer = getattr(self, "_bucketer", None)
+        producer_was_live = bool(
+            bucketer is not None
+            and bucketer.concurrent
+            and bucketer._producer_thread is not None
+            and bucketer._producer_thread.is_alive()
+            and not bucketer._source_exhausted
+        )
+        if producer_was_live:
+            # Freeze both the source iterator and bucket queues before the
+            # parent snapshots cuts_state followed by bucketer_state.
+            bucketer._source_exhausted = True
+            bucketer._producer_thread.join()
+            bucketer._producer_thread = None
+            bucketer._source_exhausted = False
+        try:
+            state = super().state_dict()
+            state["packing_buffer_size"] = self.packing_buffer_size
+            return state
+        finally:
+            if producer_was_live:
+                bucketer._start_data_producer_thread()
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        packing_buffer_size = state_dict.pop("packing_buffer_size", self.packing_buffer_size)
+        if packing_buffer_size <= 0:
+            raise ValueError(f"Restored packing_buffer_size must be positive (got {packing_buffer_size})")
+        self.packing_buffer_size = packing_buffer_size
+        super().load_state_dict(state_dict)
+
+    def __iter__(self) -> "PackedSequenceDynamicBucketingSampler":
+        if getattr(self, "_needs_fast_forward", False):
+            self._needs_fast_forward = False
+            self._fast_forward()
+            return self
+        if self._just_restored_state:
+            return self
+
+        seed = resolve_seed(self.seed)
+        self.rng = random.Random(seed + self.epoch)
+        if self.sync_buckets:
+            bucket_rng_seed = 1234
+            worker_info = torch.utils.data.get_worker_info()
+            if worker_info is not None:
+                bucket_rng_seed += worker_info.id
+            bucket_rng = random.Random(bucket_rng_seed)
+        else:
+            bucket_rng = None
+        if getattr(self, "_skip_diagnostics_reset_once", False):
+            self._skip_diagnostics_reset_once = False
+        else:
+            self.diagnostics.reset_current_epoch()
+
+        restore_sources = [resolve_iterator_source(source) for source in self.cuts]
+        source_iterators = [iter(source) for source in restore_sources]
+        filtered_examples = Filter(
+            iterator=zip(*source_iterators),
+            predicate=lambda examples: all(self._filter_fn(example) for example in examples),
+            diagnostics=self.diagnostics,
+        )
+        self._bucketer = PackedSequenceDynamicBucketer(
+            filtered_examples,
+            duration_bins=self.duration_bins,
+            world_size=self.world_size,
+            max_duration=self.max_duration,
+            max_cuts=self.max_cuts,
+            constraint=self.constraint,
+            drop_last=self.drop_last,
+            buffer_size=self.buffer_size,
+            quadratic_duration=self.quadratic_duration,
+            shuffle=self.shuffle,
+            rng=self.rng,
+            bucket_rng=bucket_rng,
+            concurrent=self.concurrent,
+            diagnostics=self.diagnostics,
+            restore_sources=restore_sources,
+            packing_buffer_size=self.packing_buffer_size,
+        )
+        self.cuts_iter = iter(self._bucketer)
+        return self
 
 
 class PackedSequenceDynamicCutSampler(DynamicCutSampler):

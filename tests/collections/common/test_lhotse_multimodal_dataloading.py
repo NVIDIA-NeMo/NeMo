@@ -93,7 +93,12 @@ def multimodal_conversations_path(tmp_path_factory):
                     "from": "Assistant",
                     "type": "text",
                 },
-                {"value": "123_answer.wav", "from": "Assistant", "type": "audio", "offset": 7.11},
+                {
+                    "value": "123_answer.wav",
+                    "from": "Assistant",
+                    "type": "audio",
+                    "offset": 7.11,
+                },
             ],
         }
     ]
@@ -109,7 +114,7 @@ def tarred_multimodal_conversations_path(multimodal_conversations_path, tmp_path
     tar_dir = tmp_path_factory.mktemp("multi_convo_tarred")
     with NeMoMultimodalConversationTarWriter(tar_dir, shard_size=5) as writer:
         for i in range(10):
-            conversation.id = f'convo-{i}'
+            conversation.id = f"convo-{i}"
             writer.write(conversation)
     return str(tar_dir / "manifest_{0..1}.jsonl"), str(tar_dir / "audio_{0..1}.tar")
 
@@ -370,12 +375,8 @@ def test_multimodal_conversation_input_sharegpt_list_audio_paths(tmp_path):
 def test_multimodal_conversation_input_sharegpt_speech_alias_and_precedence(tmp_path):
     manifest_path = tmp_path / "sharegpt_speech_alias_manifest.jsonl"
     dummy_recording(0, 1.0, with_data=True).to_cut().save_audio(tmp_path / "sound.wav")
-    dummy_recording(1, 1.5, with_data=True).to_cut().save_audio(
-        tmp_path / "speech_a.wav"
-    )
-    dummy_recording(2, 2.0, with_data=True).to_cut().save_audio(
-        tmp_path / "speech_b.wav"
-    )
+    dummy_recording(1, 1.5, with_data=True).to_cut().save_audio(tmp_path / "speech_a.wav")
+    dummy_recording(2, 2.0, with_data=True).to_cut().save_audio(tmp_path / "speech_b.wav")
     lhotse.serialization.save_to_jsonl(
         [
             {
@@ -409,9 +410,7 @@ def test_multimodal_conversation_input_sharegpt_speech_alias_and_precedence(tmp_
     speech_list, precedence = list(adapter)
     speech_audio = [turn for turn in speech_list.turns if isinstance(turn, AudioTurn)]
     assert [turn.cut.duration for turn in speech_audio] == [1.5, 2.0]
-    precedence_audio = [
-        turn for turn in precedence.turns if isinstance(turn, AudioTurn)
-    ]
+    precedence_audio = [turn for turn in precedence.turns if isinstance(turn, AudioTurn)]
     assert [turn.cut.duration for turn in precedence_audio] == [1.0]
 
 
@@ -419,9 +418,7 @@ def test_multimodal_conversation_input_sharegpt_audio_path_prefix_map(tmp_path):
     manifest_path = tmp_path / "sharegpt_prefix_map_manifest.jsonl"
     mirror_root = tmp_path / "mirror"
     mirror_root.mkdir()
-    dummy_recording(0, 1.25, with_data=True).to_cut().save_audio(
-        mirror_root / "clip.wav"
-    )
+    dummy_recording(0, 1.25, with_data=True).to_cut().save_audio(mirror_root / "clip.wav")
     lhotse.serialization.save_to_jsonl(
         [
             {
@@ -471,7 +468,9 @@ def test_multimodal_conversation_input_sharegpt_nested_audio_path_list_raises(tm
         list(adapter)
 
 
-def test_multimodal_conversation_input_sharegpt_ignores_assistant_literal_audio_tag(tmp_path):
+def test_multimodal_conversation_input_sharegpt_ignores_assistant_literal_audio_tag(
+    tmp_path,
+):
     manifest_path = tmp_path / "sharegpt_assistant_literal_audio_manifest.jsonl"
     dummy_recording(0, 1.0, with_data=True).to_cut().save_audio(tmp_path / "clip_a.wav")
     dummy_recording(1, 1.5, with_data=True).to_cut().save_audio(tmp_path / "clip_b.wav")
@@ -507,7 +506,9 @@ def test_multimodal_conversation_input_sharegpt_ignores_assistant_literal_audio_
     assert "Use an HTML <audio> tag in the page." in assistant_texts
 
 
-def test_multimodal_conversation_input_sharegpt_user_audio_path_placeholder_mismatch_raises(tmp_path):
+def test_multimodal_conversation_input_sharegpt_user_audio_path_placeholder_mismatch_raises(
+    tmp_path,
+):
     manifest_path = tmp_path / "sharegpt_user_mismatch_manifest.jsonl"
     lhotse.serialization.save_to_jsonl(
         [
@@ -515,7 +516,10 @@ def test_multimodal_conversation_input_sharegpt_user_audio_path_placeholder_mism
                 "id": "bad_user_mismatch",
                 "sound": ["clip_a.wav", "clip_b.wav", "clip_c.wav"],
                 "conversations": [
-                    {"from": "human", "value": "A <sound> B <sound> C <sound> D <sound>"},
+                    {
+                        "from": "human",
+                        "value": "A <sound> B <sound> C <sound> D <sound>",
+                    },
                     {"from": "gpt", "value": "done"},
                 ],
             }
@@ -657,7 +661,11 @@ def test_multimodal_conversation_input_with_prompt(multimodal_conversations_path
     )
 
     dl = get_lhotse_dataloader_from_config(
-        config=config, global_rank=0, world_size=1, dataset=Identity(), tokenizer=tokenizer
+        config=config,
+        global_rank=0,
+        world_size=1,
+        dataset=Identity(),
+        tokenizer=tokenizer,
     )
     batches = [batch for batch in dl]
     assert len(batches) == 1
@@ -717,7 +725,9 @@ def test_text_only_conversation_length_measurement(tokenizer):
     assert constr.measure_length(convo) == 14
 
     constr = MultimodalFixedBucketBatchSizeConstraint2D(
-        max_seq_len_buckets=[5, 10, 15], batch_sizes=[3, 2, 1], measure_total_length=True
+        max_seq_len_buckets=[5, 10, 15],
+        batch_sizes=[3, 2, 1],
+        measure_total_length=True,
     )
     assert constr.measure_length(convo) == 14
     assert constr.select_bucket(constr.max_seq_len_buckets, convo) == 2
@@ -762,7 +772,7 @@ def test_packed_multimodal_constraint_budgets_sum_not_padded_length(monkeypatch)
 
 def test_packed_multimodal_constraint_uses_full_token_budget():
     constraint = MultimodalSamplingConstraint(batch_tokens=16384, use_packed_sequence_sampling=True)
-    assert constraint._internal.max_tokens == 16384
+    assert constraint._internal.batch_tokens == 16384
 
 
 def test_audio_only_conversation_length_measurement(tokenizer, tmp_path_factory):
@@ -801,7 +811,9 @@ def test_audio_only_conversation_length_measurement(tokenizer, tmp_path_factory)
     assert constr.measure_length(convo) == 162 + 78
 
     constr = MultimodalFixedBucketBatchSizeConstraint2D(
-        max_seq_len_buckets=[100, 200, 300, 400], batch_sizes=[3, 2, 1, 1], measure_total_length=True
+        max_seq_len_buckets=[100, 200, 300, 400],
+        batch_sizes=[3, 2, 1, 1],
+        measure_total_length=True,
     )
     assert constr.measure_length(convo) == 162 + 78
     assert constr.select_bucket(constr.max_seq_len_buckets, convo) == 2
@@ -869,7 +881,9 @@ def test_multimodal_conversation_length_measurement(tokenizer, tmp_path_factory)
     assert constr.measure_length(convo) == 303
 
     constr = MultimodalFixedBucketBatchSizeConstraint2D(
-        max_seq_len_buckets=[100, 200, 300, 400], batch_sizes=[3, 2, 1, 1], measure_total_length=True
+        max_seq_len_buckets=[100, 200, 300, 400],
+        batch_sizes=[3, 2, 1, 1],
+        measure_total_length=True,
     )
     assert constr.measure_length(convo) == 303
     assert constr.select_bucket(constr.max_seq_len_buckets, convo) == 3
@@ -975,7 +989,11 @@ def test_multimodal_conversation_duration_filter():
         "audio-audio-7s",
         turns=[
             AudioTurn(dummy_cut(0, duration=3.0), role="user", audio_locator_tag="<|audio|>"),
-            AudioTurn(dummy_cut(0, duration=4.0), role="assistant", audio_locator_tag="<|audio|>"),
+            AudioTurn(
+                dummy_cut(0, duration=4.0),
+                role="assistant",
+                audio_locator_tag="<|audio|>",
+            ),
         ],
     )
     assert fltr(conv_s2s_7s) is False
@@ -1041,7 +1059,11 @@ def test_cut_to_conversation_conversion(cutset_path, tokenizer):
         }
     )
     dl = get_lhotse_dataloader_from_config(
-        config=config, global_rank=0, world_size=1, dataset=Identity(), tokenizer=tokenizer
+        config=config,
+        global_rank=0,
+        world_size=1,
+        dataset=Identity(),
+        tokenizer=tokenizer,
     )
     batches = [batch for batch in dl]
     assert len(batches) == 1
@@ -1107,12 +1129,38 @@ def s2s_cutset_path(tmp_path_factory) -> Path:
         duration=60.0,
         recording_duration=60.0,
         supervisions=[
-            SupervisionSegment("ut1", "c1", start=1.5, duration=7.13, text="greetings, assistant", speaker="user"),
-            SupervisionSegment("at1", "c1", start=10.2, duration=8.49, text="welcome, user", speaker="assistant"),
             SupervisionSegment(
-                "ut2", "c1", start=21.3, duration=15.2, text="lengthy issue description", speaker="user"
+                "ut1",
+                "c1",
+                start=1.5,
+                duration=7.13,
+                text="greetings, assistant",
+                speaker="user",
             ),
-            SupervisionSegment("at2", "c1", start=38.1, duration=20.0, text="lengthy response", speaker="assistant"),
+            SupervisionSegment(
+                "at1",
+                "c1",
+                start=10.2,
+                duration=8.49,
+                text="welcome, user",
+                speaker="assistant",
+            ),
+            SupervisionSegment(
+                "ut2",
+                "c1",
+                start=21.3,
+                duration=15.2,
+                text="lengthy issue description",
+                speaker="user",
+            ),
+            SupervisionSegment(
+                "at2",
+                "c1",
+                start=38.1,
+                duration=20.0,
+                text="lengthy response",
+                speaker="assistant",
+            ),
         ],
         with_data=True,
     )
@@ -1146,7 +1194,11 @@ def test_s2s_cut_to_conversation_conversion(s2s_cutset_path, tokenizer):
         }
     )
     dl = get_lhotse_dataloader_from_config(
-        config=config, global_rank=0, world_size=1, dataset=Identity(), tokenizer=tokenizer
+        config=config,
+        global_rank=0,
+        world_size=1,
+        dataset=Identity(),
+        tokenizer=tokenizer,
     )
     batches = [batch for batch in dl]
     assert len(batches) == 1
@@ -1223,12 +1275,14 @@ def multiple_multimodal_conversations_path(multimodal_conversations_path, tmp_pa
     out_dir = tmp_path_factory.mktemp("multi_convo")
     with JsonlShardWriter(f"{out_dir}/manifest_%d.jsonl", shard_size=5) as writer:
         for i in range(10):
-            conversation.id = f'convo-{i}'
+            conversation.id = f"convo-{i}"
             writer.write(conversation.to_dict())
     return str(out_dir) + "/manifest_{0..1}.jsonl"
 
 
-def test_dataloader_multimodal_conversation_nontarred_slice_length_ignored(multiple_multimodal_conversations_path):
+def test_dataloader_multimodal_conversation_nontarred_slice_length_ignored(
+    multiple_multimodal_conversations_path,
+):
     config = OmegaConf.create(
         {
             "input_cfg": [
@@ -1329,7 +1383,13 @@ def test_sharegpt_no_index_falls_back_to_in_memory_shuffle(tmp_path_factory):
 
 
 def _make_webdataset_dir(
-    tmp_path, num_samples=6, num_shards=2, create_idx=True, audio_first=False, create_meta=True, add_dir_entries=False
+    tmp_path,
+    num_samples=6,
+    num_shards=2,
+    create_idx=True,
+    audio_first=False,
+    create_meta=True,
+    add_dir_entries=False,
 ):
     """
     Helper: create a WebDataset directory layout with optional wids-meta.json,
@@ -1407,7 +1467,12 @@ def _make_webdataset_dir(
             create_tar_index(str(tar_path), str(tar_path) + ".idx")
 
     if create_meta:
-        meta = {"name": "test-dataset", "__kind__": "test-WebDataset", "wids_version": 1, "shardlist": shardlist}
+        meta = {
+            "name": "test-dataset",
+            "__kind__": "test-WebDataset",
+            "wids_version": 1,
+            "shardlist": shardlist,
+        }
         (tmp_path / "wids-meta.json").write_text(json.dumps(meta, indent=2))
 
     return tmp_path
@@ -1621,7 +1686,10 @@ def test_indexed_tar_reader_strips_trailing_zero_block_sentinel(tmp_path_factory
     import struct
 
     wds_dir = _make_webdataset_dir(
-        tmp_path_factory.mktemp("webdataset_zero_idx"), num_samples=2, num_shards=1, create_idx=True
+        tmp_path_factory.mktemp("webdataset_zero_idx"),
+        num_samples=2,
+        num_shards=1,
+        create_idx=True,
     )
     tar_path = str(next(wds_dir.rglob("*.tar")))
     tar_size = os.path.getsize(tar_path)
@@ -1643,7 +1711,10 @@ def test_indexed_tar_reader_rejects_all_zero_block_offsets(tmp_path_factory):
     import struct
 
     wds_dir = _make_webdataset_dir(
-        tmp_path_factory.mktemp("webdataset_all_zero"), num_samples=2, num_shards=1, create_idx=False
+        tmp_path_factory.mktemp("webdataset_all_zero"),
+        num_samples=2,
+        num_shards=1,
+        create_idx=False,
     )
     tar_path = str(next(wds_dir.rglob("*.tar")))
     tar_size = os.path.getsize(tar_path)

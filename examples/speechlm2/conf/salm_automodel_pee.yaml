@@ -285,8 +285,9 @@ data:
     # batch_size: null
     # use_bucketing: true
     # use_multimodal_sampling: true
-    # use_packed_sequence_sampling: false  # Sum lengths; enable only with a padding-free model path
-    # shuffle_buffer_size: 128  # Best-fit packing pool when packed sampling is enabled
+    # use_packed_sequence_sampling: false  # Sum lengths; requires a padding-free model path
+    # packing_buffer_size: 128  # Bucketed best-fit lookahead; explicit legacy shuffle_buffer_size is aliased
+    # shuffle_buffer_size: 128  # Non-bucketing best-fit pool
     # measure_total_length: true
     # Note: `batch_tokens`, `bucket_duration_bins`, and `max_tokens` all represent tokens as
     #  the sum of input audio frames and output text tokens. `audio_token_estimator` gives

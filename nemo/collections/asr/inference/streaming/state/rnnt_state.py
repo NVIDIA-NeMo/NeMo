@@ -49,7 +49,7 @@ class RNNTBeamStreamingState(RNNTStreamingState):
     """Beam search streaming state; decoder carry + cumulative/partial tokens.
 
     ``hyp_decoding_state``: K-beam carry across chunks (collapsed to top1 on EOU in the pipeline).
-    ``cumulative_*``: tokens/timestamps sealed at each EOU (prior utterances in a stream).
+    ``cumulative_*``: tokens/timestamps/confidences sealed at each EOU (prior utterances in a stream).
     ``partial_*[k]``: per-beam in-flight suffix since last EOU (chunk-local exports merged via lineage).
     ``best_hyp_idx``: index into ``partial_*`` for the chunk argmax beam used to publish.
     """
@@ -58,24 +58,32 @@ class RNNTBeamStreamingState(RNNTStreamingState):
     def _append_emissions_by_frame(
         prev_tokens: list[int],
         prev_timestamps: list[int],
+        prev_confidences: list[float],
         new_tokens: list[int],
         new_timestamps: list[int],
-    ) -> tuple[list[int], list[int]]:
+        new_confidences: list[float],
+    ) -> tuple[list[int], list[int], list[float]]:
         """Keep only emissions on frames not yet present in the beam window."""
         if not prev_timestamps:
-            return list(new_tokens), list(new_timestamps)
+            return list(new_tokens), list(new_timestamps), list(new_confidences)
         max_frame = max(prev_timestamps)
         start = 0
         while start < len(new_timestamps) and new_timestamps[start] <= max_frame:
             start += 1
-        return prev_tokens + new_tokens[start:], prev_timestamps + new_timestamps[start:]
+        return (
+            prev_tokens + new_tokens[start:],
+            prev_timestamps + new_timestamps[start:],
+            prev_confidences + new_confidences[start:],
+        )
 
     def _additional_params_reset(self) -> None:
         super()._additional_params_reset()
         self.cumulative_tokens: list[int] = []
         self.cumulative_timestamps: list[int] = []
+        self.cumulative_confidences: list[float] = []
         self.partial_tokens: list[list[int]] | None = None
         self.partial_timestamps: list[list[int]] | None = None
+        self.partial_confidences: list[list[float]] | None = None
         self._cumulative_tokens_len: int = 0
         self.best_hyp_idx: int | None = None
 
@@ -84,8 +92,10 @@ class RNNTBeamStreamingState(RNNTStreamingState):
         self.hyp_decoding_state = None
         self.cumulative_tokens = []
         self.cumulative_timestamps = []
+        self.cumulative_confidences = []
         self.partial_tokens = None
         self.partial_timestamps = None
+        self.partial_confidences = None
         self._cumulative_tokens_len = 0
         self.best_hyp_idx = None
 
@@ -97,22 +107,28 @@ class RNNTBeamStreamingState(RNNTStreamingState):
         beam_size: int,
         best_hyp_idx: int,
         ts_offset: int = 0,
+        chunk_confidences: list[list[float]] | None = None,
     ) -> None:
         """Append deduplicated chunk-local beam exports into state."""
         prev_t = self.partial_tokens or [[] for _ in range(beam_size)]
         prev_ts = self.partial_timestamps or [[] for _ in range(beam_size)]
+        prev_conf = self.partial_confidences or [[] for _ in range(beam_size)]
         next_tokens: list[list[int]] = []
         next_timestamps: list[list[int]] = []
+        next_confidences: list[list[float]] = []
         for k in range(beam_size):
             lineage = int(root_ptrs[k])
             cts_global = [t + ts_offset for t in chunk_timestamps[k]]
-            tokens, timestamps = self._append_emissions_by_frame(
-                prev_t[lineage], prev_ts[lineage], chunk_tokens[k], cts_global
+            cconf = list(chunk_confidences[k]) if chunk_confidences is not None else [0.0] * len(chunk_tokens[k])
+            tokens, timestamps, confidences = self._append_emissions_by_frame(
+                prev_t[lineage], prev_ts[lineage], prev_conf[lineage], chunk_tokens[k], cts_global, cconf
             )
             next_tokens.append(tokens)
             next_timestamps.append(timestamps)
+            next_confidences.append(confidences)
         self.partial_tokens = next_tokens
         self.partial_timestamps = next_timestamps
+        self.partial_confidences = next_confidences
         self.best_hyp_idx = best_hyp_idx
 
     def get_best_hyp_idx(self) -> int:
@@ -123,36 +139,44 @@ class RNNTBeamStreamingState(RNNTStreamingState):
             raise RuntimeError("Cannot resolve top-1 beam index without decoding carry.")
         return int(self.hyp_decoding_state.score.argmax().item())
 
-    def _get_tokens(self) -> tuple[list[int], list[int]]:
+    def _get_tokens(self) -> tuple[list[int], list[int], list[float]]:
         """``cumulative_*`` plus the current top-1 ``partial_*`` suffix."""
         if self.partial_tokens is None or self.hyp_decoding_state is None:
-            return [], []
+            return [], [], []
         best_hyp_idx = self.get_best_hyp_idx()
+        partial_tokens = list(self.partial_tokens[best_hyp_idx])
+        partial_conf = (
+            list(self.partial_confidences[best_hyp_idx])
+            if self.partial_confidences is not None
+            else [0.0] * len(partial_tokens)
+        )
         return (
-            self.cumulative_tokens + list(self.partial_tokens[best_hyp_idx]),
+            self.cumulative_tokens + partial_tokens,
             self.cumulative_timestamps + list(self.partial_timestamps[best_hyp_idx]),
+            self.cumulative_confidences + partial_conf,
         )
 
     def get_hypothesis(self, score: float) -> Hypothesis:
         """Build the publishable cumulative hypothesis for the current top-1 beam."""
-        cum_tokens, cum_ts = self._get_tokens()
+        cum_tokens, cum_ts, cum_conf = self._get_tokens()
         return Hypothesis(
             score=score,
             y_sequence=cum_tokens,
             timestamp=cum_ts,
             length=len(cum_tokens),
+            non_blank_step_confidence_precomputed=cum_conf if cum_conf else None,
         )
 
     def update_(self, eou_detected: bool) -> None:
         """Refresh publish tokens; on EOU fold utterance into ``cumulative_*`` and clear ``partial_*``."""
-        cum_tokens, cum_ts = self._get_tokens()
+        cum_tokens, cum_ts, cum_conf = self._get_tokens()
         if cum_tokens:
             start = max(0, min(int(self._cumulative_tokens_len), len(cum_tokens)))
             tokens = list(cum_tokens[start:])
             timesteps = list(cum_ts[start:])
             self.tokens = tokens
             self.timesteps = timesteps
-            self.confidences = [0.0] * len(tokens)
+            self.confidences = list(cum_conf[start:]) if cum_conf else [0.0] * len(tokens)
             if tokens:
                 self.last_token = tokens[-1]
                 self.last_token_idx = timesteps[-1] if timesteps else None
@@ -164,6 +188,8 @@ class RNNTBeamStreamingState(RNNTStreamingState):
             self._cumulative_tokens_len = len(cum_tokens)
             self.cumulative_tokens = list(cum_tokens)
             self.cumulative_timestamps = list(cum_ts)
+            self.cumulative_confidences = list(cum_conf)
         self.partial_tokens = None
         self.partial_timestamps = None
+        self.partial_confidences = None
         self.best_hyp_idx = None

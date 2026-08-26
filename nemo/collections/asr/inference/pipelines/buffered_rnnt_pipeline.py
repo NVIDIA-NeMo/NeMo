@@ -600,14 +600,22 @@ class BufferedRNNTPipeline(BasePipeline):
             )
             if isinstance(best_batched_hyps_chunk, BatchedBeamHyps):
                 chunk_beam_indices = best_batched_hyps_chunk.scores.argmax(dim=-1)
-                chunk_tokens, chunk_timestamps, _, root_ptrs = export_batched_beam_hyps_to_cpu_lists(
-                    best_batched_hyps_chunk
+                chunk_tokens, chunk_timestamps, chunk_confidences, root_ptrs = (
+                    export_batched_beam_hyps_to_cpu_lists(best_batched_hyps_chunk)
                 )
                 beam_size = best_batched_hyps_chunk.beam_size
-                for state, ct, cts, rp, ts_off, top1 in zip(
-                    states, chunk_tokens, chunk_timestamps, root_ptrs, timestamp_offsets, chunk_beam_indices
+                for b, (state, ct, cts, rp, ts_off, top1) in enumerate(
+                    zip(states, chunk_tokens, chunk_timestamps, root_ptrs, timestamp_offsets, chunk_beam_indices)
                 ):
-                    state.append_chunk_beam_(ct, cts, rp, beam_size, int(top1.item()), ts_offset=int(ts_off))
+                    state.append_chunk_beam_(
+                        ct,
+                        cts,
+                        rp,
+                        beam_size,
+                        int(top1.item()),
+                        ts_offset=int(ts_off),
+                        chunk_confidences=(chunk_confidences[b] if chunk_confidences is not None else None),
+                    )
                 best_hyps = batched_beam_hyps_to_hypotheses(best_batched_hyps_chunk, chunk_beam_indices)
             else:
                 best_hyps = batched_hyps_to_hypotheses(best_batched_hyps_chunk, batch_size=enc_lens.shape[0])

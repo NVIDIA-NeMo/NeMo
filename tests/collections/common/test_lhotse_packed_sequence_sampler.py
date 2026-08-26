@@ -46,7 +46,7 @@ def _make_sampler(
     batch_tokens=10,
     batch_size=None,
     quadratic_factor=None,
-    shuffle_buffer_size=4,
+    packing_buffer_size=4,
 ):
     return PackedSequenceDynamicCutSampler(
         *cuts,
@@ -72,7 +72,7 @@ def _make_sampler(
         # PackedSequenceDynamicCutSampler consumes this value but deliberately
         # passes shuffle=False to its DynamicCutSampler parent.
         shuffle=True,
-        shuffle_buffer_size=shuffle_buffer_size,
+        packing_buffer_size=packing_buffer_size,
         seed=0,
     )
 
@@ -148,6 +148,7 @@ def test_packed_sequence_config_flag_selects_exact_sampler(tmp_path, packed, sam
                 "force_finite": True,
                 "shuffle": True,
                 "shuffle_buffer_size": 4,
+                "packing_buffer_size": 7,
                 "num_workers": 0,
                 "use_multimodal_sampling": True,
                 "pretokenize": False,
@@ -177,8 +178,22 @@ def test_packed_sequence_config_flag_selects_exact_sampler(tmp_path, packed, sam
     )
 
     assert type(sampler) is sampler_type
-    assert sampler.shuffle_buffer_size == 4
+    if packed:
+        assert sampler.packing_buffer_size == 7
+    else:
+        assert sampler.shuffle_buffer_size == 4
     assert sampler.shuffle is not packed
+
+
+def test_packing_buffer_legacy_alias_accepts_structured_input():
+    legacy_config = OmegaConf.create({"shuffle_buffer_size": 7})
+    OmegaConf.set_struct(legacy_config, True)
+
+    config = make_structured_with_schema_warnings(legacy_config)
+
+    assert "packing_buffer_size" not in legacy_config
+    assert config.shuffle_buffer_size == 7
+    assert config.packing_buffer_size == 7
 
 
 def test_packed_sequence_bucketing_config_selects_exact_bucketed_sampler(tmp_path):
@@ -491,7 +506,7 @@ def test_packed_sequence_sampler_squeezes_around_large_next_candidate(tmp_path):
         _make_sampler(
             CutSet.from_jsonl_lazy(cuts_path),
             batch_tokens=16,
-            shuffle_buffer_size=4,
+            packing_buffer_size=4,
         )
     )
 
@@ -514,7 +529,7 @@ def test_packed_sequence_sampler_anchor_prevents_starvation(tmp_path):
         _make_sampler(
             CutSet.from_jsonl_lazy(cuts_path),
             batch_tokens=10,
-            shuffle_buffer_size=4,
+            packing_buffer_size=4,
         )
     )
 
@@ -546,7 +561,7 @@ def test_packed_sequence_sampler_preserves_quadratic_factor(tmp_path):
         _make_sampler(
             CutSet.from_jsonl_lazy(cuts_path),
             quadratic_factor=10,
-            shuffle_buffer_size=2,
+            packing_buffer_size=2,
         )
     )
 
@@ -624,16 +639,18 @@ def test_packed_sequence_sampler_resume_preserves_packing_buffer(tmp_path, index
     iterator = iter(sampler)
     assert _batch_ids([next(iterator)]) == [["dummy-mono-cut-0000", "dummy-mono-cut-0003"]]
     state = sampler.state_dict()
+    assert state["packing_buffer_size"] == 4
     if indexed:
         assert state["packing_buffer_tokens"] == [(1,), (2,)]
     else:
         assert state["packing_buffer_tokens"] is None
     expected_remaining = _batch_ids(_drain(iterator))
 
-    resumed = _make_sampler(make_source())
+    resumed = _make_sampler(make_source(), packing_buffer_size=1)
     resumed.load_state_dict(deepcopy(state))
     actual_remaining = _batch_ids(_drain(iter(resumed)))
 
+    assert resumed.packing_buffer_size == 4
     assert actual_remaining == expected_remaining == [["dummy-mono-cut-0001", "dummy-mono-cut-0002"]]
 
 
@@ -699,7 +716,7 @@ def test_packed_sequence_sampler_multiworker_stateful_resume(tmp_path):
         source = CutSet(LazyIndexedManifestIterator(cuts_path))
         wrapper = IterableDatasetWrapper(
             IdentityDataset(),
-            _make_sampler(source, shuffle_buffer_size=16),
+            _make_sampler(source, packing_buffer_size=16),
         )
         return StatefulDataLoader(
             wrapper,
@@ -742,4 +759,4 @@ def test_packed_sequence_sampler_rejects_single_example_over_budget():
 
 def test_packed_sequence_sampler_rejects_invalid_buffer_size():
     with pytest.raises(ValueError, match="positive packing-buffer size"):
-        _make_sampler(_make_cuts(), shuffle_buffer_size=0)
+        _make_sampler(_make_cuts(), packing_buffer_size=0)

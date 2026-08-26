@@ -106,16 +106,16 @@ class LhotseDataLoadingConfig:
     num_cuts_for_bins_estimate: int = 10000
     bucket_duration_bins: Any = None  # list[float] | list[list[float]] | None = None
     bucket_buffer_size: int = 10000
-    # Number of candidates considered by packed best-fit batching inside one
-    # selected bucket. This is independent of bucket_buffer_size, which caps
+    # Number of candidates considered by packed best-fit batching, with or
+    # without bucketing. This is independent of bucket_buffer_size, which caps
     # total occupancy across all buckets.
     # Explicit legacy shuffle_buffer_size values are copied here during schema
-    # merge; otherwise packed bucketing uses a safe 128-candidate default.
+    # merge; otherwise packed sampling uses a safe 128-candidate default.
     packing_buffer_size: int | None = None
     concurrent_bucketing: bool = True  # fetches data in a background thread
     bucketing_2d_strict_mode: bool = True  # reduces padding by discarding significant outliers
     #   d. Other Lhotse sampling options.
-    # Reservoir size normally; post-filter best-fit pool size in packed mode.
+    # Reservoir size for ordinary (non-packed) dynamic sampling.
     shuffle_buffer_size: int | None = 10000
     drop_last: bool = False
     shard_seed: int | str = "trng"
@@ -1005,15 +1005,23 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             f"Creating a Lhotse {sampler_cls.__name__} (bucketing is disabled, "
             f"max_batch_duration={config.batch_duration} max_batch_size={config.batch_size})"
         )
+        sampler_kwargs = {}
+        if config.use_packed_sequence_sampling:
+            packing_buffer_size = config.packing_buffer_size
+            if packing_buffer_size is None:
+                packing_buffer_size = 128
+            sampler_kwargs["packing_buffer_size"] = packing_buffer_size
+        else:
+            sampler_kwargs["shuffle_buffer_size"] = config.shuffle_buffer_size
         sampler = sampler_cls(
             cuts,
             constraint=constraint,
             shuffle=config.shuffle,
             drop_last=config.drop_last,
-            shuffle_buffer_size=config.shuffle_buffer_size,
             seed=config.shard_seed,
             rank=0 if use_iterable_dataset else global_rank,
             world_size=1 if use_iterable_dataset else world_size,
+            **sampler_kwargs,
         )
 
     if config.concatenate_samples:
@@ -1239,12 +1247,9 @@ def make_structured_with_schema_warnings(config: Union[DictConfig, dict]) -> Dic
     # Remove unsupported keys and warn about them.
     supported_keys = set(OmegaConf.to_container(default).keys())
     received_keys = set(OmegaConf.to_container(config).keys())
+    legacy_packing_buffer_size = None
     if "packing_buffer_size" not in received_keys and "shuffle_buffer_size" in received_keys:
-        config.packing_buffer_size = config.shuffle_buffer_size
-        logging.info(
-            "Treating explicitly configured shuffle_buffer_size=%s as packing_buffer_size for compatibility.",
-            config.shuffle_buffer_size,
-        )
+        legacy_packing_buffer_size = config.shuffle_buffer_size
     unsupported_keys = received_keys - supported_keys
     unsupported_keys.discard("use_lhotse")
     if unsupported_keys:
@@ -1254,6 +1259,12 @@ def make_structured_with_schema_warnings(config: Union[DictConfig, dict]) -> Dic
     config = OmegaConf.masked_copy(config, list(supported_keys))
 
     config = OmegaConf.merge(default, config)
+    if legacy_packing_buffer_size is not None:
+        config.packing_buffer_size = legacy_packing_buffer_size
+        logging.info(
+            "Treating explicitly configured shuffle_buffer_size=%s as packing_buffer_size for compatibility.",
+            legacy_packing_buffer_size,
+        )
 
     if config.get("tarred_random_access", False):
         logging.warning(

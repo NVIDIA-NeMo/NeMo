@@ -141,6 +141,27 @@ def test_packed_encoder_output_rejects_noncontiguous_cu_seqlens():
         )
 
 
+def test_packed_encoder_output_pytree_transforms_do_not_revalidate_temporary_leaves():
+    packed = pack_encoder_output(torch.randn(2, 3, 4), torch.tensor([3, 1]))
+
+    leaves, spec = torch.utils._pytree.tree_flatten(packed)
+    restored = torch.utils._pytree.tree_unflatten(leaves, spec)
+    placeholder = torch.utils._pytree.tree_map(lambda _: None, packed)
+
+    assert restored.data is packed.data
+    assert restored.lengths is packed.lengths
+    assert restored.cu_seqlens is packed.cu_seqlens
+    assert restored.max_seqlen == packed.max_seqlen
+    assert restored.padding_value == packed.padding_value
+    assert restored.padded_length == packed.padded_length
+    assert placeholder.data is None
+    assert placeholder.lengths is None
+    assert placeholder.cu_seqlens is None
+    assert placeholder.max_seqlen is None
+    assert placeholder.padding_value is None
+    assert placeholder.padded_length is None
+
+
 def _make_encoder(*, position: str, attention: str = "full", qk_norm: bool = False, rotary_fraction: float = 1.0):
     return TransformerEncoder(
         feat_in=8,

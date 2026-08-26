@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import torch
 from torch import Tensor
-from torch.utils._pytree import register_dataclass
+from torch.utils._pytree import GetAttrKey, register_pytree_node
 
 __all__ = [
     "PackedEncoderActivations",
@@ -94,10 +94,55 @@ class PackedEncoderActivations:
         )
 
 
+def _packed_encoder_activations_flatten(packed: PackedEncoderActivations):
+    values = [
+        packed.data,
+        packed.lengths,
+        packed.cu_seqlens,
+        packed.max_seqlen,
+        packed.padding_value,
+        packed.padded_length,
+    ]
+    return values, None
+
+
+def _packed_encoder_activations_flatten_with_keys(packed: PackedEncoderActivations):
+    values, context = _packed_encoder_activations_flatten(packed)
+    names = (
+        "data",
+        "lengths",
+        "cu_seqlens",
+        "max_seqlen",
+        "padding_value",
+        "padded_length",
+    )
+    keyed_values = [(GetAttrKey(name), value) for name, value in zip(names, values, strict=True)]
+    return keyed_values, context
+
+
+def _packed_encoder_activations_unflatten(values, context):
+    del context
+    # Pytree transforms may temporarily replace every leaf with a sentinel. In
+    # particular, torch.utils.checkpoint._infer_device_type maps all leaves to
+    # None merely to inspect CUDA tensors. Re-running public-constructor
+    # validation on that transient object would reject the transform itself.
+    # Real PackedEncoderActivations still enter through the validating public
+    # constructor; pytree reconstruction preserves already-validated metadata.
+    return _new_packed_encoder_activations(*values)
+
+
 # FSDP2 discovers tensors that need post-forward/pre-backward hooks by walking
 # the output pytree. Register this container so gradients from ``data`` reach
 # the optimizer-owned sharded parameters when a custom packed forward is used.
-register_dataclass(PackedEncoderActivations)
+# Use a validation-free unflatten function because generic pytree transforms
+# are allowed to replace leaves with temporary non-domain values.
+register_pytree_node(
+    PackedEncoderActivations,
+    _packed_encoder_activations_flatten,
+    _packed_encoder_activations_unflatten,
+    serialized_type_name="nemo.collections.asr.parts.packed_sequence.PackedEncoderActivations",
+    flatten_with_keys_fn=_packed_encoder_activations_flatten_with_keys,
+)
 
 
 def pack_encoder_output(padded: Tensor, lengths: Tensor) -> PackedEncoderActivations:

@@ -513,21 +513,24 @@ class PackedSequenceDynamicBucketingSampler(DynamicBucketingSampler):
 class PackedSequenceDynamicCutSampler(DynamicCutSampler):
     """Dynamic sampler with one bounded best-fit pool and an exact token cap.
 
-    ``shuffle_buffer_size`` controls the post-filter packing pool. The parent
+    ``packing_buffer_size`` controls the post-filter best-fit pool. The parent
     reservoir shuffler is intentionally disabled because indexed data sources
-    already provide an O(1)-memory Feistel permutation.
+    already provide an O(1)-memory Feistel permutation. Consequently,
+    ``shuffle_buffer_size`` retains its parent-class meaning but has no effect
+    on packing lookahead in this sampler.
     """
 
     def __init__(
         self,
         *args,
         shuffle: bool = False,
+        packing_buffer_size: int = 128,
         shuffle_buffer_size: int = 20000,
         **kwargs,
     ):
-        if shuffle_buffer_size is None or shuffle_buffer_size <= 0:
+        if packing_buffer_size is None or packing_buffer_size <= 0:
             raise ValueError(
-                "shuffle_buffer_size must be a positive packing-buffer size " f"(got {shuffle_buffer_size})"
+                "packing_buffer_size must be a positive packing-buffer size " f"(got {packing_buffer_size})"
             )
         # Consume the public `shuffle` argument for config compatibility, but
         # do not allocate DynamicCutSampler's second, reservoir-style buffer.
@@ -538,6 +541,7 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
             shuffle_buffer_size=shuffle_buffer_size,
             **kwargs,
         )
+        self.packing_buffer_size = packing_buffer_size
         self._batcher = None
         self._restored_packing_buffer_tokens = []
         self._restored_legacy_examples = []
@@ -562,6 +566,7 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
 
     def state_dict(self) -> dict[str, Any]:
         state = super().state_dict()
+        state["packing_buffer_size"] = self.packing_buffer_size
         if self._uses_indexed_restore():
             if self._batcher is not None:
                 state["packing_buffer_tokens"] = self._capture_packing_buffer_tokens(self._batcher.reuse_cuts_buffer)
@@ -573,17 +578,19 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
         return state
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        packing_buffer_size = state_dict.pop("packing_buffer_size", self.packing_buffer_size)
+        if packing_buffer_size is None or packing_buffer_size <= 0:
+            raise ValueError(
+                "Restored packing_buffer_size must be a positive packing-buffer size "
+                f"(got {packing_buffer_size})"
+            )
+        self.packing_buffer_size = packing_buffer_size
         tokens = state_dict.pop("packing_buffer_tokens", None)
         self._restored_packing_buffer_tokens = [] if tokens is None else list(tokens)
         # Read checkpoints created by the previous one-candidate implementation.
         self._restored_legacy_examples = list(state_dict.pop("deferred_examples", []))
         self._batcher = None
         super().load_state_dict(state_dict)
-        if self.shuffle_buffer_size is None or self.shuffle_buffer_size <= 0:
-            raise ValueError(
-                "Restored shuffle_buffer_size must be a positive packing-buffer size "
-                f"(got {self.shuffle_buffer_size})"
-            )
 
     def allow_iter_to_reset_state(self):
         super().allow_iter_to_reset_state()
@@ -633,7 +640,7 @@ class PackedSequenceDynamicCutSampler(DynamicCutSampler):
             drop_last=self.drop_last,
             quadratic_duration=self.quadratic_duration,
             diagnostics=self.diagnostics,
-            packing_buffer_size=self.shuffle_buffer_size,
+            packing_buffer_size=self.packing_buffer_size,
         )
         if self._inject_restored_packing_buffer:
             self._batcher.reuse_cuts_buffer.extend(self._restore_packing_buffer())

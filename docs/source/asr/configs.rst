@@ -10,7 +10,7 @@ for audio files, parameters for any augmentation being performed, as well as the
 this page cover each of these in more detail.
 
 Example configuration files for all of the NeMo ASR scripts can be found in the
-`config directory of the examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/conf>`_.
+`config directory of the examples <https://github.com/NVIDIA-NeMo/Speech/tree/stable/examples/asr/conf>`_.
 
 .. _asr-configs-dataset-configuration:
 
@@ -234,7 +234,7 @@ BLEU score relies on TorchMetrics' SacreBLEU implementation and supports all Sac
 
 **Dynamic Tokenizer Selection**
 
-In multilingual training scenarios, it is somtimes desireable to configure the BLEU tokenizer per sample to avoid sub-optimal parsing (e.g. tokenizing Chinese characters as English words). This can be toggled with ``check_cuts_for_bleu_tokenizers: true``. When enabled with Lhotse dataloading, BLEU will check individual ``cuts`` in a batch's Lhotse ``CutSet`` for the ``bleu_tokenizer`` attribute. If found, the tokenizer will be used for that sample. If not, the default ``bleu_tokenizer`` from config will be used.
+In multilingual training scenarios, it is sometimes desirable to configure the BLEU tokenizer per sample to avoid sub-optimal parsing (e.g. tokenizing Chinese characters as English words). This can be toggled with ``check_cuts_for_bleu_tokenizers: true``. When enabled with Lhotse dataloading, BLEU will check individual ``cuts`` in a batch's Lhotse ``CutSet`` for the ``bleu_tokenizer`` attribute. If found, the tokenizer will be used for that sample. If not, the default ``bleu_tokenizer`` from config will be used.
 
 MultiTask Metrics
 ~~~~~~~~~~~~~~~~~
@@ -412,7 +412,7 @@ The config files for Conformer-CTC model contain character-based encoding and su
 respectively. Some components of the configs of :ref:`Conformer-CTC <Conformer-CTC_model>` include the following datasets:
 
 * ``train_ds``, ``validation_ds``, and ``test_ds``
-* opimizer (``optim``)
+* optimizer (``optim``)
 * augmentation (``spec_augment``)
 * ``decoder``
 * ``trainer``

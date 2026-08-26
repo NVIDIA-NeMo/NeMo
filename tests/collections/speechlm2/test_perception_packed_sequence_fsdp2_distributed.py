@@ -104,6 +104,10 @@ def _run_fsdp2_packed_perception_test(rank: int, world_size: int, init_file: str
         # valid tokens, while rank 0 has audio; both ranks must reach identical
         # FSDP2 collectives and materialize gradients for every sharded parameter.
         perception = _fully_shard_perception(_make_perception(device), mesh)
+        optimizer = torch.optim.AdamW(perception.parameters(), lr=1e-2)
+        optimizer_parameters = tuple(parameter for group in optimizer.param_groups for parameter in group["params"])
+        projection_parameter = perception.proj.weight
+        projection_before = projection_parameter.detach().full_tensor().clone()
         if rank == 0:
             features = torch.randn(1, 8, 12, device=device, requires_grad=True)
             lengths = torch.tensor([12], device=device)
@@ -114,11 +118,15 @@ def _run_fsdp2_packed_perception_test(rank: int, world_size: int, init_file: str
         packed.data.float().sum().backward()
 
         assert features.grad is not None
-        assert all(parameter.grad is not None for parameter in perception.parameters())
+        assert all(parameter.grad is not None for parameter in optimizer_parameters)
+        optimizer.step()
+        projection_after = projection_parameter.detach().full_tensor()
+        assert not torch.equal(projection_before, projection_after)
+        assert optimizer.state[projection_parameter]["step"] == 1
 
         # A second step gives every rank an all-empty batch, covering the zero-token
         # collective case independently of the uneven-rank step above.
-        perception.zero_grad(set_to_none=True)
+        optimizer.zero_grad(set_to_none=True)
         empty_features = torch.empty(1, 8, 0, device=device, requires_grad=True)
         empty_lengths = torch.tensor([0], device=device)
         empty = perception.forward_sequence_packed(
@@ -127,7 +135,7 @@ def _run_fsdp2_packed_perception_test(rank: int, world_size: int, init_file: str
         )
         empty.data.sum().backward()
         assert empty_features.grad is not None
-        assert all(parameter.grad is not None for parameter in perception.parameters())
+        assert all(parameter.grad is not None for parameter in optimizer_parameters)
 
         # Exercise the CP distribution/gather path with an FSDP2-sharded custom
         # packed method. B=1 forces one CP rank to encode a dummy row.

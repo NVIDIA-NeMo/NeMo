@@ -16,10 +16,22 @@ import copy
 
 import pytest
 import torch
+from torch.utils._pytree import tree_flatten
 
 from nemo.collections.asr.modules.moe_transformer_encoder import MoEFeedForward, MoETransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, pack_encoder_output
 from tests.collections.asr.test_parallel_expert_encoder_ggemm import _MEL_FEATURES, _N_SPK, build_toy_pe_encoder
+
+
+def test_packed_encoder_activations_is_registered_as_pytree():
+    packed = pack_encoder_output(torch.randn(2, 4, 3), torch.tensor([4, 2]))
+
+    leaves, _ = tree_flatten(packed)
+
+    assert all(leaf is not packed for leaf in leaves)
+    assert any(leaf is packed.data for leaf in leaves)
+    assert any(leaf is packed.lengths for leaf in leaves)
+    assert any(leaf is packed.cu_seqlens for leaf in leaves)
 
 
 def test_packed_output_with_data_reuses_validated_metadata_and_preserves_gradients():

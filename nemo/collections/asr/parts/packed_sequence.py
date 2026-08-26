@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import torch
 from torch import Tensor
+from torch.utils._pytree import register_dataclass
 
 __all__ = [
     "PackedEncoderActivations",
@@ -91,6 +92,12 @@ class PackedEncoderActivations:
             padding_value=self.padding_value,
             padded_length=self.padded_length,
         )
+
+
+# FSDP2 discovers tensors that need post-forward/pre-backward hooks by walking
+# the output pytree. Register this container so gradients from ``data`` reach
+# the optimizer-owned sharded parameters when a custom packed forward is used.
+register_dataclass(PackedEncoderActivations)
 
 
 def pack_encoder_output(padded: Tensor, lengths: Tensor) -> PackedEncoderActivations:

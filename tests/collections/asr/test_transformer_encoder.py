@@ -325,6 +325,72 @@ class TestBypassPreEncode:
         assert torch.allclose(out_full, out_bypass, atol=1e-5)
 
 
+class TestDropout:
+    """Dropout wiring.
+
+    Every other test in this file builds encoders with ``drop_rate=0.0``, so nothing here
+    exercised the dropout path -- which is how the FFN branch ended up being dropped twice
+    (once inside ``FeedForward.net``, once by ``TransformerBlock``'s residual dropout),
+    giving an effective ``1 - 0.9**2 = 0.19`` instead of the configured 0.1.
+    """
+
+    @pytest.mark.unit
+    def test_ffn_drops_branch_output_exactly_once(self):
+        """The FFN residual branch must be dropped at the configured rate, not twice."""
+        torch.manual_seed(0)
+        p = 0.2
+        cfg = TransformerEncoderConfig(d_model=64, n_heads=4, n_layers=1, drop_rate=p, ff_expansion=4)
+        from nemo.collections.asr.modules.transformer_encoder import FeedForward, TransformerBlock
+
+        # FeedForward's own output must be dropout-free; TransformerBlock owns the branch dropout.
+        ffn = FeedForward(cfg).train()
+        assert not isinstance(ffn.net[-1], torch.nn.Dropout), (
+            "FeedForward.net must not end in Dropout -- TransformerBlock already drops this "
+            "module's output on the residual branch, and stacking the two doubles the rate."
+        )
+
+        # Measure the branch's realized drop rate end to end through the block.
+        block = TransformerBlock(cfg).train()
+        x = torch.ones(1, 8192, 64)
+        with torch.no_grad():
+            branch = block.drop(block.ffn(block.norm2(x)))
+        zero_frac = (branch == 0).float().mean().item()
+        assert zero_frac == pytest.approx(p, abs=0.02), (
+            f"FFN branch zero fraction {zero_frac:.4f} should be ~{p} (dropped once); "
+            f"~{1 - (1 - p) ** 2:.2f} means it is being dropped twice."
+        )
+
+    @pytest.mark.unit
+    def test_ffn_state_dict_keys_are_checkpoint_compatible(self):
+        """FFN Linear indices are state_dict keys -- they must stay net.0 / net.3.
+
+        ``nn.Dropout`` has no parameters, so only its *position* matters. Removing the
+        trailing Dropout keeps the Linears at indices 0 and 3; removing the inner one
+        would renumber the second Linear to ``net.2.*`` and break every existing
+        checkpoint. This test pins that down.
+        """
+        cfg = TransformerEncoderConfig(d_model=64, n_heads=4, n_layers=1, drop_rate=0.1, ff_expansion=4)
+        from nemo.collections.asr.modules.transformer_encoder import FeedForward
+
+        keys = sorted(k for k, _ in FeedForward(cfg).named_parameters())
+        assert keys == ['net.0.bias', 'net.0.weight', 'net.3.bias', 'net.3.weight'], (
+            f"FFN parameter keys changed to {keys}; this breaks loading existing "
+            "StreamingTransformerEncoder checkpoints."
+        )
+
+    @pytest.mark.unit
+    def test_eval_mode_disables_dropout(self):
+        """Inference must be deterministic and dropout-free at any drop_rate."""
+        torch.manual_seed(0)
+        model = TransformerEncoder(feat_in=128, d_model=64, n_heads=4, n_layers=2, drop_rate=0.5).eval()
+        x = torch.randn(2, 128, 32)
+        lengths = torch.tensor([32, 32])
+        with torch.no_grad():
+            a, _ = model(x, lengths)
+            b, _ = model(x, lengths)
+        torch.testing.assert_close(a, b)
+
+
 class TestTransformerEncoder:
     @pytest.mark.unit
     def test_model_creation(self):
@@ -909,14 +975,21 @@ class TestStreamingTransformerEncoder:
     @pytest.mark.unit
     def test_initial_cache_state_shapes(self):
         """A rolling cache pre-allocates ``left`` frames per layer (padded); ``cache_last_time`` is
-        a zero-width placeholder (no conv) and valid length starts at 0."""
+        a zero-width placeholder (no conv) and valid length starts at 0.
+
+        ``cache_last_time`` must keep ``ConformerEncoder``'s 4-D rank
+        ``(n_layers, B, d_model, conv_cache)`` even though its width is 0: the shared
+        cache-aware inference tooling slices it as ``cache_last_time[:, slot_ids, :, :]``,
+        so a 3-D placeholder breaks ``asr_streaming_infer.py`` at runtime.
+        """
         d_model, n_layers, left, B = 64, 3, 7, 2
         enc = StreamingTransformerEncoder(
             feat_in=80, d_model=d_model, n_heads=4, n_layers=n_layers, att_context_size=[left, 0]
         )
         clc, clt, clcl = enc.get_initial_cache_state(batch_size=B)
         assert clc.shape == (n_layers, B, left, d_model)
-        assert clt.shape == (n_layers, B, 0)
+        assert clt.shape == (n_layers, B, d_model, 0)
+        assert clt.dim() == 4, "cache_last_time must be 4-D for parity with ConformerEncoder"
         assert clcl.shape == (B,)
         assert clcl.sum().item() == 0
         # A full cache (left < 0) starts empty and grows.

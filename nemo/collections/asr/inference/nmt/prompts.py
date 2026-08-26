@@ -97,6 +97,61 @@ class EuroLLMTranslatorPromptTemplate(PromptTemplate):
         return response.split('\n')[0]
 
 
+class RivaTranslatorPromptTemplate(PromptTemplate):
+    """
+    Prompt template for the NVIDIA Riva-Translate-4B-Instruct model
+    (https://huggingface.co/nvidia/Riva-Translate-4B-Instruct).
+    """
+
+    SYSTEM_MESSAGE_TEMPLATE = "You are an expert at translating text from {src_lang} to {tgt_lang}."
+    USER_CONTENT_TEMPLATE = "What is the {tgt_lang} translation of the sentence: {src_text}?"
+
+    PROMPT_TEMPLATE = "<s>System\n{system_message}</s>\n<s>User\n{user_content}</s>\n<s>Assistant\n{tgt_text}"
+
+    @classmethod
+    def format(
+        cls,
+        src_lang: str,
+        tgt_lang: str,
+        src_prefix: str,
+        tgt_prefix: str,
+        src_context: str = "",
+        tgt_context: str = "",
+    ) -> str:
+        """
+        Generate a translation prompt for the Riva-Translate model.
+        Args:
+            src_lang (str): Source language name.
+            tgt_lang (str): Target language name.
+            src_prefix (str): Source text to translate.
+            tgt_prefix (str): Optional target prefix or placeholder for completion.
+            src_context (str): Optional source context to start translation from.
+            tgt_context (str): Optional target context to start translation from.
+        Returns:
+            str: Formatted translation prompt.
+        """
+        src_text = f"{src_context} {src_prefix}"
+        tgt_text = f"{tgt_context} {tgt_prefix}"
+        src_text = re.sub(r"\s+", " ", src_text).strip()
+        tgt_text = re.sub(r"\s+", " ", tgt_text).strip()
+
+        system_message = cls.SYSTEM_MESSAGE_TEMPLATE.format(src_lang=src_lang, tgt_lang=tgt_lang)
+        user_content = cls.USER_CONTENT_TEMPLATE.format(tgt_lang=tgt_lang, src_text=src_text)
+        return cls.PROMPT_TEMPLATE.format(system_message=system_message, user_content=user_content, tgt_text=tgt_text)
+
+    @classmethod
+    def extract(cls, response: str) -> str:
+        """
+        Extract the first line of text from a model response (Riva-Translate is not a reasoning
+        model, so no <think> block stripping is needed -- mirrors EuroLLMTranslatorPromptTemplate).
+        Args:
+            response (str): The full response from the model.
+        Returns:
+            str: The text before the first newline.
+        """
+        return response.split('\n')[0]
+
+
 class QwenReasoningTranslatorPromptTemplate(PromptTemplate):
     """
     Chat-style prompt template for Qwen Reasoning model to perform translation.

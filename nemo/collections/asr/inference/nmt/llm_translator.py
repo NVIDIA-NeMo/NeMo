@@ -26,6 +26,7 @@ from nemo.collections.asr.inference.nmt.prompts import (
     EuroLLMTranslatorPromptTemplate,
     PromptTemplate,
     QwenReasoningTranslatorPromptTemplate,
+    RivaTranslatorPromptTemplate,
 )
 
 try:
@@ -50,6 +51,7 @@ TRANSLATION_MODELS_BY_SERIES: Final[dict[str, tuple[str, ...]]] = {
         "Qwen/Qwen3.5-27B",
         "Qwen/Qwen3.5-35B-A3B",
     ),
+    "riva": ("nvidia/Riva-Translate-4B-Instruct",),
 }
 SUPPORTED_TRANSLATION_MODELS: Final[tuple[str, ...]] = tuple(
     model for series_models in TRANSLATION_MODELS_BY_SERIES.values() for model in series_models
@@ -185,6 +187,9 @@ class LLMTranslator:
             or model_name in TRANSLATION_MODELS_BY_SERIES["qwen3"]
         ):
             return QwenReasoningTranslatorPromptTemplate
+
+        if model_name in TRANSLATION_MODELS_BY_SERIES["riva"]:
+            return RivaTranslatorPromptTemplate
 
     def load_model(self, llm_params: dict) -> LLM:
         """

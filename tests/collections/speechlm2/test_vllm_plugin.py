@@ -612,6 +612,60 @@ class TestAudioProcessing:
         assert result["audio_signal"][0].shape[-1] == 12345
         assert torch.equal(result["audio_signal_length"], torch.tensor([12345]))
 
+    def test_embedded_pe_config_takes_precedence_over_training_path(self, monkeypatch):
+        from unittest.mock import Mock
+
+        import torch
+        from torch import nn
+
+        import nemo.collections.asr.modules.parallel_expert_encoder as pe_module
+        from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_pe_encoder
+
+        class _Encoder(nn.Module):
+            d_model = 4
+
+            def __init__(self):
+                super().__init__()
+                self.weight = nn.Parameter(torch.ones(1))
+
+        class _Perception(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.encoder = _Encoder().to(torch.float64)
+                self.preprocessor = SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature"))
+
+        perception = _Perception()
+        embedded_encoder = _Encoder()
+        built = {}
+
+        def build_encoder(**kwargs):
+            built.update(kwargs)
+            return embedded_encoder
+
+        load_from_nemo = Mock(side_effect=AssertionError("embedded config must avoid external path"))
+        monkeypatch.setattr(pe_module.ParallelExpertEncoderPT, "load_from_nemo", load_from_nemo)
+        monkeypatch.setattr(pe_module, "ParallelExpertEncoder", build_encoder)
+
+        mounted = _maybe_mount_pe_encoder(
+            perception,
+            "/training/only/encoder.nemo",
+            {
+                "target": "nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT",
+                "asr_encoder_cfg": {"kind": "transformer"},
+                "diarization_model_cfg": {"kind": "sortformer"},
+                "asr_normalize_type": "per_feature",
+            },
+        )
+
+        assert mounted
+        assert perception.encoder is embedded_encoder
+        assert perception.encoder.weight.dtype == torch.float64
+        assert perception.preprocessor.featurizer.normalize is None
+        assert not perception.training
+        assert built["asr_encoder_cfg"]["kind"] == "transformer"
+        assert built["diarization_model_cfg"]["kind"] == "sortformer"
+        load_from_nemo.assert_not_called()
+
     def test_perception_forward(self):
         """A small NeMo perception module should encode dummy audio to embeddings."""
         import torch

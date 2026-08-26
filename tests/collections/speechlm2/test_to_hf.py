@@ -445,7 +445,7 @@ def test_prepare_for_vllm_uses_training_tokenizer_path(tmp_path):
             },
         )
 
-    load_tokenizer.assert_called_once_with("custom-tokenizer", trust_remote_code=True)
+    load_tokenizer.assert_called_once_with("custom-tokenizer", trust_remote_code=True, fix_mistral_regex=True)
 
 
 def test_prepare_for_vllm_tokenizer_config_normalized(tmp_path):

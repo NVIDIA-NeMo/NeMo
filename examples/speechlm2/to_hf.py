@@ -263,7 +263,7 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     if existing:
         LOG.info("Overwriting existing files in %s: %s", output_dir, existing)
     tokenizer_src = model_cfg.get("tokenizer_path") or pretrained_llm
-    tok = AutoTokenizer.from_pretrained(tokenizer_src, trust_remote_code=True)
+    tok = AutoTokenizer.from_pretrained(tokenizer_src, trust_remote_code=True, fix_mistral_regex=True)
     if audio_token not in tok.get_vocab():
         tok.add_special_tokens({"additional_special_tokens": [audio_token]})
     audio_token_id = tok.get_vocab().get(audio_token)

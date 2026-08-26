@@ -566,7 +566,7 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
 
     _cache: dict[str, object] = {}
 
-    def _resolve_if_path(val):
+    def _resolve_if_path(val, containing_dir: Path | None):
         """If *val* is a string/Path, load the YAML file it points to.
 
         Raises on I/O or parse errors except ``FileNotFoundError``, which is
@@ -576,29 +576,38 @@ def count_input_cfg_levels(config: Union[DictConfig, dict]) -> int:
         runtime via ``OmegaConf.create()``.
         """
         if isinstance(val, (str, Path)):
-            key = str(val)
+            raw_path = str(val)
+            if "://" in raw_path:
+                key = raw_path
+                next_dir = containing_dir
+            else:
+                path = Path(raw_path)
+                if containing_dir is not None and not path.is_absolute():
+                    path = containing_dir / path
+                key = str(path)
+                next_dir = path.parent
             if key not in _cache:
                 try:
                     _cache[key] = load_yaml(key)
                 except FileNotFoundError:
                     logging.debug("count_input_cfg_levels: could not load %r, treating as leaf", key)
                     _cache[key] = val
-            return _cache[key]
-        return val
+            return _cache[key], next_dir
+        return val, containing_dir
 
-    def _max_depth(obj) -> int:
+    def _max_depth(obj, containing_dir: Path | None = None) -> int:
         if isinstance(obj, (dict, DictConfig)):
             depths = []
             for key, val in obj.items():
                 if key == "input_cfg":
-                    resolved = _resolve_if_path(val)
-                    depths.append(1 + _max_depth(resolved))
+                    resolved, next_dir = _resolve_if_path(val, containing_dir)
+                    depths.append(1 + _max_depth(resolved, next_dir))
                 else:
-                    depths.append(_max_depth(val))
+                    depths.append(_max_depth(val, containing_dir))
             return max(depths, default=0)
         elif isinstance(obj, (list, ListConfig)):
             # For lists, find the max depth across all items (siblings)
-            return max((_max_depth(item) for item in obj), default=0)
+            return max((_max_depth(item, containing_dir) for item in obj), default=0)
         return 0
 
     return _max_depth(config)
@@ -621,13 +630,25 @@ def parse_and_combine_datasets(
         temperature, *next_temperatures = propagate_attrs["reweight_temperature"]
     propagate_attrs["reweight_temperature"] = next_temperatures
 
+    containing_dir = None
     if isinstance(config_list, (str, Path)):
         # Resolve local filepath /path/to/input_cfg.yaml or
         # remote url s3://bucket/path/to/input_cfg.yaml into config contents if needed.
-        config_list = OmegaConf.create(load_yaml(config_list))
+        config_path = str(config_list)
+        config_list = OmegaConf.create(load_yaml(config_path))
+        if "://" not in config_path:
+            containing_dir = Path(config_path).parent
     assert len(config_list) > 0, "Empty group in dataset config list."
 
     for item in config_list:
+        # External blend YAMLs may refer to another YAML relative to their own
+        # location. Resolve that reference before descending so frozen blend
+        # trees remain portable when their common parent directory is moved.
+        if containing_dir is not None and isinstance((nested := item.get("input_cfg")), (str, Path)):
+            nested_path = str(nested)
+            if "://" not in nested_path and not Path(nested_path).is_absolute():
+                item["input_cfg"] = str(containing_dir / nested_path)
+
         # Check if we have any attributes that are propagated downwards to each item in the group.
         # If a key already exists in the item, it takes precedence (we will not overwrite);
         # otherwise we will assign it.

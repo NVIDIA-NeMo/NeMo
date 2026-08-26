@@ -131,6 +131,23 @@ class RNNTBeamStreamingState(RNNTStreamingState):
         self.partial_confidences = next_confidences
         self.best_hyp_idx = best_hyp_idx
 
+    def select_best_beam_idx_(self, *, score_norm: bool = False) -> int:
+        """Pick beam index into ``partial_*``; updates ``best_hyp_idx``.
+
+        Defaults to raw scores, which is the buffered pipeline's historical EOU ranking.
+        ``score_norm=True`` normalizes by ``current_lengths_nb`` to match offline
+        :meth:`BatchedBeamHyps.flatten_sort_`, as the cache-aware pipeline does.
+        """
+        if self.hyp_decoding_state is None:
+            raise RuntimeError("Cannot select beam without decoding carry.")
+
+        scores = self.hyp_decoding_state.score
+        lengths_nb = self.hyp_decoding_state.current_lengths_nb
+        ranking = scores / (lengths_nb.to(dtype=scores.dtype) + 1) if score_norm else scores
+
+        self.best_hyp_idx = int(ranking.argmax().item())
+        return self.best_hyp_idx
+
     def get_best_hyp_idx(self) -> int:
         """Index into ``partial_*`` for publish (chunk argmax, or score argmax from carry)."""
         if self.best_hyp_idx is not None:

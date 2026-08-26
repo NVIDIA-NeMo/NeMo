@@ -667,10 +667,10 @@ class BufferedRNNTPipeline(BasePipeline):
     def _apply_beam_update_(self, state: RNNTBeamStreamingState, eou_detected: bool) -> None:
         """After endpointing: refresh beam publish tokens and fold cumulative prefix on EOU."""
         if eou_detected and state.hyp_decoding_state is not None:
-            # Match pre-refactor commit: collapse using accumulated carry scores (after RC decode),
-            # not chunk-local best_hyp_idx which is fixed before right-context decode.
-            top1 = int(state.hyp_decoding_state.score.argmax().item())
-            self.beam_decoder_computer.select_beam_in_state_item_(state.hyp_decoding_state, top1)
+            # Rank off the carry so the published beam and the beam the carry collapses to are
+            # the same index by construction; ``score_norm`` matches offline ``flatten_sort_``.
+            beam_idx = state.select_best_beam_idx_(score_norm=True)
+            self.beam_decoder_computer.select_beam_in_state_item_(state.hyp_decoding_state, beam_idx)
         state.update_(eou_detected)
 
     def decode_step(self, best_hyp: list, requests: list[Request], states: list[RNNTStreamingState]) -> set:

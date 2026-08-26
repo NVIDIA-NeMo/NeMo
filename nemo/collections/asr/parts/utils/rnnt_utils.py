@@ -382,17 +382,26 @@ def batched_beam_hyps_to_hypotheses(
         beam_indices: Per-stream physical beam index, shape ``[batch_size]``.
 
     Returns:
-        One :class:`Hypothesis` per batch row (chunk-local tokens/timestamps).
+        One :class:`Hypothesis` per batch row (chunk-local tokens/timestamps), tensor-backed like
+        :func:`batched_hyps_to_hypotheses`.
     """
-    scores, transcripts, timestamps, durations, _ = batched_beam_hyps._export(sort=False, score_norm=False)
-    return [
-        batched_beam_hyps._hypothesis_from_flat(
+    scores, transcripts, timestamps, durations, _, step_confidence = batched_beam_hyps._export(
+        sort=False, score_norm=False
+    )
+    hypotheses = []
+    for batch_idx in range(batched_beam_hyps.batch_size):
+        hyp = batched_beam_hyps._hypothesis_from_flat(
             batch_idx,
             int(beam_indices[batch_idx].item()),
             scores,
             transcripts,
             timestamps,
             durations,
+            step_confidence,
         )
-        for batch_idx in range(batched_beam_hyps.batch_size)
-    ]
+        hyp.y_sequence = torch.as_tensor(hyp.y_sequence)
+        hyp.timestamp = torch.as_tensor(hyp.timestamp)
+        if hyp.token_duration is not None:
+            hyp.token_duration = torch.as_tensor(hyp.token_duration)
+        hypotheses.append(hyp)
+    return hypotheses

@@ -600,7 +600,7 @@ class BufferedRNNTPipeline(BasePipeline):
             )
             if isinstance(best_batched_hyps_chunk, BatchedBeamHyps):
                 chunk_beam_indices = best_batched_hyps_chunk.scores.argmax(dim=-1)
-                chunk_tokens, chunk_timestamps, root_ptrs = export_batched_beam_hyps_to_cpu_lists(
+                chunk_tokens, chunk_timestamps, _, root_ptrs = export_batched_beam_hyps_to_cpu_lists(
                     best_batched_hyps_chunk
                 )
                 beam_size = best_batched_hyps_chunk.beam_size

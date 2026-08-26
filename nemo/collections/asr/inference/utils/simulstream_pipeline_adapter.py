@@ -407,18 +407,22 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
         prediction manifest line and emits an empty incremental output. Required by the
         SpeechProcessor interface.
         """
+        if self._finalized:
+            return IncrementalOutput(new_tokens=[], new_string="", deleted_tokens=[], deleted_string="")
+
         pred_text = (self._final_transcript_acc + self._last_partial_transcript).strip()
         pred_translation = (self._final_translation_acc + self._last_partial_translation).strip()
         self._write_prediction_manifest_line(pred_text, pred_translation)
 
         self.pipeline.delete_state(self.stream_id)
+        self._finalized = True
         return IncrementalOutput(new_tokens=[], new_string="", deleted_tokens=[], deleted_string="")
 
     def clear(self) -> None:
         """
         Clear stream state and prepare for the next audio stream (simulstream interface).
         """
-        if not self.is_first_chunk:
+        if not self.is_first_chunk and not self._finalized:
             self.end_of_stream()
 
         self.stream_id += 1
@@ -427,6 +431,7 @@ class NeMoStreamingPipelineAdapter(SpeechProcessor):
     def _reset_stream_state(self) -> None:
         """Reset per-stream accumulators (used on init and between streams)."""
         self.is_first_chunk = True
+        self._finalized = False
         self._final_transcript_acc = ""
         self._final_translation_acc = ""
         self._last_partial_transcript = ""

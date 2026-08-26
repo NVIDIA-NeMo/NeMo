@@ -232,14 +232,25 @@ def prepare_for_vllm(output_dir: str, model_cfg: dict) -> None:
     # 1. Patch config.json (arch, model_type, audio_locator_tag for vLLM plugin).
     arch_model_cfg = dict(model_cfg)
     llm_backbone_dir = output_dir / LLM_BACKBONE_DIR
-    if (llm_backbone_dir / "config.json").exists():
+    llm_backbone_config_path = llm_backbone_dir / "config.json"
+    llm_backbone_config = None
+    if llm_backbone_config_path.exists():
         arch_model_cfg["pretrained_llm"] = str(llm_backbone_dir)
+        llm_backbone_config = json.loads(llm_backbone_config_path.read_text())
     arch, base_vocab_size = _detect_vllm_architecture(arch_model_cfg)
     config_path = output_dir / "config.json"
     config = json.loads(config_path.read_text())
     config["model_type"] = "nemo_speechlm"
     config["architectures"] = [arch]
     config["audio_locator_tag"] = audio_token
+    if llm_backbone_config is not None:
+        # Keep the export portable while making the bundled config authoritative.
+        # NeMo's HF loader resolves this relative marker to a cached local path;
+        # the vLLM config consumes the embedded copy without another Hub lookup.
+        config["pretrained_llm"] = LLM_BACKBONE_DIR
+        config["llm_config"] = llm_backbone_config
+    else:
+        config.pop("llm_config", None)
     config.pop("audio_token_index", None)
     config.pop("image_token_index", None)
 

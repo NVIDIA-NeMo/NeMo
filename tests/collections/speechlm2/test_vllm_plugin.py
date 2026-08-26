@@ -103,6 +103,38 @@ class TestNeMoSpeechLMConfig:
         assert hasattr(cfg.text_config, "hidden_size")
         assert cfg.get_text_config() is cfg.text_config
 
+    def test_uses_embedded_backbone_config(self, monkeypatch):
+        """Bundled exports must not reload the stale training backbone reference."""
+        embedded_config = {
+            "model_type": "qwen2",
+            "architectures": ["Qwen2ForCausalLM"],
+            "hidden_size": 2048,
+            "vocab_size": 151936,
+            "num_hidden_layers": 4,
+            "rms_norm_eps": 1e-6,
+        }
+        text_config = SimpleNamespace(**embedded_config)
+        from_pretrained = pytest.fail
+
+        monkeypatch.setattr(
+            _config_module.AutoConfig,
+            "from_pretrained",
+            lambda *args, **kwargs: from_pretrained("must not load pretrained_llm when llm_config is embedded"),
+        )
+        monkeypatch.setattr(_config_module.AutoConfig, "for_model", lambda model_type, **kwargs: text_config)
+
+        cfg = NeMoSpeechLMConfig(
+            **{
+                **_DEFAULT_CONFIG_KWARGS,
+                "pretrained_llm": "llm_backbone",
+                "llm_config": embedded_config,
+            }
+        )
+
+        assert cfg.pretrained_llm == "llm_backbone"
+        assert cfg.llm_config == embedded_config
+        assert cfg.text_config is text_config
+
     def test_hybrid_backbone_aliases_for_vllm(self):
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
         assert cfg.is_hybrid is True

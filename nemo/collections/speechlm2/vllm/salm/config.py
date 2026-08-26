@@ -74,6 +74,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self,
         perception: dict | None = None,
         pretrained_llm: str | None = None,
+        llm_config: dict | None = None,
         pretrained_asr: str | None = None,
         audio_locator_tag: str | None = None,
         prompt_format: str | None = None,
@@ -113,6 +114,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             # path inert; real checkpoint loads continue through validation below.
             self.perception = {}
             self.pretrained_llm = None
+            self.llm_config = None
             self.pretrained_asr = None
             self.audio_locator_tag = None
             self.prompt_format = None
@@ -140,6 +142,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             )
         self.perception = perception or {}
         self.pretrained_llm = pretrained_llm
+        self.llm_config = llm_config
         self.pretrained_asr = pretrained_asr
         self.audio_locator_tag = audio_locator_tag
         self.prompt_format = prompt_format
@@ -147,7 +150,16 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.lora = lora
         self.encoder_chunk_size_seconds = encoder_chunk_size_seconds
 
-        self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+        if llm_config is None:
+            self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+        else:
+            if not isinstance(llm_config, dict):
+                raise ValueError(f"NeMo SpeechLM llm_config must be a dict, got {type(llm_config).__name__}.")
+            embedded_config = dict(llm_config)
+            model_type = embedded_config.pop("model_type", None)
+            if not model_type:
+                raise ValueError("NeMo SpeechLM llm_config must declare model_type.")
+            self.text_config = AutoConfig.for_model(model_type, **embedded_config)
 
         raw_archs = getattr(self.text_config, "architectures", [])
         if len(raw_archs) != 1:

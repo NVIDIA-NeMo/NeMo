@@ -345,6 +345,43 @@ def test_prepare_for_vllm_patches_config_json(tmp_path):
     assert cfg["hidden_size"] == 2048
 
 
+def test_prepare_for_vllm_embeds_bundled_backbone_config(tmp_path):
+    """The vLLM root config must not reload the stale training backbone reference."""
+    output_dir = _seed_output_dir(tmp_path)
+    backbone_dir = output_dir / "llm_backbone"
+    backbone_dir.mkdir()
+    backbone_config = {
+        "model_type": "qwen2",
+        "architectures": ["Qwen2ForCausalLM"],
+        "hidden_size": 2048,
+        "vocab_size": 100,
+    }
+    (backbone_dir / "config.json").write_text(json.dumps(backbone_config))
+
+    with (
+        patch.object(
+            to_hf,
+            "_detect_vllm_architecture",
+            return_value=("NeMoSpeechLMForConditionalGeneration", 100),
+        ) as detect_architecture,
+        patch("transformers.AutoTokenizer.from_pretrained", return_value=_FakeTokenizer()),
+    ):
+        to_hf.prepare_for_vllm(
+            str(output_dir),
+            {"pretrained_llm": "stale-training-model", "audio_locator_tag": AUDIO_TOKEN},
+        )
+
+    cfg = json.loads((output_dir / "config.json").read_text())
+    assert cfg["pretrained_llm"] == "llm_backbone"
+    assert cfg["llm_config"] == backbone_config
+    detect_architecture.assert_called_once_with(
+        {
+            "pretrained_llm": str(backbone_dir),
+            "audio_locator_tag": AUDIO_TOKEN,
+        }
+    )
+
+
 def test_prepare_for_vllm_adds_audio_token_to_vocab(tmp_path):
     """Audio token is registered via add_special_tokens when not already in vocab."""
     fake_tok = _FakeTokenizer(vocab_tokens=["<|im_start|>", "<|im_end|>"])

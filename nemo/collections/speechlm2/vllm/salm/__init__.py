@@ -159,5 +159,12 @@ def register():
         "NeMoSpeechLMForConditionalGeneration",
         f"{_PKG}.model:NeMoSpeechLMForConditionalGeneration",
     )
+    supported_archs = ModelRegistry.get_supported_archs()
+    if "DFlashDraftModel" in supported_archs:
+        native_dflash_model = ModelRegistry.models["DFlashDraftModel"]
+        native_dflash_model_ref = f"{native_dflash_model.module_name}:{native_dflash_model.class_name}"
+        for automodel_arch in ("Qwen3DFlashDraftModel", "DFlashQwen3DFlashDraftModel"):
+            if automodel_arch not in supported_archs:
+                ModelRegistry.register_model(automodel_arch, native_dflash_model_ref)
 
     _patch_vllm_for_nemo_speechlm_mtp()

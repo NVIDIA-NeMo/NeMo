@@ -19,8 +19,8 @@ import pytest
 
 from nemo.collections.asr.parts.utils.eou_utils import (
     EOUResult,
-    evaluate_eou,
     cal_eou_metrics_from_frame_labels,
+    evaluate_eou,
     get_SegLST_from_frame_labels,
 )
 

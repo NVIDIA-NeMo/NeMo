@@ -143,6 +143,8 @@ class TestEOUMetrics:
         assert eou_metrics.true_positives == 1
         assert eou_metrics.false_positives == 0
         assert eou_metrics.false_negatives == 0
+
+    @pytest.mark.unit
     def test_get_seglst_from_frame_labels_multiple_eou(self):
         # Frames 4, 12 and 20 are labelled as EOU, i.e. utterances end at 0.32s, 0.96s and 1.6s.
         # Each segment spans from the end of the previous utterance to its own EOU frame.

@@ -527,21 +527,32 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         return self._training_step_batch(batch, batch_idx)
 
     def _compute_training_cross_entropy_sum(
-        self, forward_outputs: dict[str, Tensor], target_ids: Tensor, dp_group
+        self,
+        forward_outputs: dict[str, Tensor],
+        target_ids: Tensor,
+        dp_group,
+        *,
+        lm_weight: Tensor | None = None,
     ) -> tuple[Tensor, Tensor | None]:
-        """Return local summed CE and optional full logits used by auxiliary losses."""
+        """Return local summed CE and optional full logits used by auxiliary losses.
+
+        ``lm_weight`` may be a previously materialized regular tensor shared
+        with the MTP loss. Supplying it avoids a second FSDP DTensor gather.
+        """
         fused_linear_cross_entropy = getattr(self, "_fused_linear_cross_entropy", None)
         if fused_linear_cross_entropy is not None:
             hidden_states = forward_outputs.get("hidden_states", None)
             if hidden_states is None:
                 raise RuntimeError("Fused linear CE requires final hidden states from forward().")
-            lm_head = self.llm.get_output_embeddings() if hasattr(self.llm, "get_output_embeddings") else None
-            if lm_head is None:
-                lm_head = self.llm.lm_head
+            if lm_weight is None:
+                lm_head = self.llm.get_output_embeddings() if hasattr(self.llm, "get_output_embeddings") else None
+                if lm_head is None:
+                    lm_head = self.llm.lm_head
+                lm_weight = lm_head.weight
             loss_sum = fused_linear_cross_entropy(
                 hidden_states,
                 target_ids,
-                lm_head.weight,
+                lm_weight,
                 grad_reduce_group=dp_group,
             )
             return loss_sum, None
@@ -588,9 +599,25 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             num_frames_global = num_frames
         num_frames_global = num_frames_global.clamp(min=1)
 
+        # The main and MTP fused losses both consume the full LM-head weight
+        # outside the owning FSDP module. Gather it once and share the regular
+        # tensor so their gradients accumulate into one reduce-scatter graph.
+        mtp_h = forward_outputs.get("mtp_per_depth_h", None)
+        shared_lm_weight = None
+        main_materialize = getattr(getattr(self, "_fused_linear_cross_entropy", None), "materialize_lm_weight", None)
+        mtp_materialize = getattr(getattr(self, "_mtp_loss_fn", None), "materialize_lm_weight", None)
+        if mtp_h is not None and callable(main_materialize) and callable(mtp_materialize):
+            lm_head = self.llm.get_output_embeddings() if hasattr(self.llm, "get_output_embeddings") else None
+            if lm_head is None:
+                lm_head = self.llm.lm_head
+            shared_lm_weight = main_materialize(lm_head.weight, grad_reduce_group=dp_group)
+
         with loss_parallel():
             loss_sum, logits = self._compute_training_cross_entropy_sum(
-                forward_outputs, inputs["target_ids"], dp_group
+                forward_outputs,
+                inputs["target_ids"],
+                dp_group,
+                lm_weight=shared_lm_weight,
             )
             loss = loss_sum * dp_size / num_frames_global
         if (dummy_audio_loss := inputs.get("dummy_audio_loss")) is not None:
@@ -613,7 +640,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # lm_head + CE work. ``mtp_loss`` keeps the same meaning as before: the weighted
         # auxiliary loss added to the training objective after the DP-size correction.
         mtp_metrics = {}
-        mtp_h = forward_outputs.get("mtp_per_depth_h", None)
         if mtp_h is not None:
             # Under packed THD multiple utterances share one token stream, so the
             # per-depth label roll must not predict the next sequence's first token
@@ -634,6 +660,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                     scaling_factor=self._mtp_loss_scaling_factor,
                     num_label_tokens=num_frames_global,
                     grad_reduce_group=dp_group,
+                    lm_weight=shared_lm_weight,
                     cu_seqlens=mtp_cu_seqlens,
                     return_per_depth=True,
                 )

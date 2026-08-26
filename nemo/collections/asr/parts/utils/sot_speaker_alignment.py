@@ -37,6 +37,7 @@ __all__ = [
     "sl_to_wl_sot",
     "speaker_activity_from_cut",
     "speaker_freq_cost_batch",
+    "strip_speaker_tags",
 ]
 
 
@@ -76,6 +77,34 @@ def sl_to_wl_sot(text: str) -> str:
             result.append(current_token)
             result.append(word)
     return " ".join(result)
+
+
+def strip_speaker_tags(text: str) -> tuple[str, list[int]]:
+    """Split SOT text into a tag-free transcript and a per-word speaker index.
+
+    Forced aligners mangle ``<spk:N>`` into a phantom word (``clean_token('<spk:0>') == 'spk0'``),
+    so the tags must be removed before alignment and re-attached afterwards. The returned speaker
+    list is parallel to ``tag_free_text.split()``.
+
+    Args:
+        text (str): SOT text such as ``"<spk:0> hello there <spk:1> hi"``.
+
+    Returns:
+        tuple[str, list[int]]: ``(tag_free_text, speaker_ids)`` where ``speaker_ids[i]`` is the
+            speaker of the i-th whitespace-separated word of ``tag_free_text``.
+
+    Example:
+        >>> strip_speaker_tags("<spk:0> hello there <spk:1> hi")
+        ('hello there hi', [0, 0, 1])
+    """
+    speaker_ids = parse_speaker_tokens(text)
+    tag_free_text = " ".join(_SPEAKER_TOKEN_SPLIT_PATTERN.sub(" ", text).split())
+    if len(tag_free_text.split()) != len(speaker_ids):
+        raise ValueError(
+            f"Speaker-tag stripping desynchronised: {len(tag_free_text.split())} words but "
+            f"{len(speaker_ids)} speaker ids. Text starts with: {text[:80]!r}"
+        )
+    return tag_free_text, speaker_ids
 
 
 def parse_speaker_tokens(text: str) -> list[int]:

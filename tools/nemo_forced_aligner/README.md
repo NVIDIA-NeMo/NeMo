@@ -26,5 +26,29 @@ NFA is a tool for generating token-, word- and segment-level timestamps of speec
 	<img src="https://github.com/NVIDIA-NeMo/Speech/releases/download/v1.20.0/nfa_run.png">
 </p>
 
-## Documentation 
+## Documentation
 More documentation is available [here](https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/tools/nemo_forced_aligner.html).
+
+## Multispeaker t-SOT timestamps
+
+`align_multispeaker_sot.py` is a specialized PEE + TransformerCTC tool for
+force-aligning a Nemotron-Transcribe t-SOT transcript with Sortformer speaker
+probabilities. It reads each WAV directly from the JSONL manifest's
+`audio_filepath`, and emits timestamps relative to that file,
+one CTM per recording (numeric t-SOT speaker ID in the second column), RTTM,
+and a `.seglst` file.
+
+Run `python tools/nemo_forced_aligner/align_multispeaker_sot.py --help` for
+its required model, tokenizer, input, and output arguments. The project-level
+`extract_timestamps.sh` wrapper provides the normal, shorter interface:
+
+```bash
+./extract_timestamps.sh \
+  --input manifest.jsonl \
+  --output-dir results
+```
+
+The wrapper uses the project-owned
+`conf/pee_transformer_ctc_timestamps.yaml` for model paths and alignment
+defaults. Each record's `audio_filepath` is the only audio location used;
+source-audio fields and recording offsets are ignored.

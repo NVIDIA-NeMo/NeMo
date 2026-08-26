@@ -40,6 +40,7 @@ from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoi
 from nemo.collections.asr.modules.lstm_decoder import LSTMDecoder  # noqa: F401
 from nemo.collections.asr.modules.moe_transformer_encoder import MoETransformerEncoder  # noqa: F401
 from nemo.collections.asr.modules.parallel_expert_encoder import (  # noqa: F401
+    PEETransformerCTCTimestampExtractor,
     ParallelExpertEncoder,
     TransformerCTCDecoder,
 )
@@ -78,6 +79,7 @@ __all__ = [
     'GGEMMParallelExpertEncoder',
     'GGEMMParallelExpertEncoderPT',
     'MoETransformerEncoder',
+    'PEETransformerCTCTimestampExtractor',
     'ParallelExpertEncoder',
     'TransformerCTCDecoder',
     'ConvASRDecoder',

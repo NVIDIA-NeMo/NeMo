@@ -24,6 +24,7 @@ from torch import nn
 from nemo.collections.asr.models import SortformerEncLabelModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.modules.parallel_expert_encoder import (
+    PEETransformerCTCTimestampExtractor,
     ParallelExpertEncoder,
     ParallelExpertEncoderPT,
     TransformerCTCDecoder,
@@ -724,3 +725,54 @@ def test_pe_encoder_online_forward_on_gpu():
     assert outputs.shape == (batch_size, _ASR_D_MODEL, expected_t)
     assert expected_t > 0
     assert torch.isfinite(outputs).all()
+
+
+class _TimestampToyTokenizer:
+    vocab_size = 2
+
+    def text_to_ids(self, text):
+        return {'alpha': [0], 'beta': [1]}[text]
+
+
+@pytest.mark.unit
+def test_pee_transformer_ctc_timestamp_extractor_parallel_alignment():
+    # Both speakers can use frame 2, because the parallel mode runs a separate
+    # speaker-conditioned CTC Viterbi path against the same acoustic timeline.
+    logits = torch.tensor(
+        [
+            [0.0, -4.0, 5.0],
+            [5.0, -2.0, 0.0],
+            [4.0, 4.0, 0.0],
+            [-2.0, 5.0, 0.0],
+            [-4.0, -4.0, 5.0],
+        ],
+        dtype=torch.float32,
+    )
+    ctc_log_probs = torch.log_softmax(logits, dim=-1).unsqueeze(0)
+    speaker_probs = torch.tensor(
+        [
+            [0.05, 0.05],
+            [0.95, 0.05],
+            [0.95, 0.95],
+            [0.05, 0.95],
+            [0.05, 0.05],
+        ],
+        dtype=torch.float32,
+    ).unsqueeze(0)
+
+    extractor = PEETransformerCTCTimestampExtractor(tokenizer=_TimestampToyTokenizer(), blank_id=2, alignment_mode='parallel')
+    result = extractor.extract_from_outputs(
+        ctc_log_probs=ctc_log_probs,
+        sortformer_sigmoids=speaker_probs,
+        sot_transcript='<spk:0> alpha <spk:1> beta',
+        audio_duration=0.5,
+    )
+
+    assert result['speaker_tag_to_sortformer_column'] == {0: 0, 1: 1}
+    alpha = result['speaker_word_timestamps'][0][0]
+    beta = result['speaker_word_timestamps'][1][0]
+    assert alpha['word'] == 'alpha'
+    assert beta['word'] == 'beta'
+    assert alpha['end_frame'] >= beta['start_frame']
+    assert alpha['ctc_confidence'] > 0.5
+    assert beta['speaker_confidence'] > 0.9

@@ -1163,7 +1163,12 @@ class StreamingTransformerEncoder(TransformerEncoder, StreamingEncoder):
         cache_last_channel = torch.zeros(
             self.n_layers, batch_size, cache_size, self.d_model, dtype=dtype, device=device
         )
-        cache_last_time = torch.zeros(self.n_layers, batch_size, 0, dtype=dtype, device=device)
+        # Zero *width*, but the same RANK as ``ConformerEncoder``'s conv cache
+        # ``(n_layers, B, d_model, conv_cache)`` -- the shared cache-aware tooling slices this
+        # tensor positionally (e.g. ``StreamingContextManager.get_context`` does
+        # ``cache_last_time[:, slot_ids, :, :]``), so a 3-D placeholder raises
+        # "IndexError: too many indices" even though the encoder never reads it.
+        cache_last_time = torch.zeros(self.n_layers, batch_size, self.d_model, 0, dtype=dtype, device=device)
         cache_last_channel_len = torch.zeros(batch_size, dtype=torch.int64, device=device)
         return cache_last_channel, cache_last_time, cache_last_channel_len
 

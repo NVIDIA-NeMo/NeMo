@@ -975,14 +975,21 @@ class TestStreamingTransformerEncoder:
     @pytest.mark.unit
     def test_initial_cache_state_shapes(self):
         """A rolling cache pre-allocates ``left`` frames per layer (padded); ``cache_last_time`` is
-        a zero-width placeholder (no conv) and valid length starts at 0."""
+        a zero-width placeholder (no conv) and valid length starts at 0.
+
+        ``cache_last_time`` must keep ``ConformerEncoder``'s 4-D rank
+        ``(n_layers, B, d_model, conv_cache)`` even though its width is 0: the shared
+        cache-aware inference tooling slices it as ``cache_last_time[:, slot_ids, :, :]``,
+        so a 3-D placeholder breaks ``asr_streaming_infer.py`` at runtime.
+        """
         d_model, n_layers, left, B = 64, 3, 7, 2
         enc = StreamingTransformerEncoder(
             feat_in=80, d_model=d_model, n_heads=4, n_layers=n_layers, att_context_size=[left, 0]
         )
         clc, clt, clcl = enc.get_initial_cache_state(batch_size=B)
         assert clc.shape == (n_layers, B, left, d_model)
-        assert clt.shape == (n_layers, B, 0)
+        assert clt.shape == (n_layers, B, d_model, 0)
+        assert clt.dim() == 4, "cache_last_time must be 4-D for parity with ConformerEncoder"
         assert clcl.shape == (B,)
         assert clcl.sum().item() == 0
         # A full cache (left < 0) starts empty and grows.

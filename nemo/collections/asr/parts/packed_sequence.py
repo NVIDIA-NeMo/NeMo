@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import torch
 from torch import Tensor
+from torch.utils._pytree import GetAttrKey, register_pytree_node
 
 __all__ = [
     "PackedEncoderActivations",
@@ -270,3 +271,49 @@ def _new_packed_encoder_activations(data, lengths, cu_seqlens, max_seqlen, paddi
     object.__setattr__(packed, "padding_value", padding_value)
     object.__setattr__(packed, "padded_length", padded_length)
     return packed
+
+
+_PACKED_TENSOR_FIELDS = ("data", "lengths", "cu_seqlens", "padding_value")
+
+
+def _flatten_packed_encoder_activations(packed: PackedEncoderActivations):
+    tensor_padding = isinstance(packed.padding_value, Tensor)
+    children = [packed.data, packed.lengths, packed.cu_seqlens]
+    if tensor_padding:
+        children.append(packed.padding_value)
+    context = (packed.max_seqlen, packed.padded_length, None if tensor_padding else packed.padding_value)
+    return children, context
+
+
+def _flatten_packed_encoder_activations_with_keys(packed: PackedEncoderActivations):
+    children, context = _flatten_packed_encoder_activations(packed)
+    return [(GetAttrKey(name), child) for name, child in zip(_PACKED_TENSOR_FIELDS, children)], context
+
+
+def _unflatten_packed_encoder_activations(children, context) -> PackedEncoderActivations:
+    max_seqlen, padded_length, scalar_padding_value = context
+    data, lengths, cu_seqlens, *tensor_padding_value = children
+    return _new_packed_encoder_activations(
+        data,
+        lengths,
+        cu_seqlens,
+        max_seqlen,
+        padding_value=tensor_padding_value[0] if tensor_padding_value else scalar_padding_value,
+        padded_length=padded_length,
+    )
+
+
+# FSDP2 discovers the output tensors that need its pre-backward hook by calling
+# tree_flatten() on the module output. While unregistered, this container is a
+# single opaque leaf, so an FSDP root forward returning it never runs the
+# post-backward lifecycle that moves gradients onto the optimizer-owned DTensor
+# parameters, and the optimizer silently skips those weights. Only the tensor
+# fields are children so that generic tensor transforms never see the integer
+# metadata, and unflattening reuses the already validated offsets.
+register_pytree_node(
+    PackedEncoderActivations,
+    _flatten_packed_encoder_activations,
+    _unflatten_packed_encoder_activations,
+    flatten_with_keys_fn=_flatten_packed_encoder_activations_with_keys,
+    serialized_type_name="nemo.collections.asr.parts.packed_sequence.PackedEncoderActivations",
+)

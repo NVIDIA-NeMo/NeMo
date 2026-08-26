@@ -16,6 +16,7 @@ import copy
 
 import pytest
 import torch
+from torch.utils._pytree import tree_flatten, tree_flatten_with_path, tree_map, tree_unflatten
 
 from nemo.collections.asr.modules.moe_transformer_encoder import MoEFeedForward, MoETransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import PackedEncoderActivations, pack_encoder_output
@@ -35,6 +36,45 @@ def test_packed_output_with_data_reuses_validated_metadata_and_preserves_gradien
     assert replacement.grad is not None
     with pytest.raises(ValueError, match="replacement data"):
         packed.with_data(torch.randn(5, 3))
+
+
+def test_packed_output_flattens_to_its_tensors_so_autograd_hooks_can_reach_them():
+    packed = pack_encoder_output(torch.randn(2, 4, 3, requires_grad=True), torch.tensor([4, 2]))
+
+    leaves, treespec = tree_flatten(packed)
+    restored = tree_unflatten(leaves, treespec)
+
+    assert len(leaves) == 3
+    assert leaves[0] is packed.data
+    assert leaves[1] is packed.lengths
+    assert leaves[2] is packed.cu_seqlens
+    assert restored.data is packed.data
+    assert restored.max_seqlen == packed.max_seqlen
+    assert restored.padded_length == packed.padded_length
+    assert restored.padding_value == packed.padding_value
+    assert [str(path[-1]) for path, _ in tree_flatten_with_path(packed)[0]] == [".data", ".lengths", ".cu_seqlens"]
+
+
+def test_packed_output_tensor_mapping_covers_tensor_padding_and_keeps_metadata():
+    dense = pack_encoder_output(torch.randn(2, 4, 3), torch.tensor([4, 2]))
+    packed = PackedEncoderActivations(
+        dense.data,
+        dense.lengths,
+        dense.cu_seqlens,
+        dense.max_seqlen,
+        padding_value=torch.zeros(2, 3),
+        padded_length=dense.padded_length,
+    )
+
+    mapped = tree_map(lambda leaf: leaf.to(torch.float64) if leaf.is_floating_point() else leaf, packed)
+
+    assert len(tree_flatten(packed)[0]) == 4
+    assert mapped.data.dtype == torch.float64
+    assert mapped.padding_value.dtype == torch.float64
+    assert mapped.lengths.dtype == torch.int64
+    assert mapped.cu_seqlens.dtype == torch.int32
+    assert mapped.max_seqlen == packed.max_seqlen
+    assert mapped.padded_length == packed.padded_length
 
 
 @pytest.mark.parametrize(("top_k", "router_type"), [(1, "switch"), (2, "omni")])

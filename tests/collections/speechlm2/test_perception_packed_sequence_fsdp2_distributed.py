@@ -17,6 +17,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.tensor import DTensor
 
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
@@ -42,6 +43,15 @@ class _WorldCpMesh:
 
     def get_group(self):
         return dist.group.WORLD
+
+
+class _PackedLinearPerception(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = torch.nn.Sequential(torch.nn.Linear(5, 8), torch.nn.SiLU(), torch.nn.Linear(8, 8))
+
+    def forward_sequence_packed(self, *, input_signal, input_signal_length):
+        return pack_encoder_output(self.layers(input_signal), input_signal_length)
 
 
 class _ScalePerception(torch.nn.Module):
@@ -212,6 +222,47 @@ def _run_fsdp2_grouped_pee_test(rank: int, world_size: int, init_file: str):
         assert all(parameter.grad is not None for parameter in perception.parameters() if parameter.requires_grad)
     finally:
         dist.destroy_process_group()
+
+
+def _run_fsdp2_optimizer_owned_gradient_test(rank: int, world_size: int, init_file: str):
+    dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=world_size)
+    try:
+        torch.manual_seed(123)
+        mesh = init_device_mesh("cpu", (world_size,), mesh_dim_names=("dp",))
+        perception = _fully_shard_perception(_PackedLinearPerception(), mesh)
+        head = torch.nn.Linear(8, 4)
+        optimizer = torch.optim.AdamW(list(perception.parameters()) + list(head.parameters()), lr=1e-2)
+
+        # Sample the parameter the optimizer owns before any forward. FSDP2 swaps
+        # in unsharded temporaries during forward, so gradients seen by iterating
+        # perception.parameters() afterwards do not prove that the optimizer's own
+        # sharded parameters received them.
+        sample = next(iter(perception.parameters()))
+        initial = sample.to_local().detach().clone()
+
+        for step in range(1, 4):
+            optimizer.zero_grad(set_to_none=True)
+            packed = perception.forward_sequence_packed(
+                input_signal=torch.randn(2, 7, 5),
+                input_signal_length=torch.tensor([7, 4]),
+            )
+            head(packed.data).square().mean().backward()
+            assert isinstance(sample.grad, DTensor)
+            optimizer.step()
+            assert int(optimizer.state[sample]["step"]) == step
+
+        assert (sample.to_local() - initial).abs().max() > 0
+    finally:
+        dist.destroy_process_group()
+
+
+def test_packed_perception_fsdp2_updates_optimizer_owned_parameters(tmp_path):
+    mp.spawn(
+        _run_fsdp2_optimizer_owned_gradient_test,
+        args=(2, str(tmp_path / "optimizer_owned_gradient_init")),
+        nprocs=2,
+        join=True,
+    )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason="Test requires 2 GPUs")

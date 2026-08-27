@@ -22,7 +22,11 @@ from safetensors.torch import load_file
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.asr.models import ASRModel
-from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
+from nemo.collections.asr.modules.parallel_expert_encoder import (
+    ParallelExpertEncoder,
+    ParallelExpertEncoderPT,
+    StreamingParallelExpertEncoder,
+)
 from nemo.collections.speechlm2.modules import AudioPerceptionModule
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
@@ -376,7 +380,73 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         map_location="cpu",
         strict=True,
     )
+    mount_parallel_expert_encoder(model, pe_encoder, source=pe_encoder_path)
 
+
+def setup_parallel_expert_encoder_from_checkpoints(model: torch.nn.Module):
+    """Mount a ParallelExpertEncoder assembled from separate ASR and diarizer ``.nemo`` files.
+
+    The sibling of :func:`setup_parallel_expert_encoder`, for when there is no pre-fused bundle.
+    Reads ``model.cfg.parallel_expert_encoder``: ``asr_model`` and ``diar_model`` name the two
+    sources -- each a local ``.nemo`` path OR a pretrained id (HuggingFace ``{repo}/{name}`` / NGC
+    alias) -- and every other key is forwarded to the encoder constructor, so the two branches can
+    be swapped independently without re-exporting a bundle.
+
+    Prefer a bundle for anything you intend to distribute or reproduce exactly -- assembling from
+    checkpoints leaves the fusion LayerNorms (``asr_norm`` / ``diar_norm``) at init, since they
+    exist in neither source.
+    """
+    cfg = model.cfg.get("parallel_expert_encoder", None)
+    if not cfg:
+        return
+    asr_model, diar_model = cfg.get("asr_model", None), cfg.get("diar_model", None)
+    if not asr_model or not diar_model:
+        raise ValueError(
+            "model.parallel_expert_encoder requires both `asr_model` and `diar_model` "
+            f"(got asr_model={asr_model!r}, diar_model={diar_model!r})."
+        )
+    # Only local paths are checked here. A value that is not an existing `.nemo` is treated as a
+    # pretrained id and validated when `from_pretrained` resolves it.
+    for label, source in (("asr_model", asr_model), ("diar_model", diar_model)):
+        if str(source).endswith(".nemo") and not Path(source).is_file():
+            raise FileNotFoundError(
+                f"model.parallel_expert_encoder.{label}={source!r} looks like a local .nemo path but does not exist."
+            )
+
+    # `pretrained_asr` still supplies the perception PREPROCESSOR (the mel front-end) even though
+    # its encoder is discarded by the swap below. A different checkpoint there would feed the PE
+    # branch mels it was not trained on -- silently, since shapes still line up.
+    pretrained_asr = model.cfg.get("pretrained_asr", None)
+    if isinstance(pretrained_asr, str) and Path(pretrained_asr).is_file() and Path(str(asr_model)).is_file():
+        if Path(pretrained_asr).resolve() != Path(str(asr_model)).resolve():
+            logging.warning(
+                "model.pretrained_asr=%s differs from parallel_expert_encoder.asr_model=%s. The PE "
+                "encoder's ASR branch comes from asr_model, but the mel preprocessor still comes "
+                "from pretrained_asr -- make sure their front-ends match.",
+                pretrained_asr,
+                asr_model,
+            )
+
+    kwargs = {k: v for k, v in dict(cfg).items() if k not in ("asr_model", "diar_model", "streaming")}
+    # Default to the streaming subclass: these models are driven chunk-by-chunk and only it
+    # implements the StreamingEncoder interface. `streaming: false` opts out for offline-only runs.
+    encoder_cls = StreamingParallelExpertEncoder if cfg.get("streaming", True) else ParallelExpertEncoder
+    # `model.att_context_size` is applied to a plain encoder at construction by setup_perception;
+    # the PE branch is built from its own checkpoint config, so pass it through here or a
+    # multi-context checkpoint would randomly sample its look-ahead during training.
+    kwargs.setdefault("att_context_size", model.cfg.get("att_context_size", None))
+    pe_encoder = encoder_cls.from_checkpoints(asr_model, diar_model, **kwargs)
+    mount_parallel_expert_encoder(model, pe_encoder, source=f"{asr_model} + {diar_model}")
+
+
+def mount_parallel_expert_encoder(model: torch.nn.Module, pe_encoder, source: str):
+    """Swap ``pe_encoder`` in as ``model.perception.encoder``, with compatibility checks.
+
+    Shared by the bundle and two-checkpoint paths. The PE encoder expects un-normalised mels for
+    its Sortformer branch and replays ASR normalisation internally, so the outer perception
+    preprocessor normalisation is disabled here.
+    """
+    pe_encoder_path = source
     existing_encoder = model.perception.encoder
     existing_d_model = int(getattr(existing_encoder, "d_model", -1))
     if existing_d_model > 0 and int(pe_encoder.d_model) != existing_d_model:
@@ -420,6 +490,10 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         # featurizer.normalize disabling above is the functional change that matters.
         pass
 
+    att_context_size = model.cfg.get("att_context_size", None)
+    if att_context_size is not None and hasattr(pe_encoder, "set_att_context_size"):
+        pe_encoder.set_att_context_size(att_context_size)
+
     model.perception.encoder = pe_encoder
     logging.info(
         "Mounted ParallelExpertEncoder from %s onto model.perception.encoder "
@@ -432,6 +506,33 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         bool(pe_encoder.freeze_asr),
         prev_normalize,
     )
+
+
+def _remap_asr_state_dict(asr_state: Dict[str, torch.Tensor], perception) -> Dict[str, torch.Tensor]:
+    """Rewrite pretrained-ASR keys so they land on the mounted encoder.
+
+    A plain encoder sits at ``encoder.*`` and needs no remap. A ParallelExpertEncoder keeps its ASR
+    branch at ``encoder.asr_encoder.*``, so the pretrained weights must be re-prefixed or they load
+    into nothing -- ``load_state_dict(..., strict=False)`` would report success either way. Mirrors
+    the ``encoder_multilayer.`` remap already used by ``setup_speech_encoder``.
+    """
+    encoder = getattr(perception, "encoder", None)
+    if encoder is None or not hasattr(encoder, "asr_encoder"):
+        return asr_state
+    remapped = {
+        ("encoder.asr_encoder." + k[len("encoder.") :] if k.startswith("encoder.") else k): v
+        for k, v in asr_state.items()
+    }
+    target_keys = set(perception.state_dict().keys())
+    n_hit = sum(1 for k in remapped if k in target_keys)
+    if n_hit == 0:
+        raise RuntimeError(
+            "Remapping pretrained ASR weights onto the ParallelExpertEncoder's ASR branch matched "
+            "ZERO parameters. The bundle's ASR branch likely differs from `pretrained_asr`; loading "
+            "would silently leave it randomly initialized."
+        )
+    logging.info("Loaded %d pretrained ASR tensors into encoder.asr_encoder.*", n_hit)
+    return remapped
 
 
 def setup_perception(
@@ -463,21 +564,37 @@ def setup_perception(
             user_encoder_config = OmegaConf.to_container(cfg.perception.encoder, resolve=True)
 
         asr = load_pretrained_nemo(ASRModel, pretrained_asr).eval()
+        # An explicit `_target_` means the user is specifying the encoder WHOLESALE (e.g. a
+        # ParallelExpertEncoder wrapping its own ASR branch). Merging the pretrained ASR's encoder
+        # keys into it would produce a hybrid config -- ConformerEncoder keys plus the user's --
+        # which then fails on unexpected kwargs. Take the user's config verbatim instead.
+        user_targets_encoder = bool(user_encoder_config) and "_target_" in user_encoder_config
         with open_dict(cfg):
             cfg.perception.preprocessor = asr.cfg.preprocessor
             if audio_pad_to is not None:
                 cfg.perception.preprocessor.pad_to = cfg.audio_pad_to
-            cfg.perception.encoder = asr.cfg.encoder
-            if att_context_size is not None:
-                cfg.perception.encoder.att_context_size = att_context_size
+            if user_targets_encoder:
+                if att_context_size is not None:
+                    logging.warning(
+                        "`att_context_size=%s` is ignored because `perception.encoder` sets an explicit "
+                        "`_target_` (%s); set the attention context inside that encoder's own config.",
+                        att_context_size,
+                        user_encoder_config.get("_target_"),
+                    )
+                cfg.perception.encoder = OmegaConf.create(user_encoder_config)
+            else:
+                cfg.perception.encoder = asr.cfg.encoder
+                if att_context_size is not None:
+                    cfg.perception.encoder.att_context_size = att_context_size
+                # Override with user-specified encoder parameters, e.g. initializiing a non-causal
+                # encoder for causal setup.
+                if user_encoder_config:
+                    for key, value in user_encoder_config.items():
+                        if value is not None:  # Only override if user explicitly set a value
+                            cfg.perception.encoder[key] = value
             cfg.perception.output_dim = output_dim
-            # Override with user-specified encoder parameters, e.g. initializiing a non-causal encoder for causal setup.
-            if user_encoder_config:
-                for key, value in user_encoder_config.items():
-                    if value is not None:  # Only override if user explicitly set a value
-                        cfg.perception.encoder[key] = value
         perception = AudioPerceptionModule(cfg.perception).train()
-        perception.load_state_dict(asr.state_dict(), strict=False)
+        perception.load_state_dict(_remap_asr_state_dict(asr.state_dict(), perception), strict=False)
     else:
         with open_dict(cfg):
             cfg.perception.output_dim = output_dim

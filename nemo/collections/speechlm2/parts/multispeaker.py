@@ -11,9 +11,70 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from dataclasses import dataclass
+from typing import Optional
+
 from omegaconf import DictConfig, open_dict
 
 from nemo.core.classes.common import safe_instantiate
+
+__all__ = ["MultiSpeakerConfig", "build_speaker_tokens", "maybe_init_lss_loss"]
+
+
+@dataclass(frozen=True)
+class MultiSpeakerConfig:
+    """Settings for RTTM-derived SOT speaker targets, shared by SALM and the streaming SpeechLM.
+
+    Field names follow the SALM/phPEE reference so recipes port across unchanged. Note that
+    ``from_dict`` collapses the YAML-facing ``window_stride`` / ``sample_rate`` /
+    ``subsampling_factor`` knobs into the frame-rate fields the helpers actually take.
+    """
+
+    num_speakers: int = 4
+    no_rttm_to_ones: bool = True
+    num_sample_per_mel_frame: int = 160
+    num_mel_frame_per_target_frame: int = 8
+    # Bound on the brute-force permutation search in `fix_speaker_activity`. Uncapped, an
+    # 8-active-speaker cut enumerates 8! = 40320 permutations and materialises a
+    # (P, n_tokens, n_frames) array -- measured at 48.7 s per cut in a dataloader worker.
+    max_alignment_permutations: Optional[int] = 720
+    # --- streaming SpeechLM only (ignored by SALM) ---
+    enable: bool = True
+    speaker_token_template: str = "<spk:{i}>"
+
+    @property
+    def max_permutable(self) -> Optional[int]:
+        """Largest speaker count whose factorial fits the permutation budget (720 -> 6).
+
+        ``fix_speaker_activity`` takes a *speaker count*, while the reference config expresses the
+        limit as a *permutation budget*; this bridges the two.
+        """
+        if self.max_alignment_permutations is None:
+            return None
+        count, factorial = 1, 1
+        while factorial * (count + 1) <= int(self.max_alignment_permutations):
+            count += 1
+            factorial *= count
+        return count
+
+    @staticmethod
+    def from_dict(cfg: "DictConfig | dict | None") -> "Optional[MultiSpeakerConfig]":
+        """Build a config from a raw settings dict, or ``None`` when no SOT settings are given."""
+        if cfg is None:
+            return None
+        return MultiSpeakerConfig(
+            num_speakers=int(cfg.get('num_speakers', 4)),
+            no_rttm_to_ones=cfg.get('no_rttm_to_ones', True),
+            num_sample_per_mel_frame=int(cfg.get('window_stride', 0.01) * cfg.get('sample_rate', 16000)),
+            num_mel_frame_per_target_frame=int(cfg.get('subsampling_factor', 8)),
+            max_alignment_permutations=(
+                None
+                if cfg.get('max_alignment_permutations', 720) is None
+                else int(cfg.get('max_alignment_permutations', 720))
+            ),
+            enable=bool(cfg.get('enable', True)),
+            speaker_token_template=cfg.get('speaker_token_template', "<spk:{i}>"),
+        )
 
 
 def build_speaker_tokens(speaker_cfg: DictConfig | dict | None, tokenizer) -> list[int]:

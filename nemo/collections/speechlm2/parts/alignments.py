@@ -22,6 +22,8 @@ from typing import List, Optional
 from lhotse import CutSet
 from torch import Tensor
 
+from nemo.utils import logging
+
 
 @dataclass
 class WordAlignment:
@@ -30,6 +32,10 @@ class WordAlignment:
     text: str
     start_time: float
     end_time: float
+    # SOT multi-speaker only: index of the speaker who said this word, matching the
+    # `<spk:N>` tag in the transcript. Carried on the word rather than as a parallel
+    # list so the two cannot desynchronise.
+    speaker: Optional[int] = None
 
 
 class ForcedAligner(ABC):
@@ -78,11 +84,26 @@ def get_word_alignments_for_batch(
         for cut in cuts:
             custom = cut.custom or {}
             raw_alignments = custom.get("alignments", [])
+            # `speaker_ids` is written by scripts/speechlm2/align_manifest.py for SOT manifests and
+            # is parallel to `alignments`. A length mismatch means the manifest is inconsistent, so
+            # drop the speaker information rather than silently misattribute words.
+            speaker_ids = custom.get("speaker_ids") or []
+            if speaker_ids and len(speaker_ids) != len(raw_alignments):
+                logging.warning(
+                    "Cut %s: %d speaker_ids vs %d alignments; ignoring speaker_ids.",
+                    cut.id,
+                    len(speaker_ids),
+                    len(raw_alignments),
+                )
+                speaker_ids = []
             cut_alignments = []
-            for alignment in raw_alignments:
+            for i, alignment in enumerate(raw_alignments):
                 cut_alignments.append(
                     WordAlignment(
-                        text=alignment["text"], start_time=alignment["start_time"], end_time=alignment["end_time"]
+                        text=alignment["text"],
+                        start_time=alignment["start_time"],
+                        end_time=alignment["end_time"],
+                        speaker=speaker_ids[i] if speaker_ids else None,
                     )
                 )
             batch_alignments.append(cut_alignments)

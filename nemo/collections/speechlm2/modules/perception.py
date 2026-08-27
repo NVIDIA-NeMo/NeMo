@@ -193,8 +193,18 @@ class AudioPerceptionModule(NeuralModule, Exportable):
             encoder_emb, encoded_len = self.encoder_multilayer(
                 audio_signal=processed_signal, length=processed_signal_length
             )
-        elif isinstance(self.encoder, (ConformerEncoder, StreamingTransformerEncoder)):
+        elif isinstance(self.encoder, (ConformerEncoder, StreamingTransformerEncoder)) or (
+            streaming and isinstance(self.encoder, StreamingEncoder)
+        ):
             if streaming:
+                stream_kwargs = {}
+                if spk_targets is not None:
+                    if not self._encoder_accepts_spk_targets(self.encoder):
+                        raise ValueError(
+                            "`spk_targets` were provided for a streaming step, but the mounted encoder "
+                            f"({type(self.encoder).__name__}) does not support speaker-target inputs."
+                        )
+                    stream_kwargs["spk_targets"] = spk_targets
                 encoder_outputs = self.encoder.cache_aware_stream_step(
                     processed_signal=processed_signal,
                     processed_signal_length=processed_signal_length,
@@ -202,6 +212,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
                     cache_last_time=cache_last_time,
                     cache_last_channel_len=cache_last_channel_len,
                     keep_all_outputs=False,
+                    **stream_kwargs,
                 )
             else:
                 encoder_outputs = self.encoder(

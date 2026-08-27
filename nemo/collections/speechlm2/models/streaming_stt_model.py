@@ -44,11 +44,18 @@ from nemo.collections.speechlm2.data.streaming_stt_dataset import (
     parse_chat_template_ids,
     resolve_pad_id,
 )
+from nemo.collections.speechlm2.modules.perception import AudioPerceptionModule
 from nemo.collections.speechlm2.parts.alignments import ForcedAligner
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, is_frozen
-from nemo.collections.speechlm2.parts.pretrained import load_pretrained_hf, move_embedding, setup_perception
+from nemo.collections.speechlm2.parts.pretrained import (
+    load_pretrained_hf,
+    move_embedding,
+    setup_parallel_expert_encoder,
+    setup_parallel_expert_encoder_from_checkpoints,
+    setup_perception,
+)
 from nemo.collections.speechlm2.parts.utils import freeze_module, to_dataclass, unfreeze_module
 from nemo.utils import logging
 from nemo.utils.dtype import str_to_dtype
@@ -284,6 +291,23 @@ class StreamingSTTModelConfig:
     # positions are masked to IGNORE_INDEX in the LM CE — the aux head owns
     # the boundary decision exclusively.
     chunk_classifier_keep_lm_supervision_at_audio: bool = False
+    # --- SOT multi-speaker speaker tokens ---
+    # Key names mirror the SALM/phPEE reference (`nemo/collections/speechlm2/parts/multispeaker.py`)
+    # so recipes port across: {enable, template, max_speakers, base_token_id}. When enabled, the
+    # `<spk:N>` tags are registered as single special tokens -- stock Qwen3 splits `<spk:0>` into
+    # SIX tokens, which would make every speaker change cost six emissions and swamp the loss.
+    speaker_tokens: Optional[dict] = None
+    # Path to a self-contained ParallelExpertEncoder ".nemo" bundle. When set, the perception
+    # encoder built from `pretrained_asr` is REPLACED by the bundle's encoder, which carries the
+    # trained weights for BOTH branches plus the fusion LayerNorms -- none of which the
+    # `pretrained_asr` path can supply (it has no diarizer, and `asr_norm`/`diar_norm` exist in no
+    # ASR checkpoint). Same key and loader as SALM's `pe_encoder_path`.
+    pe_encoder_path: Optional[str] = None
+    # Alternative to `pe_encoder_path` when there is no pre-fused bundle: name the two source
+    # checkpoints and assemble at construction time, so the ASR and diarizer branches can be
+    # swapped independently. `{asr_model, diar_model}` (each a local .nemo OR a
+    # pretrained id) plus any ParallelExpertEncoder ctor kwarg.
+    parallel_expert_encoder: Optional[dict] = None
 
 
 @dataclass
@@ -408,6 +432,20 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             audio_pad_to=self.core_cfg.audio_pad_to,
             att_context_size=self.core_cfg.att_context_size,
         )
+
+        # --- Optional: replace the encoder with a ParallelExpertEncoder bundle ---
+        # Must run before `_apply_freeze_config` so the PE's `apply_internal_freeze` hook is
+        # applied to the mounted encoder rather than the throwaway one.
+        if self.core_cfg.pe_encoder_path and self.core_cfg.parallel_expert_encoder:
+            raise ValueError(
+                "Set only one of `model.pe_encoder_path` (a pre-fused bundle) and "
+                "`model.parallel_expert_encoder` (assemble from separate ASR + diarizer "
+                "checkpoints); they build the same encoder from different sources."
+            )
+        if self.core_cfg.pe_encoder_path:
+            setup_parallel_expert_encoder(self)
+        elif self.core_cfg.parallel_expert_encoder:
+            setup_parallel_expert_encoder_from_checkpoints(self)
 
         # --- Aux chunk-boundary classifier (only built when enabled) ---
         # Only valid in dynamic-chunking mode (chunk_size == 0). When disabled,
@@ -545,6 +583,41 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     f"{self.core_cfg.write_token!r}."
                 )
 
+        # SOT speaker tokens. Registered last so their ids are contiguous and stable given a fixed
+        # blank/write/end-of-audio configuration; note ids depend on the ORDER of these
+        # add_special_tokens calls, and the tokenizer is rebuilt from `pretrained_llm` on every
+        # init rather than serialized with the checkpoint -- so do not reorder them after training.
+        self.speaker_token_ids: list[int] = []
+        cfg = self.core_cfg.speaker_tokens or {}
+        if cfg and cfg.get("enable", True):
+            template = cfg.get("template", "<spk:{i}>")
+            max_speakers = int(cfg.get("max_speakers", 4))
+            new_tokens = [
+                template.format(i=i)
+                for i in range(max_speakers)
+                if not token_in_vocab(template.format(i=i), self.tokenizer)
+            ]
+            if new_tokens:
+                self.tokenizer.add_special_tokens({"additional_special_tokens": new_tokens})
+                self._resize_llm_embeddings()
+            self.speaker_token_ids = [
+                self.tokenizer.tokenizer.convert_tokens_to_ids(template.format(i=i)) for i in range(max_speakers)
+            ]
+            for i, tid in enumerate(self.speaker_token_ids):
+                probe = template.format(i=i)
+                if not token_in_vocab(probe, self.tokenizer):
+                    raise ValueError(
+                        f"speaker token {probe!r} is not a single token after registration; "
+                        "the dataset requires single-token speaker tags."
+                    )
+            base = cfg.get("base_token_id")
+            if base is not None and self.speaker_token_ids[0] != int(base):
+                raise ValueError(
+                    f"speaker token {template.format(i=0)!r} resolved to id {self.speaker_token_ids[0]}, "
+                    f"expected base_token_id={base}. The tokenizer does not match the configured layout."
+                )
+            logging.info("Registered %d speaker tokens: ids %s", max_speakers, self.speaker_token_ids)
+
     def _setup_forced_aligner(self, forced_aligner, data_cfg, val_data_cfg, dataset_cls) -> None:
         """Attach the optional online forced aligner and its dataset(s)."""
         if forced_aligner is not None:
@@ -609,6 +682,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             freeze_module(self.perception.encoder)
         else:
             unfreeze_module(self.perception.encoder)
+        # A composite encoder (e.g. ParallelExpertEncoder) owns an internal frozen/trainable split
+        # that the blanket calls above cannot see; let it re-assert its own policy.
+        internal_freeze = getattr(self.perception.encoder, "apply_internal_freeze", None)
+        if callable(internal_freeze):
+            internal_freeze()
 
         if self.core_cfg.freeze_modality_adapter:
             freeze_module(self.perception.modality_adapter)
@@ -653,6 +731,17 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
+    @property
+    def speaker_token_map(self) -> dict:
+        """``{token_id: "<spk:N>"}`` for decoding. Empty when speaker tokens are disabled.
+
+        The tags are registered as *special* tokens, so ``tokens_to_text`` would filter them out;
+        every decode path must pass this map or hypotheses come back untagged.
+        """
+        cfg = self.core_cfg.speaker_tokens or {}
+        template = cfg.get("template", "<spk:{i}>")
+        return {tid: template.format(i=i) for i, tid in enumerate(getattr(self, "speaker_token_ids", []))}
+
     @property
     def text_vocab_size(self):
         """Return the size of the text tokenizer."""
@@ -796,11 +885,25 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
     # Core: efficient audio-text embedding interleaving
     # ------------------------------------------------------------------
 
+    def _perception_accepts_spk_targets(self) -> bool:
+        """Whether the mounted perception encoder can consume ``spk_targets``.
+
+        Cached because it is queried on every forward. A plain Conformer cannot, and the control
+        arm deliberately runs multispeaker data through one, so this must not raise there.
+        """
+        if getattr(self, "_spk_targets_supported", None) is None:
+            encoder = getattr(self.perception, "encoder", None)
+            self._spk_targets_supported = encoder is not None and AudioPerceptionModule._encoder_accepts_spk_targets(
+                encoder
+            )
+        return self._spk_targets_supported
+
     def _build_input_embeds(
         self,
         input_tokens: Tensor,
         audios: Tensor,
         audio_lens: Tensor,
+        spk_targets: Tensor | None = None,
     ) -> dict[str, Tensor]:
         """
         Encode audio, embed text tokens, then interleave them.
@@ -825,9 +928,18 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         text_embeds = self._embed_tokens(text_tokens)  # (B, L, H)
 
         # --- audio embeddings ---
+        # Oracle RTTM speaker targets, when the dataset produced them AND the mounted encoder can
+        # consume them (a ParallelExpertEncoder can; a plain Conformer cannot, and perception would
+        # raise). Without this the PE encoder silently falls back to its own embedded diarizer and
+        # the dataset's `spk_targets` are computed, collated, and then thrown away.
+        perception_kwargs = {}
+        if spk_targets is not None and self._perception_accepts_spk_targets():
+            perception_kwargs["spk_targets"] = spk_targets
+
         audio_embs, _audio_emb_lens = self.perception(
             input_signal=audios,
             input_signal_length=audio_lens,
+            **perception_kwargs,
         )  # audio_embs: (B, T_enc, H)
 
         # --- interleave & build attention mask ---
@@ -899,7 +1011,9 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # K-step does NOT drive encoder look-ahead — it's an FSM-level concept only.
         self._set_encoder_att_context(batch.chunk_size)
 
-        inputs = self._build_input_embeds(batch.input_tokens, batch.audios, batch.audio_lens)
+        inputs = self._build_input_embeds(
+            batch.input_tokens, batch.audios, batch.audio_lens, spk_targets=batch.spk_targets
+        )
         use_aux = self.core_cfg.use_chunk_classifier
         outputs = self.forward(
             inputs["input_embeds"],
@@ -1147,7 +1261,9 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # Match the encoder's attention look-ahead to the per-batch chunk size.
         self._set_encoder_att_context(batch.chunk_size)
 
-        inputs = self._build_input_embeds(batch.input_tokens, batch.audios, batch.audio_lens)
+        inputs = self._build_input_embeds(
+            batch.input_tokens, batch.audios, batch.audio_lens, spk_targets=batch.spk_targets
+        )
         aux_active = self.core_cfg.use_chunk_classifier and self.has_blank and self._user_footer_first_id is not None
         outputs = self.forward(
             inputs["input_embeds"],
@@ -1251,8 +1367,20 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             # gate (prepend_write_token). The end_of_audio anchor is not
             # LM-supervised (mask=0), so it never appears in sample_ref_ids.
             wt = self.core_cfg.write_token if getattr(self.core_cfg, "prepend_write_token", False) else None
-            ref_decoded = decode_with_blank(sample_ref_ids, self.blank_token, self.tokenizer, write_token=wt)
-            pred_decoded = decode_with_blank(sample_pred_ids, self.blank_token, self.tokenizer, write_token=wt)
+            ref_decoded = decode_with_blank(
+                sample_ref_ids,
+                self.blank_token,
+                self.tokenizer,
+                write_token=wt,
+                speaker_token_ids=self.speaker_token_map,
+            )
+            pred_decoded = decode_with_blank(
+                sample_pred_ids,
+                self.blank_token,
+                self.tokenizer,
+                write_token=wt,
+                speaker_token_ids=self.speaker_token_map,
+            )
             ref_text = batch.text[0] if batch.text else ""
             logging.info(
                 "[%s] batch %d\n  gt:         `%s`\n  ref_tokens: `%s`\n  pred:       `%s`",
@@ -2162,7 +2290,10 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         )
 
         # 8. Decode tokens to text
-        texts = [decode_with_blank(toks, self.blank_token, self.tokenizer) for toks in generated_per_stream]
+        texts = [
+            decode_with_blank(toks, self.blank_token, self.tokenizer, speaker_token_ids=self.speaker_token_map)
+            for toks in generated_per_stream
+        ]
         return StreamingSTTGenerateResult(texts=texts)
 
     def _generate_dynamic_streaming(
@@ -2806,7 +2937,10 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 break
 
         # --- Build StreamingSTTGenerateResult ---
-        texts = [decode_with_blank(toks, self.blank_token, self.tokenizer) for toks in all_tokens]
+        texts = [
+            decode_with_blank(toks, self.blank_token, self.tokenizer, speaker_token_ids=self.speaker_token_map)
+            for toks in all_tokens
+        ]
         result = StreamingSTTGenerateResult(texts=texts)
 
         if log_frames:
@@ -2884,6 +3018,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     write_token=wt,
                     replace_blank=replace_blank,
                     replace_write=replace_write,
+                    speaker_token_ids=self.speaker_token_map,
                 )
                 for toks in all_tokens
             ]
@@ -3027,7 +3162,10 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 if chunk_i < num_chunks_per_stream[b]:
                     all_token_ids[b].extend(chunk_tokens[b])
 
-        texts = [decode_with_blank(toks, self.blank_token, self.tokenizer) for toks in all_token_ids]
+        texts = [
+            decode_with_blank(toks, self.blank_token, self.tokenizer, speaker_token_ids=self.speaker_token_map)
+            for toks in all_token_ids
+        ]
         result = StreamingSTTGenerateResult(texts=texts)
 
         # TODO: capture per-chunk content_score for "binary"/"blank_only" modes
@@ -3050,6 +3188,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     write_token=wt,
                     replace_blank=replace_blank,
                     replace_write=replace_write,
+                    speaker_token_ids=self.speaker_token_map,
                 )
                 for toks in all_token_ids
             ]

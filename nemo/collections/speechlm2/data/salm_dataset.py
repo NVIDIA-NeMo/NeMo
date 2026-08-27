@@ -13,7 +13,6 @@
 # limitations under the License.
 import logging
 import os
-from dataclasses import dataclass
 from itertools import groupby
 from typing import Iterable, Union
 
@@ -42,6 +41,7 @@ from nemo.collections.common.data.prompt_fn import registered_prompt_format_fn
 from nemo.collections.common.prompts import Llama2PromptFormatter
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
+from nemo.collections.speechlm2.parts.multispeaker import MultiSpeakerConfig  # re-exported for back-compat
 
 
 class SALMDataset(torch.utils.data.Dataset):
@@ -184,28 +184,6 @@ def default_multimodal_conversation_prompt_format_fn(
         turns[0]["role"] = "system_and_user"
         turns[0]["slots"]["system"] = example.system_prompt
     return prompt.encode_dialog(turns, **prompt_kwargs)
-
-
-@dataclass(frozen=True)
-class MultiSpeakerConfig:
-    """Configuration for auxiliary multi-speaker SOT targets."""
-
-    num_speakers: int = 4
-    no_rttm_to_ones: bool = True
-    num_sample_per_mel_frame: int = 160
-    num_mel_frame_per_target_frame: int = 8
-
-    @staticmethod
-    def from_dict(cfg: dict | None) -> "MultiSpeakerConfig | None":
-        """Build a config from a raw settings dict, or return ``None`` when no SOT settings are given."""
-        if cfg is None:
-            return None
-        return MultiSpeakerConfig(
-            num_speakers=int(cfg.get('num_speakers', 4)),
-            no_rttm_to_ones=cfg.get('no_rttm_to_ones', True),
-            num_sample_per_mel_frame=int(cfg.get('window_stride', 0.01) * cfg.get('sample_rate', 16000)),
-            num_mel_frame_per_target_frame=int(cfg.get('subsampling_factor', 8)),
-        )
 
 
 class SALMMultiSpeakerProcessor:

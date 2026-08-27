@@ -30,9 +30,17 @@ from omegaconf import DictConfig, ListConfig
 from torch.nn import CrossEntropyLoss
 from torch.nn.utils.rnn import pad_sequence
 
+from nemo.collections.asr.parts.utils.asr_multispeaker_utils import get_hidden_length_from_sample_length
+from nemo.collections.asr.parts.utils.sot_speaker_alignment import (
+    collate_speaker_activity_targets,
+    ensure_single_speaker_sot,
+    fix_speaker_activity,
+    speaker_activity_from_cut,
+)
 from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.salm_dataset import left_collate_vectors
 from nemo.collections.speechlm2.parts.alignments import WordAlignment, get_word_alignments_for_batch
+from nemo.collections.speechlm2.parts.multispeaker import MultiSpeakerConfig
 from nemo.collections.speechlm2.parts.utils import to_dataclass
 
 AUDIO_TOKEN_IDX = -200
@@ -82,6 +90,12 @@ class StreamingSTTBatch:
     # ``chunk_size == 0``). With a list ``data.chunk_step`` config, one K is
     # drawn per batch and stored here. ``None`` / 1 → no K-grouping.
     chunk_step: Optional[int] = None
+    # --- SOT multi-speaker (names mirror the SALM/phPEE reference) ---
+    # (B, T_frames, n_spk) RTTM-derived speaker activity at the encoder frame rate, and the
+    # per-sample count of valid frames. ``None`` when ``multispeaker_cfg`` is absent, in which
+    # case a ParallelExpertEncoder falls back to its own embedded diarizer.
+    spk_targets: Optional[torch.Tensor] = None
+    spk_target_length: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -124,6 +138,11 @@ class StreamingSTTDataConfig:
     # May also be a list of positive ints (e.g. ``[1, 3, 7]``) for multi
     # chunk-step training; one K is drawn per batch and recorded on the batch.
     chunk_step: Union[int, List[int]] = 1
+    # --- SOT multi-speaker ---
+    # When set, assistant turns carry ``<spk:N>`` tags at speaker changes and the batch gains
+    # RTTM-derived ``spk_targets``. Parsed into :class:`MultiSpeakerConfig`, which is shared with
+    # SALM so recipes port across unchanged -- see that class for the accepted keys.
+    multispeaker_cfg: Optional[dict] = None
 
 
 def decode_with_blank(
@@ -136,6 +155,7 @@ def decode_with_blank(
     join_with: Optional[str] = " ",
     write_token: Optional[str] = None,
     replace_write: Optional[str] = None,
+    speaker_token_ids: Optional[dict] = None,
 ) -> str:
     """Decode token IDs, treating blank tokens as segment boundaries.
 
@@ -159,6 +179,11 @@ def decode_with_blank(
         replace_write: If provided, write tokens are replaced with this string
             in the output instead of being skipped. Symmetric to ``replace_blank``.
             Useful for diagnostic annotation (e.g., ``"[WRITE] "``).
+        speaker_token_ids: ``{token_id: text}`` for SOT ``<spk:N>`` tags. Unlike blank/write these
+            are **content**, so the mapped text is re-inserted rather than dropped. Required
+            because the tags are registered as *special* tokens, and ``tokens_to_text`` filters
+            ``all_special_tokens`` — without this they would silently vanish from every hypothesis
+            and cpWER would compare tagged references against untagged output.
     """
     if blank_token == "":
         # No blank token: use EOS (e.g. <|im_end|>) as chunk separator so
@@ -170,10 +195,16 @@ def decode_with_blank(
     if write_token is not None:
         write_id = tokenizer.tokenizer.convert_tokens_to_ids(write_token)
 
+    speaker_token_ids = speaker_token_ids or {}
     segments = []
     current = []
     for tid in ids:
-        if tid == blank_id:
+        if tid in speaker_token_ids:
+            if current:
+                segments.append(tokenizer.ids_to_tokens(current))
+                current = []
+            segments.append(speaker_token_ids[tid])
+        elif tid == blank_id:
             if current:
                 segments.append(tokenizer.ids_to_tokens(current))
                 current = []
@@ -281,6 +312,7 @@ def get_llm_messages_for_sample(
     chunk_step: int = 1,
     prepend_write_token: bool = False,
     write_token: str = "",
+    speaker_token_template: Optional[str] = None,
 ) -> List[dict]:
     """
     Get the LLM messages for a sample, using the alignments to determine the turns for the audio and text.
@@ -352,6 +384,43 @@ def get_llm_messages_for_sample(
     # Pre-compute word character spans if transcript is provided.
     word_spans = compute_word_spans(alignments, transcript, preserve_leading_whitespace=True) if transcript else None
 
+    # --- SOT speaker tags -------------------------------------------------------------------
+    # `<spk:N>` is emitted only when the speaker CHANGES (change-only policy). The tag is placed
+    # INSIDE the write-token prefix, so the LM's first output token on a non-blank turn stays the
+    # binary blank/write gate: `<|write|><spk:N> words`.
+    #
+    # `words_per_group > 1` is rejected upstream when speaker tags are active: the tag is derived
+    # from the group's FIRST word, so a speaker change on any later word of the group would be
+    # silently swallowed and those words attributed to the wrong speaker.
+    last_emitted_speaker: Optional[int] = None
+
+    def _apply_speaker_tag(content: str, word_indices: list[int]) -> str:
+        """Prepend `<spk:N>` to a group's content when the speaker changed, and update state.
+
+        Tags reach the assistant turn from two places, and they are complementary:
+
+        * **mid-group** tags come free in the transcript slice — ``transcript[first:last]`` spans
+          any `<spk:N>` sitting *between* two words of the group;
+        * **group-leading** tags do not, because ``compute_word_spans``' leading-whitespace
+          extension stops at the tag's ``>``. Those are what this function adds.
+
+        So ``last_emitted_speaker`` must track the group's **last** word, not its first: a group
+        may end on a different speaker than it began, via a mid-group tag the slice already carried.
+        """
+        nonlocal last_emitted_speaker
+        if not speaker_token_template or not word_indices:
+            return content
+        first_speaker = alignments[word_indices[0]].speaker
+        last_speaker = alignments[word_indices[-1]].speaker
+        if first_speaker is not None and first_speaker != last_emitted_speaker:
+            tag = speaker_token_template.format(i=first_speaker)
+            # The slice usually keeps a leading space (BPE treats it as part of the word); do not
+            # double it, and do not drop it when it is absent.
+            content = f"{tag}{content}" if content.startswith((" ", "\t")) else f"{tag} {content}"
+        if last_speaker is not None:
+            last_emitted_speaker = last_speaker
+        return content
+
     if chunk_size == 0:
         # Dynamic chunking: one user turn per word group, sized to word boundary.
         # The model learns to predict when to stop listening via audio-position targets.
@@ -392,8 +461,9 @@ def get_llm_messages_for_sample(
             else:
                 content = " ".join(alignments[i].text for i in word_buffer)
 
+            content = _apply_speaker_tag(content, word_buffer)
             if n_frames_chunk <= 0 and messages[-1]["role"] == "assistant":
-                # Words at same boundary as previous group — append
+                # Words at same boundary as previous group — append (tag, if any, rides along)
                 messages[-1]["content"] += " " + content
             else:
                 if prepend_write_token and write_token:
@@ -441,6 +511,7 @@ def get_llm_messages_for_sample(
                         content = " ".join(alignments[i].text for i in word_buffer)
                 else:
                     content = " ".join(alignments[i].text for i in word_buffer)
+                content = _apply_speaker_tag(content, word_buffer)
                 if prepend_write_token and write_token:
                     content = write_token + content
                 messages.append({"role": "assistant", "content": content})
@@ -462,6 +533,7 @@ def get_llm_messages_for_sample(
                     content = " ".join(alignments[i].text for i in residual_indices)
             else:
                 content = " ".join(alignments[i].text for i in residual_indices)
+            content = _apply_speaker_tag(content, residual_indices)
             if messages[-1]["role"] == "assistant" and messages[-1]["content"] == blank_token:
                 # Replacing a blank-only chunk with real content — needs write_token prefix
                 if prepend_write_token and write_token:
@@ -493,6 +565,7 @@ def get_llm_messages_for_batch(
     chunk_step: int = 1,
     prepend_write_token: bool = False,
     write_token: str = "",
+    speaker_token_template: Optional[str] = None,
 ) -> List[List[dict]]:
     """
     Get the LLM messages for a batch of samples.
@@ -511,6 +584,8 @@ def get_llm_messages_for_batch(
             assistant turn content preserves punctuation and spacing from the transcript.
         words_per_group: Minimum number of words to buffer before emitting an
             assistant turn (default 1 = emit each word immediately).
+        speaker_token_template: When set (e.g. ``"<spk:{i}>"``), emit a SOT speaker tag whenever
+            the speaker changes, using ``WordAlignment.speaker``. ``None`` disables tagging.
     """
     if transcripts is None:
         transcripts = [None] * len(audio_durations_secs)
@@ -537,6 +612,7 @@ def get_llm_messages_for_batch(
                 chunk_step=chunk_step,
                 prepend_write_token=prepend_write_token,
                 write_token=write_token,
+                speaker_token_template=speaker_token_template,
             )
         )
     return batch_messages
@@ -1010,6 +1086,38 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             self._eoa_id = None
             self._compact_eos_id = None
 
+        # --- SOT multi-speaker setup -------------------------------------------------------
+        self._ms: Optional[MultiSpeakerConfig] = MultiSpeakerConfig.from_dict(self.cfg.multispeaker_cfg)
+        self._multispeaker_enabled = self._ms is not None and self._ms.enable
+        self._speaker_token_template = self._ms.speaker_token_template if self._multispeaker_enabled else None
+        if self._multispeaker_enabled:
+            # The tag is derived from the FIRST word of an emitted group, so a speaker change on a
+            # later word of the same group would be silently swallowed and those words attributed
+            # to the previous speaker. Refuse rather than corrupt the targets (Q10).
+            if int(self.cfg.words_per_group) != 1:
+                raise ValueError(
+                    f"multispeaker_cfg requires words_per_group=1 (got {self.cfg.words_per_group}): with larger "
+                    "groups a speaker change on a non-first word is silently dropped and its words are "
+                    "attributed to the wrong speaker."
+                )
+            probe = self._speaker_token_template.format(i=0)
+            ids = self.tokenizer.tokenizer.encode(probe, add_special_tokens=False)
+            if len(ids) != 1:
+                raise ValueError(
+                    f"speaker token {probe!r} tokenizes into {len(ids)} tokens {ids}. It must be a single "
+                    "special token -- the model must add the <spk:N> tokens to the tokenizer before "
+                    "constructing the dataset."
+                )
+            logging.info(
+                "multispeaker SOT enabled: template=%s (id=%d), num_speakers=%d, "
+                "max_alignment_permutations=%s -> max_permutable=%s",
+                probe,
+                ids[0],
+                self._ms.num_speakers,
+                self._ms.max_alignment_permutations,
+                self._ms.max_permutable,
+            )
+
         # For dynamic chunking (chunk_size=0): cache the first token of the
         # user footer sequence (e.g. <|im_end|>).  This is the target the model
         # predicts at the last audio frame of each chunk to signal "ready to transcribe".
@@ -1026,6 +1134,63 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
         else:
             self._user_footer_first_id = None
 
+    def _build_speaker_activities(self, cuts: CutSet, text: List[str]) -> Optional[List["torch.Tensor"]]:
+        """Per-cut ``(T_frames, n_spk)`` RTTM speaker activity, column-aligned to the SOT tags.
+
+        Returns ``None`` when multispeaker is disabled. A cut whose RTTM cannot be read yields an
+        all-zero target and a warning rather than killing the batch.
+
+        .. warning::
+           ``no_rttm_to_ones`` (default ``True``, inherited from the SALM reference) is the
+           genuinely dangerous knob: a cut with *no* RTTM at all gets an all-ones single-speaker
+           target, which trains the speaker kernel to treat unlabelled audio as confidently
+           single-speaker instead of masking it out. Prefer RTTM-complete manifests; a
+           ``missing_rttm_target`` sentinel is still TODO.
+        """
+        if not self._multispeaker_enabled:
+            return None
+
+        activities = []
+        for cut, cut_text in zip(cuts, text):
+            try:
+                activity = speaker_activity_from_cut(
+                    cut,
+                    num_speakers=self._ms.num_speakers,
+                    num_sample_per_mel_frame=self._ms.num_sample_per_mel_frame,
+                    num_mel_frame_per_target_frame=self._ms.num_mel_frame_per_target_frame,
+                    no_rttm_to_ones=self._ms.no_rttm_to_ones,
+                    boundary_segments=True,
+                )
+                # `speaker_to_target` orders columns by RTTM arrival time, which usually matches the
+                # `<spk:N>` index -- but not always. `fix_speaker_activity` permutes them onto the
+                # tag order via DTW; skipping it measurably degrades the alignment.
+                normalized_text, _, _ = ensure_single_speaker_sot(cut_text)
+                activity = fix_speaker_activity(
+                    normalized_text,
+                    activity,
+                    self._ms.num_speakers,
+                    max_permutable=self._ms.max_permutable,
+                )
+            except Exception as e:  # noqa: BLE001 - one unreadable RTTM must not kill the batch
+                logging.warning("Cut %s: speaker activity failed (%s: %s); using zeros.", cut.id, type(e).__name__, e)
+                n_frames = get_hidden_length_from_sample_length(
+                    cut.num_samples, self._ms.num_sample_per_mel_frame, self._ms.num_mel_frame_per_target_frame
+                )
+                activity = torch.zeros(n_frames, self._ms.num_speakers)
+            activities.append(activity)
+        return activities
+
+    def _collate_speaker_activities(self, activities, audio_lens, dtype):
+        """Pad per-cut activities to ``(B, T, n_spk)`` and derive per-sample frame counts."""
+        return collate_speaker_activity_targets(
+            activities,
+            audio_lens,
+            num_speakers=self._ms.num_speakers,
+            num_sample_per_mel_frame=self._ms.num_sample_per_mel_frame,
+            num_mel_frame_per_target_frame=self._ms.num_mel_frame_per_target_frame,
+            dtype=dtype,
+        )
+
     def __getitem__(self, cuts: CutSet) -> StreamingSTTBatch | None:
         try:
             audios, audio_lens, cuts = collate_audio(cuts, fault_tolerant=True)
@@ -1039,6 +1204,9 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
         text = [cut.supervisions[0].text for cut in cuts]
 
         if self.defer_get_batch:
+            # Deferred (online forced alignment): `get_batch_data` runs on the training process and
+            # recomputes the activities from `cuts` there. Collation must happen after that, because
+            # the K>1 branch re-pads `audio_lens` and the target length is derived from it.
             return StreamingSTTBatch(
                 cuts=cuts,
                 audios=audios,
@@ -1048,7 +1216,16 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
 
         alignments = get_word_alignments_for_batch(cuts)
 
-        return self.get_batch_data(cuts, audios, audio_lens, alignments, text)
+        # Eager path: build activities here, in the dataloader worker, so the RTTM read and the
+        # permutation search stay off the training process.
+        return self.get_batch_data(
+            cuts,
+            audios,
+            audio_lens,
+            alignments,
+            text,
+            speaker_activities=self._build_speaker_activities(cuts, text),
+        )
 
     def get_batch_data(
         self,
@@ -1057,6 +1234,7 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
         audio_lens: torch.Tensor,
         alignments: List[List[WordAlignment]],
         text: List[str],
+        speaker_activities: Optional[List["torch.Tensor"]] = None,
     ) -> StreamingSTTBatch:
         audio_durations_secs = (audio_lens.float() / self.cfg.sample_rate).tolist()
 
@@ -1104,6 +1282,7 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             alignments=alignments,
             transcripts=text,
             words_per_group=self.cfg.words_per_group,
+            speaker_token_template=self._speaker_token_template,
             chunk_step=K,
             prepend_write_token=self.cfg.prepend_write_token,
             write_token=self.cfg.write_token,
@@ -1186,9 +1365,21 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                 [target_tokens.shape[1] for _ in range(len(all_target_ids))], dtype=torch.long
             )
 
+        # Collate speaker activity AFTER the K>1 re-pad above, since the per-sample target length
+        # is derived from the final `audio_lens`.
+        spk_targets = spk_target_length = None
+        if self._multispeaker_enabled:
+            if speaker_activities is None:
+                speaker_activities = self._build_speaker_activities(cuts, text)
+            spk_targets, spk_target_length = self._collate_speaker_activities(
+                speaker_activities, audio_lens, audios.dtype
+            )
+
         return StreamingSTTBatch(
             audios=audios,
             audio_lens=audio_lens,
+            spk_targets=spk_targets,
+            spk_target_length=spk_target_length,
             input_tokens=input_tokens,
             input_token_lens=input_token_lens,
             target_tokens=target_tokens,

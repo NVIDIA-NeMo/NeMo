@@ -27,12 +27,16 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.submodules.transducer_decoding import BatchedHyps
+
+if TYPE_CHECKING:
+    # Imported lazily: batched_beam_decoding_utils imports Hypothesis from this module.
+    from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
 
 
 @dataclass

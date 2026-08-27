@@ -16,7 +16,7 @@ asr:
       enable_per_stream_biasing: true  # Per-stream biasing in decoder
       preserve_frame_confidence: false  # Set to true to calculate confidence (token/word etc.)
       max_symbols: 10
-      # n-gram LM
+      # n-gram LM 
       ngram_lm_model: null  # The path to built '.nemo' NGPU-LM model
       ngram_lm_alpha: 0.0  # Weight of the LM model
       # phrase boosting
@@ -33,6 +33,7 @@ asr:
     beam:
       beam_size: 4
       allow_cuda_graphs: true
+      preserve_frame_confidence: false  # Set to true to calculate confidence (token/word etc.)
       # n-gram LM (off by default)
       ngram_lm_model: null
       ngram_lm_alpha: 0.0

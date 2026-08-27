@@ -134,9 +134,8 @@ class RNNTBeamStreamingState(RNNTStreamingState):
     def select_best_beam_idx_(self, *, score_norm: bool = False) -> int:
         """Pick beam index into ``partial_*``; updates ``best_hyp_idx``.
 
-        Defaults to raw scores, which is the buffered pipeline's historical EOU ranking.
-        ``score_norm=True`` normalizes by ``current_lengths_nb`` to match offline
-        :meth:`BatchedBeamHyps.flatten_sort_`, as the cache-aware pipeline does.
+        Per-chunk publish uses raw ``scores.argmax`` (via ``append_chunk_beam_``). At EOU,
+        use ``score_norm=True`` to match offline :meth:`BatchedBeamHyps.flatten_sort_`.
         """
         if self.hyp_decoding_state is None:
             raise RuntimeError("Cannot select beam without decoding carry.")

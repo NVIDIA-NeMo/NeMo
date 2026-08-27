@@ -40,6 +40,21 @@ _PEE = getattr(ParallelExpertEncoder, "__wrapped__", ParallelExpertEncoder)
 # ----------------------------------------------------------------------------- #
 # Module-level context managers / helpers
 # ----------------------------------------------------------------------------- #
+@pytest.fixture(autouse=True)
+def _cpu_default_device():
+    """Pin this module's default device to CPU, and restore it afterwards.
+
+    Several ``tests/collections/speechlm2`` modules call ``torch.set_default_device('cuda')`` at
+    import time and never restore it, so in a full-suite run this file would otherwise inherit a
+    CUDA default and mix devices (freshly built modules on CUDA, some framework-internal tensors on
+    CPU). Tests that actually want GPU opt in explicitly via ``.cuda()`` / ``device="cuda"``.
+    """
+    previous = torch.get_default_device()
+    torch.set_default_device('cpu')
+    yield
+    torch.set_default_device(previous)
+
+
 @pytest.mark.unit
 def test_clone_config_is_deep_and_handles_none():
     cfg = OmegaConf.create({"a": {"b": 1}})
@@ -198,6 +213,9 @@ def online_stub(d_model, n_spk, sf, win, lc, rc):
     enc.asr_norm = nn.LayerNorm(d_model)
     enc.diar_norm = nn.LayerNorm(n_spk)
     enc.register_buffer("diar_kernel", torch.randn(n_spk, d_model))
+    # Fusion knobs the real ctor sets; `__new__` bypasses it, so mirror the ctor defaults here.
+    enc.speaker_activity_threshold = 0.5
+    enc.spk_kernel_scale = 1.0
     enc._suppress_online_pbar = True
     enc.eval()
     return enc
@@ -315,6 +333,7 @@ def test_save_to_nemo_missing_template(tmp_path):
 # These tests build tiny-but-real instances of both and run the wrapper end to end.
 # ----------------------------------------------------------------------------- #
 _MEL_FEATURES = 128
+_UNSET_SENTINEL = object()
 _ASR_D_MODEL = 32
 _DIAR_FC_D_MODEL = 32
 _DIAR_TF_D_MODEL = 16
@@ -676,3 +695,195 @@ def test_pe_encoder_online_forward_on_gpu():
     assert outputs.shape == (batch_size, _ASR_D_MODEL, expected_t)
     assert expected_t > 0
     assert torch.isfinite(outputs).all()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "passed, expected",
+    [
+        (_UNSET_SENTINEL, 'per_feature'),  # key absent -> reference default
+        (None, None),  # explicitly disabled
+        ('NA', None),  # checkpoint-contract spelling of "no normalization"
+        ('per_feature', 'per_feature'),
+        ('all_features', 'all_features'),
+    ],
+)
+def test_asr_normalize_type_resolution(passed, expected):
+    """`None`/`'NA'` must genuinely disable normalization; only an *absent* key defaults to
+    `per_feature`. A plain `or 'per_feature'` fallback silently re-normalized mels coming from a
+    preprocessor that is already `normalize: NA`."""
+    overrides = {} if passed is _UNSET_SENTINEL else {"asr_normalize_type": passed}
+    enc = build_toy_pe_encoder(**overrides)
+    assert enc.asr_normalize_type == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("normalize_type, should_match", [(None, True), ('NA', True), ('per_feature', False)])
+def test_disabled_normalization_feeds_asr_branch_untouched(normalize_type, should_match):
+    """With normalization off, the ASR branch inside PE sees exactly the mels it would see as a
+    standalone encoder (PLAN 1.7.1)."""
+    enc = build_toy_pe_encoder(asr_normalize_type=normalize_type).eval()
+    enc._fuse_diar_and_asr = lambda asr_encoded, spk_targets: asr_encoded  # isolate the ASR path
+
+    torch.manual_seed(0)
+    mel = torch.randn(1, _MEL_FEATURES, 128)
+    length = torch.tensor([mel.shape[-1]])
+    spk_targets = torch.zeros(1, mel.shape[-1] // _SUBSAMPLING_FACTOR, _N_SPK)
+
+    with torch.no_grad():
+        fused, _ = enc(audio_signal=mel, length=length, spk_targets=spk_targets)
+        standalone, _ = enc.asr_encoder(audio_signal=mel, length=length)
+
+    assert torch.equal(fused, standalone) is should_match
+
+
+@pytest.mark.unit
+def test_apply_internal_freeze_reasserts_the_branch_split():
+    """A blanket outer unfreeze must not put the frozen diarizer back in the optimizer.
+
+    speechlm2's `freeze_speech_encoder: false` calls `unfreeze_module(perception.encoder)`, which
+    walks the whole tree and cannot know a branch is meant to stay frozen -- so the encoder has to
+    be able to re-assert its own policy afterwards.
+    """
+    enc = build_toy_pe_encoder(freeze_diar=True, freeze_asr=False)
+    diar_params = list(enc.diarization_model.parameters())
+    assert not any(p.requires_grad for p in diar_params)
+
+    for param in enc.parameters():  # simulate the outer blanket unfreeze
+        param.requires_grad = True
+    assert all(p.requires_grad for p in diar_params)
+
+    enc.apply_internal_freeze()
+    assert not any(p.requires_grad for p in diar_params), "freeze_diar was not re-asserted"
+    assert all(p.requires_grad for p in enc.asr_encoder.parameters()), "freeze_asr=False must stay trainable"
+    assert not enc.diarization_model.training, "frozen branch must also be back in eval mode"
+
+
+@pytest.mark.unit
+def test_att_context_size_forwards_to_the_asr_branch():
+    """`att_context_size` must reach the branch that actually implements attention.
+
+    speechlm2's `_set_encoder_att_context` assigns `encoder.att_context_size = [left, right]` per
+    batch (streaming_stt_model.py:957, :1205, :3198). On a plain nn.Module that silently creates a
+    dead attribute, leaving the look-ahead at whatever the bundle was built with -- which corrupts
+    training look-ahead for fixed chunking, not just streaming decode.
+    """
+    enc = build_toy_pe_encoder()
+    assert enc.att_context_size == enc.asr_encoder.att_context_size
+
+    enc.att_context_size = [70, 5]
+    assert enc.asr_encoder.att_context_size == [70, 5], "assignment did not reach the ASR branch"
+    assert enc.att_context_size == [70, 5]
+    # and it must not have shadowed the property with a plain instance attribute
+    assert "att_context_size" not in enc.__dict__
+
+
+@pytest.mark.unit
+def test_setting_att_context_size_collapses_the_multi_context_choice_set():
+    """Pinning the look-ahead must survive `ConformerEncoder.forward`'s training-time sampling.
+
+    A multi-context checkpoint (the streaming Conformer ships
+    `[[70, 13], [70, 6], [70, 1], [70, 0]]`) leaves `att_context_size_all` longer than one, and
+    the encoder then samples a context at random on every *training* forward
+    (conformer_encoder.py:663) -- silently overriding whatever `att_context_size` was set to.
+    """
+    cfg = toy_asr_encoder_cfg()
+    cfg.att_context_size = [[8, 7], [8, 3], [8, 1], [8, 0]]  # chunked_limited needs left % (right+1) == 0
+    cfg.att_context_style = 'chunked_limited'
+    enc = build_toy_pe_encoder(asr_encoder_cfg=cfg)
+    assert len(enc.asr_encoder.att_context_size_all) == 4, "fixture no longer exercises multi-context"
+
+    enc.att_context_size = [8, 1]
+    assert enc.asr_encoder.att_context_size == [8, 1]
+    assert enc.asr_encoder.att_context_size_all == [[8, 1]], "choice set not collapsed -- training would resample"
+    if getattr(enc.asr_encoder, "att_context_probs", None) is not None:
+        assert enc.asr_encoder.att_context_probs == [1.0]
+
+
+@pytest.mark.unit
+def test_att_context_size_ctor_arg_pins_the_branch_at_construction():
+    """`_set_encoder_att_context` early-returns for dynamic chunking, so construction must pin it."""
+    cfg = toy_asr_encoder_cfg()
+    cfg.att_context_size = [[8, 7], [8, 3], [8, 1], [8, 0]]  # chunked_limited needs left % (right+1) == 0
+    cfg.att_context_style = 'chunked_limited'
+
+    unpinned = build_toy_pe_encoder(asr_encoder_cfg=toy_asr_encoder_cfg())
+    assert unpinned.att_context_size == [-1, -1], "unpinned should keep the checkpoint's own setting"
+
+    pinned = build_toy_pe_encoder(asr_encoder_cfg=cfg, att_context_size=[8, 1])
+    assert pinned.att_context_size == [8, 1]
+    assert pinned.asr_encoder.att_context_size_all == [[8, 1]]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("member_prefix", ["", "./"])
+def test_nemo_member_lookup_tolerates_both_naming_conventions(tmp_path, member_prefix):
+    """``.nemo`` archives disagree on member naming, so lookup must go by basename.
+
+    The ASR checkpoint stores ``./model_config.yaml`` while the Sortformer one stores a bare
+    ``model_config.yaml``; an exact-name lookup silently works for one and raises for the other.
+    """
+    import tarfile
+
+    from nemo.collections.asr.modules.parallel_expert_encoder import _nemo_member
+
+    payload = tmp_path / "model_config.yaml"
+    payload.write_text("target: dummy\n")
+    archive_path = tmp_path / "bundle.nemo"
+    with tarfile.open(archive_path, "w") as archive:
+        archive.add(payload, arcname=f"{member_prefix}model_config.yaml")
+
+    with tarfile.open(archive_path) as archive:
+        member = _nemo_member(archive, "model_config.yaml")
+        assert archive.extractfile(member).read().decode() == "target: dummy\n"
+
+
+@pytest.mark.unit
+def test_nemo_member_raises_when_absent(tmp_path):
+    import tarfile
+
+    from nemo.collections.asr.modules.parallel_expert_encoder import _nemo_member
+
+    other = tmp_path / "something_else.txt"
+    other.write_text("x")
+    archive_path = tmp_path / "bundle.nemo"
+    with tarfile.open(archive_path, "w") as archive:
+        archive.add(other, arcname="something_else.txt")
+
+    with tarfile.open(archive_path) as archive:
+        with pytest.raises(FileNotFoundError, match="model_weights.ckpt"):
+            _nemo_member(archive, "model_weights.ckpt")
+
+
+@pytest.mark.unit
+def test_constructing_pe_does_not_retune_the_frozen_diarizer():
+    """PE must inherit the diarizer checkpoint's streaming knobs, not impose its own.
+
+    The diarizer is frozen during SpeechLM training, so its streaming behaviour should be exactly
+    what it was trained with. The old defaults (fifo 40 / update 300 / cache 188) came from the
+    placeholder bundle's model card, which pairs a *different* Sortformer -- and `chunk_len` was
+    taken from `online_inference_length`, which is PE's ASR long-form window, a different quantity.
+    """
+    diar_cfg = toy_diarization_model_cfg()
+    reference = SortformerEncLabelModel.from_config_dict(diar_cfg).sortformer_modules
+    baseline = {k: getattr(reference, k) for k in ("chunk_len", "fifo_len", "spkcache_len", "spkcache_update_period")}
+
+    enc = build_toy_pe_encoder(diarization_model_cfg=diar_cfg)
+    sm = enc.diarization_model.sortformer_modules
+    assert {k: getattr(sm, k) for k in baseline} == baseline, "construction retuned the frozen diarizer"
+
+    enc.setup_streaming_params() if hasattr(enc, "setup_streaming_params") else None
+    assert {k: getattr(sm, k) for k in baseline} == baseline, "setup_streaming_params retuned it"
+
+
+@pytest.mark.unit
+def test_explicit_diar_streaming_override_is_honored():
+    """An explicit knob still wins, and only that knob changes."""
+    diar_cfg = toy_diarization_model_cfg()
+    reference = SortformerEncLabelModel.from_config_dict(diar_cfg).sortformer_modules
+    baseline = {k: getattr(reference, k) for k in ("chunk_len", "spkcache_len", "spkcache_update_period")}
+
+    enc = build_toy_pe_encoder(diarization_model_cfg=diar_cfg, diar_fifo_len=7)
+    sm = enc.diarization_model.sortformer_modules
+    assert sm.fifo_len == 7
+    assert {k: getattr(sm, k) for k in baseline} == baseline, "an explicit override leaked into other knobs"

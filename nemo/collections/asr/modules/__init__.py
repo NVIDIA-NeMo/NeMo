@@ -37,7 +37,10 @@ from nemo.collections.asr.modules.conv_asr import (  # noqa: F401
 )
 from nemo.collections.asr.modules.hybrid_autoregressive_transducer import HATJoint  # noqa: F401
 from nemo.collections.asr.modules.lstm_decoder import LSTMDecoder  # noqa: F401
-from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder  # noqa: F401
+from nemo.collections.asr.modules.parallel_expert_encoder import (  # noqa: F401
+    ParallelExpertEncoder,
+    StreamingParallelExpertEncoder,
+)
 from nemo.collections.asr.modules.rnn_encoder import RNNEncoder  # noqa: F401
 from nemo.collections.asr.modules.rnnt import (  # noqa: F401
     RNNTDecoder,
@@ -70,6 +73,7 @@ __all__ = [
     'ConformerEncoderAdapter',
     'ConformerMultiLayerFeatureExtractor',
     'ParallelExpertEncoder',
+    'StreamingParallelExpertEncoder',
     'ConvASRDecoder',
     'ConvASRDecoderClassification',
     'ConvASRDecoderReconstruction',

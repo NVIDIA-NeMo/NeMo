@@ -15,7 +15,7 @@ import os
 import random
 import warnings
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
@@ -228,6 +228,12 @@ class LhotseDataLoadingConfig:
     clipping_prob: float = 0.5
 
     # 5. Other Lhotse options.
+    # Custom manifest keys holding *paths* that should be resolved the same way ``audio_filepath``
+    # is: relative entries are taken relative to the manifest's own directory. Without this, a
+    # manifest that stores e.g. ``rttm_filepath: diar/foo.rttm`` only works when the training
+    # process happens to be launched from the manifest's directory.
+    # Applies to non-tarred NeMo manifests (``LazyNeMoIterator``).
+    resolve_path_fields: list[str] = field(default_factory=list)
     text_field: str = "text"  # key to read the transcript from
     lang_field: str = "lang"  # key to read the language tag from
     # Enables iteration of NeMo non-tarred manifests that don't have a "sampling_rate" key without performing any I/O.

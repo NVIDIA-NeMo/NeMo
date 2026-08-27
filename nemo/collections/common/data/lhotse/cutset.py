@@ -1665,6 +1665,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
     metadata_only = config.get("metadata_only", False)
     force_finite = config.get("force_finite", False)
     notar_kwargs = {
+        "resolve_path_fields": config.get("resolve_path_fields", None),
         "metadata_only": metadata_only,
         "skip_missing_manifest_entries": config.get("skip_missing_manifest_entries", False),
     }

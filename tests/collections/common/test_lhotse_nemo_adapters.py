@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 from lhotse import AudioSource, CutSet, MonoCut, MultiCut, Recording, SupervisionSegment
@@ -319,3 +322,54 @@ def test_lazy_nemo_iterator_sample_rate_fallback_indexed(nemo_manifest_path_samp
         assert c.sampling_rate == 16000
         assert c.recording.sampling_rate == 16000
         assert "sample_rate" not in (c.custom or {})
+
+
+@pytest.mark.unit
+def test_resolve_path_fields_makes_custom_paths_manifest_relative(tmp_path):
+    """A relative custom path must resolve against the manifest dir, like ``audio_filepath`` does.
+
+    Without this the entry only works when the process happens to be launched from the manifest's
+    directory; everywhere else the open fails and callers silently fall back to empty targets.
+    """
+    import soundfile as sf
+
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    sf.write(audio_dir / "utt.wav", np.zeros(16000, dtype=np.float32), 16000)
+    (tmp_path / "rttms").mkdir()
+    rttm = tmp_path / "rttms" / "utt.rttm"
+    rttm.write_text("SPEAKER utt 1 0.00 1.00 <NA> <NA> spk0 <NA> <NA>\n")
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "audio_filepath": "audio/utt.wav",
+                "duration": 1.0,
+                "text": "hello",
+                "rttm_filepath": "rttms/utt.rttm",
+                "untouched_field": "rttms/utt.rttm",
+            }
+        )
+        + "\n"
+    )
+
+    cut = next(iter(CutSet(LazyNeMoIterator(manifest, resolve_path_fields=["rttm_filepath"]))))
+    assert Path(cut.custom["rttm_filepath"]).is_absolute()
+    assert Path(cut.custom["rttm_filepath"]).read_text().startswith("SPEAKER")
+    # fields not listed are left exactly as written
+    assert cut.custom["untouched_field"] == "rttms/utt.rttm"
+
+
+@pytest.mark.unit
+def test_resolve_path_fields_defaults_to_no_op(tmp_path):
+    """Omitting the option must leave every custom field byte-identical to the manifest."""
+    import soundfile as sf
+
+    sf.write(tmp_path / "utt.wav", np.zeros(16000, dtype=np.float32), 16000)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"audio_filepath": "utt.wav", "duration": 1.0, "text": "hi", "rttm_filepath": "rel/x.rttm"}) + "\n"
+    )
+    cut = next(iter(CutSet(LazyNeMoIterator(manifest))))
+    assert cut.custom["rttm_filepath"] == "rel/x.rttm"

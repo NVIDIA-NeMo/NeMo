@@ -151,7 +151,9 @@ class LazyNeMoIterator(IteratorNode):
         index_pack: str | Path | None = None,
         index_pack_max_open_files: int = 32,
         skip_missing_manifest_entries: bool = False,
+        resolve_path_fields: list[str] | None = None,
     ) -> None:
+        self.resolve_path_fields = tuple(resolve_path_fields or ())
         self.path = path
         self.shuffle_shards = shuffle_shards
         self.shard_seed = shard_seed
@@ -299,6 +301,13 @@ class LazyNeMoIterator(IteratorNode):
                 language=data.get(self.lang_field),
             )
         )
+        # Resolve configured custom path fields relative to the manifest, exactly as
+        # ``audio_filepath`` above. Missing/blank/non-str values are left untouched so a manifest
+        # that only sometimes carries the field still works.
+        for field_name in self.resolve_path_fields:
+            value = data.get(field_name)
+            if isinstance(value, str) and value:
+                data[field_name] = get_full_path(value, str(self.path), force_cache=False)
         cut.custom = data
         return cut
 

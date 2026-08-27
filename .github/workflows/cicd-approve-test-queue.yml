@@ -23,6 +23,10 @@ on:
     types: [completed]
   workflow_dispatch:  # Allows manual triggering
 
+concurrency:
+  group: approve-test-queue
+  cancel-in-progress: false
+
 jobs:
   approve-queue:
     runs-on: ubuntu-latest

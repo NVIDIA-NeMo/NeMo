@@ -354,6 +354,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         device_mesh = getattr(self, "_device_mesh", None)
         spk_targets = batch.get("spk_targets", None)
         spk_target_lengths = batch.get("spk_target_length", None)
+        spk_target_cu_seqlens = batch.get("spk_target_cu_seqlens", None)
         cp_mesh, cp_size, _ = get_cp_mesh(device_mesh)
         fsdp_sync_group = get_perception_fsdp_group(device_mesh)
         packed_encoder_sequences = bool(self.cfg.get("packed_encoder_sequences", False))
@@ -397,13 +398,12 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 cp_mesh=cp_mesh,
                 spk_targets=spk_targets if self._uses_ext_spk_tgts() else None,
                 spk_target_lengths=spk_target_lengths if self._uses_ext_spk_tgts() else None,
+                spk_target_cu_seqlens=spk_target_cu_seqlens if self._uses_ext_spk_tgts() else None,
                 fsdp_sync_group=fsdp_sync_group,
                 return_dummy_loss=True,
                 sequence_packed=packed_encoder_sequences,
                 packed_cp_gather=packed_encoder_cp,
             )
-        input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
-        text_embs = self._embed_tokens(input_ids_to_embed)
         target_ids_full = batch["input_ids"].where(batch["loss_mask"], -100)  # CrossEntropyLoss().ignore_index
 
         # Packed-sequence (THD) path — used for both training and validation when enabled.
@@ -413,18 +413,22 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
             ans = prepare_packed_llm_inputs(
                 input_ids=batch["input_ids"],
-                text_embs=text_embs,
+                text_embs=None,
                 audio_embs=audio_embs,
                 target_ids=target_ids_full,
                 padding_id=self.text_pad_id,
                 placeholder_id=self.audio_locator_tag_id,
                 device_mesh=device_mesh,
                 mtp_num_depths=self._mtp_num_depths if include_mtp_inputs else 0,
+                embed_tokens=self._embed_tokens,
+                text_cu_seqlens=batch.get("text_cu_seqlens"),
             )
             if dummy_audio_loss is not None:
                 ans["dummy_audio_loss"] = dummy_audio_loss
             return ans
 
+        input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
+        text_embs = self._embed_tokens(input_ids_to_embed)
         input_embs, target_ids, attention_mask = replace_placeholders_and_build_targets(
             input_ids=batch["input_ids"],
             embeds=text_embs,
@@ -711,7 +715,19 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         if token_id is None:
             token_id = self.text_pad_id
         device = self.device
-        input_ids = torch.full((1, 2), int(token_id), dtype=torch.long, device=device)
+        packed_sequences = bool(self.cfg.get("packed_sequences", False))
+        input_shape = (2,) if packed_sequences else (1, 2)
+        input_ids = torch.full(input_shape, int(token_id), dtype=torch.long, device=device)
+        if packed_sequences:
+            return {
+                "packed_audio_samples": torch.empty(0, dtype=torch.float32, device=device),
+                "audio_cu_seqlens": torch.zeros(1, dtype=torch.long, device=device),
+                "audio_lens": torch.empty(0, dtype=torch.long, device=device),
+                "input_ids": input_ids,
+                "loss_mask": torch.zeros_like(input_ids, dtype=torch.bool),
+                "text_cu_seqlens": torch.tensor([0, 2], dtype=torch.long, device=device),
+                "conversations": [],
+            }
         return {
             "audios": torch.empty(0, dtype=torch.float32, device=device),
             "audio_lens": torch.empty(0, dtype=torch.long, device=device),

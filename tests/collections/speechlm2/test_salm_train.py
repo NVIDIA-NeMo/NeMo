@@ -77,13 +77,20 @@ def test_create_salm_dataset_enables_packed_audio_without_a_second_config(monkey
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("model_cfg", "expected_pack_audio"),
+    ("model_cfg", "expected_pack_audio", "expected_pack_sequences"),
     [
-        ({}, False),
-        ({"use_nemo_automodel": True, "packed_encoder_sequences": True}, True),
+        ({}, False, False),
+        ({"use_nemo_automodel": True, "packed_encoder_sequences": True}, True, False),
+        ({"use_nemo_automodel": True, "packed_sequences": True}, False, True),
     ],
 )
-def test_train_uses_compatible_dataset_factory(monkeypatch, tmp_path, model_cfg, expected_pack_audio):
+def test_train_uses_compatible_dataset_factory(
+    monkeypatch,
+    tmp_path,
+    model_cfg,
+    expected_pack_audio,
+    expected_pack_sequences,
+):
     tokenizer = object()
     dataset = object()
     calls = []
@@ -106,8 +113,8 @@ def test_train_uses_compatible_dataset_factory(monkeypatch, tmp_path, model_cfg,
         def __init__(self, data_cfg, tokenizer, dataset):
             pass
 
-    def create_salm_dataset(tokenizer_arg, data_cfg, *, pack_audio=False):
-        calls.append((tokenizer_arg, data_cfg, pack_audio))
+    def create_salm_dataset(tokenizer_arg, data_cfg, *, pack_audio=False, pack_sequences=False):
+        calls.append((tokenizer_arg, data_cfg, pack_audio, pack_sequences))
         return dataset
 
     monkeypatch.setattr(_SALM_TRAIN, "SALM", FakeSALM)
@@ -133,4 +140,4 @@ def test_train_uses_compatible_dataset_factory(monkeypatch, tmp_path, model_cfg,
     )
     _SALM_TRAIN.train.__wrapped__(cfg)
 
-    assert calls == [(tokenizer, cfg.data, expected_pack_audio)]
+    assert calls == [(tokenizer, cfg.data, expected_pack_audio, expected_pack_sequences)]

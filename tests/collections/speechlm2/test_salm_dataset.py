@@ -126,6 +126,107 @@ def test_salm_dataset_can_return_packed_audio_samples(monkeypatch):
     assert batch["packed_audio_samples"] is expected_samples
     assert batch["audio_cu_seqlens"] is expected_cu_seqlens
     assert batch["audio_lens"] is expected_lens
+    assert batch["input_ids"].shape == (1, 2)
+
+
+@pytest.mark.unit
+def test_salm_dataset_packed_sequences_never_pads_variable_length_tensors(monkeypatch):
+    conversations = []
+    for idx, (input_ids, mask) in enumerate(
+        (
+            ([7, 8, 9], [False, True, True]),
+            ([10, 11], [False, True]),
+        )
+    ):
+        cut = dummy_cut(idx, duration=0.03, recording=dummy_recording(idx, duration=0.03, with_data=True))
+        conversation = NeMoMultimodalConversation(
+            id=f"example-{idx}",
+            turns=[
+                AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>"),
+                TextTurn(role="assistant", value="hello"),
+            ],
+            token_equivalent_duration=0.01,
+        )
+        conversation.input_ids = torch.tensor(input_ids, dtype=torch.long)
+        conversation.mask = torch.tensor(mask)
+        conversations.append(conversation)
+    conversations = CutSet(conversations)
+
+    def fake_packed_audio_collate(conversations_arg, *args, **kwargs):
+        return (
+            torch.tensor([1.0, 2.0, 10.0, 11.0, 12.0]),
+            torch.tensor([0, 2, 5], dtype=torch.long),
+            torch.tensor([2, 3], dtype=torch.long),
+            conversations_arg,
+        )
+
+    monkeypatch.setattr(
+        salm_dataset_module,
+        "collate_conversation_audio_packed_fault_tolerant",
+        fake_packed_audio_collate,
+    )
+    dataset = salm_dataset_module.SALMDataset(tokenizer=_Tokenizer(), pack_sequences=True)
+
+    batch = dataset[conversations]
+
+    assert dataset.pack_audio is True
+    assert "audios" not in batch
+    assert batch["packed_audio_samples"].shape == (5,)
+    assert torch.equal(batch["audio_cu_seqlens"], torch.tensor([0, 2, 5]))
+    assert torch.equal(batch["input_ids"], torch.tensor([7, 8, 9, 10, 11]))
+    assert torch.equal(batch["loss_mask"], torch.tensor([False, True, True, False, True]))
+    assert torch.equal(batch["text_cu_seqlens"], torch.tensor([0, 3, 5]))
+
+
+@pytest.mark.unit
+def test_salm_dataset_packs_multispeaker_targets_without_time_padding(monkeypatch):
+    conversations = []
+    for idx in range(2):
+        cut = dummy_cut(idx, duration=0.03, recording=dummy_recording(idx, duration=0.03, with_data=True))
+        conversation = NeMoMultimodalConversation(
+            id=f"example-{idx}",
+            turns=[
+                AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>"),
+                TextTurn(role="assistant", value="hello"),
+            ],
+            token_equivalent_duration=0.01,
+        )
+        conversation.input_ids = torch.tensor([7 + idx, 9], dtype=torch.long)
+        conversation.mask = torch.tensor([False, True])
+        conversations.append(conversation)
+    conversations = CutSet(conversations)
+
+    def fake_packed_audio_collate(conversations_arg, *args, **kwargs):
+        return (
+            torch.arange(6, dtype=torch.float32),
+            torch.tensor([0, 3, 6], dtype=torch.long),
+            torch.tensor([3, 3], dtype=torch.long),
+            conversations_arg,
+        )
+
+    activity_lengths = iter((3, 1))
+
+    def fake_speaker_activity_from_cut(cut, **kwargs):
+        return torch.ones(next(activity_lengths), 1)
+
+    monkeypatch.setattr(
+        salm_dataset_module,
+        "collate_conversation_audio_packed_fault_tolerant",
+        fake_packed_audio_collate,
+    )
+    monkeypatch.setattr(salm_dataset_module, "speaker_activity_from_cut", fake_speaker_activity_from_cut)
+    dataset = salm_dataset_module.SALMDataset(
+        tokenizer=_Tokenizer(),
+        pack_sequences=True,
+        multispeaker_cfg={"num_speakers": 2},
+    )
+
+    batch = dataset[conversations]
+
+    assert batch["spk_targets"].shape == (4, 2)
+    assert torch.all(batch["spk_targets"] == -1.0)
+    assert torch.equal(batch["spk_target_length"], torch.tensor([3, 1]))
+    assert torch.equal(batch["spk_target_cu_seqlens"], torch.tensor([0, 3, 4]))
 
 
 @pytest.mark.unit

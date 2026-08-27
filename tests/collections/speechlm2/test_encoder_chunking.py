@@ -21,8 +21,39 @@ from nemo.collections.speechlm2.parts.encoder_chunking import (
     _split_audio_into_chunks,
     _split_spk_targets_into_chunks,
     encode_audio_with_optional_chunking,
+    materialize_packed_spk_targets,
 )
+
 from tests.collections.speechlm2._chunking_helpers import ChunkingTestPerception
+
+
+def test_materialize_packed_spk_targets_matches_padded_contract():
+    packed = torch.tensor(
+        [
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+            [-1.0, -1.0],
+        ]
+    )
+    lengths = torch.tensor([3, 1])
+
+    targets, actual_lengths = materialize_packed_spk_targets(
+        packed,
+        lengths,
+        torch.tensor([0, 3, 4]),
+    )
+
+    assert torch.equal(actual_lengths, lengths)
+    assert torch.equal(
+        targets,
+        torch.tensor(
+            [
+                [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+                [[-1.0, -1.0], [0.0, 0.0], [0.0, 0.0]],
+            ]
+        ),
+    )
 
 
 @pytest.mark.parametrize(

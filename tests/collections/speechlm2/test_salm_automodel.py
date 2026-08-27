@@ -541,6 +541,65 @@ def test_salm_automodel_prepare_inputs_skips_chunking_when_size_is_null(device):
     assert torch.equal(input_signal_lens, torch.tensor([5], dtype=torch.long, device=device))
 
 
+@pytest.mark.parametrize("native_dataset_batch", [False, True])
+@pytest.mark.parametrize("device", chunking_test_devices())
+def test_salm_automodel_packed_no_chunking_embeds_only_real_tokens(monkeypatch, device, native_dataset_batch):
+    """Packed no-chunking batches compact IDs before the embedding lookup."""
+    model = _make_chunking_test_model(encoder_chunk_size_seconds=None, sampling_rate=2, device=device)
+    model.cfg["packed_sequences"] = True
+    batch_size = 4
+    sequence_length = 64
+    row_lengths = [64, 8, 4, 2]
+    input_ids = torch.full((batch_size, sequence_length), model.text_pad_id, dtype=torch.long, device=device)
+    for row, length in enumerate(row_lengths):
+        tokens = torch.arange(10, 10 + length, dtype=torch.long, device=device)
+        tokens[0] = model.audio_locator_tag_id
+        input_ids[row, -length:] = tokens
+    loss_mask = input_ids != model.text_pad_id
+    loss_mask[input_ids == model.audio_locator_tag_id] = False
+    audios = torch.arange(1, batch_size * 3 + 1, dtype=torch.float32, device=device).reshape(batch_size, 3)
+    batch = {
+        "audio_lens": torch.full((batch_size,), 3, dtype=torch.long, device=device),
+        "input_ids": input_ids,
+        "loss_mask": loss_mask,
+    }
+    if native_dataset_batch:
+        batch.update(
+            {
+                "packed_audio_samples": audios.flatten(),
+                "audio_cu_seqlens": torch.arange(0, batch_size * 3 + 1, 3, dtype=torch.long, device=device),
+                "input_ids": torch.cat([row[-length:] for row, length in zip(input_ids, row_lengths)]),
+                "loss_mask": torch.cat([row[-length:] for row, length in zip(loss_mask, row_lengths)]),
+                "text_cu_seqlens": torch.tensor(
+                    [0, *torch.tensor(row_lengths, device=device).cumsum(0).tolist()],
+                    dtype=torch.long,
+                    device=device,
+                ),
+            }
+        )
+    else:
+        batch["audios"] = audios
+    original_embed_tokens = model._embed_tokens
+    embedded_shapes = []
+
+    def embed_tokens(flat_ids):
+        embedded_shapes.append(tuple(flat_ids.shape))
+        return original_embed_tokens(flat_ids)
+
+    monkeypatch.setattr(model, "_embed_tokens", embed_tokens)
+
+    inputs = model.prepare_inputs(batch)
+
+    real_token_count = sum(row_lengths)
+    assert embedded_shapes == [(real_token_count,)]
+    if not native_dataset_batch:
+        assert real_token_count < input_ids.numel()
+    assert inputs["input_embeds"].ndim == 2
+    inputs["input_embeds"].sum().backward()
+    assert model.embed_tokens.weight.grad is not None
+    assert model.embed_tokens.weight.grad.abs().sum() > 0
+
+
 @pytest.mark.parametrize("device", chunking_test_devices())
 def test_salm_automodel_prepare_inputs_preserves_chunked_audio_order(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)

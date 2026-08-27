@@ -38,6 +38,7 @@ from nemo.collections.asr.parts.packed_sequence import split_packed_data
 from nemo.collections.speechlm2.parts.encoder_chunking import (
     _get_min_chunk_size_samples,
     encode_audio_with_optional_chunking,
+    materialize_packed_spk_targets,
 )
 
 
@@ -81,6 +82,7 @@ def encode_audio_with_cp_distribution(
     cp_mesh=None,
     spk_targets: Tensor | None = None,
     spk_target_lengths: Tensor | None = None,
+    spk_target_cu_seqlens: Tensor | None = None,
     fsdp_sync_group=None,
     return_dummy_loss: bool = False,
     sequence_packed: bool = False,
@@ -116,7 +118,17 @@ def encode_audio_with_cp_distribution(
     ``packed_cp_gather`` separately opts into a token-flat CP collective that
     pads only each rank's flattened token buffer, never ``B*max_L``. Keeping it
     separate leaves the historical CP collective unchanged by default.
+
+    Speaker targets may use the legacy dense ``[B, T_spk, N]`` representation
+    or a flat ``[T_spk_total, N]`` representation accompanied by
+    ``spk_target_cu_seqlens``. Flat targets are materialized only after entering
+    this perception compatibility boundary.
     """
+    spk_targets, spk_target_lengths = materialize_packed_spk_targets(
+        spk_targets,
+        spk_target_lengths,
+        spk_target_cu_seqlens,
+    )
     if audio_cu_seqlens is not None:
         if audios.ndim != 1:
             raise ValueError(f"Packed audios must be 1D, got shape {tuple(audios.shape)}.")

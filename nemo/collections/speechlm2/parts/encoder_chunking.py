@@ -32,6 +32,7 @@ def encode_audio_with_optional_chunking(
     sampling_rate: int,
     spk_targets: Tensor | None = None,
     spk_target_lengths: Tensor | None = None,
+    spk_target_cu_seqlens: Tensor | None = None,
     chunk_batch_size: int | None = None,
     sync_group=None,
     return_dummy_loss: bool = False,
@@ -61,6 +62,10 @@ def encode_audio_with_optional_chunking(
             audio chunks.
         spk_target_lengths: Optional valid speaker-target frame counts with shape
             ``(B,)``. Required for exact slicing of padded, mixed-length target batches.
+        spk_target_cu_seqlens: Optional cumulative row offsets ``(B + 1,)``.
+            When provided, ``spk_targets`` must be flat ``(sum(T_spk), N)``;
+            it is materialized only at the perception boundary that still
+            requires a dense speaker-target batch.
         chunk_batch_size: Optional maximum number of time chunks to send through
             ``perception`` in one forward. When unset, all chunks are encoded in
             the historical single forward.
@@ -80,6 +85,11 @@ def encode_audio_with_optional_chunking(
         original audio row.
     """
     _validate_chunk_config(chunk_size_seconds, chunk_batch_size)
+    spk_targets, spk_target_lengths = materialize_packed_spk_targets(
+        spk_targets,
+        spk_target_lengths,
+        spk_target_cu_seqlens,
+    )
     packed_audio_rows = None
     if input_signal_cu_seqlens is not None:
         if input_signal.ndim != 1:
@@ -172,6 +182,54 @@ def encode_audio_with_optional_chunking(
     )
     ans = _recombine_chunked_audio_embedding_list(chunked_embs, chunks_per_audio)
     return _maybe_return_dummy_loss(ans, dummy_loss, return_dummy_loss)
+
+
+def materialize_packed_spk_targets(
+    spk_targets: Tensor | None,
+    spk_target_lengths: Tensor | None,
+    spk_target_cu_seqlens: Tensor | None,
+) -> tuple[Tensor | None, Tensor | None]:
+    """Normalize padded or flat speaker targets to the perception API's dense form."""
+    if spk_target_cu_seqlens is None:
+        if spk_targets is not None and spk_targets.ndim != 3:
+            raise ValueError(
+                "Padded spk_targets must have shape [B, T, N]; flat [T_total, N] targets require "
+                f"spk_target_cu_seqlens, got shape {tuple(spk_targets.shape)}."
+            )
+        return spk_targets, spk_target_lengths
+    if spk_targets is None:
+        raise ValueError("spk_target_cu_seqlens was provided without spk_targets")
+    if spk_targets.ndim != 2:
+        raise ValueError(
+            "Packed spk_targets must have shape [T_total, N], "
+            f"got {tuple(spk_targets.shape)}."
+        )
+    if spk_target_cu_seqlens.ndim != 1 or spk_target_cu_seqlens.numel() < 2:
+        raise ValueError(
+            "spk_target_cu_seqlens must have shape [B + 1], "
+            f"got {tuple(spk_target_cu_seqlens.shape)}."
+        )
+    offsets = spk_target_cu_seqlens.to(dtype=torch.long)
+    if int(offsets[0].item()) != 0 or int(offsets[-1].item()) != spk_targets.shape[0]:
+        raise ValueError(
+            "spk_target_cu_seqlens must start at 0 and end at the flat target length, "
+            f"got endpoints ({int(offsets[0].item())}, {int(offsets[-1].item())}) "
+            f"for {spk_targets.shape[0]} frames."
+        )
+    packed_lengths = offsets.diff()
+    if bool((packed_lengths < 0).any()):
+        raise ValueError(f"Packed speaker-target lengths must be non-negative, got {packed_lengths.tolist()}.")
+    if spk_target_lengths is not None:
+        expected_lengths = spk_target_lengths.to(device=packed_lengths.device, dtype=packed_lengths.dtype)
+        if not torch.equal(expected_lengths, packed_lengths):
+            raise ValueError(
+                "spk_target_length and spk_target_cu_seqlens disagree: "
+                f"{expected_lengths.tolist()} vs {packed_lengths.tolist()}."
+            )
+    else:
+        spk_target_lengths = packed_lengths
+    rows = list(torch.split(spk_targets, packed_lengths.tolist(), dim=0))
+    return pad_sequence(rows, batch_first=True), spk_target_lengths
 
 
 def _maybe_return_dummy_loss(

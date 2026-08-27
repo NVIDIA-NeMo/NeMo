@@ -69,6 +69,13 @@ class SALMDataset(torch.utils.data.Dataset):
             Return valid waveform samples contiguously as `packed_audio_samples`
             plus `audio_cu_seqlens`, instead of materializing `audios[B, T_max]`.
             Defaults to `False` for complete batch-API compatibility.
+        pack_sequences (bool):
+            Return every variable-length sequence tensor without batch padding.
+            Text IDs and masks are concatenated to shape ``[T_total]`` and
+            described by ``text_cu_seqlens``; audio is returned in the same
+            packed form as ``pack_audio=True``; optional speaker targets are
+            concatenated to shape ``[T_spk_total, N_spk]`` and described by
+            ``spk_target_cu_seqlens``. This option implies ``pack_audio=True``.
         batch_tokens (int | None):
             Token budget used by the Lhotse sampler. When provided, and the
             sampler attached an exact ``num_tokens`` measurement to every
@@ -96,9 +103,11 @@ class SALMDataset(torch.utils.data.Dataset):
             - packed_audio_samples: Tensor of contiguous waveform samples [T_total] (packed mode)
             - audio_cu_seqlens: Tensor of cumulative waveform offsets [B_audio + 1] (packed mode)
             - audio_lens: Tensor of audio lengths [B_audio]
-            - input_ids: Tensor of text token IDs [B, T_tokens], including audio_locator_tag tokens
-            - loss_mask: Boolean tensor [B, T_tokens] indicating which tokens are part of the
-                assistant's responses (True) and should be used for computing loss
+            - input_ids: Tensor of text token IDs [B, T_tokens] (padded mode) or
+                [T_total] (packed mode), including audio_locator_tag tokens
+            - loss_mask: Boolean tensor with the same shape as input_ids indicating which
+                tokens are part of the assistant's responses (True) and should be used for loss
+            - text_cu_seqlens: Tensor of cumulative text offsets [B + 1] (packed mode)
             - packing_efficiency: Optional scalar measuring sampled tokens divided by
                 ``batch_tokens``
 
@@ -119,12 +128,14 @@ class SALMDataset(torch.utils.data.Dataset):
         tokenizer: AutoTokenizer,
         multispeaker_cfg: dict | None = None,
         pack_audio: bool = False,
+        pack_sequences: bool = False,
         batch_tokens: int | None = None,
         strict_audio_loading: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.pad_id = get_pad_id(tokenizer)
-        self.pack_audio = bool(pack_audio)
+        self.pack_sequences = bool(pack_sequences)
+        self.pack_audio = bool(pack_audio) or self.pack_sequences
         self.batch_tokens = int(batch_tokens) if batch_tokens is not None else None
         self.strict_audio_loading = bool(strict_audio_loading)
         if self.batch_tokens is not None and self.batch_tokens <= 0:
@@ -144,7 +155,9 @@ class SALMDataset(torch.utils.data.Dataset):
         )
         self.multispeaker_cfg = MultiSpeakerConfig.from_dict(multispeaker_cfg)
         self.multispeaker_processor = (
-            SALMMultiSpeakerProcessor(self.multispeaker_cfg) if self.multispeaker_cfg is not None else None
+            SALMMultiSpeakerProcessor(self.multispeaker_cfg, pack_targets=self.pack_sequences)
+            if self.multispeaker_cfg is not None
+            else None
         )
 
     def __getitem__(self, conversations: CutSet) -> dict | None:
@@ -200,13 +213,31 @@ class SALMDataset(torch.utils.data.Dataset):
                 )
         if not conversations:
             return None
+        input_ids = [c.input_ids for c in conversations]
+        loss_masks = [getattr(c, "mask", torch.empty(0)) for c in conversations]
+        if self.pack_sequences:
+            packed_input_ids, text_cu_seqlens = pack_vectors(input_ids)
+            packed_loss_mask, loss_mask_cu_seqlens = pack_vectors(loss_masks)
+            if not torch.equal(text_cu_seqlens, loss_mask_cu_seqlens):
+                raise ValueError(
+                    "Each SALM loss mask must have the same length as its input IDs; "
+                    f"got offsets {text_cu_seqlens.tolist()} and {loss_mask_cu_seqlens.tolist()}."
+                )
+            text_inputs = {
+                "input_ids": packed_input_ids,
+                "loss_mask": packed_loss_mask.to(torch.bool),
+                "text_cu_seqlens": text_cu_seqlens,
+            }
+        else:
+            text_inputs = {
+                "input_ids": left_collate_vectors(input_ids, padding_value=self.pad_id),
+                "loss_mask": left_collate_vectors(loss_masks, padding_value=0).to(torch.bool),
+            }
+
         batch = {
             **audio_inputs,
+            **text_inputs,
             "audio_lens": audio_lens,
-            "input_ids": left_collate_vectors([c.input_ids for c in conversations], padding_value=self.pad_id),
-            "loss_mask": left_collate_vectors(
-                [getattr(c, "mask", torch.empty(0)) for c in conversations], padding_value=0
-            ).to(torch.bool),
             # Keep decoded in-memory audio available until auxiliary targets
             # are materialized. Native ShareGPT WDS cuts intentionally use
             # memory-backed recordings; dropping them first replaces their
@@ -234,6 +265,19 @@ def left_collate_vectors(
     tensors = [torch.as_tensor(t) for t in tensors]
     assert all(len(t.shape) == 1 for t in tensors), "Expected only 1-D input tensors."
     return pad_sequence(tensors, batch_first=True, padding_value=padding_value, padding_side="left")
+
+
+def pack_vectors(tensors: Iterable[Union[torch.Tensor, np.ndarray]]) -> tuple[torch.Tensor, torch.Tensor]:
+    """Concatenate 1-D rows and return their cumulative offsets without padding."""
+    tensors = [torch.as_tensor(t) for t in tensors]
+    if not tensors:
+        raise ValueError("Cannot pack an empty sequence collection.")
+    if not all(t.ndim == 1 for t in tensors):
+        raise ValueError(f"Expected only 1-D input tensors, got shapes {[tuple(t.shape) for t in tensors]}.")
+    values = torch.cat(tensors, dim=0)
+    lengths = torch.as_tensor([t.shape[0] for t in tensors], dtype=torch.long, device=values.device)
+    cu_seqlens = torch.cat([lengths.new_zeros(1), lengths.cumsum(0)])
+    return values, cu_seqlens
 
 
 def drop_in_memory_data(conversations: CutSet) -> CutSet:
@@ -303,8 +347,9 @@ class MultiSpeakerConfig:
 class SALMMultiSpeakerProcessor:
     """Add SOT activity targets, using ``-1`` rows to request inferred diarization."""
 
-    def __init__(self, cfg: MultiSpeakerConfig) -> None:
+    def __init__(self, cfg: MultiSpeakerConfig, *, pack_targets: bool = False) -> None:
         self.cfg = cfg
+        self.pack_targets = bool(pack_targets)
 
     def __call__(self, batch: dict) -> None:
         """Attach RTTM targets or missing-RTTM sentinels to ``batch`` in place."""
@@ -321,17 +366,42 @@ class SALMMultiSpeakerProcessor:
             [bool(torch.all(activity == -1.0)) for activity in speaker_activities],
             dtype=torch.bool,
         )
-        targets, target_length = collate_speaker_activity_targets(
-            speaker_activities,
-            batch["audio_lens"],
-            num_speakers=cfg.num_speakers,
-            num_sample_per_mel_frame=cfg.num_sample_per_mel_frame,
-            num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
-            dtype=(batch["audios"] if "audios" in batch else batch["packed_audio_samples"]).dtype,
-        )
-        targets[missing_rttm_rows] = -1.0
-        batch["spk_targets"] = targets
-        batch["spk_target_length"] = target_length
+        dtype = (batch["audios"] if "audios" in batch else batch["packed_audio_samples"]).dtype
+        if self.pack_targets:
+            normalized = []
+            for activity, missing_rttm in zip(speaker_activities, missing_rttm_rows):
+                n_spk = activity.shape[1]
+                if n_spk > cfg.num_speakers:
+                    activity = activity[:, : cfg.num_speakers]
+                elif n_spk < cfg.num_speakers:
+                    activity = torch.nn.functional.pad(
+                        activity,
+                        (0, cfg.num_speakers - n_spk),
+                        mode="constant",
+                        value=0.0,
+                    )
+                activity = activity.to(dtype=dtype)
+                if missing_rttm:
+                    activity = torch.full_like(activity, -1.0)
+                normalized.append(activity)
+            target_length = torch.as_tensor([target.shape[0] for target in normalized], dtype=torch.long)
+            targets = torch.cat(normalized, dim=0)
+            target_cu_seqlens = torch.cat([target_length.new_zeros(1), target_length.cumsum(0)])
+            batch["spk_targets"] = targets
+            batch["spk_target_length"] = target_length
+            batch["spk_target_cu_seqlens"] = target_cu_seqlens
+        else:
+            targets, target_length = collate_speaker_activity_targets(
+                speaker_activities,
+                batch["audio_lens"],
+                num_speakers=cfg.num_speakers,
+                num_sample_per_mel_frame=cfg.num_sample_per_mel_frame,
+                num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
+                dtype=dtype,
+            )
+            targets[missing_rttm_rows] = -1.0
+            batch["spk_targets"] = targets
+            batch["spk_target_length"] = target_length
 
     def _build_speaker_activities(self, conversations: CutSet) -> list[torch.Tensor]:
         cfg = self.cfg

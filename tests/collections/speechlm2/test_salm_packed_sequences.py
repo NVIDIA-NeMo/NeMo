@@ -78,6 +78,91 @@ def _basic_batch():
     return input_ids, embeds, target_ids, replacements
 
 
+def test_prepare_packed_llm_inputs_compacts_ids_before_embedding_and_preserves_backward():
+    """Embedding work scales with real tokens, not the dense B*S rectangle."""
+    batch_size = 8
+    sequence_length = 257
+    hidden_size = 4
+    vocab_size = 64
+    row_lengths = [257, 8, 7, 6, 5, 4, 3, 2]
+    input_ids = torch.full((batch_size, sequence_length), PAD, dtype=torch.long)
+    for row, length in enumerate(row_lengths):
+        input_ids[row, -length:] = torch.arange(1, length + 1).remainder(vocab_size - 1).add(1)
+    target_ids = input_ids.where(input_ids != PAD, -100)
+    embedding = torch.nn.Embedding(vocab_size, hidden_size)
+    embedded_shapes = []
+
+    def embed_tokens(flat_ids):
+        embedded_shapes.append(tuple(flat_ids.shape))
+        return embedding(flat_ids)
+
+    actual = prepare_packed_llm_inputs(
+        input_ids=input_ids,
+        text_embs=None,
+        audio_embs=[],
+        target_ids=target_ids,
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        embed_tokens=embed_tokens,
+    )
+
+    real_token_count = sum(row_lengths)
+    assert embedded_shapes == [(real_token_count,)]
+    assert real_token_count < input_ids.numel()
+
+    # The compact lookup must remain numerically identical to the historical
+    # dense-then-unpad path.
+    dense_embeds = torch.nn.functional.embedding(input_ids, embedding.weight.detach())
+    expected = prepare_packed_llm_inputs(
+        input_ids=input_ids,
+        text_embs=dense_embeds,
+        audio_embs=[],
+        target_ids=target_ids,
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+    )
+    torch.testing.assert_close(actual["input_embeds"], expected["input_embeds"])
+    assert torch.equal(actual["target_ids"], expected["target_ids"])
+    assert torch.equal(actual["llm_kwargs"]["cu_seqlens"], expected["llm_kwargs"]["cu_seqlens"])
+
+    actual["input_embeds"].sum().backward()
+    flat_real_ids = torch.cat([row[-length:] for row, length in zip(input_ids, row_lengths)])
+    expected_counts = torch.bincount(flat_real_ids, minlength=vocab_size).to(embedding.weight.dtype)
+    expected_grad = expected_counts[:, None].expand(-1, hidden_size)
+    torch.testing.assert_close(embedding.weight.grad, expected_grad)
+
+
+def test_prepare_packed_llm_inputs_accepts_native_flat_text_with_padded_parity():
+    input_ids, _, target_ids, replacements = _basic_batch()
+    embedding = torch.nn.Embedding(128, 2)
+    expected = prepare_packed_llm_inputs(
+        input_ids=input_ids,
+        text_embs=None,
+        audio_embs=replacements,
+        target_ids=target_ids,
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        embed_tokens=embedding,
+    )
+    flat_input_ids = torch.cat([input_ids[0], input_ids[1, 2:]])
+    flat_target_ids = torch.cat([target_ids[0], target_ids[1, 2:]])
+    actual = prepare_packed_llm_inputs(
+        input_ids=flat_input_ids,
+        text_embs=None,
+        audio_embs=replacements,
+        target_ids=flat_target_ids,
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        embed_tokens=embedding,
+        text_cu_seqlens=torch.tensor([0, 6, 10]),
+    )
+
+    torch.testing.assert_close(actual["input_embeds"], expected["input_embeds"])
+    assert torch.equal(actual["target_ids"], expected["target_ids"])
+    assert torch.equal(actual["llm_kwargs"]["cu_seqlens"], expected["llm_kwargs"]["cu_seqlens"])
+    assert actual["num_examples"].item() == 2
+
+
 def test_basic_pack_shapes_and_cu_seqlens():
     input_ids, embeds, target_ids, replacements = _basic_batch()
     out = pack_audio_into_text_embeds(

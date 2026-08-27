@@ -52,18 +52,21 @@ def _create_salm_dataset(
     data_cfg: DictConfig | dict,
     *,
     pack_audio: bool = False,
+    pack_sequences: bool = False,
 ) -> SALMDataset:
     """Build SALMDataset without forwarding unset options to legacy NeMo packages."""
     multispeaker_cfg = data_cfg.get("multispeaker_cfg", None)
     batch_tokens = data_cfg.get("train_ds", {}).get("batch_tokens", None)
     # TODO(Dongji): Remove after all release images ship SALMDataset with multispeaker_cfg support.
-    if multispeaker_cfg is None and not pack_audio and batch_tokens is None:
+    if multispeaker_cfg is None and not pack_audio and not pack_sequences and batch_tokens is None:
         return SALMDataset(tokenizer=tokenizer)
     kwargs = {"tokenizer": tokenizer}
     if multispeaker_cfg is not None:
         kwargs["multispeaker_cfg"] = multispeaker_cfg
     if pack_audio:
         kwargs["pack_audio"] = True
+    if pack_sequences:
+        kwargs["pack_sequences"] = True
     if batch_tokens is not None:
         kwargs["batch_tokens"] = batch_tokens
     return SALMDataset(**kwargs)
@@ -102,6 +105,9 @@ def train(cfg):
         cfg.data,
         pack_audio=bool(
             cfg.model.get("use_nemo_automodel", False) and cfg.model.get("packed_encoder_sequences", False)
+        ),
+        pack_sequences=bool(
+            cfg.model.get("use_nemo_automodel", False) and cfg.model.get("packed_sequences", False)
         ),
     )
     datamodule = DataModule(cfg.data, tokenizer=model.tokenizer, dataset=dataset)

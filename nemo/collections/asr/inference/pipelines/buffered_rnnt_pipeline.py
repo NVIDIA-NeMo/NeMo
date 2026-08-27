@@ -47,9 +47,10 @@ from nemo.collections.asr.inference.utils.pipeline_utils import (
 from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
 from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import (
     BatchedBeamHyps,
+    batched_beam_hyps_to_hypotheses,
     export_batched_beam_hyps_to_cpu_lists,
 )
-from nemo.collections.asr.parts.utils.rnnt_utils import batched_beam_hyps_to_hypotheses, batched_hyps_to_hypotheses
+from nemo.collections.asr.parts.utils.rnnt_utils import batched_hyps_to_hypotheses
 from nemo.utils import logging
 
 if TYPE_CHECKING:
@@ -528,10 +529,6 @@ class BufferedRNNTPipeline(BasePipeline):
         # For stateless mode, use zero timestamp offsets since we don't track timestamps
         ready_states = self.decode_step(best_hyp, requests, states)
         ready_state_ids.update(ready_states)
-        if self.beam_decoder_computer is not None:
-            for request, state in zip(requests, states):
-                if request.is_last:
-                    state.reset_beam_decoding_state_()
 
     def _prepare_per_stream_biasing(
         self,

@@ -27,16 +27,12 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
 from nemo.collections.asr.parts.context_biasing.biasing_multi_model import BiasingRequestItemConfig
 from nemo.collections.asr.parts.submodules.transducer_decoding import BatchedHyps
-
-if TYPE_CHECKING:
-    # Imported lazily: batched_beam_decoding_utils imports Hypothesis from this module.
-    from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import BatchedBeamHyps
 
 
 @dataclass
@@ -367,45 +363,4 @@ def batched_hyps_to_hypotheses(batched_hyps: BatchedHyps, batch_size=None) -> li
                         [step_confidence[i, start + j] for j in range(timestamp_cnt)]
                     )
                 start += timestamp_cnt
-    return hypotheses
-
-
-def batched_beam_hyps_to_hypotheses(
-    batched_beam_hyps: "BatchedBeamHyps",
-    beam_indices: torch.Tensor,
-) -> list[Hypothesis]:
-    """
-    Convert MALSD beam output to Hypothesis objects at fixed physical beam slots.
-
-    Unlike :meth:`BatchedBeamHyps.to_hyps_list` (sorted best beam per stream), this uses
-    ``beam_indices[b]`` to pick the hypothesis in physical slot order — e.g. ``scores.argmax(-1)``
-    for streaming endpointing aligned with per-chunk publish.
-
-    Args:
-        batched_beam_hyps: Decoder output for one chunk (or right-context pass).
-        beam_indices: Per-stream physical beam index, shape ``[batch_size]``.
-
-    Returns:
-        One :class:`Hypothesis` per batch row (chunk-local tokens/timestamps), tensor-backed like
-        :func:`batched_hyps_to_hypotheses`.
-    """
-    scores, transcripts, timestamps, durations, _, step_confidence = batched_beam_hyps._export(
-        sort=False, score_norm=False
-    )
-    hypotheses = []
-    for batch_idx in range(batched_beam_hyps.batch_size):
-        hyp = batched_beam_hyps._hypothesis_from_flat(
-            batch_idx,
-            int(beam_indices[batch_idx].item()),
-            scores,
-            transcripts,
-            timestamps,
-            durations,
-            step_confidence,
-        )
-        hyp.y_sequence = torch.as_tensor(hyp.y_sequence)
-        hyp.timestamp = torch.as_tensor(hyp.timestamp)
-        if hyp.token_duration is not None:
-            hyp.token_duration = torch.as_tensor(hyp.token_duration)
-        hypotheses.append(hyp)
     return hypotheses

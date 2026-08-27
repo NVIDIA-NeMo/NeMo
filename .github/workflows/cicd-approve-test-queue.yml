@@ -17,6 +17,10 @@ name: Approve Test Queue
 on:
   schedule:
     - cron: '*/5 * * * *'  # Runs every 5 minutes
+  # Scheduled events can be delayed, so refill released queue slots immediately.
+  workflow_run:
+    workflows: ["CICD NeMo"]
+    types: [completed]
   workflow_dispatch:  # Allows manual triggering
 
 jobs:

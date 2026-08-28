@@ -19,7 +19,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 _SALM_TRAIN_PATH = Path(__file__).parents[3] / "examples" / "speechlm2" / "salm_train.py"
 _SPEC = importlib.util.spec_from_file_location("salm_train_for_test", _SALM_TRAIN_PATH)
 _SALM_TRAIN = importlib.util.module_from_spec(_SPEC)
@@ -37,6 +36,27 @@ def test_create_salm_dataset_omits_unset_multispeaker_config(monkeypatch):
     monkeypatch.setattr(_SALM_TRAIN, "SALMDataset", LegacySALMDataset)
 
     dataset = _SALM_TRAIN._create_salm_dataset(tokenizer, {})
+
+    assert dataset.tokenizer is tokenizer
+
+
+@pytest.mark.unit
+def test_create_salm_dataset_does_not_forward_prompt_format_options(monkeypatch):
+    class LegacySALMDataset:
+        def __init__(self, tokenizer):
+            self.tokenizer = tokenizer
+
+    tokenizer = object()
+    monkeypatch.setattr(_SALM_TRAIN, "SALMDataset", LegacySALMDataset)
+    data_cfg = {
+        "train_ds": {
+            "prompt_format": "nemotron-nano-v3",
+            "audio_locator_tag": "<|audio|>",
+            "token_equivalent_duration": 0.08,
+        }
+    }
+
+    dataset = _SALM_TRAIN._create_salm_dataset(tokenizer, data_cfg)
 
     assert dataset.tokenizer is tokenizer
 
@@ -73,36 +93,6 @@ def test_create_salm_dataset_enables_packed_audio_without_a_second_config(monkey
 
     assert dataset.tokenizer is tokenizer
     assert dataset.pack_audio is True
-
-
-@pytest.mark.unit
-def test_create_salm_dataset_forwards_raw_cut_normalization_options(monkeypatch):
-    class RawCutSALMDataset:
-        def __init__(
-            self,
-            tokenizer,
-            prompt_format=None,
-            audio_locator_tag=None,
-            token_equivalent_duration=None,
-        ):
-            self.options = {
-                "tokenizer": tokenizer,
-                "prompt_format": prompt_format,
-                "audio_locator_tag": audio_locator_tag,
-                "token_equivalent_duration": token_equivalent_duration,
-            }
-
-    tokenizer = object()
-    monkeypatch.setattr(_SALM_TRAIN, "SALMDataset", RawCutSALMDataset)
-    options = {
-        "prompt_format": "nemotron-nano-v3",
-        "audio_locator_tag": "<|audio|>",
-        "token_equivalent_duration": 0.08,
-    }
-
-    dataset = _SALM_TRAIN._create_salm_dataset(tokenizer, {"train_ds": options})
-
-    assert dataset.options == {"tokenizer": tokenizer, **options}
 
 
 @pytest.mark.unit

@@ -460,13 +460,26 @@ class TarSample(NamedTuple):
 
 def _split_json_audio_pair(name_a, bytes_a, name_b, bytes_b) -> TarSample:
     """Classify two tar members into a ``TarSample`` regardless of order."""
-    if name_a.endswith(".json"):
-        return TarSample(json.loads(bytes_a), bytes_b, name_b)
-    if name_b.endswith(".json"):
-        return TarSample(json.loads(bytes_b), bytes_a, name_a)
-    raise ValueError(
-        f"Expected one .json member in tar sample pair, got: {name_a}, {name_b}"
-    )
+    is_json_a = name_a.endswith(".json")
+    is_json_b = name_b.endswith(".json")
+    if is_json_a == is_json_b:
+        raise ValueError(
+            f"Expected exactly one .json member in tar sample pair, got: {name_a}, {name_b}"
+        )
+    if is_json_a:
+        json_name, json_bytes = name_a, bytes_a
+        audio_name, audio_bytes = name_b, bytes_b
+    else:
+        json_name, json_bytes = name_b, bytes_b
+        audio_name, audio_bytes = name_a, bytes_a
+    json_key = PurePosixPath(json_name).with_suffix("").as_posix()
+    audio_key = PurePosixPath(audio_name).with_suffix("").as_posix()
+    if json_key != audio_key:
+        raise ValueError(
+            "WebDataset tar pair has different sample keys: "
+            f"json={json_name!r} audio={audio_name!r}."
+        )
+    return TarSample(json.loads(json_bytes), audio_bytes, audio_name)
 
 
 class IndexedTarSampleReader:

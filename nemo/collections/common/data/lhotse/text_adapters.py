@@ -2278,6 +2278,23 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                     token_equivalent_duration=self.token_equivalent_duration,
                 )
                 cntr += 1
+            else:
+                if tar is not None:
+                    try:
+                        _, trailing_audio_path = next(tar)
+                    except StopIteration:
+                        pass
+                    except (AudioLoadingError, EOFError, OSError, RuntimeError, ValueError, tarfile.TarError) as ex:
+                        raise ValueError(
+                            "Paired ShareGPT tar has unreadable trailing data after "
+                            f"manifest exhaustion: tar={tar_path!r} manifest={jsonl_path!r}."
+                        ) from ex
+                    else:
+                        raise ValueError(
+                            "Paired ShareGPT tar contains a trailing member after "
+                            f"manifest exhaustion: tar={tar_path!r} manifest={jsonl_path!r} "
+                            f"member={str(trailing_audio_path)!r}."
+                        )
 
         self.epoch += 1
 

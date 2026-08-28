@@ -187,6 +187,31 @@ def test_paired_sharegpt_streaming_mismatch_remains_strict_in_permissive_mode(
         list(permissive)
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+def test_paired_sharegpt_streaming_rejects_surplus_tar_members(
+    tmp_path,
+    skip_missing_manifest_entries,
+):
+    manifest_path = _write_paired_manifest(tmp_path / "manifest.jsonl", num_rows=1)
+    tar_path = _write_tar(
+        tmp_path / "audio.tar",
+        [("0.wav", _wav()), ("extra.wav", _wav())],
+    )
+    adapter = _paired_adapter(
+        manifest_path,
+        tar_path,
+        indexed=False,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="trailing member after manifest exhaustion",
+    ):
+        list(adapter)
+
+
 def _write_wds(root: Path, *, version: int) -> Path:
     root.mkdir()
     members = []
@@ -274,6 +299,41 @@ def test_sharegpt_wds_audio_decode_failure_obeys_policy_and_indexed_resume(
     resumed = build()
     resumed.load_state_dict(state)
     assert [item.id for item in resumed] == expected_remainder == ["sample-2"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+def test_sharegpt_wds_v1_rejects_cross_sample_member_pairing(
+    tmp_path,
+    indexed,
+    skip_missing_manifest_entries,
+):
+    data_dir = tmp_path / "wds"
+    data_dir.mkdir()
+    tar_path = _write_tar(
+        data_dir / "shard.tar",
+        [
+            ("0.json", json.dumps(_sharegpt_row(0)).encode("utf-8")),
+            ("1.wav", _wav()),
+            ("1.json", json.dumps(_sharegpt_row(1)).encode("utf-8")),
+            ("2.wav", _wav()),
+        ],
+    )
+    (data_dir / "wids-meta.json").write_text(
+        json.dumps({"shardlist": [{"url": "shard.tar", "nsamples": 2}]})
+    )
+    if indexed:
+        create_tar_index(tar_path, f"{tar_path}.idx")
+    adapter = _wds_adapter(
+        data_dir,
+        version=1,
+        indexed=indexed,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+    )
+
+    with pytest.raises(ValueError, match="different sample keys"):
+        list(adapter)
 
 
 @pytest.mark.unit

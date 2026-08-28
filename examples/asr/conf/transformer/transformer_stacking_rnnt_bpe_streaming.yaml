@@ -1,4 +1,4 @@
-# It contains the default values for training a cache-aware streaming Streaming-Transformer-Stacked-RNNT ASR model, xlarge size (~600M) with sub-word encoding.
+# It contains the default values for training a cache-aware streaming Transformer-RNNT ASR model, xlarge size (~600M) with sub-word encoding.
 
 name: "Streaming-Transformer-RNNT-BPE-Streaming"
 
@@ -20,7 +20,7 @@ model:
     shuffle: true
     num_workers: 8
     pin_memory: true
-    max_duration: 20 # you may need to update it for your dataset
+    max_duration: 50 # you may need to update it for your dataset
     min_duration: 0.1
     # tarred datasets
     is_tarred: false
@@ -61,7 +61,7 @@ model:
     window_size: 0.025
     window_stride: 0.01
     window: "hann"
-    features: 80
+    features: 128
     n_fft: 512
     frame_splicing: 1
     dither: 0.00001

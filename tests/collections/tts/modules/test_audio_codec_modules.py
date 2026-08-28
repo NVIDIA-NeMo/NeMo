@@ -27,6 +27,7 @@ from nemo.collections.tts.modules.audio_codec_modules import (
     MultiBandMelEncoder,
     ResidualBlock,
     ResNetEncoder,
+    ResNetSpeakerEncoder,
     get_down_sample_padding,
 )
 from nemo.collections.tts.modules.encodec_modules import GroupResidualVectorQuantizer, ResidualVectorQuantizer
@@ -162,6 +163,20 @@ class TestAudioCodecModules:
         assert torch.all(out[0, :, self.len1 :] == 0.0)
         assert torch.all(out[1, :, : self.len2] != 0.0)
         assert torch.all(out[1, :, self.len2 :] == 0.0)
+
+    @pytest.mark.unit
+    def test_resnet_speaker_encoder_loads_local_checkpoint(self, mocker):
+        checkpoint_path = "speaker_encoder.pt"
+        state_dict = mocker.sentinel.state_dict
+        torch_load = mocker.patch(
+            "nemo.collections.tts.modules.audio_codec_modules.torch.load", return_value={"model": state_dict}
+        )
+        speaker_encoder = mocker.Mock()
+
+        ResNetSpeakerEncoder.load_checkpoint(speaker_encoder, checkpoint_path, strict=False)
+
+        torch_load.assert_called_once_with(checkpoint_path, map_location=torch.device("cpu"))
+        speaker_encoder.load_state_dict.assert_called_once_with(state_dict, strict=False)
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit

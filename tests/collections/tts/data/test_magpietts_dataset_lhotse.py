@@ -416,6 +416,7 @@ class TestMagpieTTSLhotseDatasets:
         dataset.interruption_token_id = dataset.bos_id + 3
         dataset.pad_id = dataset.text_tokenizer.pad
 
-        dataset[cuts]
+        batch = dataset[cuts]
 
+        assert batch["text"].shape[0] == 1
         assert dataset.text_tokenizer.encoded_texts == expected_texts

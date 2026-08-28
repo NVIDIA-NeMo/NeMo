@@ -341,6 +341,12 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
     def get_supported_mm_limits(self) -> Mapping[str, int | None]:
         return {"audio": None}
 
+    def _has_pe_encoder(self) -> bool:
+        config = self.get_hf_config()
+        return getattr(config, "pe_encoder_path", None) not in (None, "", False) or getattr(
+            config, "pe_encoder_config", None
+        ) not in (None, {}, "", False)
+
     def _get_encoder_chunk_size_seconds(self) -> float | None:
         """Return the per-encoder-call chunk size baked into the checkpoint.
 
@@ -351,11 +357,9 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         chunking, so its prompt estimator must also use one full-audio pass.
         ``None`` means the encoder runs once over the full audio.
         """
-        config = self.get_hf_config()
-        if getattr(config, "pe_encoder_path", None) not in (None, "", False) or getattr(
-            config, "pe_encoder_config", None
-        ) not in (None, {}, "", False):
+        if self._has_pe_encoder():
             return None
+        config = self.get_hf_config()
         return getattr(config, "encoder_chunk_size_seconds", None)
 
     def _get_audio_token_estimator_config(self) -> Mapping[str, object] | None:
@@ -363,6 +367,12 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         config = getattr(self.get_hf_config(), "audio_token_estimator", None)
         if config is not None and not isinstance(config, Mapping):
             raise TypeError("audio_token_estimator in config.json must be a mapping")
+        if config is not None and self._has_pe_encoder():
+            # PEE owns context-preserving online windowing and deliberately
+            # bypasses generic waveform chunking. Keep that decision
+            # authoritative when the exported training estimator still carries
+            # the generic chunk size.
+            config = {**config, "chunk_size_seconds": None}
         return config
 
     @staticmethod

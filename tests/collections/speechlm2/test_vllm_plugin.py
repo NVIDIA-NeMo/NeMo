@@ -970,6 +970,47 @@ class TestAudioProcessing:
         assert not hasattr(info, "get_max_audio_len")
         assert not hasattr(info, "get_max_audio_tokens")
 
+    def test_pe_processing_ignores_exported_generic_estimator_chunking(self, monkeypatch):
+        from nemo.collections.speechlm2.vllm.salm.audio import (
+            NeMoSpeechLMProcessingInfo,
+        )
+
+        exported_estimator = {
+            "chunk_size_seconds": 15.0,
+            "preprocessor": {
+                "n_fft": 512,
+                "hop_length": 160,
+                "stft_pad_amount": 256,
+            },
+            "subsampling": {
+                "type": "conv",
+                "kernel_size": 3,
+                "stride": 2,
+                "padding": 1,
+                "repeat": 3,
+                "ceil_mode": False,
+            },
+        }
+        info = object.__new__(NeMoSpeechLMProcessingInfo)
+        monkeypatch.setattr(
+            info,
+            "get_hf_config",
+            lambda: SimpleNamespace(
+                pe_encoder_path="/models/ParallelExpertEncoder.nemo",
+                pe_encoder_config=None,
+                encoder_chunk_size_seconds=15.0,
+                audio_token_estimator=exported_estimator,
+            ),
+        )
+
+        estimator_config = info._get_audio_token_estimator_config()
+
+        assert info._get_encoder_chunk_size_seconds() is None
+        assert estimator_config["chunk_size_seconds"] is None
+        assert exported_estimator["chunk_size_seconds"] == 15.0
+        assert info._estimate_audio_tokens(559_280, None, estimator_config) == 437
+        assert info._estimate_audio_tokens(559_280, None, exported_estimator) == 438
+
     def test_dummy_inputs_use_profiling_audio_length(self):
         from nemo.collections.speechlm2.vllm.salm.audio import (
             NeMoSpeechLMDummyInputsBuilder,

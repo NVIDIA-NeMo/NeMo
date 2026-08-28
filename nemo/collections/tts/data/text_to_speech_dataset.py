@@ -17,7 +17,7 @@ import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import librosa
 import numpy as np
@@ -65,6 +65,21 @@ class DatasetSample:
     tokenizer_names: List[str] = None
 
 
+def get_tts_text(manifest_entry: Dict[str, Any], use_raw_text_input: bool = False) -> Union[str, List[str]]:
+    """Select the manifest text used as input to a TTS model.
+
+    Args:
+        manifest_entry: TTS manifest entry containing text and optionally normalized_text.
+        use_raw_text_input: Use text even when normalized_text is available.
+
+    Returns:
+        The selected text value. This may be a string or a list of strings for multiturn manifests.
+    """
+    if not use_raw_text_input and manifest_entry.get("normalized_text") is not None:
+        return manifest_entry["normalized_text"]
+    return manifest_entry["text"]
+
+
 class TextToSpeechDataset(Dataset):
     """
     Class for processing and loading text to speech training examples.
@@ -89,6 +104,7 @@ class TextToSpeechDataset(Dataset):
         max_duration: Optional float, if provided audio files in the training manifest longer than 'max_duration'
             will be ignored.
         volume_norm: Whether to apply volume normalization to loaded audio.
+        use_raw_text_input: Whether to use text instead of normalized_text when both are available.
     """
 
     def __init__(
@@ -104,6 +120,7 @@ class TextToSpeechDataset(Dataset):
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
         volume_norm: bool = True,
+        use_raw_text_input: bool = False,
     ):
         super().__init__()
 
@@ -113,6 +130,7 @@ class TextToSpeechDataset(Dataset):
         self.align_prior_hop_length = align_prior_hop_length
         self.include_align_prior = self.align_prior_hop_length is not None
         self.volume_norm = volume_norm
+        self.use_raw_text_input = use_raw_text_input
 
         if speaker_path:
             self.include_speaker = True
@@ -183,10 +201,7 @@ class TextToSpeechDataset(Dataset):
         sample_weights = []
         for entry in filtered_entries:
 
-            if "normalized_text" in entry:
-                text = entry["normalized_text"]
-            else:
-                text = entry["text"]
+            text = get_tts_text(entry, use_raw_text_input=self.use_raw_text_input)
 
             if self.include_speaker:
                 speaker = entry["speaker"]
@@ -364,6 +379,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         context_duration_max: Maximum duration of context audio in seconds.
         text_context_remapping: Dict defining mapping of multiple text contexts to a single text context.
         text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
+        use_raw_text_input: Whether to use text instead of normalized_text when both are available.
     """
 
     def __init__(
@@ -397,6 +413,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
         default_tokenizer_name: str = "english_phoneme",
+        use_raw_text_input: bool = False,
     ):
         super().__init__(
             dataset_meta=dataset_meta,
@@ -410,6 +427,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
             min_duration=min_duration,
             max_duration=max_duration,
             volume_norm=volume_norm,
+            use_raw_text_input=use_raw_text_input,
         )
         self.bos_id = bos_id  # TODO @xueyang: this should be removed since no other places used it.
         self.eos_id = eos_id
@@ -911,6 +929,7 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
         text_conditioning_tokenizer_name: Name of text conditioning tokenizer.
         pad_context_text_to_max_duration: Whether to pad context text.
         load_16khz_audio: Whether to load 16kHz audio for SV model.
+        use_raw_text_input: Whether to use text instead of normalized_text when both are available.
     """
 
     def __init__(
@@ -926,6 +945,7 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
         text_conditioning_tokenizer_name: str = None,
         pad_context_text_to_max_duration: bool = False,
         load_16khz_audio: bool = False,
+        use_raw_text_input: bool = False,
         **kwargs,
     ):
         # Initialize parent - handles manifest reading and context audio loading
@@ -943,6 +963,7 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
             load_16khz_audio=load_16khz_audio,
             load_cached_codes_if_available=True,  # Prefer codes for inference
             dataset_type='test',
+            use_raw_text_input=use_raw_text_input,
             **kwargs,
         )
 

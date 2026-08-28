@@ -125,6 +125,38 @@ def test_build_indexes_resolves_nested_data_blend_dir(tmp_path):
     assert Path(f"{manifest}.idx").is_file()
 
 
+def test_build_indexes_resolves_nested_input_cfg_relative_to_declaring_file(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text("{}\n")
+    wrapper_dir = tmp_path / "wrapper"
+    wrapper_dir.mkdir()
+    inner = wrapper_dir / "inner.yaml"
+    inner.write_text(
+        yaml.safe_dump(
+            {
+                "type": "share_gpt",
+                "manifest_filepath": str(manifest),
+                "audio_locator_tag": "[audio]",
+                "indexed": True,
+            }
+        )
+    )
+    outer = wrapper_dir / "outer.yaml"
+    outer.write_text(
+        yaml.safe_dump(
+            [{"type": "group", "input_cfg": "inner.yaml", "weight": 1.0}]
+        )
+    )
+
+    result = CliRunner().invoke(
+        build_indexes.main,
+        ["--workers", "1", "--data-blend-dir", str(tmp_path), str(outer)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert Path(f"{manifest}.idx").is_file()
+
+
 def test_converter_resolves_nested_data_blend_dir(tmp_path):
     blend_dir, outer, _ = _write_nested_data_blend(tmp_path)
 

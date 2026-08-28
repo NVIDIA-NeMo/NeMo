@@ -167,13 +167,32 @@ def _expand_tars(spec) -> list[str]:
     return [p for raw in _flatten_path_spec(spec) for p in expand_sharded_filepaths(raw)]
 
 
+def _resolve_relative_input_cfg_paths(config, containing_dir: Path) -> None:
+    """Resolve nested YAML references relative to the file that declares them."""
+    if isinstance(config, (list, ListConfig)):
+        for item in config:
+            _resolve_relative_input_cfg_paths(item, containing_dir)
+        return
+    if not isinstance(config, (dict, DictConfig)):
+        return
+
+    nested = config.get("input_cfg")
+    if isinstance(nested, (str, Path)):
+        nested_path = str(nested)
+        if "://" not in nested_path and not Path(nested_path).is_absolute():
+            config["input_cfg"] = str(containing_dir / nested_path)
+    else:
+        _resolve_relative_input_cfg_paths(nested, containing_dir)
+
+
 def _load_input_cfg(path: str | Path, data_blend_dir: str | Path | None = None):
     config = OmegaConf.load(str(path))
-    if data_blend_dir is None:
-        return config
-    root = OmegaConf.create({"data_blend_dir": str(data_blend_dir)})
-    root.input_cfg = config
-    return root.input_cfg
+    if data_blend_dir is not None:
+        root = OmegaConf.create({"data_blend_dir": str(data_blend_dir)})
+        root.input_cfg = config
+        config = root.input_cfg
+    _resolve_relative_input_cfg_paths(config, Path(path).parent)
+    return config
 
 
 def _resolve_input_cfg(val, data_blend_dir: str | Path | None = None) -> ListConfig | None:
@@ -471,12 +490,17 @@ def _build_one(job: IndexJob, *, force: bool = False) -> tuple[IndexJob, str]:
 
 
 def _source_size(path: str) -> int:
-    if path.startswith(("ais://", "s3://")):
+    source_path = path
+    if source_path.startswith("s3://"):
+        from lhotse.audio.source import resolve_s3_to_local_mirror
+
+        source_path = resolve_s3_to_local_mirror(source_path)
+    if source_path.startswith(("ais://", "s3://")):
         from lhotse.ais import AISRangeReader
 
-        with AISRangeReader(path) as source:
+        with AISRangeReader(source_path) as source:
             return int(source.size)
-    return os.path.getsize(path)
+    return os.path.getsize(source_path)
 
 
 def _validate_legacy_sidecar(job: IndexJob) -> None:

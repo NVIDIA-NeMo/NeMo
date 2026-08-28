@@ -18,27 +18,21 @@ import json
 
 import pytest
 import torch
-from nemo.collections.common.data.lhotse.text_adapters import (
-    AudioTurn,
-    NeMoMultimodalConversation,
-    TextTurn,
-)
+from lhotse import AudioSource, Recording
+from lhotse.utils import fastcopy
 from omegaconf import OmegaConf
 from scripts.dataloading._validate_dataloader.full_stats import (
     FullValidationStats,
     configured_audio_path_resolution_modes,
 )
 
-from lhotse import AudioSource, Recording
-from lhotse.utils import fastcopy
+from nemo.collections.common.data.lhotse.text_adapters import AudioTurn, NeMoMultimodalConversation, TextTurn
 
 
 def _cut(recording_id, source, *, sampling_rate, num_samples, channels):
     recording = Recording(
         id=recording_id,
-        sources=[
-            AudioSource(type="file", channels=list(range(channels)), source=source)
-        ],
+        sources=[AudioSource(type="file", channels=list(range(channels)), source=source)],
         sampling_rate=sampling_rate,
         num_samples=num_samples,
         duration=num_samples / sampling_rate,
@@ -48,32 +42,24 @@ def _cut(recording_id, source, *, sampling_rate, num_samples, channels):
 
 def _batch():
     one = AudioTurn(
-        cut=_cut(
-            "one", "/audio/one.wav", sampling_rate=16000, num_samples=16000, channels=1
-        ),
+        cut=_cut("one", "/audio/one.wav", sampling_rate=16000, num_samples=16000, channels=1),
         role="user",
         audio_locator_tag="<audio>",
     )
     multi_a = AudioTurn(
-        cut=_cut(
-            "multi-a", "/audio/a.flac", sampling_rate=8000, num_samples=4000, channels=2
-        ),
+        cut=_cut("multi-a", "/audio/a.flac", sampling_rate=8000, num_samples=4000, channels=2),
         role="user",
         audio_locator_tag="<audio>",
     )
     multi_b = AudioTurn(
-        cut=_cut(
-            "multi-b", b"encoded", sampling_rate=16000, num_samples=4000, channels=1
-        ),
+        cut=_cut("multi-b", b"encoded", sampling_rate=16000, num_samples=4000, channels=1),
         role="user",
         audio_locator_tag="<audio>",
     )
     conversations = [
         NeMoMultimodalConversation("zero", [TextTurn("hello", "user")]),
         NeMoMultimodalConversation("one", [one, TextTurn("answer", "assistant")]),
-        NeMoMultimodalConversation(
-            "multi", [multi_a, multi_b, TextTurn("answer", "assistant")]
-        ),
+        NeMoMultimodalConversation("multi", [multi_a, multi_b, TextTurn("answer", "assistant")]),
     ]
     return {
         "audios": torch.zeros(3, 16000),
@@ -161,9 +147,7 @@ def test_full_stats_records_content_free_failure_and_measured_bytes(tmp_path):
 
     summary = json.loads(output.read_text())
     assert summary["bytes_read"] == {"status": "measured", "value": 123}
-    assert summary["failures"] == [
-        {"step": 1, "stage": "materialize_or_measure", "error_type": "RuntimeError"}
-    ]
+    assert summary["failures"] == [{"step": 1, "stage": "materialize_or_measure", "error_type": "RuntimeError"}]
     assert "secret conversation contents" not in output.read_text()
 
 
@@ -194,9 +178,7 @@ def test_resolution_modes_are_derived_from_config_without_scanning_data():
 
 
 def test_full_stats_measure_memory_codec_and_deduplicated_source_ranges():
-    repeated = _cut(
-        "repeated", b"encoded", sampling_rate=16000, num_samples=16000, channels=1
-    )
+    repeated = _cut("repeated", b"encoded", sampling_rate=16000, num_samples=16000, channels=1)
     repeated = fastcopy(
         repeated,
         custom={

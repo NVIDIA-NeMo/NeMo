@@ -54,9 +54,7 @@ def load_pretrained_nemo(cls, model_path_or_name: str):
             while hasattr(concrete_cls, "__wrapped__"):
                 concrete_cls = concrete_cls.__wrapped__
             if not isinstance(concrete_cls, type) or not issubclass(concrete_cls, cls):
-                raise TypeError(
-                    f"Checkpoint target {target!r} is not a subclass of {cls.__name__}."
-                )
+                raise TypeError(f"Checkpoint target {target!r} is not a subclass of {cls.__name__}.")
             cls = resolved_cls
         return cls.restore_from(model_path_or_name)
     else:
@@ -93,12 +91,8 @@ def load_pretrained_hf(
             model_path_or_name, torch_dtype=dtype, trust_remote_code=trust_remote_code
         )
     else:
-        config = AutoConfig.from_pretrained(
-            model_path_or_name, trust_remote_code=trust_remote_code
-        )
-        return AutoModelForCausalLM.from_config(
-            config, torch_dtype=dtype, trust_remote_code=trust_remote_code
-        )
+        config = AutoConfig.from_pretrained(model_path_or_name, trust_remote_code=trust_remote_code)
+        return AutoModelForCausalLM.from_config(config, torch_dtype=dtype, trust_remote_code=trust_remote_code)
 
 
 def load_pretrained_automodel_llm(
@@ -132,15 +126,11 @@ def load_pretrained_automodel_llm(
     during construction.
     """
     if replace_mtp_config and mtp_config_overrides is None:
-        raise ValueError(
-            "replace_mtp_config=True requires mtp_config_overrides to define the replacement head."
-        )
+        raise ValueError("replace_mtp_config=True requires mtp_config_overrides to define the replacement head.")
 
     from nemo_automodel import NeMoAutoModelForCausalLM
 
-    from nemo.collections.speechlm2.parts.automodel_compat import (
-        remove_automodel_backend_for_hf_fallback,
-    )
+    from nemo.collections.speechlm2.parts.automodel_compat import remove_automodel_backend_for_hf_fallback
 
     remove_automodel_backend_for_hf_fallback(
         model_path_or_name,
@@ -152,9 +142,7 @@ def load_pretrained_automodel_llm(
     if mtp_config_overrides is not None or use_repeated_mtp:
         config_kwargs, automodel_kwargs = _split_automodel_hf_resolution_kwargs(kwargs)
         if pretrained_weights:
-            checkpoint_path = _resolve_automodel_checkpoint_path(
-                model_path_or_name, config_kwargs
-            )
+            checkpoint_path = _resolve_automodel_checkpoint_path(model_path_or_name, config_kwargs)
         else:
             checkpoint_path = _resolve_automodel_checkpoint_path(
                 model_path_or_name, config_kwargs, include_weights=False
@@ -198,9 +186,7 @@ def load_pretrained_automodel_llm(
             **automodel_kwargs,
         )
         if pretrained_weights and initialize_fresh_mtp:
-            _load_automodel_base_checkpoint_without_mtp(
-                model, checkpoint_path, automodel_kwargs
-            )
+            _load_automodel_base_checkpoint_without_mtp(model, checkpoint_path, automodel_kwargs)
         return model
 
     if pretrained_weights:
@@ -211,20 +197,13 @@ def load_pretrained_automodel_llm(
             **kwargs,
         )
     else:
-        config = AutoConfig.from_pretrained(
-            model_path_or_name, trust_remote_code=trust_remote_code
-        )
+        config = AutoConfig.from_pretrained(model_path_or_name, trust_remote_code=trust_remote_code)
         return NeMoAutoModelForCausalLM.from_config(config, torch_dtype=dtype, **kwargs)
 
 
-def _load_automodel_base_checkpoint_without_mtp(
-    model, model_path_or_name: str, automodel_kwargs: dict
-) -> None:
+def _load_automodel_base_checkpoint_without_mtp(model, model_path_or_name: str, automodel_kwargs: dict) -> None:
     """Load an Automodel base checkpoint without overwriting a freshly configured MTP head."""
-    from nemo_automodel.components.checkpoint.checkpointing import (
-        Checkpointer,
-        CheckpointingConfig,
-    )
+    from nemo_automodel.components.checkpoint.checkpointing import Checkpointer, CheckpointingConfig
 
     distributed_setup = automodel_kwargs.get("distributed_setup")
     mesh_context = getattr(distributed_setup, "mesh_context", None)
@@ -247,15 +226,9 @@ def _load_automodel_base_checkpoint_without_mtp(
         process_group=getattr(mesh_context, "process_group", None),
     )
 
-    device = (
-        torch.device("cuda", torch.cuda.current_device())
-        if torch.cuda.is_available()
-        else torch.device("cpu")
-    )
+    device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
     with _exclude_mtp_checkpoint_state(model):
-        checkpointer.load_base_model(
-            model, device, cache_dir, model_path_or_name, load_base_model=True
-        )
+        checkpointer.load_base_model(model, device, cache_dir, model_path_or_name, load_base_model=True)
 
 
 def update_perception_output_dim(model):
@@ -271,9 +244,7 @@ def update_perception_output_dim(model):
     hidden_size = model.llm.config.hidden_size
     proj = model.perception.proj
     if isinstance(proj, torch.nn.Linear) and proj.out_features != hidden_size:
-        model.perception.proj = torch.nn.Linear(
-            proj.in_features, hidden_size, bias=proj.bias is not None
-        )
+        model.perception.proj = torch.nn.Linear(proj.in_features, hidden_size, bias=proj.bias is not None)
 
 
 @contextmanager
@@ -297,15 +268,10 @@ def setup_audio_codec(model: torch.nn.Module):
 
     Includes a workaround for PTL auto-downcasting the codec model to bf16 with bf16-true precision.
     """
-    if (
-        hasattr(model, "audio_codec")
-        and next(model.audio_codec.parameters()).dtype == torch.float
-    ):
+    if hasattr(model, "audio_codec") and next(model.audio_codec.parameters()).dtype == torch.float:
         return  # skip if already set up and has the right dtype
     with fp32_precision():
-        model.audio_codec = load_pretrained_nemo(
-            AudioCodecModel, model.cfg.pretrained_audio_codec
-        ).eval()
+        model.audio_codec = load_pretrained_nemo(AudioCodecModel, model.cfg.pretrained_audio_codec).eval()
     for p in model.audio_codec.parameters():
         p.requires_grad = False
     del model.audio_codec.discriminator  # free up some memory
@@ -319,17 +285,12 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
 
     If user config specifies encoder parameters, they will override the pretrained model's config.
     """
-    from nemo.collections.speechlm2.modules.perception import (
-        MultiLayerProjectionConnector,
-        QformerConnector,
-    )
+    from nemo.collections.speechlm2.modules.perception import MultiLayerProjectionConnector, QformerConnector
 
     # Save user-specified encoder config before filling missing architecture fields.
     user_encoder_config = {}
     if "encoder" in model.cfg.perception:
-        user_encoder_config = OmegaConf.to_container(
-            model.cfg.perception.encoder, resolve=True
-        )
+        user_encoder_config = OmegaConf.to_container(model.cfg.perception.encoder, resolve=True)
 
     # Training configs normally omit these fields and get them from the ASR model.
     # Do the same for architecture-only initialization, without loading ASR weights.
@@ -338,16 +299,8 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
     )
     asr = None
     if needs_asr_config:
-        asr = (
-            load_pretrained_nemo(ASRModel, model.cfg.pretrained_asr).eval()
-            if pretrained_weights
-            else None
-        )
-        asr_cfg = (
-            asr.cfg
-            if asr is not None
-            else load_pretrained_nemo_config(ASRModel, model.cfg.pretrained_asr)
-        )
+        asr = load_pretrained_nemo(ASRModel, model.cfg.pretrained_asr).eval() if pretrained_weights else None
+        asr_cfg = asr.cfg if asr is not None else load_pretrained_nemo_config(ASRModel, model.cfg.pretrained_asr)
 
         with open_dict(model.cfg):
             if pretrained_weights or "preprocessor" not in model.cfg.perception:
@@ -379,17 +332,12 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
             model.perception.modality_adapter,
             (QformerConnector, MultiLayerProjectionConnector),
         ):
-            asr_sd = {
-                ("encoder_multilayer." + k if k.startswith("encoder.") else k): v
-                for k, v in asr_sd.items()
-            }
+            asr_sd = {("encoder_multilayer." + k if k.startswith("encoder.") else k): v for k, v in asr_sd.items()}
         model.perception.load_state_dict(asr_sd, strict=False)
 
     if model.cfg.get("pe_encoder_path", None) not in (None, "", False):
         if model.cfg.get("speaker_encoder", None) not in (None, "", False):
-            raise ValueError(
-                "pe_encoder_path and speaker_encoder are mutually exclusive."
-            )
+            raise ValueError("pe_encoder_path and speaker_encoder are mutually exclusive.")
         setup_parallel_expert_encoder(model)
     elif model.cfg.get("speaker_encoder", None) not in (None, "", False):
         setup_independent_speaker_encoder(model)
@@ -403,10 +351,7 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
     independently inside :class:`IndependentDualEncoder`; their same-rate states
     are concatenated before the existing perception-to-LLM projection.
     """
-    from nemo.collections.speechlm2.modules.perception import (
-        IdentityConnector,
-        IndependentDualEncoder,
-    )
+    from nemo.collections.speechlm2.modules.perception import IdentityConnector, IndependentDualEncoder
 
     cfg = model.cfg.speaker_encoder
     artifact = Path(str(cfg.get("path", "")))
@@ -414,25 +359,17 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
     weights_path = artifact / "model.safetensors"
     if not artifact.is_dir() or not config_path.is_file() or not weights_path.is_file():
         raise FileNotFoundError(
-            "model.speaker_encoder.path must contain model_config.yaml and model.safetensors; "
-            f"got {artifact}."
+            "model.speaker_encoder.path must contain model_config.yaml and model.safetensors; " f"got {artifact}."
         )
     if model.cfg.get("encoder_chunk_size_seconds", None) is not None:
         raise ValueError(
             "Independent per-encoder chunking requires model.encoder_chunk_size_seconds=null; "
             "set model.speaker_encoder.asr_chunk_size_seconds and chunk_size_seconds instead."
         )
-    if (
-        not isinstance(model.perception.modality_adapter, IdentityConnector)
-        or model.perception.rote is not None
-    ):
-        raise ValueError(
-            "IndependentDualEncoder requires IdentityConnector and rote=null."
-        )
+    if not isinstance(model.perception.modality_adapter, IdentityConnector) or model.perception.rote is not None:
+        raise ValueError("IndependentDualEncoder requires IdentityConnector and rote=null.")
     if "encoder_multilayer" in model.perception._modules:
-        raise ValueError(
-            "IndependentDualEncoder does not support multi-layer perception adapters."
-        )
+        raise ValueError("IndependentDualEncoder does not support multi-layer perception adapters.")
 
     speaker_config = OmegaConf.load(config_path)
     speaker = model.perception.from_config_dict(speaker_config)
@@ -440,8 +377,7 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
     speaker.load_state_dict(state, strict=True)
 
     frame_shift_seconds = (
-        model.perception.preprocessor.featurizer.hop_length
-        / model.perception.preprocessor.featurizer.sample_rate
+        model.perception.preprocessor.featurizer.hop_length / model.perception.preprocessor.featurizer.sample_rate
     )
     dual = IndependentDualEncoder(
         model.perception.encoder,
@@ -484,13 +420,9 @@ def setup_independent_speaker_encoder(model: torch.nn.Module):
     )
 
 
-def _resolve_parallel_expert_encoder_class(
-    model_path_or_name: str, *, architecture: str | None = None
-):
+def _resolve_parallel_expert_encoder_class(model_path_or_name: str, *, architecture: str | None = None):
     """Resolve a PEE loader by bundle schema while preserving remote defaults."""
-    return resolve_parallel_expert_encoder_pt(
-        model_path_or_name, architecture=architecture
-    )
+    return resolve_parallel_expert_encoder_pt(model_path_or_name, architecture=architecture)
 
 
 def setup_parallel_expert_encoder(model: torch.nn.Module):
@@ -543,22 +475,16 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
             continue
         chunk_size = float(chunk_size)
         if chunk_size <= 0:
-            raise ValueError(
-                f"model.{cfg_key} must be positive or null, got {chunk_size}."
-            )
+            raise ValueError(f"model.{cfg_key} must be positive or null, got {chunk_size}.")
         if not hasattr(pe_encoder, attribute):
             raise TypeError(
                 f"{type(pe_encoder).__name__} does not support model.{cfg_key}; "
                 f"missing runtime attribute {attribute!r}."
             )
         setattr(pe_encoder, attribute, chunk_size)
-        logging.info(
-            "Overrode ParallelExpertEncoder %s=%g seconds", attribute, chunk_size
-        )
+        logging.info("Overrode ParallelExpertEncoder %s=%g seconds", attribute, chunk_size)
 
-    if (
-        execution_mode := model.cfg.get("pe_sequence_packed_execution_mode", None)
-    ) is not None:
+    if (execution_mode := model.cfg.get("pe_sequence_packed_execution_mode", None)) is not None:
         if execution_mode not in ("grouped", "serial_checkpointed"):
             raise ValueError(
                 "model.pe_sequence_packed_execution_mode must be grouped or serial_checkpointed, "
@@ -570,11 +496,7 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
             execution_mode,
         )
 
-    if (
-        serial_speech_grouped := model.cfg.get(
-            "pe_sequence_packed_serial_speech_grouped_moe", None
-        )
-    ) is not None:
+    if (serial_speech_grouped := model.cfg.get("pe_sequence_packed_serial_speech_grouped_moe", None)) is not None:
         if not isinstance(serial_speech_grouped, bool):
             raise ValueError(
                 "model.pe_sequence_packed_serial_speech_grouped_moe must be a boolean, "
@@ -605,9 +527,7 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
     # was trained on. Nothing downstream would catch a mismatch: it surfaces as a shape
     # error inside the expert's first convolution, far from the cause.
     pe_feat_in = int(getattr(pe_encoder, "_feat_in", -1) or -1)
-    mel_bins = (
-        model.cfg.get("perception", {}).get("preprocessor", {}).get("features", None)
-    )
+    mel_bins = model.cfg.get("perception", {}).get("preprocessor", {}).get("features", None)
     if pe_feat_in > 0 and mel_bins is not None and int(mel_bins) != pe_feat_in:
         raise ValueError(
             f"ParallelExpertEncoder expects {pe_feat_in} mel bins but the perception "
@@ -625,9 +545,7 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         )
 
     proj = getattr(model.perception, "proj", None)
-    if isinstance(proj, torch.nn.Linear) and int(proj.in_features) != int(
-        pe_encoder.d_model
-    ):
+    if isinstance(proj, torch.nn.Linear) and int(proj.in_features) != int(pe_encoder.d_model):
         raise ValueError(
             f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match "
             f"model.perception.proj.in_features={proj.in_features}."
@@ -694,9 +612,7 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
             prev_normalize,
         )
     else:
-        raise TypeError(
-            f"Unsupported ParallelExpertEncoder implementation: {type(pe_encoder).__name__}"
-        )
+        raise TypeError(f"Unsupported ParallelExpertEncoder implementation: {type(pe_encoder).__name__}")
 
 
 def set_model_dict_for_partial_init(
@@ -865,14 +781,8 @@ def init_perception_from_checkpoint(model: torch.nn.Module, checkpoint_path: str
     logging.info(f"Loading perception from checkpoint: {checkpoint_path}")
     checkpoint_state = _load_checkpoint_state(checkpoint_path)
 
-    checkpoint_state = {
-        k.replace("perception.", ""): v
-        for k, v in checkpoint_state.items()
-        if "perception." in k
-    }
-    checkpoint_state = set_model_dict_for_partial_init(
-        checkpoint_state, model.perception.state_dict()
-    )
+    checkpoint_state = {k.replace("perception.", ""): v for k, v in checkpoint_state.items() if "perception." in k}
+    checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.perception.state_dict())
     model.perception.load_state_dict(checkpoint_state, strict=True)
 
 
@@ -891,9 +801,7 @@ def init_model_from_checkpoint(model: torch.nn.Module, checkpoint_path: str):
     logging.info(f"Loading model from checkpoint: {checkpoint_path}")
     checkpoint_state = _load_checkpoint_state(checkpoint_path)
 
-    checkpoint_state = set_model_dict_for_partial_init(
-        checkpoint_state, model.state_dict()
-    )
+    checkpoint_state = set_model_dict_for_partial_init(checkpoint_state, model.state_dict())
     model.load_state_dict(checkpoint_state, strict=True)
 
 
@@ -912,6 +820,7 @@ def load_pretrained_model(model: torch.nn.Module, checkpoint_path: str):
 
     import gc
     import os
+
     from nemo.utils import logging
 
     logging.info(f"Loading pretrained s2s model from {checkpoint_path}")
@@ -947,9 +856,7 @@ def load_pretrained_model(model: torch.nn.Module, checkpoint_path: str):
 
         logging.info(f"Loaded {len(loaded_keys)} tensors from pretrained model")
         if missing_keys:
-            logging.warning(
-                f"Keys in checkpoint but not in model: {len(missing_keys)} keys"
-            )
+            logging.warning(f"Keys in checkpoint but not in model: {len(missing_keys)} keys")
 
         del model_state_dict
         gc.collect()
@@ -987,15 +894,9 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
     if checkpoint_path is None:
         return
 
-    logging.info(
-        f"Initializing model weights from training checkpoint: {checkpoint_path}"
-    )
+    logging.info(f"Initializing model weights from training checkpoint: {checkpoint_path}")
 
-    if (
-        isinstance(checkpoint_path, str)
-        and checkpoint_path.endswith(".nemo")
-        and Path(checkpoint_path).is_file()
-    ):
+    if isinstance(checkpoint_path, str) and checkpoint_path.endswith(".nemo") and Path(checkpoint_path).is_file():
         try:
             bundle_cfg = read_parallel_expert_encoder_bundle_config(checkpoint_path)
             classify_parallel_expert_encoder_config(bundle_cfg)
@@ -1067,16 +968,8 @@ _AUTOMODEL_HF_RESOLUTION_KWARGS = {
 
 def _split_automodel_hf_resolution_kwargs(kwargs: dict) -> tuple[dict, dict]:
     """Separate Hugging Face repository resolution options from model-construction options."""
-    config_kwargs = {
-        name: value
-        for name, value in kwargs.items()
-        if name in _AUTOMODEL_HF_RESOLUTION_KWARGS
-    }
-    automodel_kwargs = {
-        name: value
-        for name, value in kwargs.items()
-        if name not in _AUTOMODEL_HF_RESOLUTION_KWARGS
-    }
+    config_kwargs = {name: value for name, value in kwargs.items() if name in _AUTOMODEL_HF_RESOLUTION_KWARGS}
+    automodel_kwargs = {name: value for name, value in kwargs.items() if name not in _AUTOMODEL_HF_RESOLUTION_KWARGS}
     if "cache_dir" in kwargs:
         automodel_kwargs["cache_dir"] = kwargs["cache_dir"]
     return config_kwargs, automodel_kwargs
@@ -1111,16 +1004,12 @@ def _resolve_automodel_checkpoint_path(
             snapshot_kwargs["token"] = hf_kwargs["use_auth_token"]
         if not include_weights:
             snapshot_kwargs["allow_patterns"] = ["*.json", "*.py"]
-        resolved_path = Path(
-            snapshot_download(repo_id=model_path_or_name, **snapshot_kwargs)
-        )
+        resolved_path = Path(snapshot_download(repo_id=model_path_or_name, **snapshot_kwargs))
 
     if subfolder:
         resolved_path = resolved_path / subfolder
     if not resolved_path.exists():
-        raise FileNotFoundError(
-            f"Resolved Automodel checkpoint path does not exist: {resolved_path}"
-        )
+        raise FileNotFoundError(f"Resolved Automodel checkpoint path does not exist: {resolved_path}")
     return str(resolved_path)
 
 
@@ -1149,11 +1038,7 @@ def _exclude_mtp_checkpoint_state(model):
     if original_from_hf is not None:
 
         def from_hf_without_mtp(state_dict, *args, **kwargs):
-            filtered_state = {
-                key: value
-                for key, value in state_dict.items()
-                if not _is_mtp_state_key(key)
-            }
+            filtered_state = {key: value for key, value in state_dict.items() if not _is_mtp_state_key(key)}
             return original_from_hf(filtered_state, *args, **kwargs)
 
         adapter.from_hf = from_hf_without_mtp
@@ -1177,7 +1062,5 @@ def _find_automodel_state_dict_adapter(model):
         adapter = getattr(current, "state_dict_adapter", None)
         if adapter is not None:
             return adapter
-        current = getattr(current, "module", None) or getattr(
-            current, "_orig_mod", None
-        )
+        current = getattr(current, "module", None) or getattr(current, "_orig_mod", None)
     return None

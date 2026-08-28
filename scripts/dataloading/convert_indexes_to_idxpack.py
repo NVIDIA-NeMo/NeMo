@@ -48,10 +48,6 @@ from typing import Optional
 import click
 from lhotse.index_pack import IndexPack, IndexPackCollectionSpec, write_index_pack
 from lhotse.indexing import index_file_path
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    validate_wds_v2_tar_index,
-    wds_v2_index_path,
-)
 from omegaconf import DictConfig, ListConfig
 from scripts.dataloading._sharegpt_route_cli import ensure_sharegpt_route
 from scripts.dataloading._sharegpt_route_config import discover_sharegpt_route_specs
@@ -68,6 +64,8 @@ from scripts.dataloading.build_indexes import (
     _load_input_cfg,
     _resolve_input_cfg,
 )
+
+from nemo.collections.common.data.lhotse.indexed_adapters import validate_wds_v2_tar_index, wds_v2_index_path
 
 
 def _add_collection(
@@ -173,9 +171,7 @@ def _read_raw_tar_sentinel(idx_path: Path) -> tuple[int, os.stat_result]:
 def _repair_local_native_tar_sidecar(path: str, repair_root) -> Path:
     if _is_remote_path(path):
         raise ValueError(f"Refusing to repair non-local native tar source: {path}")
-    from nemo.collections.common.data.lhotse.indexed_adapters import (
-        create_tar_index as create_nemo_tar_index,
-    )
+    from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 
     repair_idx = _resolve_local_sidecar(path, repair_root)
     repair_idx.parent.mkdir(parents=True, exist_ok=True)
@@ -319,6 +315,7 @@ def _preflight_native_tar_sidecars(
             validated.add(path)
     return source_size_overrides, index_path_overrides
 
+
 def _preflight_wds_v2_sidecars(collections, indexes_root) -> dict[str, Path]:
     index_path_overrides = {}
     validated = set()
@@ -344,7 +341,6 @@ def _path_only_source_sizes(collections) -> dict[str, int]:
         if not collection.offsets_required
         for path in collection.paths
     }
-
 
 
 def _discover_paths_collections(
@@ -502,13 +498,11 @@ def discover_pack_collections(
     if typ not in supported:
         raise NotImplementedError(f"idxpack conversion does not support dataset type {typ!r}.")
 
-
     if typ == "share_gpt_webdataset":
         version = int(entry.get("wds_sample_index_version", 1))
         if version != 2:
             raise NotImplementedError(
-                "Packed share_gpt_webdataset requires wds_sample_index_version: 2; "
-                f"got {version}."
+                "Packed share_gpt_webdataset requires wds_sample_index_version: 2; " f"got {version}."
             )
         jobs = []
         data_dir = entry.get("data_dir")
@@ -542,8 +536,7 @@ def discover_pack_collections(
             route = route or legacy_route
             if not isinstance(route, (str, Path)) or not str(route).endswith(".sgroute"):
                 raise ValueError(
-                    "Packed ShareGPT collection mode requires tar_routing_filepath "
-                    "with the .sgroute suffix."
+                    "Packed ShareGPT collection mode requires tar_routing_filepath " "with the .sgroute suffix."
                 )
             _require_scalar_or_flat_path_list(raw, "manifest_filepath")
             raw_tars = entry.get("tarred_audio_filepaths")

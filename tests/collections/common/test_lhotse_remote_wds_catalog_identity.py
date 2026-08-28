@@ -23,11 +23,9 @@ import pytest
 import yaml
 from click.testing import CliRunner
 from lhotse.indexing import index_file_path
+from scripts.dataloading import build_indexes, convert_indexes_to_idxpack
 
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    create_wds_v2_tar_index,
-    validate_wds_v2_tar_index,
-)
+from nemo.collections.common.data.lhotse.indexed_adapters import create_wds_v2_tar_index, validate_wds_v2_tar_index
 from nemo.collections.common.data.lhotse.sharegpt_tar_routing import (
     ShareGptTarRoutingIndex,
     TarRoute,
@@ -36,7 +34,6 @@ from nemo.collections.common.data.lhotse.sharegpt_tar_routing import (
     ordered_tar_catalog_digest,
 )
 from nemo.collections.common.data.lhotse.wds_catalog import discover_webdataset_shards
-from scripts.dataloading import build_indexes, convert_indexes_to_idxpack
 
 
 def _tar_bytes(sample_id: str) -> bytes:
@@ -62,9 +59,7 @@ def _native_tar_bytes() -> bytes:
     return buffer.getvalue()
 
 
-def _write_remote_sidecars(
-    indexes_root: Path, manifest: str, tar: str, manifest_bytes: bytes, tar_bytes: bytes
-):
+def _write_remote_sidecars(indexes_root: Path, manifest: str, tar: str, manifest_bytes: bytes, tar_bytes: bytes):
     manifest_idx = Path(index_file_path(manifest, indexes_root))
     tar_idx = Path(index_file_path(tar, indexes_root))
     manifest_idx.parent.mkdir(parents=True, exist_ok=True)
@@ -185,9 +180,7 @@ def test_remote_wds_discovery_fails_closed_without_catalog(fake_ais):
     ]
 
 
-def test_remote_wds_v2_build_uses_range_reader_and_rejects_same_size_replacement(
-    tmp_path, fake_ais
-):
+def test_remote_wds_v2_build_uses_range_reader_and_rejects_same_size_replacement(tmp_path, fake_ais):
     remote = "s3://bucket/shard.tar"
     original = _tar_bytes("0")
     replacement = _tar_bytes("1")
@@ -201,15 +194,11 @@ def test_remote_wds_v2_build_uses_range_reader_and_rejects_same_size_replacement
     assert metadata["source"]["object_identity"] == "etag:old"
 
     metadata["source"]["object_identity"] = None
-    metadata_path.write_text(
-        json.dumps(metadata, separators=(",", ":"), sort_keys=True)
-    )
+    metadata_path.write_text(json.dumps(metadata, separators=(",", ":"), sort_keys=True))
     with pytest.raises(ValueError, match="missing a stable object_identity"):
         validate_wds_v2_tar_index(remote, idx_path=idx_path)
     metadata["source"]["object_identity"] = "etag:old"
-    metadata_path.write_text(
-        json.dumps(metadata, separators=(",", ":"), sort_keys=True)
-    )
+    metadata_path.write_text(json.dumps(metadata, separators=(",", ":"), sort_keys=True))
 
     fake_ais.objects[remote] = replacement
     fake_ais.identities[remote] = "etag:new"
@@ -250,17 +239,13 @@ def test_remote_catalog_flows_through_builder_and_converter_discovery(fake_ais):
 
 def test_remote_catalog_rejects_traversal_outside_uri_authority(fake_ais):
     root = "s3://bucket/dataset"
-    fake_ais.objects[f"{root}/wids-meta.json"] = json.dumps(
-        {"shardlist": [{"url": "../../../escape.tar"}]}
-    ).encode()
+    fake_ais.objects[f"{root}/wids-meta.json"] = json.dumps({"shardlist": [{"url": "../../../escape.tar"}]}).encode()
 
     with pytest.raises(ValueError, match="traversal"):
         discover_webdataset_shards(root, require_catalog=True)
 
 
-def test_remote_sharegpt_route_build_uses_bounded_sources_and_local_sidecars(
-    tmp_path, fake_ais
-):
+def test_remote_sharegpt_route_build_uses_bounded_sources_and_local_sidecars(tmp_path, fake_ais):
     manifest = "s3://bucket/rows.jsonl"
     tar = "ais://bucket/audio.tar"
     manifest_bytes = (
@@ -278,9 +263,7 @@ def test_remote_sharegpt_route_build_uses_bounded_sources_and_local_sidecars(
     tar_bytes = _native_tar_bytes()
     fake_ais.objects.update({manifest: manifest_bytes, tar: tar_bytes})
     fake_ais.identities.update({manifest: "etag:manifest-v1", tar: "etag:tar-v1"})
-    manifest_idx, tar_idx = _write_remote_sidecars(
-        tmp_path / "indexes", manifest, tar, manifest_bytes, tar_bytes
-    )
+    manifest_idx, tar_idx = _write_remote_sidecars(tmp_path / "indexes", manifest, tar, manifest_bytes, tar_bytes)
     route_path = tmp_path / "remote.sgroute"
 
     build_sharegpt_tar_routing_index(
@@ -293,10 +276,7 @@ def test_remote_sharegpt_route_build_uses_bounded_sources_and_local_sidecars(
 
     with ShareGptTarRoutingIndex(route_path) as routing:
         assert routing.routes_for_row(0) == (TarRoute(0, 0),)
-        assert (
-            routing.header.manifest_content_digest
-            == ordered_manifest_content_digest([manifest])
-        )
+        assert routing.header.manifest_content_digest == ordered_manifest_content_digest([manifest])
         assert routing.header.tar_catalog_digest == ordered_tar_catalog_digest([tar])
 
     fake_ais.identities[tar] = "etag:tar-v2"

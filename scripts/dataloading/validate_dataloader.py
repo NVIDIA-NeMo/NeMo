@@ -55,20 +55,11 @@ from omegaconf import OmegaConf
 
 # Local helpers — same directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _validate_dataloader.config_inject import (  # noqa: E402
-    inject_groundtruth_flags,
-    inject_validator_flags,
-)
+from _validate_dataloader.config_inject import inject_groundtruth_flags, inject_validator_flags  # noqa: E402
 from _validate_dataloader.cut_id_dataset import _validation_identity  # noqa: E402
-from _validate_dataloader.full_mode import (  # noqa: E402
-    build_tokenizer as _build_tokenizer,
-)
-from _validate_dataloader.full_mode import (
-    build_validation_dataset as _build_validation_dataset,
-)
-from _validate_dataloader.full_mode import (
-    validate_full_batch as _validate_full_batch,
-)
+from _validate_dataloader.full_mode import build_tokenizer as _build_tokenizer  # noqa: E402
+from _validate_dataloader.full_mode import build_validation_dataset as _build_validation_dataset
+from _validate_dataloader.full_mode import validate_full_batch as _validate_full_batch
 from _validate_dataloader.full_stats import (  # noqa: E402
     FullValidationStats,
     configured_audio_path_resolution_modes,
@@ -100,12 +91,8 @@ def _ensure_validation_process_group(*, rank: int, world_size: int) -> bool:
             )
         return False
 
-    LOG.info(
-        "initializing gloo process group for rank=%d world_size=%d", rank, world_size
-    )
-    torch.distributed.init_process_group(
-        backend="gloo", rank=rank, world_size=world_size
-    )
+    LOG.info("initializing gloo process group for rank=%d world_size=%d", rank, world_size)
+    torch.distributed.init_process_group(backend="gloo", rank=rank, world_size=world_size)
     return True
 
 
@@ -210,25 +197,16 @@ def cli(
     )
 
     if phase == PHASE_GROUNDTRUTH and world_size != 1:
-        raise click.ClickException(
-            f"--phase=groundtruth requires nproc-per-node=1 (got world_size={world_size})"
-        )
-    initialized_process_group = _ensure_validation_process_group(
-        rank=rank, world_size=world_size
-    )
+        raise click.ClickException(f"--phase=groundtruth requires nproc-per-node=1 (got world_size={world_size})")
+    initialized_process_group = _ensure_validation_process_group(rank=rank, world_size=world_size)
 
     cfg = OmegaConf.load(config_path)
     if data_blend_dir is not None:
         cfg.data_blend_dir = data_blend_dir
     if input_cfg_path is not None:
         input_cfg_override = OmegaConf.load(input_cfg_path)
-        if not (
-            OmegaConf.is_dict(input_cfg_override)
-            or OmegaConf.is_list(input_cfg_override)
-        ):
-            raise click.ClickException(
-                "--input-cfg must contain a YAML mapping or list"
-            )
+        if not (OmegaConf.is_dict(input_cfg_override) or OmegaConf.is_list(input_cfg_override)):
+            raise click.ClickException("--input-cfg must contain a YAML mapping or list")
         cfg.data[section].input_cfg = input_cfg_override
         LOG.info("override data.%s.input_cfg from %s", section, input_cfg_path)
     OmegaConf.resolve(cfg)
@@ -236,13 +214,9 @@ def cli(
 
     if mode == "full" and metadata_only:
         metadata_only = False
-        LOG.info(
-            "full mode: forced metadata_only=False to materialize production payloads"
-        )
+        LOG.info("full mode: forced metadata_only=False to materialize production payloads")
 
-    inject_validator_flags(
-        section_cfg, force_finite=force_finite, metadata_only=metadata_only
-    )
+    inject_validator_flags(section_cfg, force_finite=force_finite, metadata_only=metadata_only)
     if num_workers_override is not None:
         LOG.info(
             "override num_workers: %s -> %s",
@@ -259,9 +233,7 @@ def cli(
         )
 
     # Defer import until env vars and config injections are in place.
-    from nemo.collections.common.data.lhotse.dataloader import (
-        get_lhotse_dataloader_from_config,
-    )
+    from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader_from_config
 
     tokenizer = _build_tokenizer(cfg, section_cfg, required=mode == "full")
     dataset = _build_validation_dataset(cfg, tokenizer, mode=mode, section=section)
@@ -297,9 +269,7 @@ def cli(
         full_stats = FullValidationStats(
             requested_batches=None if phase == PHASE_GROUNDTRUTH else steps,
             audio_placeholder_token_id=placeholder_id,
-            audio_path_resolution_modes=configured_audio_path_resolution_modes(
-                section_cfg
-            ),
+            audio_path_resolution_modes=configured_audio_path_resolution_modes(section_cfg),
         )
         full_summary_path = phase_dir / f"full_summary_rank_{rank:03d}.json"
 
@@ -385,9 +355,7 @@ def cli(
                 break
 
     if mode == "full" and phase != PHASE_GROUNDTRUTH and completed_steps < steps:
-        error = click.ClickException(
-            f"full validation materialized {completed_steps}/{steps} requested batches"
-        )
+        error = click.ClickException(f"full validation materialized {completed_steps}/{steps} requested batches")
         full_stats.record_failure(step=completed_steps, error=error)
         full_stats.write(
             full_summary_path,
@@ -477,8 +445,7 @@ def _extract_semantic_cut_ids(batch, expected_count: int) -> list[str]:
     normalized = [str(value) for value in values]
     if len(normalized) != expected_count:
         raise click.ClickException(
-            "validator semantic ID cardinality mismatch: "
-            f"expected={expected_count} actual={len(normalized)}"
+            "validator semantic ID cardinality mismatch: " f"expected={expected_count} actual={len(normalized)}"
         )
     return normalized
 
@@ -495,8 +462,7 @@ def _extract_source_labels(batch, expected_count: int) -> tuple[list[str], list[
         normalized = [str(value) for value in values]
         if len(normalized) != expected_count:
             raise click.ClickException(
-                "validator source-label cardinality mismatch: "
-                f"expected={expected_count} actual={len(normalized)}"
+                "validator source-label cardinality mismatch: " f"expected={expected_count} actual={len(normalized)}"
             )
         return normalized
 
@@ -547,9 +513,7 @@ def _write_throughput_summary(
                 "p95_ms": round(p95, 3),
                 "mean_ms": round(mean, 3),
                 "count": len(samples),
-                "t_first_batch_ms": round(t_first_batch_ms, 3)
-                if t_first_batch_ms
-                else None,
+                "t_first_batch_ms": round(t_first_batch_ms, 3) if t_first_batch_ms else None,
                 "num_workers": int(num_workers),
             },
             indent=2,

@@ -59,9 +59,10 @@ from typing import Optional
 
 import click
 from lhotse.indexing import index_file_path
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    create_tar_index as create_nemo_tar_index,
-)
+from omegaconf import DictConfig, ListConfig, OmegaConf
+from scripts.dataloading._sharegpt_route_cli import ensure_sharegpt_route
+
+from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 from nemo.collections.common.data.lhotse.indexed_adapters import (
     create_wds_v2_tar_index,
     validate_wds_v2_tar_index,
@@ -70,8 +71,6 @@ from nemo.collections.common.data.lhotse.indexed_adapters import (
 )
 from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
 from nemo.collections.common.data.lhotse.wds_catalog import discover_webdataset_shards
-from omegaconf import DictConfig, ListConfig, OmegaConf
-from scripts.dataloading._sharegpt_route_cli import ensure_sharegpt_route
 
 # --------------------------------------------------------------------------- #
 # Tar layout taxonomy.
@@ -152,6 +151,7 @@ def _flatten_path_spec(spec) -> list[str]:
 def _expand_jsonl(spec) -> list[str]:
     return [p for raw in _flatten_path_spec(spec) for p in expand_sharded_filepaths(raw)]
 
+
 def _expand_jsonl_with_specs(spec) -> tuple[list[str], list[str]]:
     paths = []
     specs = []
@@ -160,7 +160,6 @@ def _expand_jsonl_with_specs(spec) -> tuple[list[str], list[str]]:
         paths.extend(expanded)
         specs.extend([raw] * len(expanded))
     return paths, specs
-
 
 
 def _expand_tars(spec) -> list[str]:
@@ -331,9 +330,7 @@ def discover(
                 raise ValueError("tar_routing_filepath and tar_routing_index disagree")
             route_path = route_path or legacy_route_path
             if not isinstance(route_path, (str, Path)) or not str(route_path).endswith(".sgroute"):
-                raise ValueError(
-                    "ShareGPT collection mode requires tar_routing_filepath with the .sgroute suffix"
-                )
+                raise ValueError("ShareGPT collection mode requires tar_routing_filepath with the .sgroute suffix")
             manifests, manifest_specs = _expand_jsonl_with_specs(raw_manifests)
             tars = _expand_tars(raw_tars)
             jobs.append(
@@ -490,9 +487,7 @@ def _validate_legacy_sidecar(job: IndexJob) -> None:
         raise ValueError(f"Index offsets are not monotonic: {idx_path}")
     source_size = _source_size(job.path)
     if int(offsets[-1]) != source_size:
-        raise ValueError(
-            f"Index sentinel mismatch for {job.path}: index={int(offsets[-1])}, source={source_size}"
-        )
+        raise ValueError(f"Index sentinel mismatch for {job.path}: index={int(offsets[-1])}, source={source_size}")
 
     if not job.path.startswith(("ais://", "s3://")):
         source_stat = Path(job.path).stat()
@@ -649,7 +644,6 @@ def main(
                     100.0 * done / total,
                     len(failures),
                 )
-
 
     if not failures:
         for job in route_todo:

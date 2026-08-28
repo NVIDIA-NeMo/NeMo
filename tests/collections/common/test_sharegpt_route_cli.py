@@ -23,14 +23,10 @@ import yaml
 from click.testing import CliRunner
 from lhotse.index_pack import IndexPack, index_pack_collection_key
 from lhotse.indexing import create_jsonl_index
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    create_tar_index as create_nemo_tar_index,
-)
-from nemo.collections.common.data.lhotse.sharegpt_tar_routing import (
-    ShareGptTarRoutingIndex,
-    TarRoute,
-)
 from scripts.dataloading import build_indexes, convert_indexes_to_idxpack
+
+from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
+from nemo.collections.common.data.lhotse.sharegpt_tar_routing import ShareGptTarRoutingIndex, TarRoute
 
 
 def _write_sharegpt_collection(tmp_path: Path) -> tuple[Path, Path, Path]:

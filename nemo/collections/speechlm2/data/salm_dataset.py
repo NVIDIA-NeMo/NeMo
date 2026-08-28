@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import torch.utils.data
 from lhotse import CutSet, fastcopy
-from lhotse.cut import MixedCut, MultiCut
+from lhotse.cut import Cut, MixedCut, MultiCut
 from lhotse.dataset import AudioSamples
 from torch.nn import CrossEntropyLoss
 from torch.nn.utils.rnn import pad_sequence
@@ -34,6 +34,8 @@ from nemo.collections.asr.parts.utils.sot_speaker_alignment import (
     speaker_activity_from_cut,
 )
 from nemo.collections.common.data.lhotse import NeMoMultimodalConversation
+from nemo.collections.common.data.lhotse.cutset import cut_to_conversation
+from nemo.collections.common.data.lhotse.dataloader import tokenize_with_prompt
 from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
     Formattable,
@@ -84,6 +86,16 @@ class SALMDataset(torch.utils.data.Dataset):
             retained conversation, the batch contains a scalar
             ``packing_efficiency`` equal to the measured token sum divided by
             this budget.
+        prompt_format (str | None):
+            Prompt formatter used to normalize raw audio cuts emitted by
+            legacy input adapters. Must be provided together with
+            ``audio_locator_tag`` and ``token_equivalent_duration`` when such
+            inputs are present.
+        audio_locator_tag (str | None):
+            Audio placeholder inserted while normalizing raw audio cuts.
+        token_equivalent_duration (float | None):
+            Duration represented by one audio token while normalizing raw
+            audio cuts.
         strict_audio_loading (bool):
             Re-raises audio collation errors and
             rejects conversations or audio items dropped or reordered by the
@@ -133,6 +145,9 @@ class SALMDataset(torch.utils.data.Dataset):
         pack_audio: bool = False,
         pack_sequences: bool = False,
         batch_tokens: int | None = None,
+        prompt_format: str | None = None,
+        audio_locator_tag: str | None = None,
+        token_equivalent_duration: float | None = None,
         strict_audio_loading: bool = True,
     ) -> None:
         self.tokenizer = tokenizer
@@ -140,6 +155,11 @@ class SALMDataset(torch.utils.data.Dataset):
         self.pack_sequences = bool(pack_sequences)
         self.pack_audio = bool(pack_audio) or self.pack_sequences
         self.batch_tokens = int(batch_tokens) if batch_tokens is not None else None
+        self.prompt_format = prompt_format
+        self.audio_locator_tag = audio_locator_tag
+        self.token_equivalent_duration = (
+            float(token_equivalent_duration) if token_equivalent_duration is not None else None
+        )
         self.strict_audio_loading = bool(strict_audio_loading)
         if self.batch_tokens is not None and self.batch_tokens <= 0:
             raise ValueError(f"batch_tokens must be positive, got {self.batch_tokens}")
@@ -181,7 +201,48 @@ class SALMDataset(torch.utils.data.Dataset):
             dataset.load_audio.ais_batch_loader.skip_failed_fetches = bool(skip_missing_manifest_entries)
         return dataset
 
+    def _normalize_examples(self, examples: CutSet) -> CutSet:
+        """Convert raw audio cuts to the conversation contract used by SALM."""
+        normalized = []
+        converted_raw_cut = False
+        for example in examples:
+            if isinstance(example, Formattable):
+                normalized.append(example)
+                continue
+            if not isinstance(example, Cut):
+                raise TypeError(
+                    "SALMDataset expected a prompt-formatted example or raw audio cut, "
+                    f"got {type(example).__name__}."
+                )
+
+            required = {
+                "prompt_format": self.prompt_format,
+                "audio_locator_tag": self.audio_locator_tag,
+                "token_equivalent_duration": self.token_equivalent_duration,
+            }
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise TypeError(
+                    "SALMDataset cannot normalize a raw audio cut without "
+                    f"{', '.join(missing)}."
+                )
+            converted_raw_cut = True
+            conversation = cut_to_conversation(
+                example,
+                audio_locator_tag=self.audio_locator_tag,
+                token_equivalent_duration=self.token_equivalent_duration,
+            )
+            normalized.append(
+                tokenize_with_prompt(
+                    conversation,
+                    tokenizer=self.tokenizer,
+                    prompt_format=self.prompt_format,
+                )
+            )
+        return CutSet(normalized) if converted_raw_cut else examples
+
     def __getitem__(self, conversations: CutSet) -> dict | None:
+        conversations = self._normalize_examples(conversations)
         # The collator retains its fault-tolerant 3-tuple API, but strict mode
         # verifies exact conversation/audio identity and raises on any drop.
         # Returning None is possible only for an explicitly permissive loader;
@@ -442,7 +503,11 @@ class SALMMultiSpeakerProcessor:
         cfg = self.cfg
         speaker_activities = []
         for conversation in conversations:
-            for turn in conversation.turns:
+            # SALMDataset also accepts generic prompt-formatted ``Formattable``
+            # examples for text-only blends. Those examples intentionally do
+            # not expose multimodal ``turns`` and therefore have no auxiliary
+            # speaker targets to materialize.
+            for turn in getattr(conversation, "turns", ()):
                 if not isinstance(turn, AudioTurn):
                     continue
 

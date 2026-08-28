@@ -76,6 +76,36 @@ def test_create_salm_dataset_enables_packed_audio_without_a_second_config(monkey
 
 
 @pytest.mark.unit
+def test_create_salm_dataset_forwards_raw_cut_normalization_options(monkeypatch):
+    class RawCutSALMDataset:
+        def __init__(
+            self,
+            tokenizer,
+            prompt_format=None,
+            audio_locator_tag=None,
+            token_equivalent_duration=None,
+        ):
+            self.options = {
+                "tokenizer": tokenizer,
+                "prompt_format": prompt_format,
+                "audio_locator_tag": audio_locator_tag,
+                "token_equivalent_duration": token_equivalent_duration,
+            }
+
+    tokenizer = object()
+    monkeypatch.setattr(_SALM_TRAIN, "SALMDataset", RawCutSALMDataset)
+    options = {
+        "prompt_format": "nemotron-nano-v3",
+        "audio_locator_tag": "<|audio|>",
+        "token_equivalent_duration": 0.08,
+    }
+
+    dataset = _SALM_TRAIN._create_salm_dataset(tokenizer, {"train_ds": options})
+
+    assert dataset.options == {"tokenizer": tokenizer, **options}
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("model_cfg", "expected_pack_audio", "expected_pack_sequences"),
     [

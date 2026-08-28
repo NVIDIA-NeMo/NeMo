@@ -13,6 +13,7 @@
 # limitations under the License.
 import inspect
 import os
+from contextlib import contextmanager
 
 import pytest
 import torch
@@ -204,6 +205,62 @@ def test_salm_automodel_training_step(model, dataset, prompt_formatter, training
 
 def test_salm_automodel_training_step_uses_dataloader_iter_signature():
     assert list(inspect.signature(SALMAutomodel.training_step).parameters) == ["self", "dataloader_iter"]
+
+
+def test_salm_automodel_forward_enters_configured_te_fp8_context():
+    events = []
+
+    class FakeFP8:
+        @contextmanager
+        def maybe_te_autocast(self):
+            events.append("enter")
+            yield
+            events.append("exit")
+
+    class FakeLLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backend = type("Backend", (), {"te_fp8": FakeFP8()})()
+
+        def forward(self, *args, inputs_embeds, **kwargs):
+            events.append("forward")
+            return {"logits": inputs_embeds}
+
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    LightningModule.__init__(model)
+    model.llm = FakeLLM()
+    model._fused_linear_cross_entropy = None
+
+    outputs = model.forward(torch.randn(1, 2, 4))
+
+    assert outputs["logits"].shape == (1, 2, 4)
+    assert events == ["enter", "forward", "exit"]
+
+
+def test_salm_automodel_backward_does_not_enter_te_fp8_context(monkeypatch):
+    events = []
+
+    class FakeFP8:
+        @contextmanager
+        def maybe_te_autocast(self):
+            events.append("enter")
+            yield
+            events.append("exit")
+
+    class FakeLLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.backend = type("Backend", (), {"te_fp8": FakeFP8()})()
+
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    LightningModule.__init__(model)
+    model.llm = FakeLLM()
+    monkeypatch.setattr(model, "_setup_moe_fsdp_sync", lambda: events.append("setup"))
+    monkeypatch.setattr(LightningModule, "backward", lambda *_args, **_kwargs: events.append("backward"))
+
+    model.backward(torch.tensor(1.0))
+
+    assert events == ["setup", "backward"]
 
 
 def test_salm_automodel_pad_token_override_preserves_eot_labels(monkeypatch):

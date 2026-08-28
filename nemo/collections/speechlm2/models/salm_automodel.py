@@ -14,7 +14,7 @@
 import re
 import warnings
 from collections import defaultdict
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any
 
 import torch
@@ -244,15 +244,19 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             llm_kwargs["output_hidden_states"] = True
             llm_kwargs["compute_logits"] = False
 
-        out = self.llm(
-            *llm_positional_args,
-            inputs_embeds=input_embeds,
-            attention_mask=attention_mask,
-            past_key_values=cache,
-            use_cache=cache is not None,
-            return_dict=True,
-            **llm_kwargs,
-        )
+        backend = getattr(self.llm, "backend", None)
+        te_fp8 = getattr(backend, "te_fp8", None)
+        fp8_ctx = te_fp8.maybe_te_autocast() if te_fp8 is not None else nullcontext()
+        with fp8_ctx:
+            out = self.llm(
+                *llm_positional_args,
+                inputs_embeds=input_embeds,
+                attention_mask=attention_mask,
+                past_key_values=cache,
+                use_cache=cache is not None,
+                return_dict=True,
+                **llm_kwargs,
+            )
         if not isinstance(out, dict):
             # NeMo Automodel doesn't respect return_dict=True yet
             ans = {"logits": out}
@@ -410,6 +414,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # Generate stays on the BSHD path (it doesn't go through prepare_inputs).
         if self.cfg.get("packed_sequences", False):
             from nemo.collections.speechlm2.parts.packed_sequences import prepare_packed_llm_inputs
+            te_fp8 = getattr(getattr(self.llm, "backend", None), "te_fp8", None)
 
             ans = prepare_packed_llm_inputs(
                 input_ids=batch["input_ids"],
@@ -422,6 +427,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 mtp_num_depths=self._mtp_num_depths if include_mtp_inputs else 0,
                 embed_tokens=self._embed_tokens,
                 text_cu_seqlens=batch.get("text_cu_seqlens"),
+                token_alignment=8 if te_fp8 is not None else 1,
             )
             if dummy_audio_loss is not None:
                 ans["dummy_audio_loss"] = dummy_audio_loss
@@ -967,6 +973,9 @@ class SALMAutomodel(LightningModule, HFHubMixin):
 
     def backward(self, *args, **kwargs):
         self._setup_moe_fsdp_sync()
+        # Transformer Engine FP8 autocast is a forward-only context. Backward
+        # precision and scaling state come from the recorded forward graph; a
+        # fresh context here would update global amax bookkeeping twice.
         with loss_parallel():
             super().backward(*args, **kwargs)
 

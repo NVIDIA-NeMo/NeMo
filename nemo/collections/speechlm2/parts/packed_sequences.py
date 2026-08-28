@@ -26,6 +26,7 @@ testable on CPU.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -45,6 +46,7 @@ def pack_audio_into_text_embeds(
     placeholder_id: int,
     cp_size: int = 1,
     tp_size: int = 1,
+    token_alignment: int = 1,
     ignore_index: int = -100,
 ) -> dict[str, Tensor]:
     """Left-unpad dense text embeddings, splice audio frames, and pack THD.
@@ -65,6 +67,7 @@ def pack_audio_into_text_embeds(
         placeholder_id=placeholder_id,
         cp_size=cp_size,
         tp_size=tp_size,
+        token_alignment=token_alignment,
         ignore_index=ignore_index,
     )
 
@@ -155,6 +158,7 @@ def _pack_audio_into_unpadded_text_embeds(
     placeholder_id: int,
     cp_size: int = 1,
     tp_size: int = 1,
+    token_alignment: int = 1,
     ignore_index: int = -100,
 ) -> dict[str, Tensor]:
     """Splice audio frames into per-utterance text embeddings and pack into THD.
@@ -181,6 +185,9 @@ def _pack_audio_into_unpadded_text_embeds(
                          ``T_total % tp_size == 0`` (sequence-parallel). When
                          CP is active, the bump also preserves the
                          ``2 * cp_size`` per-utterance alignment.
+        token_alignment: the token count seen by each CP rank is rounded up to
+                         this multiple. Transformer Engine FP8 requires 8; the
+                         default 1 preserves existing behavior.
         ignore_index:    label fill for audio-frame slots, padding slots, and
                          the last position of every utterance.
 
@@ -257,28 +264,34 @@ def _pack_audio_into_unpadded_text_embeds(
             f"Used {rep_idx} of {len(replacements)} audio replacements — "
             f"placeholder occurrences in input_ids do not match replacements length."
         )
+    if not isinstance(token_alignment, int) or token_alignment < 1:
+        raise ValueError(f"token_alignment must be a positive integer, got {token_alignment!r}")
 
     # Round each utterance's length up to a multiple of 2*cp_size (TE-CP
     # interleaves 2 chunks per rank); skip rounding when cp_size == 1. Then
-    # bump the last so the total is divisible by tp_size for sequence
-    # parallelism, preserving the CP alignment when CP is active.
+    # bump the last so the total satisfies both TP and backend alignment while
+    # preserving the per-utterance CP alignment when CP is active.
     if cp_size > 1:
         cp_mult = 2 * cp_size
         padded_lens = [((L + cp_mult - 1) // cp_mult) * cp_mult for L in real_lens]
     else:
         padded_lens = list(real_lens)
-    if tp_size > 1:
+    # Context parallelism shards the packed token dimension before the LLM, so
+    # the global total must contain ``token_alignment`` tokens per CP rank.
+    # Retain the existing TP divisibility contract at the same time.
+    total_alignment = math.lcm(tp_size, token_alignment * cp_size)
+    if total_alignment > 1:
         total_len = sum(padded_lens)
         if cp_size > 1:
             cp_mult = 2 * cp_size
-            tp_bump = 0
-            while (total_len + tp_bump) % tp_size != 0:
-                tp_bump += cp_mult
-            padded_lens[-1] += tp_bump
+            alignment_bump = 0
+            while (total_len + alignment_bump) % total_alignment != 0:
+                alignment_bump += cp_mult
+            padded_lens[-1] += alignment_bump
         else:
-            rem = total_len % tp_size
+            rem = total_len % total_alignment
             if rem != 0:
-                padded_lens[-1] += tp_size - rem
+                padded_lens[-1] += total_alignment - rem
 
     # Materialize the flat THD batch.
     flat_emb_segs: list[Tensor] = []
@@ -394,6 +407,7 @@ def prepare_packed_llm_inputs(
     mtp_num_depths: int = 0,
     embed_tokens: Callable[[Tensor], Tensor] | None = None,
     text_cu_seqlens: Tensor | None = None,
+    token_alignment: int = 1,
 ) -> dict[str, Any]:
     """Pack a SALM minibatch and (optionally) shard it across CP ranks.
 
@@ -416,6 +430,8 @@ def prepare_packed_llm_inputs(
             must be provided.
         text_cu_seqlens: Cumulative text row offsets [batch + 1], required
             when ``input_ids`` is flat and omitted for padded inputs.
+        token_alignment: Required multiple for the packed-token count seen by
+            each CP rank; default 1 preserves the existing behavior.
 
     Returns:
         Mapping containing rank-local THD model inputs. ``input_embeds`` has
@@ -455,6 +471,7 @@ def prepare_packed_llm_inputs(
             placeholder_id=placeholder_id,
             cp_size=cp_size,
             tp_size=tp_size,
+            token_alignment=token_alignment,
         )
     else:
         packed = pack_audio_into_text_embeds(
@@ -466,6 +483,7 @@ def prepare_packed_llm_inputs(
             placeholder_id=placeholder_id,
             cp_size=cp_size,
             tp_size=tp_size,
+            token_alignment=token_alignment,
         )
     num_tokens = packed["seq_lens"].sum()
     batch_size = input_ids.shape[0] if text_cu_seqlens is None else text_cu_seqlens.numel() - 1

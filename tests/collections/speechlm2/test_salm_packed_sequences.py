@@ -191,6 +191,64 @@ def test_basic_pack_shapes_and_cu_seqlens():
     assert out["position_ids"].shape == (T_total,)
 
 
+def test_fp8_token_alignment_pads_only_trailing_slots():
+    input_ids = torch.tensor([[1, 2, 3, 4, 5]])
+    embeds = torch.arange(10, dtype=torch.float32).reshape(1, 5, 2)
+    target_ids = input_ids.clone()
+    out = pack_audio_into_text_embeds(
+        input_ids=input_ids,
+        embeds=embeds,
+        target_ids=target_ids,
+        replacements=[],
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        token_alignment=8,
+    )
+
+    assert out["seq_lens"].squeeze(-1).tolist() == [5]
+    assert out["seq_lens_padded"].squeeze(-1).tolist() == [8]
+    assert out["cu_seqlens"].tolist() == [0, 8]
+    assert out["max_seqlen"].item() == 8
+    torch.testing.assert_close(out["inputs_embeds"][:5], embeds[0])
+    assert torch.count_nonzero(out["inputs_embeds"][5:]).item() == 0
+    assert out["labels"].tolist() == [2, 3, 4, 5, -100, -100, -100, -100]
+
+
+def test_fp8_token_alignment_accounts_for_context_parallel_sharding():
+    input_ids = torch.tensor([[1, 2, 3, 4, 5]])
+    embeds = torch.arange(10, dtype=torch.float32).reshape(1, 5, 2)
+    target_ids = input_ids.clone()
+    packed = pack_audio_into_text_embeds(
+        input_ids=input_ids,
+        embeds=embeds,
+        target_ids=target_ids,
+        replacements=[],
+        padding_id=PAD,
+        placeholder_id=AUDIO,
+        cp_size=2,
+        tp_size=3,
+        token_alignment=8,
+    )
+
+    assert packed["seq_lens"].squeeze(-1).tolist() == [5]
+    assert packed["seq_lens_padded"].squeeze(-1).tolist() == [48]
+    assert packed["inputs_embeds"].shape[0] == 48
+    assert packed["inputs_embeds"].shape[0] % (2 * 8) == 0
+
+
+def test_token_alignment_must_be_positive():
+    with pytest.raises(ValueError, match="token_alignment must be a positive integer"):
+        pack_audio_into_text_embeds(
+            input_ids=torch.tensor([[1]]),
+            embeds=torch.zeros(1, 1, 2),
+            target_ids=torch.tensor([[1]]),
+            replacements=[],
+            padding_id=PAD,
+            placeholder_id=AUDIO,
+            token_alignment=0,
+        )
+
+
 def test_mtp_inputs_are_shifted_before_te_context_parallel_partition(monkeypatch):
     """Each CP rank receives globally shifted MTP inputs and targets."""
     labels = torch.tensor([10, 11, 12, 13, 20, 21, 22, 23])

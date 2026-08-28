@@ -19,15 +19,15 @@ from pathlib import Path
 
 import yaml
 from click.testing import CliRunner
+from scripts.dataloading.build_indexes import main as build_indexes_cli
+from scripts.dataloading.convert_indexes_to_idxpack import main as convert_indexes_cli
+from scripts.dataloading.validate_dataloader import cli as validate_dataloader_cli
 
 from nemo.collections.common.data.lhotse.text_adapters import (
     NeMoMultimodalConversationShareGPTJsonlAdapter,
     NeMoMultimodalConversationShareGPTWebdatasetAdapter,
     _ShareGPTConversationParser,
 )
-from scripts.dataloading.build_indexes import main as build_indexes_cli
-from scripts.dataloading.convert_indexes_to_idxpack import main as convert_indexes_cli
-from scripts.dataloading.validate_dataloader import cli as validate_dataloader_cli
 
 DOC_PATH = Path(__file__).parents[3] / "docs/source/speechlm2/datasets.rst"
 SECTION_TITLE = "Indexed ShareGPT audio formats"
@@ -49,9 +49,7 @@ def _code_blocks(language: str) -> list[str]:
             idx += 1
             continue
         idx += 1
-        while idx < len(lines) and (
-            not lines[idx].strip() or lines[idx].startswith("   :")
-        ):
+        while idx < len(lines) and (not lines[idx].strip() or lines[idx].startswith("   :")):
             idx += 1
         block = []
         while idx < len(lines) and (not lines[idx] or lines[idx].startswith("    ")):
@@ -93,17 +91,9 @@ def test_all_indexed_sharegpt_success_formats_are_complete_parseable_yaml():
     }
 
     adapter_fields = {
-        "share_gpt": {
-            field.name
-            for field in dataclasses.fields(
-                NeMoMultimodalConversationShareGPTJsonlAdapter
-            )
-        },
+        "share_gpt": {field.name for field in dataclasses.fields(NeMoMultimodalConversationShareGPTJsonlAdapter)},
         "share_gpt_webdataset": {
-            field.name
-            for field in dataclasses.fields(
-                NeMoMultimodalConversationShareGPTWebdatasetAdapter
-            )
+            field.name for field in dataclasses.fields(NeMoMultimodalConversationShareGPTWebdatasetAdapter)
         },
     }
     generic_fields = {"type", "force_finite"}
@@ -118,10 +108,7 @@ def test_all_indexed_sharegpt_success_formats_are_complete_parseable_yaml():
         assert entry["indexes_root"].startswith("/index-mirror/"), name
         for field_name in entry:
             public_name = renamed_fields.get(field_name, field_name)
-            assert (
-                public_name in adapter_fields[entry["type"]]
-                or field_name in generic_fields
-            ), (name, field_name)
+            assert public_name in adapter_fields[entry["type"]] or field_name in generic_fields, (name, field_name)
 
     assert "index_pack" not in examples["aligned-jsonl-tar"][0]
     for name in set(examples) - {"aligned-jsonl-tar"}:
@@ -152,9 +139,7 @@ def test_documented_json_rows_exercise_real_sharegpt_parser_contract():
     assert required_ids <= set(examples)
 
     def audio_values(sample_id: str) -> list[str]:
-        turns = _ShareGPTConversationParser(
-            ["<sound>", "<speech>"], examples[sample_id]
-        ).transform()
+        turns = _ShareGPTConversationParser(["<sound>", "<speech>"], examples[sample_id]).transform()
         return [turn["value"] for turn in turns if turn["type"] == "audio"]
 
     assert audio_values("loose-relative-scalar") == ["audio/request.wav"]
@@ -162,9 +147,7 @@ def test_documented_json_rows_exercise_real_sharegpt_parser_contract():
         "s3://example-audio/clips/left.flac",
         "ais://example-audio/clips/right.flac",
     ]
-    assert audio_values("loose-absolute-prefix-map") == [
-        "/lustre/source/audio/request.wav"
-    ]
+    assert audio_values("loose-absolute-prefix-map") == ["/lustre/source/audio/request.wav"]
     assert audio_values("unordered-tar-collection") == [
         "clips/left.flac",
         "clips/right.flac",

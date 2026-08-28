@@ -46,11 +46,11 @@ from nemo.collections.common.data.lhotse._compat import (
 )
 from nemo.collections.common.data.lhotse.audio_path_resolver import AudioPathPrefixMap
 from nemo.collections.common.data.lhotse.indexed_adapters import (
-    IndexedTarSampleBundleReader,
     IndexedTarMemberReader,
+    IndexedTarSampleBundleReader,
     IndexedTarSampleReader,
-    PackedTarSampleBundleReader,
     PackedTarMemberReader,
+    PackedTarSampleBundleReader,
     _split_json_audio_pair,
     wds_v2_index_path,
 )
@@ -1756,9 +1756,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 raise ValueError("approved_exclusion_audit_sha256 must be a lowercase SHA-256 digest.")
             self.approved_exclusion_audit_sha256 = audit_digest
         elif lines:
-            raise ValueError(
-                "excluded_manifest_lines requires approved_exclusion_audit_sha256 provenance."
-            )
+            raise ValueError("excluded_manifest_lines requires approved_exclusion_audit_sha256 provenance.")
         self._source_total_len = source_total_len
         self._excluded_manifest_lines = lines
         self._excluded_physical_indexes = tuple(line - 1 for line in lines)
@@ -1902,11 +1900,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             if isinstance(manifest_source_spec, (str, os.PathLike))
             else list(manifest_source_spec)
         )
-        manifest_specs = [
-            os.fspath(spec)
-            for spec in raw_specs
-            for _ in expand_sharded_filepaths(spec)
-        ]
+        manifest_specs = [os.fspath(spec) for spec in raw_specs for _ in expand_sharded_filepaths(spec)]
         if len(manifest_specs) != len(manifest_paths):
             raise ValueError(
                 f"ShareGPT manifest source spec expands to {len(manifest_specs)} shards but "
@@ -1915,17 +1909,11 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
         validate_sharegpt_tar_routing_index(
             self.tar_routing_filepath,
             expected_manifest_row_count=self._total_len,
-            expected_manifest_spec_path_digest=ordered_manifest_spec_path_digest(
-                manifest_paths, manifest_specs
-            ),
-            expected_manifest_source_identity_digest=ordered_manifest_source_identity_digest(
-                manifest_paths
-            ),
+            expected_manifest_spec_path_digest=ordered_manifest_spec_path_digest(manifest_paths, manifest_specs),
+            expected_manifest_source_identity_digest=ordered_manifest_source_identity_digest(manifest_paths),
             expected_tar_shard_count=tar_count,
             expected_tar_catalog_digest=ordered_tar_catalog_digest(tar_paths),
-            expected_audio_prefix_map_digest=canonical_audio_prefix_map_digest(
-                self._audio_path_prefix_mapper.mapping
-            ),
+            expected_audio_prefix_map_digest=canonical_audio_prefix_map_digest(self._audio_path_prefix_mapper.mapping),
             offset_bearing_tar_collections=True,
         )
         self._collection_route = ShareGptTarRoutingIndex(self.tar_routing_filepath)
@@ -1974,9 +1962,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 f"checkpoint={restored_audit!r}, current={self.approved_exclusion_audit_sha256!r}."
             )
         if not self._excluded_manifest_lines and (restored_digest is not None or restored_audit is not None):
-            raise ValueError(
-                "Checkpoint contains ShareGPT exclusions but the current config does not."
-            )
+            raise ValueError("Checkpoint contains ShareGPT exclusions but the current config does not.")
         self._iter_state.load_state_dict(sd)
         self.epoch = sd.get("epoch", 0)
 

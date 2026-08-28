@@ -49,11 +49,7 @@ except ImportError:
     from vllm.multimodal.inputs import MultiModalDataDict
 
 from vllm.multimodal.inputs import MultiModalFieldConfig, MultiModalKwargsItems
-from vllm.multimodal.parse import (
-    AudioProcessorItems,
-    MultiModalDataItems,
-    MultiModalDataParser,
-)
+from vllm.multimodal.parse import AudioProcessorItems, MultiModalDataItems, MultiModalDataParser
 from vllm.multimodal.processing import (
     BaseMultiModalProcessor,
     BaseProcessingInfo,
@@ -104,8 +100,7 @@ def _load_nemo_perception(perception_cfg: dict) -> nn.Module:
         from nemo.collections.speechlm2.modules import AudioPerceptionModule
     except ImportError as e:
         raise ImportError(
-            "NeMo is required for the audio encoder. "
-            "Install with: pip install 'nemo-toolkit[asr]'"
+            "NeMo is required for the audio encoder. " "Install with: pip install 'nemo-toolkit[asr]'"
         ) from e
 
     cfg = DictConfig(perception_cfg)
@@ -131,31 +126,21 @@ def _maybe_mount_pe_encoder(
     if not has_path and not has_config:
         return False
     if has_path and has_config:
-        raise ValueError(
-            "pe_encoder_path and pe_encoder_config are mutually exclusive."
-        )
+        raise ValueError("pe_encoder_path and pe_encoder_config are mutually exclusive.")
     if has_config and pe_encoder_overrides not in (None, {}):
-        raise ValueError(
-            "pe_encoder_overrides may only be used with pe_encoder_path, not pe_encoder_config."
-        )
+        raise ValueError("pe_encoder_overrides may only be used with pe_encoder_path, not pe_encoder_config.")
     if not hasattr(perception, "encoder"):
         raise RuntimeError(
             "A ParallelExpertEncoder is configured but perception has no `encoder` attribute to replace."
         )
 
-    from nemo.collections.asr.modules.parallel_expert_encoder_resolver import (
-        resolve_parallel_expert_encoder_pt,
-    )
+    from nemo.collections.asr.modules.parallel_expert_encoder_resolver import resolve_parallel_expert_encoder_pt
 
     if has_config:
         encoder_class = resolve_parallel_expert_encoder_pt(config=pe_encoder_config)
-        pe_encoder = encoder_class.from_inline_config(
-            pe_encoder_config, map_location="cpu"
-        )
+        pe_encoder = encoder_class.from_inline_config(pe_encoder_config, map_location="cpu")
     else:
-        encoder_class = resolve_parallel_expert_encoder_pt(
-            pe_encoder_path, architecture=pe_encoder_type
-        )
+        encoder_class = resolve_parallel_expert_encoder_pt(pe_encoder_path, architecture=pe_encoder_type)
         pe_encoder = encoder_class.load_from_nemo(
             pe_encoder_path,
             map_location="cpu",
@@ -175,15 +160,9 @@ def _maybe_mount_pe_encoder(
         )
 
     perception_cfg = getattr(perception, "cfg", {})
-    preprocessor_cfg = (
-        perception_cfg.get("preprocessor", {}) if hasattr(perception_cfg, "get") else {}
-    )
+    preprocessor_cfg = perception_cfg.get("preprocessor", {}) if hasattr(perception_cfg, "get") else {}
     pe_feat_in = int(getattr(pe_encoder, "_feat_in", -1) or -1)
-    mel_bins = (
-        preprocessor_cfg.get("features", None)
-        if hasattr(preprocessor_cfg, "get")
-        else None
-    )
+    mel_bins = preprocessor_cfg.get("features", None) if hasattr(preprocessor_cfg, "get") else None
     if pe_feat_in > 0 and mel_bins is not None and int(mel_bins) != pe_feat_in:
         raise ValueError(
             f"ParallelExpertEncoder expects {pe_feat_in} mel bins but the vLLM perception "
@@ -191,14 +170,8 @@ def _maybe_mount_pe_encoder(
             "the mount, so these must agree."
         )
 
-    adapter_cfg = (
-        perception_cfg.get("modality_adapter", {})
-        if hasattr(perception_cfg, "get")
-        else {}
-    )
-    adapter_d_model = (
-        adapter_cfg.get("d_model", None) if hasattr(adapter_cfg, "get") else None
-    )
+    adapter_cfg = perception_cfg.get("modality_adapter", {}) if hasattr(perception_cfg, "get") else {}
+    adapter_d_model = adapter_cfg.get("d_model", None) if hasattr(adapter_cfg, "get") else None
     if adapter_d_model is not None and int(adapter_d_model) != int(pe_encoder.d_model):
         raise ValueError(
             f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match "
@@ -206,9 +179,7 @@ def _maybe_mount_pe_encoder(
         )
 
     proj = getattr(perception, "proj", None)
-    if isinstance(proj, torch.nn.Linear) and int(proj.in_features) != int(
-        pe_encoder.d_model
-    ):
+    if isinstance(proj, torch.nn.Linear) and int(proj.in_features) != int(pe_encoder.d_model):
         raise ValueError(
             f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match "
             f"vLLM perception proj.in_features={proj.in_features}."
@@ -258,16 +229,11 @@ def _maybe_mount_independent_speaker_encoder(
             "use speaker_encoder.asr_chunk_size_seconds and chunk_size_seconds."
         )
     if not hasattr(perception, "encoder"):
-        raise RuntimeError(
-            "speaker_encoder is set but perception has no encoder to wrap."
-        )
+        raise RuntimeError("speaker_encoder is set but perception has no encoder to wrap.")
 
     from omegaconf import OmegaConf
 
-    from nemo.collections.speechlm2.modules.perception import (
-        IdentityConnector,
-        IndependentDualEncoder,
-    )
+    from nemo.collections.speechlm2.modules.perception import IdentityConnector, IndependentDualEncoder
 
     encoder_config = speaker_encoder_cfg.get("encoder_config", None)
     artifact = None
@@ -275,11 +241,7 @@ def _maybe_mount_independent_speaker_encoder(
         artifact = Path(str(speaker_encoder_cfg.get("path", "")))
         config_path = artifact / "model_config.yaml"
         weights_path = artifact / "model.safetensors"
-        if (
-            not artifact.is_dir()
-            or not config_path.is_file()
-            or not weights_path.is_file()
-        ):
+        if not artifact.is_dir() or not config_path.is_file() or not weights_path.is_file():
             raise FileNotFoundError(
                 "speaker_encoder must contain encoder_config, or path must contain "
                 f"model_config.yaml and model.safetensors; got {artifact}."
@@ -289,9 +251,7 @@ def _maybe_mount_independent_speaker_encoder(
     if getattr(perception, "rote", None) is not None:
         raise ValueError("IndependentDualEncoder requires rote=null.")
     if "encoder_multilayer" in perception._modules:
-        raise ValueError(
-            "IndependentDualEncoder does not support multi-layer perception adapters."
-        )
+        raise ValueError("IndependentDualEncoder does not support multi-layer perception adapters.")
 
     if encoder_config not in (None, {}, "", False):
         speaker_config = OmegaConf.create(encoder_config)
@@ -317,9 +277,7 @@ def _maybe_mount_independent_speaker_encoder(
         speaker,
         frame_shift_seconds=frame_shift_seconds,
         asr_chunk_size_seconds=speaker_encoder_cfg.get("asr_chunk_size_seconds", None),
-        auxiliary_chunk_size_seconds=speaker_encoder_cfg.get(
-            "chunk_size_seconds", None
-        ),
+        auxiliary_chunk_size_seconds=speaker_encoder_cfg.get("chunk_size_seconds", None),
         freeze_auxiliary=speaker_encoder_cfg.get("frozen", True),
     )
 
@@ -434,15 +392,9 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
             preprocessor = raw_preprocessor
             raw_subsampling = estimator_config.get("subsampling")
 
-        stages = (
-            [raw_subsampling]
-            if isinstance(raw_subsampling, Mapping)
-            else raw_subsampling
-        )
+        stages = [raw_subsampling] if isinstance(raw_subsampling, Mapping) else raw_subsampling
         if not isinstance(stages, (list, tuple)):
-            raise TypeError(
-                "audio_token_estimator.subsampling must be a mapping or list"
-            )
+            raise TypeError("audio_token_estimator.subsampling must be a mapping or list")
 
         n_fft = int(preprocessor["n_fft"])
         hop_length = int(preprocessor["hop_length"])
@@ -450,9 +402,7 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         length = (int(audio_length_samples) + 2 * stft_pad - n_fft) // hop_length
         for stage in stages:
             if not isinstance(stage, Mapping):
-                raise TypeError(
-                    "Each audio_token_estimator.subsampling stage must be a mapping"
-                )
+                raise TypeError("Each audio_token_estimator.subsampling stage must be a mapping")
             stage_type = stage.get("type", "conv")
             if stage_type == "feature_stacking":
                 factor = int(stage["factor"])
@@ -465,14 +415,10 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
                 ceil_mode = bool(stage.get("ceil_mode", False))
                 for _ in range(repeat):
                     numerator = length + 2 * padding - kernel
-                    quotient = (
-                        -(-numerator // stride) if ceil_mode else numerator // stride
-                    )
+                    quotient = -(-numerator // stride) if ceil_mode else numerator // stride
                     length = quotient + 1
             else:
-                raise ValueError(
-                    f"Unsupported audio_token_estimator subsampling type: {stage_type!r}"
-                )
+                raise ValueError(f"Unsupported audio_token_estimator subsampling type: {stage_type!r}")
         return max(1, length)
 
     @classmethod
@@ -492,21 +438,15 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         """
         if estimator_config is not None and "chunk_size_seconds" in estimator_config:
             configured_chunk_size = estimator_config.get("chunk_size_seconds")
-            chunk_size_seconds = (
-                None if configured_chunk_size is None else float(configured_chunk_size)
-            )
+            chunk_size_seconds = None if configured_chunk_size is None else float(configured_chunk_size)
         if chunk_size_seconds is None or audio_length_samples <= 0:
-            return cls._estimate_audio_tokens_single_pass(
-                audio_length_samples, estimator_config
-            )
+            return cls._estimate_audio_tokens_single_pass(audio_length_samples, estimator_config)
         if chunk_size_seconds <= 0.0:
             raise ValueError("encoder_chunk_size_seconds must be positive when set.")
         chunk_size_samples = max(1, int(round(chunk_size_seconds * _SAMPLING_RATE)))
         chunk_size_samples = max(chunk_size_samples, _MIN_CHUNK_SIZE_SAMPLES)
         if audio_length_samples <= chunk_size_samples:
-            return cls._estimate_audio_tokens_single_pass(
-                audio_length_samples, estimator_config
-            )
+            return cls._estimate_audio_tokens_single_pass(audio_length_samples, estimator_config)
 
         spans: list[tuple[int, int]] = []
         for begin in range(0, audio_length_samples, chunk_size_samples):
@@ -516,10 +456,7 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
             spans[-2] = (spans[-2][0], spans[-1][1])
             spans.pop()
 
-        return sum(
-            cls._estimate_audio_tokens_single_pass(end - begin, estimator_config)
-            for begin, end in spans
-        )
+        return sum(cls._estimate_audio_tokens_single_pass(end - begin, estimator_config) for begin, end in spans)
 
     @classmethod
     def _samples_for_audio_tokens(
@@ -541,9 +478,7 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
         max_samples = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
         lo, hi = 1, min(_SAMPLING_RATE, max_samples)
         while (
-            hi < max_samples
-            and cls._estimate_audio_tokens(hi, chunk_size_seconds, estimator_config)
-            < target_tokens
+            hi < max_samples and cls._estimate_audio_tokens(hi, chunk_size_seconds, estimator_config) < target_tokens
         ):
             hi = min(hi * 2, max_samples)
 
@@ -557,10 +492,7 @@ class NeMoSpeechLMProcessingInfo(BaseProcessingInfo):
 
         while lo < hi:
             mid = (lo + hi) // 2
-            if (
-                cls._estimate_audio_tokens(mid, chunk_size_seconds, estimator_config)
-                >= target_tokens
-            ):
+            if cls._estimate_audio_tokens(mid, chunk_size_seconds, estimator_config) >= target_tokens:
                 hi = mid
             else:
                 lo = mid + 1
@@ -601,9 +533,7 @@ class NeMoSpeechLMMultiModalProcessor(
 
         def get_replacement(item_idx: int):
             audio = audios.get(item_idx)
-            n_tokens = self.info._estimate_audio_tokens(
-                audio.shape[-1], chunk_size_seconds, estimator_config
-            )
+            n_tokens = self.info._estimate_audio_tokens(audio.shape[-1], chunk_size_seconds, estimator_config)
             repl_full = _AUDIO_PLACEHOLDER * n_tokens
             return PromptUpdateDetails.select_text(repl_full, _AUDIO_PLACEHOLDER)
 
@@ -645,9 +575,7 @@ class NeMoSpeechLMMultiModalProcessor(
                 )
             for i, audio in zip(ph_positions, audios):
                 audio_tensor = (
-                    audio
-                    if isinstance(audio, torch.Tensor)
-                    else torch.as_tensor(audio, dtype=torch.float32)
+                    audio if isinstance(audio, torch.Tensor) else torch.as_tensor(audio, dtype=torch.float32)
                 )
                 if audio_tensor.dim() > 1:
                     audio_tensor = audio_tensor.squeeze()
@@ -688,20 +616,16 @@ class NeMoSpeechLMDummyInputsBuilder(
             if seq_len > _DUMMY_AUDIO_TEXT_TOKEN_RESERVE:
                 max_audio_tokens = seq_len - _DUMMY_AUDIO_TEXT_TOKEN_RESERVE
                 max_audio_len = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)
-                max_supported_audio_tokens = (
-                    NeMoSpeechLMProcessingInfo._estimate_audio_tokens(
-                        max_audio_len,
-                        chunk_size_seconds,
-                        estimator_config,
-                    )
+                max_supported_audio_tokens = NeMoSpeechLMProcessingInfo._estimate_audio_tokens(
+                    max_audio_len,
+                    chunk_size_seconds,
+                    estimator_config,
                 )
                 if max_audio_tokens < max_supported_audio_tokens:
-                    max_audio_len = (
-                        NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(
-                            max_audio_tokens,
-                            chunk_size_seconds,
-                            estimator_config,
-                        )
+                    max_audio_len = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(
+                        max_audio_tokens,
+                        chunk_size_seconds,
+                        estimator_config,
                     )
             else:
                 max_audio_len = int(_DUMMY_AUDIO_MAX_DURATION_S * _SAMPLING_RATE)

@@ -35,14 +35,8 @@ from nemo.collections.asr.modules.parallel_expert_encoder_two_branch import (
     _disable_dist_feature_sync,
 )
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
-from nemo.collections.asr.parts.packed_sequence import (
-    pack_encoder_output,
-    unpack_encoder_output,
-)
-from nemo.collections.asr.parts.preprocessing.features import (
-    normalize_batch,
-    normalize_packed_batch,
-)
+from nemo.collections.asr.parts.packed_sequence import pack_encoder_output, unpack_encoder_output
+from nemo.collections.asr.parts.preprocessing.features import normalize_batch, normalize_packed_batch
 
 _PEE = getattr(ParallelExpertEncoder, "__wrapped__", ParallelExpertEncoder)
 
@@ -281,13 +275,8 @@ def test_pe_encoder_builds_two_real_branches_and_freezes_diarizer():
     assert encoder.subsampling_factor == _SUBSAMPLING_FACTOR
     assert encoder.n_spk == _N_SPK
     assert encoder.diar_normalize_type == "per_feature"
-    assert all(
-        not parameter.requires_grad
-        for parameter in encoder.diarization_model.parameters()
-    )
-    assert any(
-        parameter.requires_grad for parameter in encoder.asr_encoder.parameters()
-    )
+    assert all(not parameter.requires_grad for parameter in encoder.diarization_model.parameters())
+    assert any(parameter.requires_grad for parameter in encoder.asr_encoder.parameters())
 
     encoder.train()
     assert encoder.asr_encoder.training
@@ -314,9 +303,7 @@ def test_pe_encoder_selects_native_transformer_asr_branch():
         ("transformer", toy_asr_encoder_cfg, "TransformerEncoder"),
     ],
 )
-def test_pe_encoder_rejects_asr_encoder_type_config_mismatch(
-    asr_encoder_type, asr_encoder_cfg, expected_class
-):
+def test_pe_encoder_rejects_asr_encoder_type_config_mismatch(asr_encoder_type, asr_encoder_cfg, expected_class):
     with pytest.raises(TypeError, match=rf"requires .*{expected_class}"):
         build_toy_pe_encoder(
             asr_encoder_type=asr_encoder_type,
@@ -336,18 +323,14 @@ def test_freeze_asr_keeps_both_frozen_branches_in_eval():
     encoder.train()
     assert not encoder.asr_encoder.training
     assert not encoder.diarization_model.training
-    assert all(
-        not parameter.requires_grad for parameter in encoder.asr_encoder.parameters()
-    )
+    assert all(not parameter.requires_grad for parameter in encoder.asr_encoder.parameters())
 
 
 @pytest.mark.unit
 def test_pe_encoder_rejects_incompatible_branch_frame_rates():
     diarization_config = toy_diarization_model_cfg()
     diarization_config.encoder.subsampling_factor = 4
-    with pytest.raises(
-        ValueError, match="embedded diarization encoder subsampling factor"
-    ):
+    with pytest.raises(ValueError, match="embedded diarization encoder subsampling factor"):
         build_toy_pe_encoder(diarization_model_cfg=diarization_config)
 
 
@@ -421,9 +404,7 @@ def test_mixed_missing_rttm_rows_use_sortformer_predictions(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize(("training", "world_size"), [(True, 1), (False, 2)])
-def test_all_rttm_rows_still_run_sortformer_in_collective_safe_paths(
-    monkeypatch, training, world_size
-):
+def test_all_rttm_rows_still_run_sortformer_in_collective_safe_paths(monkeypatch, training, world_size):
     encoder = build_toy_pe_encoder().train(training)
     monkeypatch.setattr(dist, "is_available", lambda: True)
     monkeypatch.setattr(dist, "is_initialized", lambda: world_size > 1)
@@ -464,9 +445,7 @@ def test_all_rttm_rows_can_skip_sortformer_in_single_process_eval(monkeypatch):
     monkeypatch.setattr(
         encoder,
         "_run_diarization",
-        lambda *_: (_ for _ in ()).throw(
-            AssertionError("single-process eval unexpectedly ran Sortformer")
-        ),
+        lambda *_: (_ for _ in ()).throw(AssertionError("single-process eval unexpectedly ran Sortformer")),
     )
     monkeypatch.setattr(encoder, "_run_asr", lambda *_: (asr_states, asr_lengths))
 
@@ -511,9 +490,7 @@ def test_all_rttm_rows_still_run_sortformer_in_packed_training_path(monkeypatch)
 
 @pytest.mark.unit
 def test_speaker_threshold_and_kernel_scale_are_preserved():
-    encoder = build_toy_pe_encoder(
-        speaker_activity_threshold=0.5, spk_kernel_scale=0.25
-    ).eval()
+    encoder = build_toy_pe_encoder(speaker_activity_threshold=0.5, spk_kernel_scale=0.25).eval()
     asr_states = torch.randn(1, _ASR_D_MODEL, 3)
     targets = torch.full((1, 3, _N_SPK), 0.5)
     targets[:, 1, 0] = 0.5001
@@ -555,9 +532,7 @@ def test_high_resolution_fusion_pools_offline_but_not_aligned_online_predictions
     diarization_config.output_subsampling_factor = 1
     encoder = build_toy_pe_encoder(diarization_model_cfg=diarization_config).eval()
     asr_states = torch.randn(1, _ASR_D_MODEL, 3)
-    fine_predictions = torch.sigmoid(
-        torch.arange(24 * _N_SPK).reshape(1, 24, _N_SPK).float() / 17.0 - 2.0
-    )
+    fine_predictions = torch.sigmoid(torch.arange(24 * _N_SPK).reshape(1, 24, _N_SPK).float() / 17.0 - 2.0)
     aligned_predictions = encoder.diarization_model.sortformer_modules.downsample_preds(
         fine_predictions, _SUBSAMPLING_FACTOR
     )
@@ -578,9 +553,7 @@ def test_packed_diarization_supports_optional_post_encoder():
     mels = torch.randn(2, _MEL_FEATURES, 80)
 
     with torch.no_grad():
-        predictions = encoder._run_diarization_packed(
-            pack_encoder_output(mels.transpose(1, 2), lengths)
-        )
+        predictions = encoder._run_diarization_packed(pack_encoder_output(mels.transpose(1, 2), lengths))
 
     assert predictions.lengths.tolist() == [10, 7]
     assert torch.isfinite(predictions.data).all()
@@ -599,22 +572,14 @@ def test_packed_fallback_matches_padded_forward_for_dense_and_packed_inputs():
 
     with torch.no_grad():
         padded, output_lengths = encoder(mels, lengths, spk_targets=targets)
-        packed_from_dense = encoder.forward_sequence_packed(
-            mels, lengths, spk_targets=targets
-        )
+        packed_from_dense = encoder.forward_sequence_packed(mels, lengths, spk_targets=targets)
         packed_input = pack_encoder_output(mels.transpose(1, 2), lengths)
-        packed_from_packed = encoder.forward_sequence_packed(
-            packed_input, spk_targets=targets
-        )
+        packed_from_packed = encoder.forward_sequence_packed(packed_input, spk_targets=targets)
 
     restored = unpack_encoder_output(packed_from_dense, total_length=padded.shape[-1])
     valid = torch.arange(padded.shape[-1])[None, :] < output_lengths[:, None]
-    torch.testing.assert_close(
-        restored[valid], padded.transpose(1, 2)[valid], rtol=1e-4, atol=1e-5
-    )
-    torch.testing.assert_close(
-        packed_from_packed.data, packed_from_dense.data, rtol=1e-5, atol=1e-6
-    )
+    torch.testing.assert_close(restored[valid], padded.transpose(1, 2)[valid], rtol=1e-4, atol=1e-5)
+    torch.testing.assert_close(packed_from_packed.data, packed_from_dense.data, rtol=1e-5, atol=1e-6)
     assert torch.equal(packed_from_packed.lengths, packed_from_dense.lengths)
 
 
@@ -642,9 +607,7 @@ def test_native_packed_path_normalizes_diar_and_asr_independently_without_unpack
     monkeypatch.setattr(
         pee_module,
         "unpack_encoder_output",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("native packed path unpacked")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("native packed path unpacked")),
     )
     with torch.no_grad():
         output = encoder.forward_sequence_packed(packed)
@@ -676,9 +639,7 @@ def test_native_packed_output_matches_padded_two_branch_path():
         packed = encoder.forward_sequence_packed(mels, lengths)
     restored = unpack_encoder_output(packed, total_length=padded.shape[-1])
     valid = torch.arange(padded.shape[-1])[None, :] < padded_lengths[:, None]
-    torch.testing.assert_close(
-        restored[valid], padded.transpose(1, 2)[valid], rtol=1e-4, atol=1e-5
-    )
+    torch.testing.assert_close(restored[valid], padded.transpose(1, 2)[valid], rtol=1e-4, atol=1e-5)
 
 
 @pytest.mark.unit
@@ -691,9 +652,7 @@ def test_native_packed_branches_chunk_independently_after_feature_stacking(monke
         asr_chunk_size_seconds=None,
         diar_chunk_size_seconds=0.16,
     ).eval()
-    packed = pack_encoder_output(
-        torch.randn(2, 80, _MEL_FEATURES), torch.tensor([80, 65])
-    )
+    packed = pack_encoder_output(torch.randn(2, 80, _MEL_FEATURES), torch.tensor([80, 65]))
     diar_calls = []
     asr_calls = []
     diar_forward = encoder.diarization_model.encoder.forward_sequence_packed
@@ -717,9 +676,7 @@ def test_native_packed_branches_chunk_independently_after_feature_stacking(monke
         )
         return asr_forward(audio_signal, length, *args, **kwargs)
 
-    monkeypatch.setattr(
-        encoder.diarization_model.encoder, "forward_sequence_packed", tracked_diar
-    )
+    monkeypatch.setattr(encoder.diarization_model.encoder, "forward_sequence_packed", tracked_diar)
     monkeypatch.setattr(encoder.asr_encoder, "forward_sequence_packed", tracked_asr)
     with torch.no_grad():
         output = encoder.forward_sequence_packed(packed)
@@ -733,9 +690,7 @@ def test_native_packed_branches_chunk_independently_after_feature_stacking(monke
 def test_packed_fallback_rejects_online_scope():
     encoder = build_toy_pe_encoder().eval()
     with encoder.online_inference(), pytest.raises(RuntimeError, match="offline API"):
-        encoder.forward_sequence_packed(
-            torch.randn(1, _MEL_FEATURES, 32), torch.tensor([32])
-        )
+        encoder.forward_sequence_packed(torch.randn(1, _MEL_FEATURES, 32), torch.tensor([32]))
 
 
 @pytest.mark.unit
@@ -748,14 +703,8 @@ def test_activation_checkpointing_wraps_trainable_asr_layers_and_packed_backward
     encoder.set_activation_checkpointing(True)
     encoder.set_activation_checkpointing(True)
 
-    assert (
-        getattr(encoder.asr_encoder.pre_encode, "_checkpoint_wrapped_module", None)
-        is not None
-    )
-    assert all(
-        getattr(layer, "_checkpoint_wrapped_module", None) is not None
-        for layer in encoder.asr_encoder.layers
-    )
+    assert getattr(encoder.asr_encoder.pre_encode, "_checkpoint_wrapped_module", None) is not None
+    assert all(getattr(layer, "_checkpoint_wrapped_module", None) is not None for layer in encoder.asr_encoder.layers)
     assert all(
         getattr(layer, "_checkpoint_wrapped_module", None) is None
         for layer in encoder.diarization_model.encoder.layers
@@ -853,9 +802,7 @@ def test_online_inference_passes_normalized_time_major_mels_to_sortformer(monkey
 
     expected, _, _ = normalize_batch(mels, lengths, normalize_type="per_feature")
     assert observed_signals
-    expected_first_chunk = expected[:, :, : observed_signals[0].shape[1]].transpose(
-        1, 2
-    )
+    expected_first_chunk = expected[:, :, : observed_signals[0].shape[1]].transpose(1, 2)
     torch.testing.assert_close(observed_signals[0], expected_first_chunk)
 
 
@@ -892,9 +839,7 @@ def test_online_inference_uses_activation_device_after_nested_parent_move():
         ("transformer", toy_transformer_asr_encoder_cfg),
     ],
 )
-def test_online_inference_matches_independent_valid_prefixes_for_unequal_audio(
-    asr_encoder_type, asr_encoder_cfg
-):
+def test_online_inference_matches_independent_valid_prefixes_for_unequal_audio(asr_encoder_type, asr_encoder_cfg):
     encoder = build_toy_pe_encoder(
         asr_encoder_type=asr_encoder_type,
         asr_encoder_cfg=asr_encoder_cfg(),
@@ -918,9 +863,7 @@ def test_online_inference_matches_independent_valid_prefixes_for_unequal_audio(
     assert torch.equal(batched_lengths, expected_lengths)
     assert batched_output.shape == (2, _ASR_D_MODEL, int(expected_lengths.max()))
     torch.testing.assert_close(batched_output[0, :, : first_length[0]], first_output[0])
-    torch.testing.assert_close(
-        batched_output[1, :, : second_length[0]], second_output[0]
-    )
+    torch.testing.assert_close(batched_output[1, :, : second_length[0]], second_output[0])
 
 
 @pytest.mark.unit
@@ -958,9 +901,7 @@ def test_transformer_online_inference_preserves_partial_feature_stack():
         ("transformer", toy_transformer_asr_encoder_cfg, True),
     ],
 )
-def test_strict_two_branch_bundle_loading(
-    tmp_path, asr_encoder_type, asr_encoder_cfg, write_type_flag
-):
+def test_strict_two_branch_bundle_loading(tmp_path, asr_encoder_type, asr_encoder_cfg, write_type_flag):
     source = build_toy_pe_encoder(
         asr_encoder_type=asr_encoder_type,
         asr_encoder_cfg=asr_encoder_cfg(),
@@ -999,9 +940,7 @@ def test_inline_config_reconstructs_architecture_without_standalone_weights():
 
 @pytest.mark.unit
 def test_legacy_canonical_bundle_requires_explicit_speaker_contract(tmp_path):
-    config = bundle_config(
-        target="nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT"
-    )
+    config = bundle_config(target="nemo.collections.asr.modules.parallel_expert_encoder.ParallelExpertEncoderPT")
     with pytest.raises(ValueError, match="cannot be inferred safely"):
         ParallelExpertEncoderPT.from_inline_config(config)
 
@@ -1144,9 +1083,7 @@ def test_exported_inline_config_round_trips_consolidated_weights():
     )
 
     exported = to_hf._hf_export_config(root, "bfloat16")
-    restored = ParallelExpertEncoderPT.from_inline_config(
-        exported["pe_encoder_config"]
-    ).eval()
+    restored = ParallelExpertEncoderPT.from_inline_config(exported["pe_encoder_config"]).eval()
     restored.load_state_dict(source.state_dict(), strict=True)
 
     assert set(restored.state_dict()) == set(source.state_dict())
@@ -1207,16 +1144,12 @@ def test_is_pe_nemo_uses_target_and_two_branch_schema(tmp_path, target, expected
 
 @pytest.mark.unit
 def test_training_loader_dispatches_two_branch_bundle_by_schema(tmp_path):
-    from nemo.collections.speechlm2.parts.pretrained import (
-        _resolve_parallel_expert_encoder_class,
-    )
+    from nemo.collections.speechlm2.parts.pretrained import _resolve_parallel_expert_encoder_class
 
     archive = tmp_path / "bundle.nemo"
     write_bundle(archive, bundle_config())
 
-    assert (
-        _resolve_parallel_expert_encoder_class(str(archive)) is ParallelExpertEncoderPT
-    )
+    assert _resolve_parallel_expert_encoder_class(str(archive)) is ParallelExpertEncoderPT
 
 
 @pytest.mark.unit

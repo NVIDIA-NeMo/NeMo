@@ -22,17 +22,10 @@ import yaml
 from click.testing import CliRunner
 from lhotse.index_pack import IndexPack, index_pack_collection_key
 from omegaconf import OmegaConf
+from scripts.dataloading import build_indexes, convert_indexes_to_idxpack, validate_dataloader
 
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    create_wds_v2_tar_index,
-    wds_v2_metadata_path,
-)
+from nemo.collections.common.data.lhotse.indexed_adapters import create_wds_v2_tar_index, wds_v2_metadata_path
 from nemo.collections.speechlm2.data.salm_dataset import SALMDataset
-from scripts.dataloading import (
-    build_indexes,
-    convert_indexes_to_idxpack,
-    validate_dataloader,
-)
 
 
 def _write_wds_tar(path: Path) -> Path:
@@ -50,9 +43,7 @@ def _write_wds_tar(path: Path) -> Path:
 
 
 def _write_wds_config(tmp_path: Path, tar_path: Path) -> Path:
-    (tmp_path / "wids-meta.json").write_text(
-        json.dumps({"shardlist": [{"url": tar_path.name}]})
-    )
+    (tmp_path / "wids-meta.json").write_text(json.dumps({"shardlist": [{"url": tar_path.name}]}))
     config_path = tmp_path / "wds.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -70,9 +61,7 @@ def test_build_indexes_accepts_repeatable_kind_filter(tmp_path):
     manifest = tmp_path / "manifest.jsonl"
     manifest.write_text("{}\n")
     config_path = tmp_path / "input.yaml"
-    config_path.write_text(
-        yaml.safe_dump({"type": "nemo", "manifest_filepath": str(manifest)})
-    )
+    config_path.write_text(yaml.safe_dump({"type": "nemo", "manifest_filepath": str(manifest)}))
 
     result = CliRunner().invoke(
         build_indexes.main,
@@ -183,18 +172,14 @@ def test_build_indexes_discovers_versioned_wds_sidecar(tmp_path):
     jobs = []
     build_indexes.discover(config, jobs)
 
-    assert [(job.path, job.kind) for job in jobs] == [
-        (str(tar_path), build_indexes.WDS_TAR_V2)
-    ]
+    assert [(job.path, job.kind) for job in jobs] == [(str(tar_path), build_indexes.WDS_TAR_V2)]
     assert jobs[0].idx_path() == Path(f"{tar_path}.wds-v2.idx")
 
 
 def test_build_indexes_discovers_split_catalog_without_recursive_scan(tmp_path):
     (tmp_path / "wds").mkdir()
     (tmp_path / "unrelated").mkdir()
-    cataloged = [
-        _write_wds_tar(tmp_path / "wds" / f"shard-{idx}.tar") for idx in range(2)
-    ]
+    cataloged = [_write_wds_tar(tmp_path / "wds" / f"shard-{idx}.tar") for idx in range(2)]
     unrelated = _write_wds_tar(tmp_path / "unrelated" / "ignore-me.tar")
     (tmp_path / ".nv-meta").mkdir()
     (tmp_path / ".nv-meta" / "split.yaml").write_text(
@@ -216,9 +201,7 @@ def test_build_indexes_discovers_split_catalog_without_recursive_scan(tmp_path):
     jobs = []
     build_indexes.discover(config, jobs)
 
-    assert [(job.path, job.kind) for job in jobs] == [
-        (str(path), build_indexes.WDS_TAR_V2) for path in cataloged
-    ]
+    assert [(job.path, job.kind) for job in jobs] == [(str(path), build_indexes.WDS_TAR_V2) for path in cataloged]
     assert all(job.path != str(unrelated) for job in jobs)
 
 
@@ -274,9 +257,7 @@ def test_converter_rejects_tampered_wds_v2_metadata(tmp_path):
     idx_path, metadata_path = create_wds_v2_tar_index(tar_path)
     metadata = json.loads(metadata_path.read_text())
     metadata["sample_count"] += 1
-    metadata_path.write_text(
-        json.dumps(metadata, separators=(",", ":"), sort_keys=True)
-    )
+    metadata_path.write_text(json.dumps(metadata, separators=(",", ":"), sort_keys=True))
     config_path = _write_wds_config(tmp_path, tar_path)
 
     result = CliRunner().invoke(
@@ -355,9 +336,7 @@ def test_full_mode_builds_production_salm_dataset():
         }
     )
 
-    dataset = validate_dataloader._build_validation_dataset(
-        config, _Tokenizer(), mode="full"
-    )
+    dataset = validate_dataloader._build_validation_dataset(config, _Tokenizer(), mode="full")
 
     assert isinstance(dataset, SALMDataset)
     assert dataset.pack_audio is True

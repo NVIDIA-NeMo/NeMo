@@ -48,13 +48,16 @@ _DEFAULT_CONFIG_KWARGS = {
 }
 
 
+def _identity_hf_config_override(hf_config):
+    """Pickleable target override for vLLM's composed-override API."""
+    return hf_config
+
+
 def test_serving_only_asr_exports_grouped_encoder_dependencies():
     repo_root = Path(__file__).parents[3]
     env = os.environ.copy()
     env["NEMO_SPEECHLM2_VLLM_ONLY"] = "1"
-    env["PYTHONPATH"] = os.pathsep.join(
-        filter(None, (str(repo_root), env.get("PYTHONPATH")))
-    )
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(repo_root), env.get("PYTHONPATH"))))
     code = """
 from omegaconf import OmegaConf
 from nemo.collections.asr.models import SortformerEncLabelModel
@@ -126,9 +129,7 @@ class TestNeMoSpeechLMConfig:
                 rms_norm_eps=1e-6,
             )
 
-        monkeypatch.setattr(
-            _config_module.AutoConfig, "from_pretrained", from_pretrained
-        )
+        monkeypatch.setattr(_config_module.AutoConfig, "from_pretrained", from_pretrained)
 
     def test_model_type(self):
         assert NeMoSpeechLMConfig.model_type == "nemo_speechlm"
@@ -137,8 +138,10 @@ class TestNeMoSpeechLMConfig:
         """HF internally constructs a no-arg config when serializing configs."""
         cfg = NeMoSpeechLMConfig()
         assert cfg.pretrained_llm is None
+        assert cfg.llm_config is None
         assert cfg.pretrained_asr is None
         assert cfg.audio_locator_tag is None
+        assert cfg.image_token_index is None
         assert cfg.prompt_format is None
         assert cfg.pretrained_weights is None
         assert cfg.pe_encoder_path is None
@@ -155,6 +158,40 @@ class TestNeMoSpeechLMConfig:
         assert cfg.text_config is not None
         assert hasattr(cfg.text_config, "hidden_size")
         assert cfg.get_text_config() is cfg.text_config
+
+    def test_uses_embedded_backbone_config(self, monkeypatch):
+        """Bundled exports must not reload the stale training backbone reference."""
+        embedded_config = {
+            "model_type": "qwen2",
+            "architectures": ["Qwen2ForCausalLM"],
+            "hidden_size": 2048,
+            "vocab_size": 151936,
+            "num_hidden_layers": 4,
+            "rms_norm_eps": 1e-6,
+        }
+        text_config = SimpleNamespace(**embedded_config)
+
+        def fail_from_pretrained(*args, **kwargs):
+            pytest.fail("must not load pretrained_llm when llm_config is embedded")
+
+        monkeypatch.setattr(_config_module.AutoConfig, "from_pretrained", fail_from_pretrained)
+        monkeypatch.setattr(
+            _config_module.AutoConfig,
+            "for_model",
+            lambda model_type, **kwargs: text_config,
+        )
+
+        cfg = NeMoSpeechLMConfig(
+            **{
+                **_DEFAULT_CONFIG_KWARGS,
+                "pretrained_llm": "llm_backbone",
+                "llm_config": embedded_config,
+            }
+        )
+
+        assert cfg.pretrained_llm == "llm_backbone"
+        assert cfg.llm_config == embedded_config
+        assert cfg.text_config is text_config
 
     def test_preserves_explicit_phpee_export_schema(self):
         pe_config = {
@@ -193,9 +230,7 @@ class TestNeMoSpeechLMConfig:
             "chunk_size_seconds": 120.0,
             "asr_chunk_size_seconds": None,
         }
-        cfg = NeMoSpeechLMConfig(
-            **_DEFAULT_CONFIG_KWARGS, speaker_encoder=speaker_config
-        )
+        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, speaker_encoder=speaker_config)
 
         assert cfg.speaker_encoder == speaker_config
         assert cfg.encoder_chunk_size_seconds is None
@@ -239,9 +274,7 @@ class TestNeMoSpeechLMConfig:
             (["Qwen3ForCausalLM"], False),
         ],
     )
-    def test_is_hybrid_set_from_backbone_architectures(
-        self, monkeypatch, backbone_archs, expected_is_hybrid
-    ):
+    def test_is_hybrid_set_from_backbone_architectures(self, monkeypatch, backbone_archs, expected_is_hybrid):
         """``cfg.is_hybrid`` is driven by the backbone HF config's ``architectures``."""
 
         def from_pretrained(model_name: str, trust_remote_code: bool = True):
@@ -257,9 +290,7 @@ class TestNeMoSpeechLMConfig:
                 kwargs.update(rms_norm_eps=1e-6)
             return SimpleNamespace(**kwargs)
 
-        monkeypatch.setattr(
-            _config_module.AutoConfig, "from_pretrained", from_pretrained
-        )
+        monkeypatch.setattr(_config_module.AutoConfig, "from_pretrained", from_pretrained)
 
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
         assert cfg.is_hybrid is expected_is_hybrid
@@ -280,9 +311,7 @@ class TestNeMoSpeechLMConfig:
                 mtp_layers_block_type=["attention", "moe"],
             )
 
-        monkeypatch.setattr(
-            _config_module.AutoConfig, "from_pretrained", from_pretrained
-        )
+        monkeypatch.setattr(_config_module.AutoConfig, "from_pretrained", from_pretrained)
 
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, compute_mtp=True, mtp=None)
 
@@ -309,9 +338,7 @@ class TestNeMoSpeechLMConfig:
                 mtp_layers_block_type=["attention", "moe"],
             )
 
-        monkeypatch.setattr(
-            _config_module.AutoConfig, "from_pretrained", from_pretrained
-        )
+        monkeypatch.setattr(_config_module.AutoConfig, "from_pretrained", from_pretrained)
 
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, compute_mtp=False)
 
@@ -332,9 +359,7 @@ class TestNeMoSpeechLMConfig:
                 mtp_layers_block_type=["mamba", "moe"],
             )
 
-        monkeypatch.setattr(
-            _config_module.AutoConfig, "from_pretrained", from_pretrained
-        )
+        monkeypatch.setattr(_config_module.AutoConfig, "from_pretrained", from_pretrained)
 
         with pytest.raises(ValueError, match="does not support block type 'mamba'"):
             NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, compute_mtp=True)
@@ -427,9 +452,7 @@ class TestNeMoSpeechLMConfig:
         assert cfg.encoder_chunk_size_seconds is None
 
 
-@pytest.mark.skipif(
-    not (_HAS_CONFIG and _HAS_VLLM), reason="NeMoSpeechLMConfig or vLLM not available"
-)
+@pytest.mark.skipif(not (_HAS_CONFIG and _HAS_VLLM), reason="NeMoSpeechLMConfig or vLLM not available")
 class TestBackendSelection:
     """Tests for ``backends.make_backend`` dispatch on hybrid/transformer configs."""
 
@@ -453,15 +476,10 @@ class TestBackendSelection:
                 rms_norm_eps=1e-6,
             )
 
-        monkeypatch.setattr(
-            _config_module.AutoConfig, "from_pretrained", from_pretrained
-        )
+        monkeypatch.setattr(_config_module.AutoConfig, "from_pretrained", from_pretrained)
 
     def test_hybrid_config_picks_hybrid_backend(self):
-        from nemo.collections.speechlm2.vllm.salm.backends import (
-            HybridBackend,
-            make_backend,
-        )
+        from nemo.collections.speechlm2.vllm.salm.backends import HybridBackend, make_backend
 
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
         backend = make_backend(cfg)
@@ -469,10 +487,7 @@ class TestBackendSelection:
         assert backend.architectures() == ["NemotronHForCausalLM"]
 
     def test_transformer_config_picks_transformer_backend(self):
-        from nemo.collections.speechlm2.vllm.salm.backends import (
-            TransformerBackend,
-            make_backend,
-        )
+        from nemo.collections.speechlm2.vllm.salm.backends import TransformerBackend, make_backend
 
         cfg = NeMoSpeechLMConfig(
             **{
@@ -504,9 +519,7 @@ class TestHybridBackendWeightMapping:
             ("_fp32_params.D", "D"),
         ],
     )
-    def test_canonicalizes_fp32_param_holder_names_without_changing_tensors(
-        self, backend, holder_name, vllm_name
-    ):
+    def test_canonicalizes_fp32_param_holder_names_without_changing_tensors(self, backend, holder_name, vllm_name):
         import torch
 
         tensor = torch.tensor([-2.0, 0.5, 3.0])
@@ -519,41 +532,29 @@ class TestHybridBackendWeightMapping:
         assert mapped_tensor is tensor
         assert torch.equal(mapped_tensor, original_values)
 
-    @pytest.mark.parametrize(
-        "holder_name", ["_fp32_params.A_log", "_fp32_params.dt_bias", "_fp32_params.D"]
-    )
-    def test_does_not_canonicalize_non_mixer_fp32_param_holders(
-        self, backend, holder_name
-    ):
+    @pytest.mark.parametrize("holder_name", ["_fp32_params.A_log", "_fp32_params.dt_bias", "_fp32_params.D"])
+    def test_does_not_canonicalize_non_mixer_fp32_param_holders(self, backend, holder_name):
         import torch
 
         source_name = f"llm.model.layers.0.other.{holder_name}"
         tensor = torch.tensor([1.0])
-        [(mapped_name, mapped_tensor)] = backend.nemo_to_hf_llm_weights(
-            [(source_name, tensor)]
-        )
+        [(mapped_name, mapped_tensor)] = backend.nemo_to_hf_llm_weights([(source_name, tensor)])
 
         assert mapped_name == f"backbone.layers.0.other.{holder_name}"
         assert mapped_tensor is tensor
 
     @pytest.mark.parametrize("param_name", ["A", "dt_bias", "D"])
-    def test_already_canonical_fp32_param_names_are_unchanged(
-        self, backend, param_name
-    ):
+    def test_already_canonical_fp32_param_names_are_unchanged(self, backend, param_name):
         import torch
 
         canonical_name = f"backbone.layers.0.mixer.{param_name}"
         tensor = torch.tensor([1.0])
-        [(mapped_name, mapped_tensor)] = backend.nemo_to_hf_llm_weights(
-            [(canonical_name, tensor)]
-        )
+        [(mapped_name, mapped_tensor)] = backend.nemo_to_hf_llm_weights([(canonical_name, tensor)])
 
         assert mapped_name == canonical_name
         assert mapped_tensor is tensor
 
-    def test_a_log_reaches_vllm_loader_and_is_transformed_once(
-        self, backend, monkeypatch
-    ):
+    def test_a_log_reaches_vllm_loader_and_is_transformed_once(self, backend, monkeypatch):
         import torch
         from torch import nn
         from vllm.model_executor.layers.mamba import mamba_mixer2
@@ -569,16 +570,12 @@ class TestHybridBackendWeightMapping:
         model.model.layers[0].mixer.A = nn.Parameter(torch.empty_like(a_log))
 
         monkeypatch.setattr(weight_utils, "get_tensor_model_parallel_rank", lambda: 0)
-        model.model.layers[
-            0
-        ].mixer.A.weight_loader = mamba_mixer2.composed_weight_loader(
+        model.model.layers[0].mixer.A.weight_loader = mamba_mixer2.composed_weight_loader(
             mamba_mixer2.sharded_weight_loader(0),
             lambda tensor: -torch.exp(tensor.float()),
         )
 
-        hf_weights = backend.nemo_to_hf_llm_weights(
-            [("llm.model.layers.0.mixer._fp32_params.A_log", a_log)]
-        )
+        hf_weights = backend.nemo_to_hf_llm_weights([("llm.model.layers.0.mixer._fp32_params.A_log", a_log)])
         loaded = AutoWeightsLoader(model).load_weights(
             hf_weights,
             mapper=NemotronHForCausalLM.hf_to_vllm_mapper,
@@ -645,17 +642,10 @@ class TestSpecialTokens:
         tokenizer.add_special_tokens.assert_not_called()
 
     def test_placeholder_str(self):
-        from nemo.collections.speechlm2.vllm.salm.model import (
-            NeMoSpeechLMForConditionalGeneration,
-        )
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
 
-        assert (
-            NeMoSpeechLMForConditionalGeneration.get_placeholder_str("audio", 0)
-            == "<|audio|>"
-        )
-        assert (
-            NeMoSpeechLMForConditionalGeneration.get_placeholder_str("image", 0) is None
-        )
+        assert NeMoSpeechLMForConditionalGeneration.get_placeholder_str("audio", 0) == "<|audio|>"
+        assert NeMoSpeechLMForConditionalGeneration.get_placeholder_str("image", 0) is None
 
 
 @pytest.mark.skipif(not _HAS_VLLM, reason="vLLM not installed")
@@ -673,9 +663,7 @@ class TestAudioProcessing:
 
         perception = torch.nn.Module()
         perception.encoder = _Encoder(encoder_d_model)
-        perception.preprocessor = SimpleNamespace(
-            featurizer=SimpleNamespace(normalize="per_feature")
-        )
+        perception.preprocessor = SimpleNamespace(featurizer=SimpleNamespace(normalize="per_feature"))
         perception.proj = torch.nn.Linear(pe_d_model, 4096)
         perception.cfg = {
             "preprocessor": {"features": 128},
@@ -686,9 +674,7 @@ class TestAudioProcessing:
 
     @staticmethod
     def _make_pe_processing_model(torch, *, fail_forward=False):
-        from nemo.collections.speechlm2.vllm.salm.model import (
-            NeMoSpeechLMForConditionalGeneration,
-        )
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
 
         class _Encoder(torch.nn.Module):
             def __init__(self):
@@ -715,15 +701,11 @@ class TestAudioProcessing:
                 self.online_enabled_during_forward = None
 
             def forward(self, input_signal, input_signal_length):
-                self.online_enabled_during_forward = (
-                    self.encoder.online_inference_enabled
-                )
+                self.online_enabled_during_forward = self.encoder.online_inference_enabled
                 if fail_forward:
                     raise RuntimeError("synthetic PE forward failure")
                 batch_size = input_signal.shape[0]
-                return torch.ones(batch_size, 3, 4), torch.full(
-                    (batch_size,), 3, dtype=torch.long
-                )
+                return torch.ones(batch_size, 3, 4), torch.full((batch_size,), 3, dtype=torch.long)
 
         model = object.__new__(NeMoSpeechLMForConditionalGeneration)
         torch.nn.Module.__init__(model)
@@ -731,18 +713,11 @@ class TestAudioProcessing:
         model._uses_pe_encoder = True
         return model
 
-    def test_independent_speaker_encoder_mount_reconstructs_dual_encoder(
-        self, monkeypatch, tmp_path
-    ):
+    def test_independent_speaker_encoder_mount_reconstructs_dual_encoder(self, monkeypatch, tmp_path):
         import torch
 
-        from nemo.collections.speechlm2.modules.perception import (
-            IdentityConnector,
-            IndependentDualEncoder,
-        )
-        from nemo.collections.speechlm2.vllm.salm.audio import (
-            _maybe_mount_independent_speaker_encoder,
-        )
+        from nemo.collections.speechlm2.modules.perception import IdentityConnector, IndependentDualEncoder
+        from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_independent_speaker_encoder
 
         class _Encoder(torch.nn.Module):
             supports_sequence_packed_output = True
@@ -768,15 +743,11 @@ class TestAudioProcessing:
         perception.encoder = asr
         perception.modality_adapter = IdentityConnector()
         perception.rote = None
-        perception.preprocessor = SimpleNamespace(
-            featurizer=SimpleNamespace(hop_length=160, sample_rate=16000)
-        )
+        perception.preprocessor = SimpleNamespace(featurizer=SimpleNamespace(hop_length=160, sample_rate=16000))
         perception.proj = torch.nn.Linear(3, 7)
         perception.from_config_dict = lambda config: speaker
 
-        monkeypatch.setattr(
-            "safetensors.torch.load_file", lambda *args, **kwargs: speaker.state_dict()
-        )
+        monkeypatch.setattr("safetensors.torch.load_file", lambda *args, **kwargs: speaker.state_dict())
 
         mounted = _maybe_mount_independent_speaker_encoder(
             perception,
@@ -803,9 +774,7 @@ class TestAudioProcessing:
     def test_independent_speaker_encoder_mount_fails_closed_on_global_chunking(self):
         import torch
 
-        from nemo.collections.speechlm2.vllm.salm.audio import (
-            _maybe_mount_independent_speaker_encoder,
-        )
+        from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_independent_speaker_encoder
 
         perception = torch.nn.Module()
         perception.encoder = torch.nn.Identity()
@@ -854,9 +823,7 @@ class TestAudioProcessing:
     def test_pe_perception_weight_loading_requires_exact_architecture(self):
         import torch
 
-        from nemo.collections.speechlm2.vllm.salm.model import (
-            NeMoSpeechLMForConditionalGeneration,
-        )
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
 
         class _Perception(torch.nn.Module):
             def __init__(self):
@@ -877,9 +844,7 @@ class TestAudioProcessing:
     def test_pe_mount_allows_replacing_canary_encoder_with_wider_pee(self, monkeypatch):
         import torch
 
-        from nemo.collections.asr.modules.parallel_expert_encoder import (
-            ParallelExpertEncoderPT,
-        )
+        from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
         from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_pe_encoder
 
         perception, pe_encoder = self._make_pe_mount_modules(torch)
@@ -889,15 +854,11 @@ class TestAudioProcessing:
             lambda *args, **kwargs: pe_encoder,
         )
 
-        assert (
-            _maybe_mount_pe_encoder(perception, "nvidia/ParallelExpertEncoder") is True
-        )
+        assert _maybe_mount_pe_encoder(perception, "nvidia/ParallelExpertEncoder") is True
         assert perception.encoder is pe_encoder
         assert perception.preprocessor.featurizer.normalize is None
 
-    def test_pe_mount_constructs_two_branch_encoder_from_inline_config(
-        self, monkeypatch
-    ):
+    def test_pe_mount_constructs_two_branch_encoder_from_inline_config(self, monkeypatch):
         import torch
 
         from nemo.collections.asr.modules.parallel_expert_encoder_two_branch import (
@@ -913,9 +874,7 @@ class TestAudioProcessing:
             observed["map_location"] = map_location
             return pe_encoder
 
-        monkeypatch.setattr(
-            TwoBranchParallelExpertEncoderPT, "from_inline_config", from_inline_config
-        )
+        monkeypatch.setattr(TwoBranchParallelExpertEncoderPT, "from_inline_config", from_inline_config)
         config = {
             "asr_encoder_cfg": {"_target_": "example.TransformerEncoder"},
             "diarization_model_cfg": {"target": "example.Sortformer"},
@@ -928,9 +887,7 @@ class TestAudioProcessing:
     def test_pe_mount_constructs_ggemm_encoder_from_inline_config(self, monkeypatch):
         import torch
 
-        from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import (
-            ParallelExpertEncoderPT,
-        )
+        from nemo.collections.asr.modules.parallel_expert_encoder_ggemm import ParallelExpertEncoderPT
         from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_pe_encoder
 
         perception, pe_encoder = self._make_pe_mount_modules(torch)
@@ -972,14 +929,10 @@ class TestAudioProcessing:
             ("projection", "proj.in_features=1024"),
         ],
     )
-    def test_pe_mount_rejects_unchanged_component_dimension_mismatches(
-        self, monkeypatch, mismatch, expected_error
-    ):
+    def test_pe_mount_rejects_unchanged_component_dimension_mismatches(self, monkeypatch, mismatch, expected_error):
         import torch
 
-        from nemo.collections.asr.modules.parallel_expert_encoder import (
-            ParallelExpertEncoderPT,
-        )
+        from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
         from nemo.collections.speechlm2.vllm.salm.audio import _maybe_mount_pe_encoder
 
         perception, pe_encoder = self._make_pe_mount_modules(torch)
@@ -999,9 +952,7 @@ class TestAudioProcessing:
             _maybe_mount_pe_encoder(perception, "nvidia/ParallelExpertEncoder")
 
     def test_data_parser_normalizes_audio(self, monkeypatch):
-        from nemo.collections.speechlm2.vllm.salm.audio import (
-            NeMoSpeechLMProcessingInfo,
-        )
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMProcessingInfo
 
         info = object.__new__(NeMoSpeechLMProcessingInfo)
         monkeypatch.setattr(info, "_get_expected_hidden_size", lambda: 2048)
@@ -1012,9 +963,7 @@ class TestAudioProcessing:
         assert parser.target_channels == 1
 
     def test_processing_info_has_no_audio_duration_limit(self):
-        from nemo.collections.speechlm2.vllm.salm.audio import (
-            NeMoSpeechLMProcessingInfo,
-        )
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMProcessingInfo
 
         info = object.__new__(NeMoSpeechLMProcessingInfo)
 
@@ -1031,16 +980,12 @@ class TestAudioProcessing:
         builder = object.__new__(NeMoSpeechLMDummyInputsBuilder)
         builder.info = info
 
-        result = builder.get_dummy_mm_data(
-            seq_len=0, mm_counts={"audio": 1}, mm_options={}
-        )
+        result = builder.get_dummy_mm_data(seq_len=0, mm_counts={"audio": 1}, mm_options={})
 
         assert result["audio"][0].shape[-1] == 40 * 16000
 
     def test_dummy_inputs_use_requested_audio_length(self, monkeypatch):
-        from nemo.collections.speechlm2.vllm.salm.audio import (
-            NeMoSpeechLMDummyInputsBuilder,
-        )
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMDummyInputsBuilder
 
         builder = object.__new__(NeMoSpeechLMDummyInputsBuilder)
         builder.info = SimpleNamespace(
@@ -1050,9 +995,7 @@ class TestAudioProcessing:
         monkeypatch.setattr(
             builder,
             "_get_dummy_audios",
-            lambda length, num_audios: [
-                SimpleNamespace(length=length) for _ in range(num_audios)
-            ],
+            lambda length, num_audios: [SimpleNamespace(length=length) for _ in range(num_audios)],
         )
 
         result = builder.get_dummy_mm_data(
@@ -1071,9 +1014,7 @@ class TestAudioProcessing:
         )
 
         target_audio_tokens = 4
-        max_audio_len = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(
-            target_audio_tokens
-        )
+        max_audio_len = NeMoSpeechLMProcessingInfo._samples_for_audio_tokens(target_audio_tokens)
         builder = object.__new__(NeMoSpeechLMDummyInputsBuilder)
         builder.info = SimpleNamespace(
             _get_encoder_chunk_size_seconds=lambda: None,
@@ -1082,9 +1023,7 @@ class TestAudioProcessing:
         monkeypatch.setattr(
             builder,
             "_get_dummy_audios",
-            lambda length, num_audios: [
-                SimpleNamespace(length=length) for _ in range(num_audios)
-            ],
+            lambda length, num_audios: [SimpleNamespace(length=length) for _ in range(num_audios)],
         )
 
         result = builder.get_dummy_mm_data(
@@ -1111,9 +1050,7 @@ class TestAudioProcessing:
         monkeypatch.setattr(
             builder,
             "_get_dummy_audios",
-            lambda length, num_audios: [
-                SimpleNamespace(length=length) for _ in range(num_audios)
-            ],
+            lambda length, num_audios: [SimpleNamespace(length=length) for _ in range(num_audios)],
         )
 
         result = builder.get_dummy_mm_data(
@@ -1125,16 +1062,12 @@ class TestAudioProcessing:
         assert result["audio"][0].length == max_audio_len
 
     def test_call_hf_processor_requires_matching_placeholder_count(self):
-        from nemo.collections.speechlm2.vllm.salm.audio import (
-            NeMoSpeechLMMultiModalProcessor,
-        )
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
 
         processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
         processor.info = SimpleNamespace(
             get_tokenizer=_FakeTokenizer,
-            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None, estimator_config=None: (
-                2
-            ),
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None, estimator_config=None: (2),
             _get_encoder_chunk_size_seconds=lambda: None,
             _get_audio_token_estimator_config=lambda: None,
         )
@@ -1150,16 +1083,12 @@ class TestAudioProcessing:
     def test_call_hf_processor_emits_true_audio_lengths(self):
         import torch
 
-        from nemo.collections.speechlm2.vllm.salm.audio import (
-            NeMoSpeechLMMultiModalProcessor,
-        )
+        from nemo.collections.speechlm2.vllm.salm.audio import NeMoSpeechLMMultiModalProcessor
 
         processor = object.__new__(NeMoSpeechLMMultiModalProcessor)
         processor.info = SimpleNamespace(
             get_tokenizer=_FakeTokenizer,
-            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None, estimator_config=None: (
-                2
-            ),
+            _estimate_audio_tokens=lambda samples, chunk_size_seconds=None, estimator_config=None: (2),
             _get_encoder_chunk_size_seconds=lambda: None,
             _get_audio_token_estimator_config=lambda: None,
         )
@@ -1232,9 +1161,7 @@ class TestAudioProcessing:
         audio_len = torch.tensor([16000], device="cuda")
 
         with torch.no_grad():
-            embeds, embed_lens = perception(
-                input_signal=dummy_audio, input_signal_length=audio_len
-            )
+            embeds, embed_lens = perception(input_signal=dummy_audio, input_signal_length=audio_len)
 
         assert embeds.ndim == 3
         assert embeds.shape[0] == 1
@@ -1284,14 +1211,9 @@ class TestPluginRegistration:
 
         from vllm.model_executor.models.registry import ModelRegistry
 
-        from nemo.collections.speechlm2.vllm.salm.model import (
-            NeMoSpeechLMForConditionalGeneration,
-        )
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
 
-        assert (
-            "NeMoSpeechLMForConditionalGeneration"
-            in ModelRegistry.get_supported_archs()
-        )
+        assert "NeMoSpeechLMForConditionalGeneration" in ModelRegistry.get_supported_archs()
         assert NeMoSpeechLMForConditionalGeneration is not None
 
     def test_register_model_config_hook(self, monkeypatch):
@@ -1300,9 +1222,7 @@ class TestPluginRegistration:
         from vllm.model_executor.models.config import MODELS_CONFIG_MAP
 
         from nemo.collections.speechlm2.vllm.salm import register
-        from nemo.collections.speechlm2.vllm.salm.config_hook import (
-            NeMoSpeechLMForConditionalGenerationConfig,
-        )
+        from nemo.collections.speechlm2.vllm.salm.config_hook import NeMoSpeechLMForConditionalGenerationConfig
 
         monkeypatch.setattr(
             AutoConfig,
@@ -1312,10 +1232,7 @@ class TestPluginRegistration:
 
         register()
 
-        assert (
-            MODELS_CONFIG_MAP["NeMoSpeechLMForConditionalGeneration"]
-            is NeMoSpeechLMForConditionalGenerationConfig
-        )
+        assert MODELS_CONFIG_MAP["NeMoSpeechLMForConditionalGeneration"] is NeMoSpeechLMForConditionalGenerationConfig
 
     @pytest.mark.parametrize(
         ("is_hybrid", "backbone_dtype", "initial_dtype", "expected_dtype"),
@@ -1329,18 +1246,14 @@ class TestPluginRegistration:
     def test_model_config_hook_sets_only_hybrid_auto_cache_dtype(
         self, is_hybrid, backbone_dtype, initial_dtype, expected_dtype
     ):
-        from nemo.collections.speechlm2.vllm.salm.config_hook import (
-            NeMoSpeechLMForConditionalGenerationConfig,
-        )
+        from nemo.collections.speechlm2.vllm.salm.config_hook import NeMoSpeechLMForConditionalGenerationConfig
 
         text_config = SimpleNamespace()
         if backbone_dtype is not None:
             text_config.mamba_ssm_cache_dtype = backbone_dtype
         vllm_config = SimpleNamespace(
             cache_config=SimpleNamespace(mamba_ssm_cache_dtype=initial_dtype),
-            model_config=SimpleNamespace(
-                hf_config=SimpleNamespace(is_hybrid=is_hybrid, text_config=text_config)
-            ),
+            model_config=SimpleNamespace(hf_config=SimpleNamespace(is_hybrid=is_hybrid, text_config=text_config)),
         )
 
         NeMoSpeechLMForConditionalGenerationConfig.verify_and_update_config(vllm_config)
@@ -1369,11 +1282,7 @@ class TestPluginRegistration:
 
         from nemo.collections.speechlm2.vllm.salm import register
 
-        from_pretrained = Mock(
-            side_effect=AssertionError(
-                "register() must not load remote backbone configs"
-            )
-        )
+        from_pretrained = Mock(side_effect=AssertionError("register() must not load remote backbone configs"))
         monkeypatch.setattr(AutoConfig, "from_pretrained", from_pretrained)
 
         register()
@@ -1384,6 +1293,34 @@ class TestPluginRegistration:
 @pytest.mark.skipif(not _HAS_VLLM, reason="vLLM not installed")
 class TestMTPPlugin:
     """Tests for NeMo SpeechLM MTP speculative-decoding support."""
+
+    @pytest.fixture(autouse=True)
+    def restore_original_override(self):
+        """Keep the process-local fallback hook isolated between tests."""
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
+        original_override = salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE
+        yield
+        salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = original_override
+
+    @pytest.fixture(autouse=True)
+    def mock_backbone_config(self, monkeypatch):
+        """Keep registration tests independent of Hugging Face network access."""
+        if not _HAS_CONFIG:
+            return
+
+        monkeypatch.setattr(
+            _config_module.AutoConfig,
+            "from_pretrained",
+            lambda *args, **kwargs: SimpleNamespace(
+                architectures=["NemotronHybridForCausalLM"],
+                hidden_size=2048,
+                vocab_size=131072,
+                num_hidden_layers=4,
+                num_key_value_heads=2,
+                layer_norm_epsilon=1e-5,
+            ),
+        )
 
     class _HFConfigLike:
         """Minimal stand-in for a HuggingFace PretrainedConfig."""
@@ -1461,9 +1398,109 @@ class TestMTPPlugin:
         assert result.n_predict == 1
         assert result.num_nextn_predict_layers == 1
 
-    def test_patched_override_repeated_layer_exposes_one_reusable_head(
-        self, monkeypatch
-    ):
+    def test_patched_override_is_pickleable_for_spawned_engine(self, monkeypatch):
+        """The callable retained on draft ModelConfig must survive multiprocessing spawn."""
+        import pickle
+
+        from transformers import AutoConfig
+        from vllm.config.speculative import SpeculativeConfig
+
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm.salm import register
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()),
+        )
+        register()
+
+        restored = pickle.loads(pickle.dumps(SpeculativeConfig.hf_config_override))
+        assert restored is salm_module._nemo_speechlm_mtp_hf_config_override
+
+        overrides = [restored]
+        if hasattr(SpeculativeConfig, "compose_draft_hf_overrides"):
+            composed = SpeculativeConfig.compose_draft_hf_overrides(_identity_hf_config_override)
+            assert composed is not SpeculativeConfig.hf_config_override
+            overrides.append(pickle.loads(pickle.dumps(composed)))
+
+        for override in overrides:
+            hf_cfg = self._HFConfigLike(
+                model_type="nemo_speechlm",
+                mtp={
+                    "enabled": True,
+                    "num_nextn_predict_layers": 4,
+                    "use_repeated_layer": True,
+                },
+            )
+            result = override(hf_cfg)
+            assert result.model_type == "nemo_speechlm_mtp"
+            assert result.n_predict == 1
+
+    def test_patched_override_lazily_captures_native_hook_in_spawn_child(self, monkeypatch):
+        """A fresh spawn import should delegate unrelated configs to vLLM's native hook."""
+        from vllm.config.speculative import SpeculativeConfig
+
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
+        original_calls = []
+
+        def _recording_native(cfg):
+            original_calls.append(cfg)
+            return cfg
+
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
+        monkeypatch.setattr(
+            SpeculativeConfig,
+            "hf_config_override",
+            staticmethod(_recording_native),
+        )
+
+        hf_cfg = self._HFConfigLike(model_type="unrelated")
+        result = salm_module._nemo_speechlm_mtp_hf_config_override(hf_cfg)
+
+        assert result is hf_cfg
+        assert original_calls == [hf_cfg]
+        assert salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is _recording_native
+
+    def test_patched_override_rejects_missing_native_hook(self, monkeypatch):
+        """A corrupted install must fail clearly instead of recursing into our override."""
+        from vllm.config.speculative import SpeculativeConfig
+
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
+        monkeypatch.setattr(
+            SpeculativeConfig,
+            "hf_config_override",
+            staticmethod(salm_module._nemo_speechlm_mtp_hf_config_override),
+        )
+
+        with pytest.raises(RuntimeError, match="without preserving vLLM's original hook"):
+            salm_module._nemo_speechlm_mtp_hf_config_override(self._HFConfigLike(model_type="unrelated"))
+
+    def test_patched_override_enabled_mtp_defaults_to_one_head(self, monkeypatch):
+        """An enabled training block without an explicit depth constructs one head."""
+        from transformers import AutoConfig
+        from vllm.config.speculative import SpeculativeConfig
+
+        from nemo.collections.speechlm2.vllm.salm import register
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()),
+        )
+        register()
+
+        hf_cfg = self._HFConfigLike(model_type="nemo_speechlm", mtp={"enabled": True})
+        result = SpeculativeConfig.hf_config_override(hf_cfg)
+
+        assert result.model_type == "nemo_speechlm_mtp"
+        assert result.n_predict == 1
+        assert result.num_nextn_predict_layers == 1
+
+    def test_patched_override_repeated_layer_exposes_one_reusable_head(self, monkeypatch):
         """Repeated-layer training depth must not constrain inference-time K."""
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
@@ -1508,9 +1545,10 @@ class TestMTPPlugin:
             original_calls.append(cfg)
             return cfg
 
-        monkeypatch.setattr(
-            SpeculativeConfig, "hf_config_override", staticmethod(_recording_orig)
-        )
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
+        monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_recording_orig))
         register()
 
         hf_cfg = self._HFConfigLike(
@@ -1521,9 +1559,75 @@ class TestMTPPlugin:
 
         assert len(original_calls) == 1
 
-    def test_patched_override_multi_head_without_repeated_layer_raises(
-        self, monkeypatch
-    ):
+    def test_patched_override_depth_without_enabled_flag_falls_through(self, monkeypatch):
+        """A retained recipe depth must not enable a head that training did not construct."""
+        from transformers import AutoConfig
+        from vllm.config.speculative import SpeculativeConfig
+
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm.salm import register
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()),
+        )
+        original_calls = []
+
+        def _recording_orig(cfg):
+            original_calls.append(cfg)
+            return cfg
+
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
+        monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_recording_orig))
+        register()
+
+        hf_cfg = self._HFConfigLike(
+            model_type="nemo_speechlm",
+            mtp={"num_nextn_predict_layers": 4, "use_repeated_layer": True},
+        )
+        result = SpeculativeConfig.hf_config_override(hf_cfg)
+
+        assert result.model_type == "nemo_speechlm"
+        assert original_calls == [hf_cfg]
+
+    def test_patched_override_explicitly_disabled_mtp_falls_through(self, monkeypatch):
+        """An exported recipe depth must not override mtp.enabled=false."""
+        from transformers import AutoConfig
+        from vllm.config.speculative import SpeculativeConfig
+
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm.salm import register
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()),
+        )
+        original_calls = []
+
+        def _recording_orig(cfg):
+            original_calls.append(cfg)
+            return cfg
+
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
+        monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_recording_orig))
+        register()
+
+        hf_cfg = self._HFConfigLike(
+            model_type="nemo_speechlm",
+            mtp={
+                "enabled": False,
+                "num_nextn_predict_layers": 4,
+                "use_repeated_layer": True,
+            },
+        )
+        result = SpeculativeConfig.hf_config_override(hf_cfg)
+
+        assert result.model_type == "nemo_speechlm"
+        assert original_calls == [hf_cfg]
+
+    def test_patched_override_multi_head_without_repeated_layer_raises(self, monkeypatch):
         """hf_config_override should raise for multi-head checkpoints without use_repeated_layer."""
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
@@ -1566,6 +1670,51 @@ class TestMTPPlugin:
 
         assert SpeculativeConfig.hf_config_override is first_override
 
+    def test_mtp_override_reregistration_preserves_first_native_hook(self, monkeypatch):
+        """A later wrapper that delegates to us must not become our fallback."""
+        from transformers import AutoConfig
+        from vllm.config.speculative import SpeculativeConfig
+
+        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm.salm import register
+
+        monkeypatch.setattr(
+            AutoConfig,
+            "from_pretrained",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError()),
+        )
+        native_calls = []
+
+        def _recording_native(cfg):
+            native_calls.append(cfg)
+            return cfg
+
+        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
+        monkeypatch.setattr(
+            SpeculativeConfig,
+            "hf_config_override",
+            staticmethod(_recording_native),
+        )
+        register()
+        first_override = SpeculativeConfig.hf_config_override
+
+        def _third_party_wrapper(cfg):
+            return first_override(cfg)
+
+        monkeypatch.setattr(
+            SpeculativeConfig,
+            "hf_config_override",
+            staticmethod(_third_party_wrapper),
+        )
+        register()
+
+        hf_cfg = self._HFConfigLike(model_type="unrelated")
+        result = SpeculativeConfig.hf_config_override(hf_cfg)
+
+        assert result is hf_cfg
+        assert native_calls == [hf_cfg]
+        assert salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is _recording_native
+
     def test_embed_input_ids_text_only(self):
         """embed_input_ids with no audio embeddings should return plain text embeddings."""
         import torch
@@ -1604,6 +1753,86 @@ class TestMTPPlugin:
         assert torch.equal(result[2], torch.ones(2) * 9.0)
         assert torch.equal(result[3], torch.zeros(2))
 
+    def test_embed_input_ids_fuses_multiple_audio_chunks(self):
+        """embed_input_ids should preserve vLLM's nested embedding order."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import NeMoSpeechLMMTP
+
+        model = object.__new__(NeMoSpeechLMMTP)
+        base_embeds = torch.zeros(5, 2)
+        model.model = SimpleNamespace(get_input_embeddings=lambda ids: base_embeds.clone())
+
+        audio_feats = [[torch.ones(1, 2) * 3.0], [torch.ones(2, 2) * 7.0]]
+        is_audio = torch.tensor([True, False, True, True, False])
+        result = model.embed_input_ids(
+            torch.tensor([0, 1, 2, 3, 4]),
+            multimodal_embeddings=audio_feats,
+            is_multimodal=is_audio,
+        )
+
+        assert torch.equal(result[0], torch.ones(2) * 3.0)
+        assert torch.equal(result[1], torch.zeros(2))
+        assert torch.equal(result[2], torch.ones(2) * 7.0)
+        assert torch.equal(result[3], torch.ones(2) * 7.0)
+        assert torch.equal(result[4], torch.zeros(2))
+
+    def test_embed_input_ids_requires_multimodal_mask(self):
+        """Audio embeddings without placeholder positions should fail clearly."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import NeMoSpeechLMMTP
+
+        model = object.__new__(NeMoSpeechLMMTP)
+        model.model = SimpleNamespace(get_input_embeddings=lambda ids: torch.zeros(2, 2))
+
+        with pytest.raises(ValueError, match="is_multimodal"):
+            model.embed_input_ids(
+                torch.tensor([0, 1]),
+                multimodal_embeddings=[torch.ones(1, 2)],
+            )
+
+    def test_embed_input_ids_ignores_embeddings_without_placeholder_positions(self):
+        """vLLM's merge semantics leave embeddings unchanged for an all-text mask."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import NeMoSpeechLMMTP
+
+        model = object.__new__(NeMoSpeechLMMTP)
+        model.model = SimpleNamespace(get_input_embeddings=lambda ids: torch.zeros(2, 2))
+
+        result = model.embed_input_ids(
+            torch.tensor([0, 1]),
+            multimodal_embeddings=[torch.ones(1, 2)],
+            is_multimodal=torch.tensor([False, False]),
+        )
+
+        assert torch.equal(result, torch.zeros(2, 2))
+
+    def test_target_weight_split_excludes_salm_mtp_and_rejects_bare_mtp(self):
+        """The target loader should route SALM draft weights and reject native names."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.model import NeMoSpeechLMForConditionalGeneration
+
+        perception_tensor = torch.ones(1)
+        llm_tensor = torch.ones(2)
+        perception, llm = NeMoSpeechLMForConditionalGeneration._split_perception_llm(
+            [
+                ("perception.encoder.weight", perception_tensor),
+                ("llm.mtp.layers.0.weight", torch.ones(4)),
+                ("llm.model.layers.0.weight", llm_tensor),
+                ("llm.model.layers.0._extra_state", torch.ones(5)),
+            ]
+        )
+
+        assert perception == {"encoder.weight": perception_tensor}
+        assert [name for name, _ in llm] == ["llm.model.layers.0.weight"]
+        assert llm[0][1] is llm_tensor
+
+        with pytest.raises(ValueError, match=r"llm\.mtp\.\*"):
+            NeMoSpeechLMForConditionalGeneration._split_perception_llm([("mtp.layers.0.weight", torch.ones(3))])
+
     def test_mtp_weight_remap_uses_vllm_embedding_alias(self):
         """Exported SpeechLM embeddings must pass NemotronHMTP's name filter."""
         import torch
@@ -1639,6 +1868,106 @@ class TestMTPPlugin:
         )
         assert padded["backbone.embeddings.weight"].shape == (5, 3)
         assert padded["lm_head.weight"].shape == (5, 3)
+
+    def test_mtp_weight_remap_rejects_distinct_head_layers(self):
+        """Unsupported distinct heads in a SpeechLM export should fail loudly."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import _remap_nemo_mtp_weights
+
+        tensor = torch.ones(2, 3)
+        with pytest.raises(ValueError, match="distinct multi-head"):
+            list(
+                _remap_nemo_mtp_weights(
+                    [("llm.mtp.layers.1.enorm.weight", tensor)],
+                    expected_layer_modules=1,
+                )
+            )
+
+    def test_mtp_weight_remap_ignores_non_salm_names(self):
+        """The draft loader supports SpeechLM exports, not bare backbone weights."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import _remap_nemo_mtp_weights
+
+        assert list(_remap_nemo_mtp_weights([("mtp.layers.0.norm.weight", torch.ones(1))])) == []
+
+    def test_mtp_weight_remap_allows_all_sublayers_in_hybrid_pattern(self):
+        """Hybrid-pattern sublayers belong to one reusable prediction step."""
+        import torch
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import _remap_nemo_mtp_weights
+
+        tensor = torch.ones(2, 3)
+        remapped = dict(
+            _remap_nemo_mtp_weights(
+                [(f"llm.mtp.layers.{i}.norm.weight", tensor) for i in range(3)],
+                expected_layer_modules=3,
+            )
+        )
+        assert set(remapped) == {f"mtp.layers.{i}.norm.weight" for i in range(3)}
+
+    def test_mtp_load_weights_bounds_layers_from_serialized_pattern(self, monkeypatch):
+        """The loader should derive its physical-layer bound from config."""
+        import torch
+        from vllm.model_executor.models.nemotron_h_mtp import NemotronHMTP
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import NeMoSpeechLMMTP
+
+        model = object.__new__(NeMoSpeechLMMTP)
+        object.__setattr__(
+            model,
+            "config",
+            SimpleNamespace(mtp_hybrid_override_pattern="*E", vocab_size=3),
+        )
+        captured = []
+
+        def _capture_weights(self, weights):
+            captured.extend(weights)
+            return set()
+
+        monkeypatch.setattr(NemotronHMTP, "load_weights", _capture_weights)
+        tensor = torch.ones(1, 2)
+        NeMoSpeechLMMTP.load_weights(
+            model,
+            [
+                ("llm.model.embed_tokens.weight", tensor),
+                ("llm.mtp.layers.0.norm.weight", tensor),
+                ("llm.mtp.layers.1.norm.weight", tensor),
+                ("llm.lm_head.weight", tensor),
+            ],
+        )
+        assert [name for name, _ in captured] == [
+            "backbone.embeddings.weight",
+            "mtp.layers.0.norm.weight",
+            "mtp.layers.1.norm.weight",
+            "lm_head.weight",
+        ]
+        captured_tensors = dict(captured)
+        assert captured_tensors["backbone.embeddings.weight"].shape == (3, 2)
+        assert captured_tensors["lm_head.weight"].shape == (3, 2)
+        assert captured_tensors["mtp.layers.0.norm.weight"] is tensor
+        assert captured_tensors["mtp.layers.1.norm.weight"] is tensor
+
+        with pytest.raises(ValueError, match="distinct multi-head"):
+            NeMoSpeechLMMTP.load_weights(model, [("llm.mtp.layers.2.norm.weight", tensor)])
+
+    @pytest.mark.parametrize("pattern", [None, "", 3])
+    def test_mtp_load_weights_rejects_invalid_serialized_pattern(self, monkeypatch, pattern):
+        from vllm.model_executor.models.nemotron_h_mtp import NemotronHMTP
+
+        from nemo.collections.speechlm2.vllm.salm.mtp import NeMoSpeechLMMTP
+
+        model = object.__new__(NeMoSpeechLMMTP)
+        object.__setattr__(
+            model,
+            "config",
+            SimpleNamespace(mtp_hybrid_override_pattern=pattern, vocab_size=3),
+        )
+        monkeypatch.setattr(NemotronHMTP, "load_weights", lambda self, weights: set())
+
+        with pytest.raises(ValueError, match="non-empty string"):
+            NeMoSpeechLMMTP.load_weights(model, [])
 
     def test_mtp_weight_remap_splits_packed_experts(self):
         """Packed Automodel MTP experts must become vLLM per-expert weights."""
@@ -1694,18 +2023,31 @@ class TestMTPPlugin:
         assert cfg.mtp_hybrid_override_pattern == "*"
 
     @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
-    def test_image_token_index_is_base_vocab_size(self):
-        """image_token_index should equal the backbone base vocab size (before padding)."""
+    def test_image_token_index_is_unserialized_backbone_vocab_boundary(self):
+        """vLLM's compatibility property should identify the first padded row."""
         import importlib
 
-        config_mod = importlib.import_module(
-            "nemo.collections.speechlm2.vllm.salm.config"
-        )
+        config_mod = importlib.import_module("nemo.collections.speechlm2.vllm.salm.config")
         extra_rows = config_mod._SPEECHLM_EMBED_EXTRA_ROWS
 
         cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS)
         base_vocab = cfg.text_config.vocab_size - extra_rows
         assert cfg.image_token_index == base_vocab
+        # vLLM copies the target value onto the draft config. The setter accepts
+        # that runtime-only assignment without adding serialized state.
+        cfg.image_token_index = base_vocab
+        assert cfg.image_token_index == base_vocab
+        assert "audio_token_index" not in cfg.to_dict()
+        assert "image_token_index" not in cfg.to_dict()
+
+    @pytest.mark.skipif(not _HAS_CONFIG, reason="NeMoSpeechLMConfig not available")
+    def test_legacy_image_token_index_is_validated_after_backbone_load(self):
+        cfg = NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, image_token_index=131072)
+        assert cfg.image_token_index == 131072
+        assert "image_token_index" not in cfg.to_dict()
+
+        with pytest.raises(ValueError, match="backbone vocabulary boundary"):
+            NeMoSpeechLMConfig(**_DEFAULT_CONFIG_KWARGS, image_token_index=42)
 
 
 class _FakeTokenizer:

@@ -18,10 +18,7 @@ import pytest
 import torch
 from lhotse import CutSet
 
-from nemo.collections.common.data.lhotse.text_adapters import (
-    NeMoMultimodalConversation,
-    TextTurn,
-)
+from nemo.collections.common.data.lhotse.text_adapters import NeMoMultimodalConversation, TextTurn
 from nemo.collections.speechlm2.data import salm_dataset
 from nemo.collections.speechlm2.data.salm_dataset import SALMDataset
 
@@ -46,9 +43,7 @@ def test_strict_audio_loading_rejects_partial_conversation_drop(monkeypatch):
     def partial(conversations, load_audio):
         return torch.empty(0), torch.empty(0, dtype=torch.long), CutSet([first])
 
-    monkeypatch.setattr(
-        salm_dataset, "collate_conversation_audio_fault_tolerant", partial
-    )
+    monkeypatch.setattr(salm_dataset, "collate_conversation_audio_fault_tolerant", partial)
     strict = SALMDataset(_Tokenizer(), strict_audio_loading=True)
 
     with pytest.raises(RuntimeError, match="dropped or reordered conversations"):

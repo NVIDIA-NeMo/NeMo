@@ -24,18 +24,11 @@ from types import SimpleNamespace
 import pytest
 from lhotse.index_pack import IndexPackCollectionSpec, write_index_pack
 from lhotse.indexing import create_jsonl_index
+
 from nemo.collections.common.data.lhotse import indexed_adapters, sharegpt_tar_routing
-from nemo.collections.common.data.lhotse.indexed_adapters import (
-    PackedTarMemberReader,
-    create_tar_index,
-)
-from nemo.collections.common.data.lhotse.sharegpt_tar_routing import (
-    build_sharegpt_tar_routing_index,
-)
-from nemo.collections.common.data.lhotse.text_adapters import (
-    AudioTurn,
-    NeMoMultimodalConversationShareGPTJsonlAdapter,
-)
+from nemo.collections.common.data.lhotse.indexed_adapters import PackedTarMemberReader, create_tar_index
+from nemo.collections.common.data.lhotse.sharegpt_tar_routing import build_sharegpt_tar_routing_index
+from nemo.collections.common.data.lhotse.text_adapters import AudioTurn, NeMoMultimodalConversationShareGPTJsonlAdapter
 
 
 def _wav(duration: float) -> bytes:
@@ -104,19 +97,9 @@ def _assert_conversations(adapter):
     second_audio = [turn for turn in second.turns if isinstance(turn, AudioTurn)]
     assert [turn.cut.duration for turn in first_audio] == [1.0]
     assert [turn.cut.duration for turn in second_audio] == [1.5]
-    assert [
-        turn.cut.custom["_source_codec"] for turn in first_audio + second_audio
-    ] == ["wav", "wav"]
-    assert all(
-        turn.cut.custom["_source_range_bytes"] > 0
-        for turn in first_audio + second_audio
-    )
-    assert (
-        len(
-            {turn.cut.custom["_source_read_key"] for turn in first_audio + second_audio}
-        )
-        == 2
-    )
+    assert [turn.cut.custom["_source_codec"] for turn in first_audio + second_audio] == ["wav", "wav"]
+    assert all(turn.cut.custom["_source_range_bytes"] > 0 for turn in first_audio + second_audio)
+    assert len({turn.cut.custom["_source_read_key"] for turn in first_audio + second_audio}) == 2
 
 
 def test_sharegpt_loose_index_tar_collection_routes_manifest_rows(tmp_path):
@@ -314,10 +297,7 @@ def test_sharegpt_packed_collection_validates_every_manifest_shard(tmp_path):
 
     conversations = list(adapter)
     assert [item.id for item in conversations] == ["row-0", "row-1"]
-    assert [
-        [turn.cut.duration for turn in item.turns if isinstance(turn, AudioTurn)]
-        for item in conversations
-    ] == [
+    assert [[turn.cut.duration for turn in item.turns if isinstance(turn, AudioTurn)] for item in conversations] == [
         [1.0],
         [2.0],
     ]
@@ -330,9 +310,7 @@ def test_packed_tar_collection_uses_bounded_remote_ranges(tmp_path, monkeypatch)
         f"<{Path(f'{tar_path}.idx').stat().st_size // 8}Q",
         Path(f"{tar_path}.idx").read_bytes(),
     )
-    location = SimpleNamespace(
-        path="s3://bucket/audio.tar", start=offsets[0], end=offsets[1]
-    )
+    location = SimpleNamespace(path="s3://bucket/audio.tar", start=offsets[0], end=offsets[1])
 
     class Collection:
         kind = "nemo_tar"
@@ -370,9 +348,7 @@ def test_packed_tar_collection_uses_bounded_remote_ranges(tmp_path, monkeypatch)
     assert all(call[0] == "s3://bucket/audio.tar" for call in calls)
 
 
-def test_sharegpt_collection_runtime_startup_does_not_read_manifest_payload(
-    tmp_path, monkeypatch
-):
+def test_sharegpt_collection_runtime_startup_does_not_read_manifest_payload(tmp_path, monkeypatch):
     manifest, tars, route = _sources(tmp_path)
     calls = []
 

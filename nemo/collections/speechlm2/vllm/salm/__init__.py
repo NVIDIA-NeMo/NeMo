@@ -24,12 +24,71 @@ Backbone-specific behavior is selected at instantiation time.
 """
 
 _PKG = "nemo.collections.speechlm2.vllm.salm"
+_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = None
+
+
+def _nemo_speechlm_mtp_hf_config_override(hf_config):
+    """Apply the SpeechLM MTP rewrite, then defer unrelated configs to vLLM.
+
+    This function must remain at module scope: vLLM retains it on the draft
+    ``ModelConfig``, which can cross a spawned process boundary. The original
+    vLLM callable stays in process-local module state because binding the
+    replaced static method inside a closure also makes that method
+    unresolvable by standard pickle.
+    """
+    if hf_config.model_type == "nemo_speechlm":
+        mtp_cfg = getattr(hf_config, "mtp", None)
+        if not isinstance(mtp_cfg, dict):
+            mtp_cfg = {}
+        # Match SALMAutomodel's training defaults exactly: retaining a recipe
+        # depth does not enable MTP, while an enabled block with no explicit
+        # depth constructs one logical head.
+        mtp_enabled = bool(mtp_cfg.get("enabled", False))
+        n_predict = int(mtp_cfg.get("num_nextn_predict_layers", 1 if mtp_enabled else 0) or 0)
+        if mtp_enabled and n_predict > 0:
+            use_repeated_layer = bool(mtp_cfg.get("use_repeated_layer", False))
+            if n_predict > 1 and not use_repeated_layer:
+                raise ValueError(
+                    f"NeMo SpeechLM MTP with {n_predict} distinct head layers is not "
+                    f"supported: vLLM's NemotronHMultiTokenPredictor builds a single "
+                    f"physical MTP layer and reuses it every speculative step. Only "
+                    f"checkpoints trained with mtp.use_repeated_layer=true match that "
+                    f"execution model."
+                )
+            hf_config.model_type = "nemo_speechlm_mtp"
+            hf_config.update(
+                {
+                    # vLLM instantiates one physical prediction step and reuses
+                    # it for arbitrary speculative K. Repeated-layer training
+                    # produces exactly that checkpoint layout.
+                    "n_predict": 1,
+                    "num_nextn_predict_layers": 1,
+                    "architectures": ["NeMoSpeechLMMTPModel"],
+                }
+            )
+            return hf_config
+
+    global _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE
+    if _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is None:
+        # A spawn child can import this module while unpickling the function
+        # without running the vLLM plugin hook first. In that case the class
+        # still exposes its native override, which is safe to capture lazily.
+        import vllm.config.speculative as _spec_mod
+
+        current_override = _spec_mod.SpeculativeConfig.hf_config_override
+        if current_override is _nemo_speechlm_mtp_hf_config_override:
+            raise RuntimeError("NeMo SpeechLM MTP override was installed without preserving vLLM's original hook.")
+        _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = current_override
+    return _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE(hf_config)
+
+
+_nemo_speechlm_mtp_hf_config_override._nemo_speechlm_mtp_override = True
 
 
 def _patch_vllm_for_nemo_speechlm_mtp() -> None:
     """Extend vLLM's speculative-decoding framework to support nemo_speechlm MTP.
 
-    Three patches are applied:
+    Three patches are applied on the supported vLLM 0.19+ releases:
 
     1. ``MTPModelTypes`` — the Literal type that guards the MTP detection
        branch in ``SpeculativeConfig.__post_init__`` is extended to include
@@ -48,7 +107,6 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
     from typing import Literal, get_args
 
     import vllm.config.speculative as _spec_mod
-    from vllm.config.speculative import SpeculativeConfig
 
     # Extend vLLM's recognized MTP model types.
     old_args = get_args(_spec_mod.MTPModelTypes)
@@ -56,49 +114,15 @@ def _patch_vllm_for_nemo_speechlm_mtp() -> None:
         _spec_mod.MTPModelTypes = Literal[old_args + ("nemo_speechlm_mtp",)]
 
     # Route SpeechLM MTP checkpoints through SpeculativeConfig.hf_config_override.
-    current_override = SpeculativeConfig.hf_config_override
+    current_override = _spec_mod.SpeculativeConfig.hf_config_override
     if not getattr(current_override, "_nemo_speechlm_mtp_override", False):
-        original_override = current_override
-
-        def _patched_override(hf_config):
-            if hf_config.model_type == "nemo_speechlm":
-                mtp_cfg = getattr(hf_config, "mtp", None)
-                if not isinstance(mtp_cfg, dict):
-                    mtp_cfg = {}
-                n_predict = int(mtp_cfg.get("num_nextn_predict_layers", 0) or 0)
-                if mtp_cfg.get("enabled", False) and n_predict > 0:
-                    use_repeated_layer = bool(mtp_cfg.get("use_repeated_layer", False))
-                    if n_predict > 1 and not use_repeated_layer:
-                        raise ValueError(
-                            f"NeMo SpeechLM MTP with {n_predict} distinct head layers is not "
-                            f"supported: vLLM's NemotronHMultiTokenPredictor builds a single "
-                            f"physical MTP layer and reuses it every speculative step. Only "
-                            f"checkpoints trained with mtp.use_repeated_layer=true match that "
-                            f"execution model."
-                        )
-                    hf_config.model_type = "nemo_speechlm_mtp"
-                    hf_config.update(
-                        {
-                            # Size of the physical MTP block that vLLM reuses. A
-                            # repeated-layer checkpoint ships one shared head even
-                            # when it was trained for multiple next-token positions,
-                            # so arbitrary inference K values must be multiples of 1.
-                            "n_predict": 1 if use_repeated_layer else n_predict,
-                            # Physical MTP layers to instantiate. Repeated-layer checkpoints ship
-                            # one shared layer (mtp.layers.0.*) that is reapplied every step, which
-                            # is exactly how the vLLM proposer drives an MTP draft. This also
-                            # shadows the backbone text_config's num_nextn_predict_layers (e.g. 4),
-                            # which would otherwise trip the single-layer assert in
-                            # NemotronHMultiTokenPredictor.
-                            "num_nextn_predict_layers": 1,
-                            "architectures": ["NeMoSpeechLMMTPModel"],
-                        }
-                    )
-                    return hf_config
-            return original_override(hf_config)
-
-        _patched_override._nemo_speechlm_mtp_override = True
-        SpeculativeConfig.hf_config_override = staticmethod(_patched_override)
+        global _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE
+        # Preserve the first native hook for the lifetime of this process.
+        # Replacing it during later registration could capture a third-party
+        # wrapper that already delegates to us and create an override cycle.
+        if _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is None:
+            _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = current_override
+        _spec_mod.SpeculativeConfig.hf_config_override = staticmethod(_nemo_speechlm_mtp_hf_config_override)
 
     # Register the SpeechLM MTP draft architecture with vLLM.
     from vllm.model_executor.models.registry import ModelRegistry

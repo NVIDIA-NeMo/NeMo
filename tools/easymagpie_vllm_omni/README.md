@@ -201,8 +201,18 @@ curl -X POST http://localhost:8091/v1/audio/speech \
 python scripts/benchmark_model.py --model ./converted_model -n 128 -c 1 32 \
     [--streaming --tokens-per-chunk 5]
 
-# Benchmark the service's HTTP API.
-python scripts/benchmark_server.py --text-file vctk_subset.txt -n 128 -c 1 32
+# Benchmark the service's HTTP API with a known speaker.
+python scripts/benchmark_server.py --text-file vctk_subset.txt -n 128 -c 1 32 \
+    --speaker-id eng
+
+# Benchmark zero-shot synthesis with one request-time reference.
+python scripts/benchmark_server.py --text-file vctk_subset.txt -n 128 -c 1 32 \
+    --reference-audio /path/to/reference.wav
+
+# Perturb the reference for every request to bypass audio caches.
+python scripts/benchmark_server.py --text-file vctk_subset.txt -n 128 -c 1 32 \
+    --reference-audio /path/to/reference.wav \
+    --randomize-reference-audio
 
 # Benchmark the service's incremental synthesis via its WebSocket API.
 python scripts/benchmark_incremental_server.py --model ./converted_model \

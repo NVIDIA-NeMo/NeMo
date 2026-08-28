@@ -36,6 +36,7 @@ from nemo.collections.asr.parts.utils.sot_speaker_alignment import (
 from nemo.collections.common.data.lhotse import NeMoMultimodalConversation
 from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
+    Formattable,
     TextTurn,
     collate_conversation_audio_fault_tolerant,
     collate_conversation_audio_packed_fault_tolerant,
@@ -186,10 +187,8 @@ class SALMDataset(torch.utils.data.Dataset):
         # Returning None is possible only for an explicitly permissive loader;
         # DataModule gates FallbackDataset behind that same explicit policy.
         if self.strict_audio_loading:
-            requested_conversation_ids = tuple(conversation.id for conversation in conversations)
-            requested_audio_cut_ids = tuple(
-                cut.id for conversation in conversations for cut in conversation.list_cuts()
-            )
+            requested_conversation_ids = tuple(id(conversation) for conversation in conversations)
+            requested_audio_cut_ids = _audio_cut_ids(conversations)
         else:
             requested_conversation_ids = requested_audio_cut_ids = ()
 
@@ -213,16 +212,14 @@ class SALMDataset(torch.utils.data.Dataset):
             logging.warning(f"Error collating conversations: {e}")
             return None
         if self.strict_audio_loading:
-            materialized_conversation_ids = tuple(conversation.id for conversation in conversations)
+            materialized_conversation_ids = tuple(id(conversation) for conversation in conversations)
             if materialized_conversation_ids != requested_conversation_ids:
                 raise RuntimeError(
                     "Strict SALM validation dropped or reordered conversations: "
                     f"requested={len(requested_conversation_ids)} "
                     f"materialized={len(materialized_conversation_ids)}"
                 )
-            materialized_audio_cut_ids = tuple(
-                cut.id for conversation in conversations for cut in conversation.list_cuts()
-            )
+            materialized_audio_cut_ids = _audio_cut_ids(conversations)
             if (
                 materialized_audio_cut_ids != requested_audio_cut_ids
                 or len(audio_lens) != len(requested_audio_cut_ids)
@@ -304,7 +301,9 @@ def pack_vectors(tensors: Iterable[Union[torch.Tensor, np.ndarray]]) -> tuple[to
 
 
 def drop_in_memory_data(conversations: CutSet) -> CutSet:
-    def _drop(conversation: NeMoMultimodalConversation) -> NeMoMultimodalConversation:
+    def _drop(conversation: Formattable) -> Formattable:
+        if not isinstance(conversation, NeMoMultimodalConversation):
+            return conversation
         turns = []
         for t in conversation.turns:
             if isinstance(t, AudioTurn):
@@ -313,6 +312,19 @@ def drop_in_memory_data(conversations: CutSet) -> CutSet:
         return fastcopy(conversation, turns=turns)
 
     return conversations.map(_drop, apply_fn=None)
+
+
+def _audio_cut_ids(conversations: Iterable[Formattable]) -> tuple[str, ...]:
+    cut_ids = []
+    for conversation in conversations:
+        if isinstance(conversation, NeMoMultimodalConversation):
+            cut_ids.extend(cut.id for cut in conversation.list_cuts())
+        elif not isinstance(conversation, Formattable):
+            raise TypeError(
+                "SALMDataset expected a prompt-formatted example, "
+                f"got {type(conversation).__name__}."
+            )
+    return tuple(cut_ids)
 
 
 @registered_prompt_format_fn(NeMoMultimodalConversation, Llama2PromptFormatter)

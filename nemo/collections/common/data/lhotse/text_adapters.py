@@ -876,7 +876,7 @@ class NeMoMultimodalConversation(Formattable, CustomFieldMixin):
 
 
 def collate_conversation_audio_fault_tolerant(
-    conversations: Sequence[NeMoMultimodalConversation],
+    conversations: Sequence[Formattable],
     load_audio: AudioSamples,
 ) -> tuple[torch.Tensor, torch.Tensor, CutSet]:
     """
@@ -924,15 +924,7 @@ def collate_conversation_audio_fault_tolerant(
     * ``conversations`` CutSet of NeMoMultimodalConversations that were successfully loaded.
     """
     # Phase 1: flatten — per-conv cut-id lists let us regroup after the batched load.
-    flat_cuts: list[Cut] = []
-    conv_to_cut_ids: list[list[str]] = []
-    for conversation in conversations:
-        assert isinstance(conversation, NeMoMultimodalConversation)
-        ids = []
-        for cut in conversation.list_cuts():
-            flat_cuts.append(cut)
-            ids.append(cut.id)
-        conv_to_cut_ids.append(ids)
+    flat_cuts, conv_to_cut_ids = _flatten_conversation_audio_cuts(conversations)
 
     if not flat_cuts:
         # Text-only batch: nothing to load, but pass conversations through unchanged.
@@ -964,7 +956,7 @@ def collate_conversation_audio_fault_tolerant(
 
 
 def collate_conversation_audio_packed_fault_tolerant(
-    conversations: Sequence[NeMoMultimodalConversation],
+    conversations: Sequence[Formattable],
     load_audio: AudioSamples,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, CutSet]:
     """Load conversation audio into one contiguous, unpadded waveform buffer.
@@ -2887,9 +2879,14 @@ def _flatten_conversation_audio_cuts(conversations):
     flat_cuts = []
     conversation_cut_ids = []
     for conversation in conversations:
-        if not isinstance(conversation, NeMoMultimodalConversation):
+        if isinstance(conversation, NeMoMultimodalConversation):
+            cuts = conversation.list_cuts()
+        elif isinstance(conversation, Formattable):
+            # Prompt-formatted text-only examples share the SALM batching path
+            # but intentionally carry no audio turns.
+            cuts = []
+        else:
             raise TypeError(f"Expected NeMoMultimodalConversation, got {type(conversation).__name__}.")
-        cuts = conversation.list_cuts()
         flat_cuts.extend(cuts)
         conversation_cut_ids.append([cut.id for cut in cuts])
     return flat_cuts, conversation_cut_ids

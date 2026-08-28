@@ -509,6 +509,7 @@ def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
             wds_sample_index_version=config.get("wds_sample_index_version", 1),
             index_pack=_resolve_index_pack(config),
             index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
+            skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
         )
     )
     # When force_finite is False (default), repeat the dataset infinitely so that

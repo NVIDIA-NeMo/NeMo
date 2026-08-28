@@ -2101,8 +2101,18 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
             )
         )
         turn_for_id = {**turn, "value": audio_path}
-        audio_bytes = tar_reader.get(audio_path)
-        meta = _sf.info(_io.BytesIO(audio_bytes))
+        try:
+            audio_bytes = tar_reader.get(audio_path)
+        except KeyError as ex:
+            raise _ShareGPTMissingTarMemberError(
+                f"ShareGPT manifest references missing member {audio_path!r} in paired tar {tar_path!r}."
+            ) from ex
+        try:
+            meta = _sf.info(_io.BytesIO(audio_bytes))
+        except (AudioLoadingError, EOFError, OSError, RuntimeError, ValueError) as ex:
+            raise _ShareGPTAudioDecodeError(
+                f"Failed to decode ShareGPT member {audio_path!r} from paired tar {tar_path!r}."
+            ) from ex
         recording = _Recording(
             id=audio_path,
             sources=[_AudioSource(type="memory", channels=list(range(meta.channels)), source=audio_bytes)],
@@ -2210,6 +2220,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 conversations = _ShareGPTConversationParser(self.audio_placeholders, data).transform()
                 audio_turns = [t for t in conversations if t["type"] == "audio"]
                 cuts = []
+                skip_remaining_shard = False
                 for turn in audio_turns:
                     if use_ais_get_batch:
                         cut = _make_archive_member_cut(
@@ -2222,18 +2233,36 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                         )
                         cut = cut.with_id(self._make_cut_id(cut, turn))
                     else:
-                        recording, audio_path = next(tar)
+                        try:
+                            recording, audio_path = next(tar)
+                        except (AudioLoadingError, OSError, RuntimeError, StopIteration) as ex:
+                            message = (
+                                f"Failed to load paired ShareGPT tar {tar_path!r} "
+                                f"for manifest {jsonl_path!r}."
+                            )
+                            if not self.skip_missing_manifest_entries:
+                                raise RuntimeError(message) from ex
+                            logging.warning(
+                                "Skipping the remainder of paired ShareGPT shard because "
+                                f"skip_missing_manifest_entries=true: {message} {ex}"
+                            )
+                            skip_remaining_shard = True
+                            break
                         audio_path = str(audio_path)
                         cut = recording.to_cut().truncate(
                             offset=turn.get("offset", 0.0), duration=turn.get("duration")
                         )
                         cut = cut.with_id(self._make_cut_id(cut, turn))
-                        assert (
-                            audio_path == turn['value']
-                        ), f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got the following from tar {audio_path=}"
+                        if audio_path != turn['value']:
+                            raise ValueError(
+                                "Mismatch between JSONL and paired ShareGPT tar: "
+                                f"manifest member={turn['value']!r} tar member={audio_path!r}."
+                            )
                     turn["duration"] = cut.duration
                     turn["offset"] = cut.start
                     cuts.append(cut)
+                if skip_remaining_shard:
+                    break
                 cuts = deque(cuts)
 
                 if idx < slice_offset:
@@ -2326,6 +2355,7 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
     wds_sample_index_version: int = 1
     index_pack: Optional[Pathlike] = None
     index_pack_max_open_files: int = 32
+    skip_missing_manifest_entries: bool = False
 
     def __post_init__(self):
         if self.wds_sample_index_version not in (1, 2):
@@ -2425,10 +2455,12 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
         idx = int(normalize_graph_token(token))
         shard_idx, local_idx = self._resolve(idx)
         sample = self._tar_readers[shard_idx][local_idx]
-        if self.wds_sample_index_version == 2:
-            convo = self._yield_from_sample_bundle(sample)
-        else:
-            convo = self._yield_from_sample(*sample)
+        convo = self._build_wds_sample(sample, sample_idx=idx)
+        if convo is None:
+            raise IndexError(
+                f"ShareGPT WebDataset sample at index {idx} is not decodable; "
+                "cannot satisfy random-access __getitem__."
+            )
         return attach_graph_origin(convo, idx)
 
     def __iter__(self) -> Iterator[NeMoMultimodalConversation]:
@@ -2441,10 +2473,9 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
         for global_idx in self._iter_state.iterate(self._total_len):
             shard_idx, local_idx = self._resolve(global_idx)
             sample = self._tar_readers[shard_idx][local_idx]
-            if self.wds_sample_index_version == 2:
-                convo = self._yield_from_sample_bundle(sample)
-            else:
-                convo = self._yield_from_sample(*sample)
+            convo = self._build_wds_sample(sample, sample_idx=global_idx)
+            if convo is None:
+                continue
             attach_graph_origin(convo, global_idx)
             yield convo
         self.epoch += 1
@@ -2452,10 +2483,24 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
     def _get_rng(self) -> random.Random:
         return random.Random(resolve_seed(self.shard_seed) + self.epoch)
 
+    def _build_wds_sample(self, sample, *, sample_idx: int | None = None):
+        try:
+            if self.wds_sample_index_version == 2:
+                return self._yield_from_sample_bundle(sample)
+            return self._yield_from_sample(*sample)
+        except _SHAREGPT_AUDIO_LOADING_ERRORS as ex:
+            if not self.skip_missing_manifest_entries:
+                raise
+            logging.warning(
+                "Skipping ShareGPT WebDataset sample due to audio loading failure: "
+                f"sample_idx={sample_idx!r} error={type(ex).__name__}: {ex}"
+            )
+            return None
+
     def _yield_from_sample(self, json_data, audio_bytes, audio_name):
         sample_id = Path(audio_name).stem
-        recording = Recording.from_bytes(audio_bytes, recording_id=sample_id)
         conversations = _ShareGPTConversationParser(self.audio_placeholders, json_data, audio_name).transform()
+        recording = _sharegpt_recording_from_bytes(audio_bytes, recording_id=sample_id)
         base_cut = recording.to_cut()
         return NeMoMultimodalConversation(
             id=json_data.get("id", sample_id),
@@ -2502,7 +2547,7 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
                         # samples remain strict below.
                         (member,) = bundle.audio_members
                     else:
-                        raise ValueError(
+                        raise _ShareGPTMissingAudioMemberError(
                             f"WDS sample {bundle.sample_key!r} is missing audio member {requested!r}; "
                             f"available members are {sorted(member_names)!r}."
                         )
@@ -2525,7 +2570,7 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
             cut = decoded_cuts.get(member.name)
             if cut is None:
                 recording_id = f"{bundle.sample_key}-{PurePosixPath(member.name).stem}"
-                cut = Recording.from_bytes(member.data, recording_id=recording_id).to_cut()
+                cut = _sharegpt_recording_from_bytes(member.data, recording_id=recording_id).to_cut()
                 custom = {"_source_codec": PurePosixPath(member.name).suffix.lower().removeprefix(".") or None}
                 if bundle.source_range_bytes is not None:
                     custom["_source_range_bytes"] = bundle.source_range_bytes
@@ -2559,7 +2604,11 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
                         info_b.name,
                         tar.extractfile(info_b).read(),
                     )
-                    yield self._yield_from_sample(json_data, audio_bytes, audio_name)
+                    conversation = self._build_wds_sample(
+                        (json_data, audio_bytes, audio_name), sample_idx=None
+                    )
+                    if conversation is not None:
+                        yield conversation
         self.epoch += 1
 
 
@@ -2675,7 +2724,34 @@ class NeMoMultimodalConversationTarWriter:
         self.tar_writer = AudioTarWriter(f"{self.output_dir}/audio_{self.shard_idx}.tar", shard_size=None)
 
 
-_SHAREGPT_AUDIO_LOADING_ERRORS = (AudioLoadingError, OSError)
+class _ShareGPTAudioDecodeError(AudioLoadingError):
+    """An audio payload was present but could not be decoded."""
+
+
+class _ShareGPTMissingTarMemberError(KeyError):
+    """A paired ShareGPT manifest referenced an absent tar member."""
+
+
+class _ShareGPTMissingAudioMemberError(ValueError):
+    """A WDS sample did not contain the audio member named by its JSON."""
+
+
+_SHAREGPT_AUDIO_LOADING_ERRORS = (
+    AudioLoadingError,
+    OSError,
+    _ShareGPTMissingTarMemberError,
+    _ShareGPTMissingAudioMemberError,
+)
+
+
+def _sharegpt_recording_from_bytes(data: bytes, *, recording_id: str) -> Recording:
+    """Decode one embedded payload without reclassifying structural errors."""
+    try:
+        return Recording.from_bytes(data, recording_id=recording_id)
+    except (AudioLoadingError, EOFError, OSError, RuntimeError, ValueError) as ex:
+        raise _ShareGPTAudioDecodeError(
+            f"Failed to decode ShareGPT audio payload for recording {recording_id!r}."
+        ) from ex
 
 
 def _normalize_audio_placeholders(val: Union[str, list[str], None]) -> list[str]:

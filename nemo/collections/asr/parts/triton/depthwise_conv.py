@@ -397,7 +397,8 @@ class _DepthwiseConv2d(torch.autograd.Function):
             PAD_W=pad_w,
             TAPS=kernel_h * kernel_w,
         )
-        ctx.save_for_backward(features_cast, weight_cast, in_lengths, out_lengths)
+        # Cloned because callers own the lengths and edit them in place; backward needs the originals.
+        ctx.save_for_backward(features_cast, weight_cast, in_lengths.clone(), out_lengths.clone())
         ctx.geometry = geometry
         ctx.param_dtypes = (weight.dtype, bias.dtype)
         return output

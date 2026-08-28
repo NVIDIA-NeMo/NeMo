@@ -326,6 +326,21 @@ def test_export_takes_the_pytorch_path(tmp_path, dynamo):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
+def test_backward_survives_callers_editing_the_returned_lengths():
+    """Callers own the lengths and edit them in place, e.g. speechlm2's duplex model."""
+    module = _build()
+    x, lengths = _inputs(batch=7)
+    out, out_lengths = module(x, lengths)
+
+    torch.clamp_(out_lengths, max=64)
+    out_lengths[0] = 5
+
+    out.float().pow(2).mean().backward()
+    assert all(torch.isfinite(p.grad).all() for p in module.parameters() if p.grad is not None)
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not CUDA_TRITON_AVAILABLE, reason="CUDA and Triton are required")
 def test_deterministic_algorithms_take_the_pytorch_path(monkeypatch):
     """The weight gradients accumulate through atomics, whose summation order varies per run."""
     module = _build()

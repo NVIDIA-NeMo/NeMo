@@ -466,8 +466,16 @@ class _FusedSubsampling(torch.autograd.Function):
             output.stride(1),
             output.stride(2),
         )
+        # Cloned because callers own the lengths and edit them in place; backward needs the originals.
         ctx.save_for_backward(
-            mel, conv_weight_cast, conv_bias_cast, taps_bin0, taps_bin1, mel_lengths, relu_out_lengths, out_lengths
+            mel,
+            conv_weight_cast,
+            conv_bias_cast,
+            taps_bin0,
+            taps_bin1,
+            mel_lengths.clone(),
+            relu_out_lengths.clone(),
+            out_lengths.clone(),
         )
         ctx.shapes = (batch_size, channels, mel_freq, relu_out_freq, out_time, out_freq, pad_start)
         ctx.param_dtypes = (conv_weight.dtype, conv_bias.dtype, depth_weight.dtype, depth_bias.dtype)

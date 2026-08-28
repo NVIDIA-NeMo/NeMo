@@ -16,6 +16,7 @@ import json
 import os
 import tarfile
 from abc import ABC, abstractmethod
+from pathlib import PurePosixPath
 from typing import List
 
 import torch
@@ -32,6 +33,7 @@ from nemo.collections.asr.parts.utils.tokenizer_utils import (
     extract_punctuation_from_vocab,
 )
 from nemo.collections.common import tokenizers
+from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import app_state, logging
 from nemo.utils.file_utils import robust_copy
 
@@ -58,6 +60,14 @@ class ASRBPEMixin(ABC):
 
     # this will be used in configs and nemo artifacts
     AGGREGATE_TOKENIZERS_DICT_PREFIX = 'langs'
+
+    @staticmethod
+    def _get_extracted_tokenizer_name(member_name: str) -> str:
+        member_file_name = PurePosixPath(member_name).name
+        new_name = member_file_name.split("_")[1:]
+        if len(new_name) > 1:
+            return "_".join(new_name)
+        return new_name[0]
 
     def _setup_tokenizer(self, tokenizer_cfg: DictConfig):
         tokenizer_type = tokenizer_cfg.get('type')
@@ -466,21 +476,15 @@ class ASRBPEMixin(ABC):
             except tarfile.ReadError:
                 # can be older checkpoint => try compressed tar
                 tar_header = "r:gz"
-            tar = tarfile.open(restore_path, tar_header)
+            with tarfile.open(restore_path, tar_header) as tar:
+                for nemo_object_name in nemo_file_objects:
+                    members = [x for x in tar.getmembers() if nemo_object_name in x.name]
+                    extracted_members = SaveRestoreConnector._safe_extract(tar, dir, members=members)
+                    for member in extracted_members:
+                        new_name = self._get_extracted_tokenizer_name(member.name)
+                        os.rename(os.path.join(dir, member.name), os.path.join(dir, new_name))
 
-            for nemo_object_name in nemo_file_objects:
-                members = [x for x in tar.getmembers() if nemo_object_name in x.name]
-                for member in members:
-                    tar.extract(member, dir)
-
-                    new_name = member.name.split("_")[1:]
-                    if len(new_name) > 1:
-                        new_name = "_".join(new_name)
-                    else:
-                        new_name = new_name[0]
-                    os.rename(os.path.join(dir, member.name), os.path.join(dir, new_name))
-
-                    logging.info(f"Saved {nemo_object_name} at {os.path.join(dir, new_name)}")
+                        logging.info(f"Saved {nemo_object_name} at {os.path.join(dir, new_name)}")
 
     def _derive_tokenizer_properties(self):
         vocab = self.tokenizer.tokenizer.get_vocab()
@@ -517,7 +521,12 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         )
 
     def change_attention_model(
-        self, self_attention_model: str = None, att_context_size: List[int] = None, update_config: bool = True
+        self,
+        self_attention_model: str = None,
+        att_context_size: List[int] = None,
+        update_config: bool = True,
+        rope_base: float = None,
+        rotary_fraction: float = None,
     ):
         """
         Update the self_attention_model if function is available in encoder.
@@ -535,13 +544,20 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 'abs_pos':
                     absolute positional embedding and Transformer
 
+                'rope':
+                    rotary position embedding
+
                 If None is provided, the self_attention_model isn't changed. Defauts to None.
             att_context_size (List[int]): List of 2 ints corresponding to left and right attention context sizes,
                 or None to keep as it is. Defauts to None.
             update_config (bool): Whether to update the config or not with the new attention model.
                 Defaults to True.
+            rope_base (float): Theta base for rotary position embedding. Only used when
+                ``self_attention_model='rope'``. If None, the existing value is kept.
+            rotary_fraction (float): Fraction of the per-head dim to rotate. Only used when
+                ``self_attention_model='rope'``. If None, the existing value is kept.
         """
-        if self_attention_model is None and att_context_size is None:
+        if self_attention_model is None and att_context_size is None and rope_base is None and rotary_fraction is None:
             return
 
         if not hasattr(self, 'encoder'):
@@ -555,11 +571,21 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             logging.info("Model encoder doesn't have a change_attention_model method ")
             return
 
-        self.encoder.change_attention_model(self_attention_model, att_context_size, update_config, self.device)
+        self.encoder.change_attention_model(
+            self_attention_model=self_attention_model,
+            att_context_size=att_context_size,
+            update_config=update_config,
+            device=self.device,
+            rope_base=rope_base,
+            rotary_fraction=rotary_fraction,
+        )
         if update_config:
             with open_dict(self.cfg):
-                self.cfg.encoder.self_attention_model = self_attention_model
-                self.cfg.encoder.att_context_size = att_context_size
+                self.cfg.encoder.self_attention_model = self.encoder.self_attention_model
+                self.cfg.encoder.att_context_size = self.encoder.att_context_size
+                if self.encoder.self_attention_model == 'rope':
+                    self.cfg.encoder.rope_base = self.encoder._cfg.rope_base
+                    self.cfg.encoder.rotary_fraction = self.encoder._cfg.rotary_fraction
 
     def change_subsampling_conv_chunking_factor(
         self, subsampling_conv_chunking_factor: int, update_config: bool = True

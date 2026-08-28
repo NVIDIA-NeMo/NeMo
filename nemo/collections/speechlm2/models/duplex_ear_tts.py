@@ -96,7 +96,7 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         self.tokenizer = AutoTokenizer(
             tokenizer_src,
             use_fast=True,
-            trust_remote_code=True,
+            trust_remote_code=self.cfg.get("trust_remote_code", False),
             bos_token=self.cfg.get("bos_token", None),
             eos_token=self.cfg.get("eos_token", None),
             pad_token=self.cfg.get("pad_token", None),
@@ -182,7 +182,9 @@ class DuplexEARTTS(LightningModule, HFHubMixin):
         """Load language model for RVQ-EAR-TTS."""
         if cfg.pretrained_lm_name:
             language_model = load_pretrained_hf(
-                self.cfg.pretrained_lm_name, pretrained_weights=True, trust_remote_code=True
+                self.cfg.pretrained_lm_name,
+                pretrained_weights=True,
+                trust_remote_code=self.cfg.get("trust_remote_code", False),
             ).eval()
         else:
             language_model = None

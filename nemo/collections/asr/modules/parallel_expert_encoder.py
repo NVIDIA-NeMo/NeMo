@@ -161,26 +161,50 @@ class ParallelExpertEncoderPT(ModelPT):
     @classmethod
     def load_from_nemo(
         cls,
-        nemo_path: str,
+        model_path_or_name: str,
         *,
         map_location: Union[str, torch.device] = 'cpu',
         strict: bool = True,
     ) -> ParallelExpertEncoder:
-        """Load a self-contained PE ``.nemo`` bundle and return its inner encoder.
+        """Load a self-contained PE bundle and return its inner encoder.
+
+        Follows the standard NeMo :class:`~nemo.core.classes.common.Model`
+        convention for resolving a checkpoint reference:
+
+        * a local ``.nemo`` file is restored with :meth:`ModelPT.restore_from`;
+        * otherwise ``model_path_or_name`` is treated as a pretrained model
+          identifier -- a HuggingFace Hub repo id (``{repo}/{name}``) or an NGC
+          alias -- and resolved with :meth:`Model.from_pretrained`, which
+          downloads/caches the ``.nemo`` (honouring the HuggingFace cache and
+          ``HF_HUB_OFFLINE``, so a prefetched cache works on offline nodes).
+
+        This mirrors ``speechlm2.parts.pretrained.load_pretrained_nemo`` so PE
+        bundles load uniformly from local files or model cards.
 
         Args:
-            nemo_path (str): Path to a self-contained PE ``.nemo`` bundle.
+            model_path_or_name (str): Local ``.nemo`` path or pretrained model id.
             map_location (str | torch.device): Device to map weights onto.
             strict (bool): Enforce exact state-dict match.
 
         Returns:
             The restored :class:`ParallelExpertEncoder`.
         """
-        bundle = cls.restore_from(
-            restore_path=nemo_path,
-            map_location=map_location,
-            strict=strict,
-        )
+        if (
+            isinstance(model_path_or_name, str)
+            and model_path_or_name.endswith('.nemo')
+            and os.path.isfile(model_path_or_name)
+        ):
+            bundle = cls.restore_from(
+                restore_path=model_path_or_name,
+                map_location=map_location,
+                strict=strict,
+            )
+        else:
+            bundle = cls.from_pretrained(
+                model_name=model_path_or_name,
+                map_location=map_location,
+                strict=strict,
+            )
         return bundle.encoder
 
     @classmethod
@@ -316,7 +340,15 @@ class ParallelExpertEncoder(nn.Module):
         self.asr_normalize_type = asr_normalize_type or 'per_feature'
         self._feat_in = self.asr_encoder._feat_in
 
-        self.diarization_model = SortformerEncLabelModel.from_config_dict(_clone_config(diarization_model_cfg))
+        diarization_model_cfg = _clone_config(diarization_model_cfg)
+        diarization_model_cfg.output_subsampling_factor = self.asr_encoder.subsampling_factor
+        self.diarization_model = SortformerEncLabelModel.from_config_dict(diarization_model_cfg)
+        if self.diarization_model.output_subsampling_factor != self.asr_encoder.subsampling_factor:
+            raise ValueError(
+                "ParallelExpertEncoder requires the diarization output subsampling factor "
+                f"({self.diarization_model.output_subsampling_factor}) to equal the ASR encoder subsampling factor "
+                f"({self.asr_encoder.subsampling_factor})."
+            )
 
         self.freeze_diar = freeze_diar
         self.freeze_asr = freeze_asr
@@ -353,6 +385,26 @@ class ParallelExpertEncoder(nn.Module):
             self.asr_encoder.eval()
             for p in self.asr_encoder.parameters():
                 p.requires_grad = False
+
+    def train(self, mode: bool = True) -> "ParallelExpertEncoder":
+        """Set training mode, but keep frozen sub-branches in eval.
+
+        The parent ``model.train()`` recurses into every sub-module, which would re-enable
+        dropout / BatchNorm stat updates in a frozen branch. This re-asserts ``eval()`` on
+        the frozen Sortformer (and ASR encoder) so their outputs stay deterministic.
+
+        Args:
+            mode (bool): Whether to set training mode (``True``) or eval mode (``False``).
+
+        Returns:
+            ParallelExpertEncoder: ``self``, matching ``nn.Module.train``d.
+        """
+        super().train(mode)
+        if self.freeze_diar:
+            self.diarization_model.eval()
+        if self.freeze_asr:
+            self.asr_encoder.eval()
+        return self
 
     # ConformerEncoder-compatible properties (drop-in for SALM perception).
     @property
@@ -652,7 +704,7 @@ class ParallelExpertEncoder(nn.Module):
         sm.fifo_len = self.diar_fifo_len
         sm.spkcache_update_period = self.diar_spkcache_update_period
         sm.spkcache_len = self.diar_spkcache_len
-        sm._check_streaming_parameters()
+        self.diarization_model._check_streaming_parameters()
 
         diar_param = next(self.diarization_model.parameters(), None)
         if diar_param is not None:

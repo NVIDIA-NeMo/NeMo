@@ -20,7 +20,7 @@ from typing import Dict, Iterable, List, Tuple
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-from hydra.utils import instantiate
+from huggingface_hub import hf_hub_download
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 
@@ -46,7 +46,7 @@ from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
 from nemo.collections.tts.parts.utils.tts_dataset_utils import resample_batch
 from nemo.core import ModelPT
-from nemo.core.classes.common import PretrainedModelInfo, typecheck
+from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
 from nemo.core.neural_types.elements import (
     AudioSignal,
     EncodedRepresentation,
@@ -87,7 +87,7 @@ class AudioCodecModel(ModelPT):
             )
 
         # Encoder setup
-        self.audio_encoder = instantiate(cfg.audio_encoder)
+        self.audio_encoder = safe_instantiate(cfg.audio_encoder)
 
         # Optionally, add gaussian noise to encoder output as an information bottleneck
         encoder_noise_stdev = cfg.get("encoder_noise_stdev", 0.0)
@@ -97,7 +97,8 @@ class AudioCodecModel(ModelPT):
             self.encoder_noise = None
 
         if "vector_quantizer" in cfg:
-            self.vector_quantizer = instantiate(cfg.vector_quantizer)
+            self.vector_quantizer = safe_instantiate(cfg.vector_quantizer)
+            self.codebook_dropout_rate = cfg.get("codebook_dropout_rate", 0.0)
 
             vq_output_types = list(self.vector_quantizer.output_types.keys())
 
@@ -107,17 +108,17 @@ class AudioCodecModel(ModelPT):
             else:
                 self.vector_quantizer_has_commit_loss = False
                 logging.info('Vector quantizer does not support commit loss.')
-
         else:
             logging.warning('Vector quantizer will not be used.')
             self.vector_quantizer = None
+            self.codebook_dropout_rate = 0.0
 
         # Decoder setup
-        self.audio_decoder = instantiate(cfg.audio_decoder)
+        self.audio_decoder = safe_instantiate(cfg.audio_decoder)
 
         # Discriminator setup
         if cfg.get("discriminator"):
-            self.discriminator = instantiate(cfg.discriminator)
+            self.discriminator = safe_instantiate(cfg.discriminator)
         else:
             self.discriminator = None
 
@@ -142,10 +143,10 @@ class AudioCodecModel(ModelPT):
         # Optional config for using semantic distillation loss
         self.use_slm_loss = cfg.get("use_slm_loss", False)
         if self.use_slm_loss:
-            self.slm_encoder = instantiate(cfg.get("slm_encoder"))
+            self.slm_encoder = safe_instantiate(cfg.get("slm_encoder"))
             self.slm_encoder.eval()
             self.slm_encoder.freeze()
-            self.slm_predictor = instantiate(cfg.slm_predictor)
+            self.slm_predictor = safe_instantiate(cfg.slm_predictor)
             self.slm_loss_fn = torch.nn.MSELoss()
             self.slm_loss_scale = cfg.get("slm_loss_scale", 1.0)
         else:
@@ -184,20 +185,20 @@ class AudioCodecModel(ModelPT):
         # Discriminator loss setup
         self.gen_loss_scale = cfg.get("gen_loss_scale", 1.0)
         self.feature_loss_scale = cfg.get("feature_loss_scale", 1.0)
-        self.gen_loss_fn = instantiate(cfg.generator_loss)
-        self.disc_loss_fn = instantiate(cfg.discriminator_loss)
+        self.gen_loss_fn = safe_instantiate(cfg.generator_loss)
+        self.disc_loss_fn = safe_instantiate(cfg.discriminator_loss)
 
         self.mmd_loss_start_epoch = cfg.get("mmd_loss_start_epoch", 0)
 
         if "mmd_loss" in cfg:
-            self.mmd_loss_fn = instantiate(cfg.mmd_loss)
+            self.mmd_loss_fn = safe_instantiate(cfg.mmd_loss)
             self.mmd_loss_scale = cfg.get("mmd_loss_scale", 1.0)
         else:
             self.mmd_loss_fn = None
             self.mmd_loss_scale = None
 
         if "mmd_time_loss" in cfg:
-            self.mmd_time_loss_fn = instantiate(cfg.mmd_time_loss)
+            self.mmd_time_loss_fn = safe_instantiate(cfg.mmd_time_loss)
             self.mmd_time_loss_scale = cfg.get("mmd_time_loss_scale", 1.0)
         else:
             self.mmd_time_loss_fn = None
@@ -224,11 +225,11 @@ class AudioCodecModel(ModelPT):
         self.scl_loss_scale = cfg.get("scl_loss_scale", False)
         if self.use_scl_loss:
             self.speaker_encoder = ResNetSpeakerEncoder()
-            # load pretrained model
-            # self.speaker_encoder.load_checkpoint("https://github.com/coqui-ai/TTS/releases/download/speaker_encoder_model/model_se.pth.tar")
-            self.speaker_encoder.load_checkpoint(
-                "https://huggingface.co/Edresson/Speaker_Encoder_H_ASP/resolve/main/pytorch_model.bin", strict=False
+            speaker_encoder_checkpoint = hf_hub_download(
+                repo_id="Edresson/Speaker_Encoder_H_ASP",
+                filename="pytorch_model.bin",
             )
+            self.speaker_encoder.load_checkpoint(speaker_encoder_checkpoint, strict=False)
             # freeze the pretrained speaker encoder
             self.speaker_encoder.freeze()
             logging.info("Speaker encoder loaded and frozen !!")
@@ -438,6 +439,7 @@ class AudioCodecModel(ModelPT):
             "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
             "audio_len": NeuralType(tuple('B'), LengthsType()),
             "sample_rate": NeuralType(tuple(), IntType(), optional=True),
+            "num_codebooks": NeuralType(tuple(), IntType(), optional=True),
         },
         output_types={
             "tokens": NeuralType(('B', 'C', 'T_encoded'), TokenIndex()),
@@ -445,7 +447,11 @@ class AudioCodecModel(ModelPT):
         },
     )
     def encode(
-        self, audio: torch.Tensor, audio_len: torch.Tensor, sample_rate: Optional[int] = None
+        self,
+        audio: torch.Tensor,
+        audio_len: torch.Tensor,
+        sample_rate: Optional[int] = None,
+        num_codebooks: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Convert input time-domain audio signal into a discrete representation (tokens).
 
@@ -453,6 +459,8 @@ class AudioCodecModel(ModelPT):
             audio: input time-domain signal, shape `(batch, number of samples)`
             audio_len: valid length for each example in the batch, shape `(batch size,)`
             sample_rate: sample rate of input audio (int)
+            num_codebooks: number of codebooks to use for reconstructing audio.
+                Using fewer codebooks will only be accurate for codecs trained with codebook dropout.
 
         Returns:
             Tokens for each codebook for each frame, shape `(batch, number of codebooks, number of frames)`,
@@ -460,6 +468,12 @@ class AudioCodecModel(ModelPT):
         """
         # Apply encoder to obtain a continuous vector for each frame
         encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len, sample_rate=sample_rate)
+
+        if num_codebooks:
+            assert self.vector_quantizer is not None
+            num_codebooks_batch = num_codebooks * torch.ones([encoded.shape[0]])
+            encoded = self.vector_quantizer.dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks_batch)
+
         # Apply quantizer to obtain discrete representation per frame
         tokens = self.quantize(encoded=encoded, encoded_len=encoded_len)
         return tokens, encoded_len
@@ -560,6 +574,17 @@ class AudioCodecModel(ModelPT):
         audio, audio_len = self.pad_audio(audio=audio, audio_len=audio_len, samples_per_frame=self.samples_per_frame)
         return audio, audio_len
 
+    def _dropout_random_codebooks(self, encoded):
+        """Dropout a random number of codebooks for each batch element"""
+        batch_size = encoded.shape[0]
+        # [B]
+        apply_dropout = torch.rand(size=[batch_size], device=encoded.device) < self.codebook_dropout_rate
+        # Select random integers in range (1, num_codebooks - 1)
+        num_codebooks = torch.randint(low=1, high=self.num_codebooks, size=[batch_size], device=encoded.device)
+        num_codebooks = torch.where(apply_dropout, num_codebooks, self.num_codebooks)
+        out = self.vector_quantizer.dropout_codebooks(encoded=encoded, num_codebooks=num_codebooks)
+        return out
+
     def _process_batch(self, batch):
         # [B, T_audio]
         audio = batch.get("audio")
@@ -587,6 +612,9 @@ class AudioCodecModel(ModelPT):
             encoded = encoded.to(encoded.dtype)  # make sure encoded is converted to the right dtype
         else:
             commit_loss = 0.0
+
+        if self.training and self.codebook_dropout_rate:
+            encoded = self._dropout_random_codebooks(encoded)
 
         # [B, T]
         audio_gen, _ = self.audio_decoder(inputs=encoded, input_len=encoded_len)
@@ -832,7 +860,7 @@ class AudioCodecModel(ModelPT):
 
     def get_dataset(self, cfg):
         if '_target_' in cfg.dataset:
-            dataset = instantiate(cfg.dataset)
+            dataset = safe_instantiate(cfg.dataset)
         else:
             dataset = VocoderDataset(**cfg.dataset.dataset_args)
 
@@ -974,7 +1002,7 @@ class AudioCodecModel(ModelPT):
         se_params = self.speaker_encoder.parameters() if self.use_scl_loss else []
         vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
         self.gen_params = list(itertools.chain(encoder_params, self.audio_decoder.parameters(), vq_params, se_params))
-        optim_g = instantiate(optim_config, params=self.gen_params)
+        optim_g = safe_instantiate(optim_config, params=self.gen_params)
 
         if self.discriminator is None:
             optim_d = None
@@ -995,7 +1023,7 @@ class AudioCodecModel(ModelPT):
             optim_d = torch.optim.Adam(param_groups, **disc_optim_kwargs)
         else:
             self.disc_params = list(self.discriminator.parameters())
-            optim_d = instantiate(optim_config, params=self.disc_params)
+            optim_d = safe_instantiate(optim_config, params=self.disc_params)
 
         if sched_config is None:
             logging.debug('Scheduler is not used')
@@ -1039,7 +1067,7 @@ class AudioCodecModel(ModelPT):
             return []
 
         data_loader = self._setup_test_dataloader(self.log_config)
-        generators = instantiate(self.log_config.generators)
+        generators = safe_instantiate(self.log_config.generators)
         log_dir = Path(self.log_config.log_dir) if self.log_config.log_dir else None
         log_callback = LoggingCallback(
             generators=generators,

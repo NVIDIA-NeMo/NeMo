@@ -41,11 +41,14 @@ class CacheAwarePipelineBuilder(BaseBuilder):
         asr_decoding_type = ASRDecodingType.from_str(cfg.asr_decoding_type)
 
         if asr_decoding_type is ASRDecodingType.RNNT:
-            return cls.build_cache_aware_rnnt_pipeline(cfg)
+            pipeline = cls.build_cache_aware_rnnt_pipeline(cfg)
         elif asr_decoding_type is ASRDecodingType.CTC:
-            return cls.build_cache_aware_ctc_pipeline(cfg)
+            pipeline = cls.build_cache_aware_ctc_pipeline(cfg)
+        else:
+            raise ValueError("Invalid asr decoding type for cache aware streaming. Need to be one of ['CTC', 'RNNT']")
 
-        raise ValueError("Invalid asr decoding type for cache aware streaming. Need to be one of ['CTC', 'RNNT']")
+        pipeline.asr_model.set_streaming_cuda_graphs(enabled=cfg.asr.get("use_cuda_graphs", False))
+        return pipeline
 
     @classmethod
     def get_rnnt_decoding_cfg(cls, cfg: DictConfig) -> RNNTDecodingConfig:
@@ -81,6 +84,13 @@ class CacheAwarePipelineBuilder(BaseBuilder):
         Returns:
             Returns CacheAwareRNNTPipeline object
         """
+        strategy = str(getattr(cfg.asr.decoding, "strategy", "greedy_batch"))
+        if strategy not in {"greedy_batch", "malsd_batch"}:
+            raise ValueError(
+                "Cache-aware RNNT streaming supports `greedy_batch` and `malsd_batch` only; "
+                f"configured decoding strategy is `{strategy}`."
+            )
+
         # building ASR model
         decoding_cfg = cls.get_rnnt_decoding_cfg(cfg)
         asr_model = cls._build_asr(cfg, decoding_cfg)

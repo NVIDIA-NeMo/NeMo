@@ -17,7 +17,7 @@ import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import librosa
 import numpy as np
@@ -63,21 +63,6 @@ class DatasetSample:
     speaker: Optional[str] = None
     speaker_index: int = None
     tokenizer_names: List[str] = None
-
-
-def get_tts_text(manifest_entry: Dict[str, Any], use_raw_text_input: bool = False) -> Union[str, List[str]]:
-    """Select the manifest text used as input to a TTS model.
-
-    Args:
-        manifest_entry: TTS manifest entry containing text and optionally normalized_text.
-        use_raw_text_input: Use text even when normalized_text is available.
-
-    Returns:
-        The selected text value. This may be a string or a list of strings for multiturn manifests.
-    """
-    if not use_raw_text_input and manifest_entry.get("normalized_text") is not None:
-        return manifest_entry["normalized_text"]
-    return manifest_entry["text"]
 
 
 class TextToSpeechDataset(Dataset):
@@ -201,7 +186,10 @@ class TextToSpeechDataset(Dataset):
         sample_weights = []
         for entry in filtered_entries:
 
-            text = get_tts_text(entry, use_raw_text_input=self.use_raw_text_input)
+            if not self.use_raw_text_input and entry.get("normalized_text") is not None:
+                text = entry["normalized_text"]
+            else:
+                text = entry["text"]
 
             if self.include_speaker:
                 speaker = entry["speaker"]
@@ -364,6 +352,7 @@ class MagpieTTSDataset(TextToSpeechDataset):
         max_duration: Optional float, if provided audio files in the training manifest longer than 'max_duration'
             will be ignored.
         volume_norm: Whether to apply volume normalization to loaded audio.
+        use_raw_text_input: Whether to use text instead of normalized_text when both are available.
         codec_model_samples_per_frame: Num samples in waveform per codec frame (codec downsample factor).
         bos_id: Text BOS token id.
         eos_id: Text EOS token id.
@@ -379,7 +368,6 @@ class MagpieTTSDataset(TextToSpeechDataset):
         context_duration_max: Maximum duration of context audio in seconds.
         text_context_remapping: Dict defining mapping of multiple text contexts to a single text context.
         text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
-        use_raw_text_input: Whether to use text instead of normalized_text when both are available.
     """
 
     def __init__(

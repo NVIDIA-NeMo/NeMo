@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import random
 from io import BytesIO
 
@@ -25,6 +26,7 @@ from lhotse.array import Array, TemporalArray
 from lhotse.testing.dummies import dummy_cut, dummy_recording
 from omegaconf import OmegaConf
 
+from nemo.collections.tts.data.text_to_speech_dataset import MagpieTTSDataset
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import MagpieTTSLhotseDataset
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse_multiturn import MagpieTTSLhotseMultiturnDataset
 
@@ -60,7 +62,11 @@ class _FakeTextTokenizer:
     tokens = list(range(100))
     pad = 0
 
+    def __init__(self):
+        self.encoded_texts = []
+
     def encode(self, text, tokenizer_name):
+        self.encoded_texts.append(text)
         return [10 + len(text)]
 
 
@@ -102,7 +108,7 @@ def _cached_codes(num_codebooks=NUM_AUDIO_CODEBOOKS, num_frames=5, offset=0):
     return (codes + offset) % 16
 
 
-def _single_turn_cutset():
+def _single_turn_cutset(text="hello", normalized_text="hello"):
     cut = dummy_cut(
         0,
         duration=0.5,
@@ -115,10 +121,10 @@ def _single_turn_cutset():
             recording_id=cut.recording_id,
             start=0.0,
             duration=0.2,
-            text="hello",
+            text=text,
             language="en",
             speaker="| Language:en Dataset:Unit Speaker:spk |",
-            custom={"context_text": "speaker prompt", "normalized_text": "hello"},
+            custom={"context_text": "speaker prompt", "normalized_text": normalized_text},
         )
     ]
     cut.custom = {
@@ -208,6 +214,37 @@ def _dataset_kwargs():
         "text_conditioning_tokenizer_name": BPE_TOKENIZER_NAME,
         "tokenizer_config": _tokenizer_config(),
     }
+
+
+class TestMagpieTTSDataset:
+    @pytest.mark.parametrize(
+        "use_raw_text_input,expected_text",
+        [(False, "july fifteenth"), (True, "July 15th")],
+    )
+    def test_text_selection(self, tmp_path, use_raw_text_input, expected_text):
+        manifest_path = tmp_path / "manifest.jsonl"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "audio_filepath": "unused.wav",
+                    "duration": 1.0,
+                    "text": "July 15th",
+                    "normalized_text": "july fifteenth",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        dataset = MagpieTTSDataset(
+            dataset_meta={"test": {"manifest_path": str(manifest_path), "audio_dir": str(tmp_path)}},
+            sample_rate=22050,
+            codec_model_samples_per_frame=1024,
+            eos_id=1,
+            num_audio_codebooks=8,
+            use_raw_text_input=use_raw_text_input,
+        )
+
+        assert dataset.data_samples[0].text == expected_text
 
 
 class TestMagpieTTSLhotseDatasets:
@@ -316,3 +353,69 @@ class TestMagpieTTSLhotseDatasets:
         assert batch["context_text_tokens_lens"].item() > 0
         assert batch["has_text_context"].tolist() == [True]
         torch.testing.assert_close(batch["rewards"], torch.tensor([0.5], device=batch["rewards"].device))
+
+    @pytest.mark.parametrize(
+        "use_raw_text_input,expected_text",
+        [(False, "july fifteenth"), (True, "July 15th")],
+    )
+    def test_single_turn_text_selection(self, use_raw_text_input, expected_text):
+        _seed_everything()
+        kwargs = _dataset_kwargs()
+        kwargs["use_raw_text_input"] = use_raw_text_input
+        dataset = MagpieTTSLhotseDataset(**kwargs)
+
+        batch = dataset[_single_turn_cutset(text="July 15th", normalized_text="july fifteenth")]
+
+        assert batch["raw_texts"] == [expected_text]
+
+    @pytest.mark.parametrize(
+        "use_raw_text_input,expected_texts",
+        [
+            (
+                False,
+                [
+                    "normalized assistant greeting",
+                    "normalized assistant acknowledgement",
+                    "normalized user greeting",
+                    "normalized user acknowledgement",
+                ],
+            ),
+            (True, ["hello", "okay", "hi", "ok"]),
+        ],
+    )
+    def test_multiturn_text_selection(self, use_raw_text_input, expected_texts):
+        _seed_everything()
+        cuts = _multiturn_cutset()
+        normalized_texts = [
+            "normalized user greeting",
+            "normalized assistant greeting",
+            "normalized user acknowledgement",
+            "normalized assistant acknowledgement",
+        ]
+        for supervision, normalized_text in zip(next(iter(cuts)).supervisions, normalized_texts):
+            supervision.custom = {**(supervision.custom or {}), "normalized_text": normalized_text}
+
+        kwargs = _dataset_kwargs()
+        kwargs.update(
+            {
+                "codec_model_input_sample_rate": CODEC_MODEL_INPUT_SAMPLE_RATE,
+                "frame_stacking_factor": FRAME_STACKING_FACTOR,
+                "source_sample_rate": SAMPLE_RATE,
+                "input_roles": ["user"],
+                "output_roles": ["assistant"],
+                "add_text_bos": False,
+                "use_text_conditioning_tokenizer": False,
+                "use_raw_text_input": use_raw_text_input,
+            }
+        )
+        dataset = MagpieTTSLhotseMultiturnDataset(**kwargs)
+        dataset.text_tokenizer = _FakeTextTokenizer()
+        dataset.bos_id = len(dataset.text_tokenizer.tokens)
+        dataset.eos_id = dataset.bos_id + 1
+        dataset.cfg_unk_token_id = dataset.bos_id + 2
+        dataset.interruption_token_id = dataset.bos_id + 3
+        dataset.pad_id = dataset.text_tokenizer.pad
+
+        dataset[cuts]
+
+        assert dataset.text_tokenizer.encoded_texts == expected_texts

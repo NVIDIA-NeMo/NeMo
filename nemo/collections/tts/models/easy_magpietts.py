@@ -1955,6 +1955,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
     def get_lhotse_dataloader(self, dataset_cfg, mode='train') -> torch.utils.data.DataLoader:
         # TODO @xueyang: better to distinguish cfg. self.cfg is the model cfg, while cfg here is train_ds cfg. Also
         #   cfg is a classifier-free guidance.
+        use_raw_text_input = dataset_cfg.dataset.get("use_raw_text_input", False)
         if self.cfg.get("use_multiturn_dataset", False):
             dataset = MagpieTTSLhotseMultiturnDataset(
                 sample_rate=self.sample_rate,
@@ -1967,6 +1968,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,
+                use_raw_text_input=use_raw_text_input,
                 pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
                 context_duration_min=self.cfg.context_duration_min,
                 context_duration_max=self.cfg.context_duration_max,
@@ -2002,6 +2004,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
                 load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
                 dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
                 load_16khz_audio=False,
+                use_raw_text_input=use_raw_text_input,
                 pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
                 context_duration_min=self.cfg.context_duration_min,
                 context_duration_max=self.cfg.context_duration_max,

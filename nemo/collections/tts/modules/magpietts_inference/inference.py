@@ -41,7 +41,7 @@ import torch
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
-from nemo.collections.tts.data.text_to_speech_dataset import ChunkedTTSInferenceDataset, MagpieTTSDataset, get_tts_text
+from nemo.collections.tts.data.text_to_speech_dataset import ChunkedTTSInferenceDataset, MagpieTTSDataset
 from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
 from nemo.collections.tts.parts.utils.tts_dataset_utils import normalize_volume, stack_tensors
@@ -60,14 +60,12 @@ class BaseInferenceConfig(abc.ABC):
         batch_size: Batch size for inference.
         use_cfg: Whether to use classifier-free guidance.
         use_local_transformer: Whether to use local transformer for inference.
-        use_raw_text_input: Whether to use manifest text instead of normalized_text as model input.
     """
 
     batch_size: int = 32
     use_cfg: bool = False
     use_local_transformer: bool = False
     default_tokenizer_name: str = "english_phoneme"
-    use_raw_text_input: bool = False
 
     @abc.abstractmethod
     def build_identifier(self) -> str:
@@ -454,7 +452,6 @@ class MagpieInferenceRunner(BaseInferenceRunner):
             text_conditioning_tokenizer_name=self.model.text_conditioning_tokenizer_name,
             pad_context_text_to_max_duration=self.model.pad_context_text_to_max_duration,
             load_16khz_audio=self.model.model_type == 'single_encoder_sv_tts',
-            use_raw_text_input=self.config.use_raw_text_input,
         )
 
         # Attach model's tokenizer
@@ -719,14 +716,12 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         model,
         max_eval_turns: int = 6,
         normalize_audio: bool = True,
-        use_raw_text_input: bool = False,
     ):
         self.manifest_path = manifest_path
         self.audio_dir = audio_dir or ""
         self.model = model
         self.max_eval_turns = max_eval_turns
         self.normalize_audio = normalize_audio
-        self.use_raw_text_input = use_raw_text_input
         self.records = read_manifest(manifest_path)
 
     def __len__(self):
@@ -783,14 +778,8 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         sample_rate = model.sample_rate
         main_tokenizer_name = list(model.cfg.text_tokenizers.keys())[0]
 
-        tts_text_inputs = self._as_turn_list(get_tts_text(sample, use_raw_text_input=self.use_raw_text_input))[
-            : self.max_eval_turns
-        ]
-        normalized_text = sample.get("normalized_text")
-        normalized_turn_texts = (
-            self._as_turn_list(normalized_text)[: self.max_eval_turns] if normalized_text is not None else []
-        )
-        max_turns = len(tts_text_inputs)
+        raw_turn_texts = self._as_turn_list(sample["text"])[: self.max_eval_turns]
+        max_turns = len(raw_turn_texts)
 
         user_audio_paths = sample.get("user_audio_file_path", None)
         if not isinstance(user_audio_paths, list):
@@ -815,7 +804,7 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         turn_ids = []
         pending_user_audio_turns = []
         skipped_turns = 0
-        for turn_id, turn_text in enumerate(tts_text_inputs):
+        for turn_id, turn_text in enumerate(raw_turn_texts):
             pending_user_audio_turns.append(raw_user_audio_turns[turn_id])
             if not self._has_valid_turn_text(turn_text):
                 skipped_turns += 1
@@ -858,8 +847,7 @@ class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
         return {
             "idx": torch.tensor([int(sample["idx"])], dtype=torch.long),
             "raw_record": sample,
-            "tts_text_inputs": [tts_text_inputs],
-            "dataloader_normalized_texts": [normalized_turn_texts],
+            "raw_turn_texts": [raw_turn_texts],
             "batched_turns": batched_turns,
             "batched_turn_lens": batched_turn_lens,
             "valid_turn_masks": valid_turn_masks,
@@ -936,7 +924,6 @@ class EasyMagpieInferenceRunner(BaseInferenceRunner):
             phoneme_text_eop_marker=self.model.phoneme_text_eop_marker,
             add_language_to_context_text=self.model.add_language_to_context_text,
             default_tokenizer_name=self.config.default_tokenizer_name,
-            use_raw_text_input=self.config.use_raw_text_input,
         )
         dataset.text_tokenizer = self.model.tokenizer
 
@@ -1077,7 +1064,6 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             model=self.model,
             max_eval_turns=self.config.max_eval_turns,
             normalize_audio=True,
-            use_raw_text_input=self.config.use_raw_text_input,
         )
 
     def set_distributed_context(self, rank: int, world_size: int) -> None:
@@ -1912,12 +1898,11 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
             batch = self._move_batch_to_device(batch, self.model.device)
             sample_idx = int(batch["idx"][0].item())
             raw_record = batch["raw_record"]
-            tts_text_inputs = batch["tts_text_inputs"][0]
-            dataloader_normalized_texts = batch["dataloader_normalized_texts"][0]
+            raw_turn_texts = batch["raw_turn_texts"][0]
             logging.info(
                 f"[MT_USER_AUDIO_PROCESS] rank={rank}/{world_size} "
                 f"local_batch={batch_idx} global_sample_idx={sample_idx} "
-                f"num_turns={len(tts_text_inputs)}"
+                f"num_turns={len(raw_turn_texts)}"
             )
 
             if not batch["batched_turns"]:
@@ -2008,20 +1993,19 @@ class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
                     description=f"target audio fallback/context for sample_idx={sample_idx}, turn_id={turn_id}",
                 )
 
-                turn_record = {
-                    "audio_filepath": f"target_audio_{item_idx}.wav",
-                    "context_audio_filepath": f"context_audio_{item_idx}.wav",
-                    "text": tts_text_inputs[source_turn_idx] if source_turn_idx < len(tts_text_inputs) else "",
-                    "predicted_phoneme_text": phoneme_output.get("predicted_phoneme_text", ""),
-                    "predicted_phoneme_tokens": phoneme_output.get("predicted_phoneme_tokens", []),
-                    "predicted_phoneme_token_labels": phoneme_output.get("predicted_phoneme_token_labels", []),
-                    "speaker": str(sample_idx),
-                    "source_sample_idx": sample_idx,
-                    "turn_id": int(turn_id),
-                }
-                if source_turn_idx < len(dataloader_normalized_texts):
-                    turn_record["normalized_text"] = dataloader_normalized_texts[source_turn_idx]
-                turn_manifest_records.append(turn_record)
+                turn_manifest_records.append(
+                    {
+                        "audio_filepath": f"target_audio_{item_idx}.wav",
+                        "context_audio_filepath": f"context_audio_{item_idx}.wav",
+                        "text": raw_turn_texts[source_turn_idx] if source_turn_idx < len(raw_turn_texts) else "",
+                        "predicted_phoneme_text": phoneme_output.get("predicted_phoneme_text", ""),
+                        "predicted_phoneme_tokens": phoneme_output.get("predicted_phoneme_tokens", []),
+                        "predicted_phoneme_token_labels": phoneme_output.get("predicted_phoneme_token_labels", []),
+                        "speaker": str(sample_idx),
+                        "source_sample_idx": sample_idx,
+                        "turn_id": int(turn_id),
+                    }
+                )
                 logging.info(
                     f"[MT_USER_AUDIO_TURN] rank={rank}/{world_size} "
                     f"global_sample_idx={sample_idx} turn_id={int(turn_id)} "

@@ -1226,11 +1226,6 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         help='Default tokenizer to use when a language or dataset specific tokenizer is not provided.',
     )
     data_group.add_argument('--out_dir', type=str, required=True, help='Output directory')
-    data_group.add_argument(
-        '--use_raw_text_input',
-        action='store_true',
-        help='Use manifest text instead of normalized_text as model input when both are available.',
-    )
     data_group.add_argument('--log_exp_name', action='store_true')
     data_group.add_argument('--clean_up_disk', action='store_true')
 
@@ -1396,7 +1391,6 @@ def _build_magpie_config(args) -> MagpieInferenceConfig:
         maskgit_fixed_schedule=args.maskgit_fixed_schedule,
         maskgit_sampling_type=args.maskgit_sampling_type,
         default_tokenizer_name=args.tokenizer_name,
-        use_raw_text_input=args.use_raw_text_input,
     )
 
 
@@ -1415,7 +1409,6 @@ def _build_easy_magpie_config(args) -> EasyMagpieInferenceConfig:
         phoneme_sampling_method=args.phoneme_sampling_method,
         dropout_text_input=args.dropout_text_input,
         default_tokenizer_name=args.tokenizer_name,
-        use_raw_text_input=args.use_raw_text_input,
     )
     if cfg_cls is EasyMagpieMultiturnUserAudioInferenceConfig:
         kwargs.update(

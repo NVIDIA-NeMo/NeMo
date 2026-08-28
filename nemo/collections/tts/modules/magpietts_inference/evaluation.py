@@ -47,7 +47,6 @@ class EvaluationConfig:
             intensity, and speech-rate distance metrics.
         prosody_model_size: Emotion encoder size ("small" or "large").
         strip_text_annotations_for_metrics: Whether to strip annotation/control markers from reference and ASR hypothesis text before text metrics.
-        use_raw_text_input: Whether inference used text instead of normalized_text as model input.
         device: Device to use for running models used during evaluation.
     """
 
@@ -62,7 +61,6 @@ class EvaluationConfig:
     with_prosody_metrics: bool = False
     prosody_model_size: str = "small"
     strip_text_annotations_for_metrics: bool = False
-    use_raw_text_input: bool = False
     device: str = "cuda"
     asr_batch_size: int = 32
     eou_batch_size: int = 32
@@ -109,7 +107,6 @@ def evaluate_generated_audio_dir(
         with_prosody_metrics=config.with_prosody_metrics,
         prosody_model_size=config.prosody_model_size,
         strip_text_annotations_for_metrics=config.strip_text_annotations_for_metrics,
-        use_raw_text_input=config.use_raw_text_input,
         device=config.device,
         eou_model_name=config.eou_model_name,
         asr_batch_size=config.asr_batch_size,

@@ -34,7 +34,6 @@ from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
-from nemo.collections.tts.data.text_to_speech_dataset import get_tts_text
 from nemo.collections.tts.metrics.eou_classifier import EoUClassification, EoUClassifier, EoUType
 from nemo.collections.tts.metrics.frechet_codec_distance import FrechetCodecDistance
 from nemo.collections.tts.metrics.prosody import compute_prosody_distances
@@ -104,10 +103,10 @@ def strip_text_annotations_from_text(text: str) -> str:
     return text.strip()
 
 
-def _get_record_texts(record: dict, use_raw_text_input: bool = False) -> tuple[str, Optional[str], str]:
-    """Return model-input, dataloader-normalized, and metric-reference text."""
+def _get_record_texts(record: dict) -> tuple[str, Optional[str], str]:
+    """Return raw model-input text, dataloader-normalized text, and metric-reference text."""
     if "text" in record:
-        tts_text_input = get_tts_text(record, use_raw_text_input=use_raw_text_input)
+        tts_text_input = record["text"]
     elif "original_text" in record:
         tts_text_input = record["original_text"]
     else:
@@ -457,7 +456,6 @@ def evaluate_dir(
     asr_model_type="nemo",
     with_utmosv2=True,
     strip_text_annotations_for_metrics=False,
-    use_raw_text_input=False,
     with_prosody_metrics=False,
     prosody_model_size="small",
     asr_batch_size=32,
@@ -548,9 +546,7 @@ def evaluate_dir(
     record_texts = []
     gt_texts_processed = []
     for record in records:
-        tts_text_input, dataloader_normalized_text, metric_reference_text = _get_record_texts(
-            record, use_raw_text_input=use_raw_text_input
-        )
+        tts_text_input, dataloader_normalized_text, metric_reference_text = _get_record_texts(record)
         record_texts.append((tts_text_input, dataloader_normalized_text))
         if strip_text_annotations_for_metrics:
             metric_reference_text = strip_text_annotations_from_text(metric_reference_text)
@@ -758,7 +754,6 @@ def evaluate(
     asr_model_type="nemo",
     with_utmosv2=True,
     strip_text_annotations_for_metrics=False,
-    use_raw_text_input=False,
     with_fcd=True,
     codec_model_path=None,
     with_prosody_metrics=False,
@@ -800,7 +795,6 @@ def evaluate(
         asr_model_type=asr_model_type,
         with_utmosv2=with_utmosv2,
         strip_text_annotations_for_metrics=strip_text_annotations_for_metrics,
-        use_raw_text_input=use_raw_text_input,
         with_prosody_metrics=with_prosody_metrics,
         prosody_model_size=prosody_model_size,
         asr_batch_size=asr_batch_size,

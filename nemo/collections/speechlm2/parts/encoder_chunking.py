@@ -200,14 +200,10 @@ def materialize_packed_spk_targets(
     if spk_targets is None:
         raise ValueError("spk_target_cu_seqlens was provided without spk_targets")
     if spk_targets.ndim != 2:
-        raise ValueError(
-            "Packed spk_targets must have shape [T_total, N], "
-            f"got {tuple(spk_targets.shape)}."
-        )
+        raise ValueError("Packed spk_targets must have shape [T_total, N], " f"got {tuple(spk_targets.shape)}.")
     if spk_target_cu_seqlens.ndim != 1 or spk_target_cu_seqlens.numel() < 2:
         raise ValueError(
-            "spk_target_cu_seqlens must have shape [B + 1], "
-            f"got {tuple(spk_target_cu_seqlens.shape)}."
+            "spk_target_cu_seqlens must have shape [B + 1], " f"got {tuple(spk_target_cu_seqlens.shape)}."
         )
     offsets = spk_target_cu_seqlens.to(dtype=torch.long)
     if int(offsets[0].item()) != 0 or int(offsets[-1].item()) != spk_targets.shape[0]:
@@ -229,7 +225,17 @@ def materialize_packed_spk_targets(
     else:
         spk_target_lengths = packed_lengths
     rows = list(torch.split(spk_targets, packed_lengths.tolist(), dim=0))
-    return pad_sequence(rows, batch_first=True), spk_target_lengths
+    missing_rttm_rows = torch.stack([(row == -1.0).all() for row in rows])
+    padded_targets = pad_sequence(rows, batch_first=True)
+    # Explicit RTTM rows need zero padding to represent silence, while an all--1
+    # row is a sentinel requesting the embedded diarizer. Preserve that sentinel
+    # across dense materialization so mixed target lengths cannot change routing.
+    padded_targets = torch.where(
+        missing_rttm_rows[:, None, None],
+        torch.full_like(padded_targets, -1.0),
+        padded_targets,
+    )
+    return padded_targets, spk_target_lengths
 
 
 def _maybe_return_dummy_loss(

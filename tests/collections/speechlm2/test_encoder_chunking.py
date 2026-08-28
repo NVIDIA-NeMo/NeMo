@@ -27,21 +27,23 @@ from nemo.collections.speechlm2.parts.encoder_chunking import (
 from tests.collections.speechlm2._chunking_helpers import ChunkingTestPerception
 
 
-def test_materialize_packed_spk_targets_matches_padded_contract():
+def test_materialize_packed_spk_targets_preserves_missing_rttm_sentinel():
     packed = torch.tensor(
         [
             [1.0, 0.0],
             [0.0, 1.0],
             [1.0, 1.0],
             [-1.0, -1.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
         ]
     )
-    lengths = torch.tensor([3, 1])
+    lengths = torch.tensor([3, 1, 2])
 
     targets, actual_lengths = materialize_packed_spk_targets(
         packed,
         lengths,
-        torch.tensor([0, 3, 4]),
+        torch.tensor([0, 3, 4, 6]),
     )
 
     assert torch.equal(actual_lengths, lengths)
@@ -50,10 +52,12 @@ def test_materialize_packed_spk_targets_matches_padded_contract():
         torch.tensor(
             [
                 [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
-                [[-1.0, -1.0], [0.0, 0.0], [0.0, 0.0]],
+                [[-1.0, -1.0], [-1.0, -1.0], [-1.0, -1.0]],
+                [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]],
             ]
         ),
     )
+    assert (targets == -1.0).all(dim=(1, 2)).tolist() == [False, True, False]
 
 
 @pytest.mark.parametrize(

@@ -4,11 +4,11 @@ This file provides guidance when working with code in this repository.
 
 ## Project Overview
 
-NeMo Speech — toolkit for training/deploying speech models (ASR, TTS, Speech LLM). Active collections: `asr`, `tts`, `audio`, `speechlm2`, `common`. No Megatron / Megatron Core / Transformer Engine — parallelism is PyTorch-native (DDP, FSDP2, TP/SP via DTensor).
+NeMo Speech — toolkit for training/deploying speech models (ASR, TTS, Speech LLM). Active collections: `asr`, `tts`, `audio`, `speechlm2`, `common`.
 
 ## Build & Install
 
-See the canonical installation guide — [`docs/source/starthere/install.rst`](docs/source/starthere/install.rst) (published at https://docs.nvidia.com/nemo/speech/nightly/) — for the uv, pip (bring-your-own Python/PyTorch/CUDA), Docker, and optional `compiled` (SpeechLM2/Automodel) install paths.
+See the installation guide — [`docs/source/starthere/install.rst`](docs/source/starthere/install.rst) (published at https://docs.nvidia.com/nemo/speech/nightly/) — for the uv, pip (bring-your-own Python/PyTorch/CUDA), Docker, and optional `compiled` (SpeechLM2/Automodel) install paths.
 
 Dev quickstart matching the current CI/container baseline: `uv sync --locked --python 3.13 --extra all --extra cu13 --group test`. Use `cu12` for CUDA 12.x or omit the CUDA extra on macOS. `test` and `docs` are dependency groups, not extras.
 
@@ -49,7 +49,14 @@ Markers: `unit`, `integration`, `system`, `pleasefixme` (broken — skip), `skip
 - Formatting CI is check-only and does not fix the branch. Run pre-commit locally before pushing.
 - CI: GitHub Actions in `.github/workflows/`
 
-Every commit must carry a Developer Certificate of Origin sign-off. Create commits with `git commit -s`; when amending, use `git commit --amend --no-edit -s`. Before pushing, inspect every branch commit with `git log --format='%h %s%n%(trailers:key=Signed-off-by)' origin/main..HEAD` and repair any missing sign-off. The `-s` sign-off trailer is distinct from a cryptographic `-S` signature.
+Every commit must carry a Developer Certificate of Origin sign-off whose name and email exactly match the commit
+author. A `Signed-off-by` trailer merely being present is not sufficient. Create commits with `git commit -s`;
+when amending, use `git commit --amend --no-edit -s`. Before pushing, inspect every branch commit with
+`git log --format='%h %s%nAuthor: %an <%ae>%n%(trailers:key=Signed-off-by)' origin/main..HEAD` and verify the
+author has an exactly matching sign-off. The `-s` sign-off trailer is distinct from a cryptographic `-S`
+signature. If an API, app, or other tool creates or rewrites commits, fetch the published branch and repeat this
+check against the remote commits before reporting that DCO passes; such tools may replace the local author
+identity.
 
 ## PR Verification & Review
 
@@ -61,6 +68,18 @@ Before committing or requesting review:
 4. Record the exact checks run and any intentionally skipped checks in the PR description.
 
 When reviewing a PR, explicitly assess whether unit test coverage is appropriate for the changed behavior and whether affected documentation is accurate and complete. Treat unjustified gaps in either area as actionable review findings.
+
+For external contributions, also verify that every commit has a `Signed-off-by` identity that exactly matches its
+author. If any sign-off is missing or mismatched, leave a blocking review that clearly states the PR cannot be
+merged until all commits are signed off correctly, and give the contributor these repair instructions:
+
+```bash
+git rebase --signoff origin/main
+git push --force-with-lease
+```
+
+Before running these commands, the contributor must configure `user.name` and `user.email` to the real name and
+email used to author their commits. Reviewers must not rewrite an external contributor's commits on their behalf.
 
 ## Documentation
 
@@ -103,17 +122,6 @@ Four frequently used data/training helpers:
 - **`scripts/speech_recognition/oomptimizer.py`** — find the largest batch size per bucket that fits in GPU memory. Usage: `python scripts/speech_recognition/oomptimizer.py --pretrained-name nvidia/canary-1b` or point to a config with `--config-path`.
 - **`scripts/speech_recognition/estimate_data_weights.py`** — compute per-dataset sampling weights from YAML input configs, with optional temperature re-weighting. Usage: `python scripts/speech_recognition/estimate_data_weights.py input.yaml output.yaml -t 0.5`
 - **`scripts/speech_recognition/convert_to_tarred_audio_dataset.py`** — shard audio+manifest into tar files. Usage: `python scripts/speech_recognition/convert_to_tarred_audio_dataset.py --manifest_path=m.json --target_dir=./tar --num_shards=512 --max_duration=60.0`
-
-## Architecture
-
-- **Hydra + OmegaConf** for all config management (YAML configs)
-- **PyTorch Lightning** for training orchestration
-- **Lhotse** (>=1.32.2) for audio data loading
-- Collections are semi-isolated domains sharing `nemo.core` and `nemo.collections.common`
-
-## Subdirectory Instructions
-
-Module-specific instructions can be added as `CLAUDE.md` or `AGENTS.md` files in subdirectories.
 
 ## Issue Reproduction
 

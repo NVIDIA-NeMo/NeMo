@@ -16,7 +16,6 @@ import os
 import re
 import shutil
 import time
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
@@ -236,18 +235,11 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 return output
 
             self.previous_best_path = self.best_model_path
-            old_state_dict = deepcopy(pl_module.state_dict())
-            checkpoint = torch.load(maybe_injected_best_model_path, map_location='cpu')
-            if 'state_dict' in checkpoint:
-                checkpoint = checkpoint['state_dict']
-            # get a new instanace of the model
-            pl_module.load_state_dict(checkpoint, strict=True)
             if torch.distributed.is_initialized():
                 torch.distributed.barrier()
             backup_path = self._backup_existing_nemo_ckpt(trainer)
             pl_module.save_to(save_path=app_state.model_restore_path)
             logging.info(f"New best .nemo model saved to: {app_state.model_restore_path}")
-            pl_module.load_state_dict(old_state_dict, strict=True)
         else:
             if torch.distributed.is_initialized():
                 torch.distributed.barrier()

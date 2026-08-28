@@ -155,6 +155,11 @@ def _is_target_allowed(target: str) -> bool:
                             return True
             return False
 
+    # @experimental / @deprecated wrap the class in a wrapt proxy that passes
+    # isinstance(.., type) but breaks issubclass(); unwrap to the real class.
+    while hasattr(obj, "__wrapped__"):
+        obj = obj.__wrapped__
+
     # If it's a class: allow only subclasses of safe bases
     if isinstance(obj, type):
         if target.startswith("nemo.core.config.") and is_dataclass(obj):
@@ -228,6 +233,22 @@ def _is_target_allowed(target: str) -> bool:
                 from nemo.collections.tts.g2p.models.base import BaseG2p
 
                 return issubclass(obj, BaseG2p)
+            except (ImportError, TypeError):
+                return False
+
+        if target.startswith("nemo.collections.tts.parts.preprocessing."):
+            try:
+                from nemo.collections.tts.parts.preprocessing.audio_trimming import AudioTrimmer
+
+                return issubclass(obj, AudioTrimmer)
+            except (ImportError, TypeError):
+                return False
+
+        if target.startswith("nemo.collections.tts.parts.utils.callbacks"):
+            try:
+                from nemo.collections.tts.parts.utils.callbacks import ArtifactGenerator
+
+                return issubclass(obj, ArtifactGenerator)
             except (ImportError, TypeError):
                 return False
 

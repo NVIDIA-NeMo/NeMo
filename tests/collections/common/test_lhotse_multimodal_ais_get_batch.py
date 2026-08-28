@@ -201,6 +201,7 @@ def test_jsonl_batch_skipme(skipme_manifest, monkeypatch):
             manifest_filepath=manifest,
             tarred_audio_filepaths=tar,
             audio_locator_tag="[audio]",
+            skip_missing_manifest_entries=False,
         )
     )
     # 4 rows total, half marked _skipme -> 2 yielded.
@@ -255,6 +256,69 @@ def test_jsonl_batch_vs_tar_parity(tarred_jsonl_manifest, monkeypatch):
     # Cut ids match too (both modes route through _make_cut_id).
     for a, b in zip(tar_mode, ais_mode):
         assert [t.cut.id for t in _audio_turns(a)] == [t.cut.id for t in _audio_turns(b)]
+
+
+@pytest.mark.unit
+def test_jsonl_indexed_missing_tar_member_obeys_skip_policy(
+    tarred_jsonl_manifest, monkeypatch
+):
+    manifest, tar = tarred_jsonl_manifest
+
+    def fail_get(self, name):
+        raise KeyError(f"missing {name}")
+
+    monkeypatch.setattr(
+        "nemo.collections.common.data.lhotse.indexed_adapters.IndexedTarMemberReader.get",
+        fail_get,
+    )
+    strict = NeMoMultimodalConversationJsonlAdapter(
+        manifest_filepath=manifest,
+        tarred_audio_filepaths=tar,
+        audio_locator_tag="[audio]",
+        indexed=True,
+        skip_missing_manifest_entries=False,
+    )
+    with pytest.raises(RuntimeError, match="Failed to load multimodal audio member"):
+        next(iter(strict))
+
+    permissive = NeMoMultimodalConversationJsonlAdapter(
+        manifest_filepath=manifest,
+        tarred_audio_filepaths=tar,
+        audio_locator_tag="[audio]",
+        indexed=True,
+        skip_missing_manifest_entries=True,
+    )
+    assert list(permissive) == []
+
+
+@pytest.mark.unit
+def test_jsonl_streaming_missing_tar_member_obeys_skip_policy(
+    tarred_jsonl_manifest, monkeypatch
+):
+    manifest, tar = tarred_jsonl_manifest
+    monkeypatch.delenv("USE_AIS_GET_BATCH", raising=False)
+    monkeypatch.setattr(
+        "nemo.collections.common.data.lhotse.text_adapters.TarIterator",
+        lambda path: iter(()),
+    )
+    strict = NeMoMultimodalConversationJsonlAdapter(
+        manifest_filepath=manifest,
+        tarred_audio_filepaths=tar,
+        audio_locator_tag="[audio]",
+        indexed=False,
+        skip_missing_manifest_entries=False,
+    )
+    with pytest.raises(RuntimeError, match="Failed to load multimodal tar shard"):
+        next(iter(strict))
+
+    permissive = NeMoMultimodalConversationJsonlAdapter(
+        manifest_filepath=manifest,
+        tarred_audio_filepaths=tar,
+        audio_locator_tag="[audio]",
+        indexed=False,
+        skip_missing_manifest_entries=True,
+    )
+    assert list(permissive) == []
 
 
 # ---------------------------------------------------------------------------

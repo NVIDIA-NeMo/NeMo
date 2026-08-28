@@ -74,6 +74,13 @@ def _warn_malformed_indexed_manifest_record(ex: BaseException, idx: int, path: s
         "Further records with the same path/error type are suppressed in this worker."
     )
 
+def manifest_entry_is_explicitly_skipped(data: Mapping) -> bool:
+    """Return whether a manifest row carries a truthy canonical skip marker."""
+    if bool(data.get("_skipme", False)):
+        return True
+    custom = data.get("custom")
+    return isinstance(custom, Mapping) and bool(custom.get("_skipme", False))
+
 
 class LazyNeMoIterator(IteratorNode):
     """
@@ -235,8 +242,7 @@ class LazyNeMoIterator(IteratorNode):
         extra_fields = [ExtraField.from_dict({"seed": seed, **field_cfg}) for field_cfg in self.extra_fields or ()]
         for data in self.source:
             graph_token = getattr(data, "_graph_origin", None) if self.indexed else None
-            # filter out entries with valid "_skipme" values.
-            if data.get("_skipme", False):
+            if manifest_entry_is_explicitly_skipped(data):
                 continue
             cut = self._build_cut_from_dict(data)
             for extra_field in extra_fields:
@@ -252,6 +258,10 @@ class LazyNeMoIterator(IteratorNode):
                 "LazyNeMoIterator does not support __getitem__ when extra_fields are configured."
             )
         data = self.source[token]
+        if manifest_entry_is_explicitly_skipped(data):
+            raise IndexError(
+                f"Manifest row at physical index {token} is explicitly filtered by _skipme."
+            )
         cut = self._build_cut_from_dict(data)
         return attach_graph_origin(cut, token) if self.indexed else cut
 
@@ -715,8 +725,7 @@ class LazyNeMoTarredIterator(IteratorNode):
                 elif cntr == self.slice_length:
                     break
 
-                # filter out entries with valid "_skipme" values.
-                if data.get("_skipme", False):
+                if manifest_entry_is_explicitly_skipped(data):
                     entries_processed += 1
                     continue
 
@@ -726,9 +735,17 @@ class LazyNeMoTarredIterator(IteratorNode):
                 # Get metadata from manifest
                 duration = data.get("duration")
                 if duration is None:
-                    logging.warning(f"Skipping '{audio_filename}' - missing duration in manifest")
-                    entries_processed += 1
-                    continue
+                    message = (
+                        "NeMo tarred manifest row is missing duration: "
+                        f"audio_filepath={audio_filename!r} manifest={manifest_path!r} tar={tar_path!r}."
+                    )
+                    if self.skip_missing_manifest_entries:
+                        logging.warning(
+                            f"Skipping row because skip_missing_manifest_entries=true: {message}"
+                        )
+                        entries_processed += 1
+                        continue
+                    raise ValueError(message)
 
                 offset = data.get("offset", 0.0)
                 sampling_rate = data.get("sampling_rate", 16000)  # default to 16kHz if not specified
@@ -837,17 +854,24 @@ class LazyNeMoTarredIterator(IteratorNode):
         cut.tar_origin = tar_path
         return cut
 
+    def _indexed_entry_is_explicitly_skipped(self, data: dict, manifest_path: str, tar_path: str) -> bool:
+        return manifest_entry_is_explicitly_skipped(data)
+
     def _build_indexed_cut(self, data: dict, audio_bytes: bytes, manifest_path: str, tar_path: str) -> Cut | None:
         """Decode a single (manifest_entry, audio_bytes) pair into a Cut, mirroring the streaming path."""
-        if data.get("_skipme", False):
+        if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
             return None
         try:
             meta = soundfile.info(BytesIO(audio_bytes))
-        except Exception:
-            logging.warning(
-                f"Skipped corrupted audio member referenced by '{data.get('audio_filepath')}' in {tar_path=}."
+        except Exception as ex:
+            message = (
+                "Failed to decode indexed NeMo tarred audio member "
+                f"{data.get('audio_filepath')!r} from tar={tar_path!r} manifest={manifest_path!r}."
             )
-            return None
+            if self.skip_missing_manifest_entries:
+                logging.warning(f"Skipping corrupted audio because skip_missing_manifest_entries=true: {message}")
+                return None
+            raise RuntimeError(message) from ex
         recording = Recording(
             id=str(data["audio_filepath"]),
             sources=[AudioSource(type="memory", channels=list(range(meta.channels)), source=audio_bytes)],
@@ -867,12 +891,18 @@ class LazyNeMoTarredIterator(IteratorNode):
         ``AudioSamples(use_batch_loader=True)`` can fetch the entire minibatch in
         a single AIS GetBatch request. Mirrors ``_iter_batch_for_ais_get_batch``.
         """
-        if data.get("_skipme", False):
+        if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
             return None
         duration = data.get("duration")
         if duration is None:
-            logging.warning(f"Skipping '{data.get('audio_filepath')}' - missing duration in manifest")
-            return None
+            message = (
+                "Indexed NeMo tarred manifest row is missing duration: "
+                f"audio_filepath={data.get('audio_filepath')!r} manifest={manifest_path!r} tar={tar_path!r}."
+            )
+            if self.skip_missing_manifest_entries:
+                logging.warning(f"Skipping row because skip_missing_manifest_entries=true: {message}")
+                return None
+            raise ValueError(message)
         audio_filename = self._audio_member_name_from_entry(data)
         audio_url = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
         # ``open_best`` handles ais://, http(s)://, and local paths uniformly;
@@ -912,6 +942,8 @@ class LazyNeMoTarredIterator(IteratorNode):
             raise
         manifest_path = location.path
         tar_path = self._packed_tar_path(location.shard_index)
+        if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
+            return None
         if self.use_ais_get_batch:
             return self._build_indexed_url_cut(data, manifest_path, tar_path)
         expected_name = self._audio_member_name_from_entry(data)
@@ -931,9 +963,9 @@ class LazyNeMoTarredIterator(IteratorNode):
     def _decode_cut_at(self, idx: int) -> Cut | None:
         """Build the Cut for a global index in indexed mode (AIS or local).
 
-        Returns ``None`` if the manifest entry/audio member is missing or
-        malformed and ``skip_missing_manifest_entries`` is set, or if the
-        entry has ``_skipme=True`` / undecodable audio.
+        Truthy top-level or ``custom._skipme`` rows always return ``None``.
+        Other malformed, missing, or undecodable data returns ``None`` only when
+        ``skip_missing_manifest_entries`` is explicitly set; strict mode raises.
         """
         if getattr(self, "_packed_indexed", False):
             return self._decode_packed_cut_at(idx)
@@ -956,6 +988,8 @@ class LazyNeMoTarredIterator(IteratorNode):
                 return None
             raise
         tar_path = self.shard_id_to_tar_path[sid]
+        if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
+            return None
         if self.use_ais_get_batch:
             return self._build_indexed_url_cut(data, manifest_path, tar_path)
         member_name = self._audio_member_name_from_entry(data)
@@ -980,6 +1014,9 @@ class LazyNeMoTarredIterator(IteratorNode):
 
     def __len__(self) -> int:
         if self.indexed:
+            # Stay in the physical index domain: graph tokens and checkpointed
+            # iterator positions remain stable while iteration suppresses
+            # canonical marker rows.
             return self._total_len
         return len(self.source)
 
@@ -995,6 +1032,8 @@ class LazyNeMoTarredIterator(IteratorNode):
         self.epoch = sd.get("epoch", 0)
 
     def _iter_indexed(self) -> Generator[Cut, None, None]:
+        # State advances in physical positions before a yielded Cut; marker rows
+        # are consumed exactly once and resume deterministically.
         for global_idx in self._iter_state.iterate(self._total_len):
             cut = self._decode_cut_at(global_idx)
             if cut is None:
@@ -1044,9 +1083,17 @@ class LazyNeMoTarredIterator(IteratorNode):
                 for data, raw_audio, tar_info in self._iter_sequential(tar_path, shard_manifest, manifest_path, rng):
                     try:
                         meta = soundfile.info(BytesIO(raw_audio))
-                    except Exception:
-                        logging.warning(f"Skipped corrupted file '{tar_info.path}' in {tar_path=}.")
-                        continue
+                    except Exception as ex:
+                        message = (
+                            "Failed to decode streaming NeMo tarred audio member "
+                            f"{tar_info.path!r} from tar={tar_path!r} manifest={manifest_path!r}."
+                        )
+                        if self.skip_missing_manifest_entries:
+                            logging.warning(
+                                f"Skipping corrupted audio because skip_missing_manifest_entries=true: {message}"
+                            )
+                            continue
+                        raise RuntimeError(message) from ex
                     recording = Recording(
                         id=tar_info.path,
                         sources=[AudioSource(type="memory", channels=list(range(meta.channels)), source=raw_audio)],
@@ -1056,8 +1103,7 @@ class LazyNeMoTarredIterator(IteratorNode):
                     )
                     cuts_for_recording = []
                     for data in sorted(shard_manifest[tar_info.name], key=lambda d: d["audio_filepath"]):
-                        # filter out entries with valid "_skipme" values.
-                        if data.get("_skipme", False):
+                        if manifest_entry_is_explicitly_skipped(data):
                             continue
                         # Cut the recording into corresponding segment and discard audio data outside the segment.
                         cut = make_cut_with_subset_inmemory_recording(
@@ -1082,10 +1128,14 @@ class LazyNeMoTarredIterator(IteratorNode):
                     del recording  # free the memory - helps with very large audio files
                     del raw_audio
                     yield from cuts_for_recording
-            except tarfile.ReadError:
-                logging.warning(
-                    f"Skipping tar file due to read errors (unstable storage or bad file?): {tar_path=}",
-                )
+            except tarfile.ReadError as ex:
+                message = f"Failed to read NeMo tar archive {tar_path!r} for manifest {manifest_path!r}."
+                if self.skip_missing_manifest_entries:
+                    logging.warning(
+                        f"Skipping tar because skip_missing_manifest_entries=true: {message}"
+                    )
+                    continue
+                raise RuntimeError(message) from ex
 
         self.epoch += 1
 

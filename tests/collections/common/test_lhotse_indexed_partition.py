@@ -37,6 +37,8 @@ from pathlib import Path
 import pytest
 from lhotse import CutSet
 from lhotse.dataset.dataloading import LHOTSE_USE_WORKER_PARTITION
+from lhotse.indexing import create_jsonl_index
+from lhotse.serialization import load_jsonl, save_to_jsonl
 from lhotse.testing.dummies import DummyManifest
 
 from nemo.collections.common.data.lhotse import nemo_adapters, text_adapters
@@ -147,6 +149,181 @@ def test_lazy_nemo_tarred_iterator_indexed_partition(nemo_tarred_manifest, world
     assert len(union) == N_CUTS, f"missing {N_CUTS - len(union)} items at world_size={world_size}"
     # All items get covered at least once (each exactly once due to disjointness).
     assert sum(len(r) for r in per_rank) == N_CUTS
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+def test_lazy_nemo_tarred_soundfile_failure_obeys_skip_policy(
+    nemo_tarred_manifest, monkeypatch, indexed
+):
+    manifest_path, tar_path = nemo_tarred_manifest
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
+
+    def fail_info(*args, **kwargs):
+        raise RuntimeError("synthetic soundfile.info failure")
+
+    monkeypatch.setattr(nemo_adapters.soundfile, "info", fail_info)
+
+    strict = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=indexed,
+        skip_missing_manifest_entries=False,
+    )
+    with pytest.raises(RuntimeError, match=r"Failed to decode .*NeMo tarred audio member"):
+        next(iter(strict))
+
+    permissive = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=indexed,
+        skip_missing_manifest_entries=True,
+    )
+    assert list(permissive) == []
+
+
+def test_lazy_nemo_tarred_streaming_missing_duration_obeys_skip_policy(
+    nemo_tarred_manifest, monkeypatch
+):
+    manifest_path, tar_path = nemo_tarred_manifest
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+    rows = list(load_jsonl(manifest_path))
+    rows[0].pop("duration", None)
+    save_to_jsonl(rows, manifest_path)
+
+    strict = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=False,
+        skip_missing_manifest_entries=False,
+    )
+    with pytest.raises(ValueError, match="missing duration"):
+        next(iter(strict))
+
+    permissive = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=False,
+        skip_missing_manifest_entries=True,
+    )
+    assert len(list(permissive)) == N_CUTS - 1
+
+
+def test_lazy_nemo_tarred_streaming_tar_read_error_obeys_skip_policy(
+    nemo_tarred_manifest, monkeypatch
+):
+    manifest_path, tar_path = nemo_tarred_manifest
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
+
+    def fail_sequential(*args, **kwargs):
+        raise tarfile.ReadError("synthetic tar failure")
+
+    monkeypatch.setattr(
+        nemo_adapters.LazyNeMoTarredIterator, "_iter_sequential", fail_sequential
+    )
+
+    strict = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=False,
+        skip_missing_manifest_entries=False,
+    )
+    with pytest.raises(RuntimeError, match="Failed to read NeMo tar archive"):
+        next(iter(strict))
+
+    permissive = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=False,
+        skip_missing_manifest_entries=True,
+    )
+    assert list(permissive) == []
+
+
+@pytest.mark.parametrize("use_ais_get_batch", [False, True])
+def test_lazy_nemo_tarred_indexed_skipme_is_canonical_filter(
+    nemo_tarred_manifest, monkeypatch, use_ais_get_batch
+):
+    manifest_path, tar_path = nemo_tarred_manifest
+    monkeypatch.setenv("USE_AIS_GET_BATCH", str(use_ais_get_batch).lower())
+    rows = list(load_jsonl(manifest_path))
+    rows[0]["_skipme"] = "low char. rate"
+    rows[0]["audio_filepath"] = "intentionally-missing.wav"
+    rows[1]["custom"] = {"_skipme": 1}
+    rows[2]["_skipme"] = ""
+    rows[3]["custom"] = {"_skipme": 0}
+    save_to_jsonl(rows, manifest_path)
+
+    for skip_missing_manifest_entries in (False, True):
+        adapter = nemo_adapters.LazyNeMoTarredIterator(
+            manifest_path=str(manifest_path),
+            tar_paths=str(tar_path),
+            indexed=True,
+            skip_missing_manifest_entries=skip_missing_manifest_entries,
+        )
+        cuts = list(adapter)
+        yielded_ids = {cut.custom["cut_id"] for cut in cuts}
+        assert len(adapter) == N_CUTS
+        assert len(cuts) == N_CUTS - 2
+        assert rows[0]["cut_id"] not in yielded_ids
+        assert rows[1]["cut_id"] not in yielded_ids
+        assert rows[2]["cut_id"] in yielded_ids
+        assert rows[3]["cut_id"] in yielded_ids
+        with pytest.raises(IndexError, match="not decodable"):
+            adapter[0]
+        assert adapter[2].custom["cut_id"] == rows[2]["cut_id"]
+
+
+def test_lazy_nemo_tarred_indexed_resume_is_stable_across_skipme(
+    nemo_tarred_manifest, monkeypatch
+):
+    manifest_path, tar_path = nemo_tarred_manifest
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+    rows = list(load_jsonl(manifest_path))
+    rows[1]["_skipme"] = True
+    rows[2]["custom"] = {"_skipme": "filtered"}
+    save_to_jsonl(rows, manifest_path)
+
+    def build():
+        return nemo_adapters.LazyNeMoTarredIterator(
+            manifest_path=str(manifest_path),
+            tar_paths=str(tar_path),
+            indexed=True,
+            skip_missing_manifest_entries=False,
+        )
+
+    uninterrupted = build()
+    source = iter(uninterrupted)
+    first = next(source)
+    state_after_first_physical_row = uninterrupted.state_dict()
+    expected_remainder = [cut.id for cut in source]
+
+    resumed = build()
+    resumed.load_state_dict(state_after_first_physical_row)
+    actual_remainder = [cut.id for cut in resumed]
+
+    assert first.id not in actual_remainder
+    assert actual_remainder == expected_remainder
+    assert len(actual_remainder) == N_CUTS - 3
+    assert len(resumed) == N_CUTS
+
+
+def test_lazy_nemo_tarred_indexed_malformed_json_is_fatal(
+    nemo_tarred_manifest, monkeypatch
+):
+    manifest_path, tar_path = nemo_tarred_manifest
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
+    valid_rows = manifest_path.read_text().splitlines()
+    manifest_path.write_text("{not-json}\n" + "\n".join(valid_rows[1:]) + "\n")
+    create_jsonl_index(manifest_path)
+
+    adapter = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=True,
+        skip_missing_manifest_entries=False,
+    )
+    with pytest.raises(json.JSONDecodeError):
+        next(iter(adapter))
 
 
 @pytest.fixture
@@ -383,6 +560,61 @@ def test_nemo_multimodal_conversation_jsonl_adapter_indexed_partition(mm_convers
 
     per_rank, union = _collect_disjoint_per_rank(build, world_size)
     assert len(union) == N_CUTS
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+def test_nemo_multimodal_missing_local_audio_obeys_skip_policy(
+    mm_conversation_jsonl, indexed
+):
+    rows = list(load_jsonl(mm_conversation_jsonl))
+    rows[0]["conversations"][0]["value"] = str(
+        mm_conversation_jsonl.parent / "missing.wav"
+    )
+    save_to_jsonl(rows, mm_conversation_jsonl)
+
+    strict = text_adapters.NeMoMultimodalConversationJsonlAdapter(
+        manifest_filepath=[str(mm_conversation_jsonl)],
+        audio_locator_tag="<audio>",
+        indexed=indexed,
+        skip_missing_manifest_entries=False,
+    )
+    with pytest.raises(RuntimeError, match="Failed to load multimodal conversation"):
+        next(iter(strict))
+
+    permissive = text_adapters.NeMoMultimodalConversationJsonlAdapter(
+        manifest_filepath=[str(mm_conversation_jsonl)],
+        audio_locator_tag="<audio>",
+        indexed=indexed,
+        skip_missing_manifest_entries=True,
+    )
+    assert len(list(permissive)) == N_CUTS - 1
+
+
+def test_nemo_multimodal_indexed_skipme_is_canonical_filter(mm_conversation_jsonl):
+    rows = list(load_jsonl(mm_conversation_jsonl))
+    rows[0]["_skipme"] = "filtered"
+    rows[1]["custom"] = {"_skipme": 1}
+    rows[2]["_skipme"] = ""
+    rows[3]["custom"] = {"_skipme": 0}
+    save_to_jsonl(rows, mm_conversation_jsonl)
+
+    for skip_missing_manifest_entries in (False, True):
+        adapter = text_adapters.NeMoMultimodalConversationJsonlAdapter(
+            manifest_filepath=[str(mm_conversation_jsonl)],
+            audio_locator_tag="<audio>",
+            indexed=True,
+            skip_missing_manifest_entries=skip_missing_manifest_entries,
+        )
+        conversations = list(adapter)
+        yielded_ids = {conversation.id for conversation in conversations}
+        assert len(adapter) == N_CUTS
+        assert len(conversations) == N_CUTS - 2
+        assert rows[0]["id"] not in yielded_ids
+        assert rows[1]["id"] not in yielded_ids
+        assert rows[2]["id"] in yielded_ids
+        assert rows[3]["id"] in yielded_ids
+        with pytest.raises(IndexError):
+            adapter[0]
 
 
 # ---------------------------------------------------------------------------

@@ -54,7 +54,10 @@ from nemo.collections.common.data.lhotse.indexed_adapters import (
     _split_json_audio_pair,
     wds_v2_index_path,
 )
-from nemo.collections.common.data.lhotse.nemo_adapters import expand_sharded_filepaths
+from nemo.collections.common.data.lhotse.nemo_adapters import (
+    expand_sharded_filepaths,
+    manifest_entry_is_explicitly_skipped,
+)
 from nemo.collections.common.data.lhotse.wds_catalog import discover_webdataset_shards
 from nemo.collections.common.data.prompt_fn import apply_prompt_format_fn, registered_prompt_format_fn
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
@@ -1197,6 +1200,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
     indexes_root: Optional[Pathlike] = None
     index_pack: Optional[Pathlike] = None
     index_pack_max_open_files: int = 32
+    skip_missing_manifest_entries: bool = False
 
     def __post_init__(self):
         raw_manifest_filepath = self.manifest_filepath
@@ -1327,24 +1331,37 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
     def _build_conversation_local(self, data: dict, manifest_path: str) -> NeMoMultimodalConversation | None:
         if self._should_skip(data):
             return None
-        turns = [
-            (
-                TextTurn(
-                    value=turn["value"],
-                    role=turn["from"].lower(),
+        try:
+            turns = []
+            for turn in data["conversations"]:
+                if turn["type"] == "text":
+                    turns.append(
+                        TextTurn(value=turn["value"], role=turn["from"].lower())
+                    )
+                    continue
+                cut = self._build_direct_audio_cut(
+                    turn=turn, manifest_path=manifest_path
                 )
-                if turn["type"] == "text"
-                else AudioTurn(
-                    cut=(cut := self._build_direct_audio_cut(turn=turn, manifest_path=manifest_path)).with_id(
-                        self._make_cut_id(cut, turn)
-                    ),
-                    text=cut.supervisions[0].text if cut.supervisions else None,
-                    role=turn["from"].lower(),
-                    audio_locator_tag=self.audio_locator_tag,
+                cut = cut.with_id(self._make_cut_id(cut, turn))
+                turns.append(
+                    AudioTurn(
+                        cut=cut,
+                        text=cut.supervisions[0].text if cut.supervisions else None,
+                        role=turn["from"].lower(),
+                        audio_locator_tag=self.audio_locator_tag,
+                    )
                 )
+        except (AudioLoadingError, OSError, RuntimeError, ValueError) as ex:
+            message = (
+                f"Failed to load multimodal conversation {data.get('id')!r} "
+                f"from manifest {manifest_path!r}."
             )
-            for turn in data["conversations"]
-        ]
+            if self.skip_missing_manifest_entries:
+                logging.warning(
+                    f"Skipping conversation because skip_missing_manifest_entries=true: {message} {ex}"
+                )
+                return None
+            raise RuntimeError(message) from ex
         if self.context is not None and turns[0].role == "user" and isinstance(turns[0], AudioTurn):
             turns = [TextTurn(role="user", value=self.context)] + turns
         if self.system_prompt is not None and turns[0].role != "system":
@@ -1392,12 +1409,20 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
         for turn in data["conversations"]:
             if turn["type"] != "audio":
                 continue
-            audio_bytes = tar_reader.get(turn["value"])
             try:
+                audio_bytes = tar_reader.get(turn["value"])
                 meta = _sf.info(_io.BytesIO(audio_bytes))
-            except Exception:
-                logging.warning(f"Skipped corrupted audio member '{turn['value']}' in {tar_path=}.")
-                return None
+            except (EOFError, KeyError, OSError, RuntimeError, ValueError, tarfile.TarError) as ex:
+                message = (
+                    f"Failed to load multimodal audio member {turn['value']!r} "
+                    f"from tar {tar_path!r}."
+                )
+                if self.skip_missing_manifest_entries:
+                    logging.warning(
+                        f"Skipping conversation because skip_missing_manifest_entries=true: {message} {ex}"
+                    )
+                    return None
+                raise RuntimeError(message) from ex
             recording = _Recording(
                 id=turn["value"],
                 sources=[_AudioSource(type="memory", channels=list(range(meta.channels)), source=audio_bytes)],
@@ -1468,10 +1493,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
         self.epoch += 1
 
     def _should_skip(self, example: dict) -> bool:
-        custom = example.get("custom")
-        if custom is None:
-            return False
-        return bool(custom.get("_skipme", False))
+        return manifest_entry_is_explicitly_skipped(example)
 
     def _get_rng(self) -> random.Random:
         seed = resolve_seed(self.shard_seed) + self.epoch
@@ -1506,29 +1528,49 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
             for idx, data in enumerate(jsonl):
                 audio_turns = [t for t in data["conversations"] if t["type"] == "audio"]
                 cuts = []
-                for turn in audio_turns:
-                    if use_ais_get_batch:
-                        cut = _make_archive_member_cut(
-                            tar_path=str(tar_path),
-                            audio_filename=turn['value'],
-                            duration=turn.get('duration'),
-                            offset=turn.get('offset', 0.0),
-                            sampling_rate=turn.get('sampling_rate', 16000),
-                            source_type='url',
+                try:
+                    for turn in audio_turns:
+                        if use_ais_get_batch:
+                            cut = _make_archive_member_cut(
+                                tar_path=str(tar_path),
+                                audio_filename=turn['value'],
+                                duration=turn.get('duration'),
+                                offset=turn.get('offset', 0.0),
+                                sampling_rate=turn.get('sampling_rate', 16000),
+                                source_type='url',
+                            )
+                            cut = cut.with_id(self._make_cut_id(cut, turn))
+                        else:
+                            recording, audio_path = next(tar)
+                            audio_path = str(audio_path)
+                            cut = recording.to_cut().truncate(
+                                offset=turn.get("offset", 0.0), duration=turn.get("duration")
+                            )
+                            cut = cut.with_id(self._make_cut_id(cut, turn))
+                            if audio_path != turn['value']:
+                                raise ValueError(
+                                    "Mismatch between JSONL and tar: "
+                                    f"manifest member={turn['value']!r} tar member={audio_path!r}."
+                                )
+                        cuts.append(cut)
+                except (
+                    AudioLoadingError,
+                    OSError,
+                    RuntimeError,
+                    StopIteration,
+                    ValueError,
+                    tarfile.TarError,
+                ) as ex:
+                    message = (
+                        f"Failed to load multimodal tar shard {tar_path!r} "
+                        f"for manifest {jsonl_path!r}."
+                    )
+                    if self.skip_missing_manifest_entries:
+                        logging.warning(
+                            f"Skipping tar because skip_missing_manifest_entries=true: {message} {ex}"
                         )
-                        cut = cut.with_id(self._make_cut_id(cut, turn))
-                    else:
-                        recording, audio_path = next(tar)
-                        audio_path = str(audio_path)
-                        cut = recording.to_cut().truncate(
-                            offset=turn.get("offset", 0.0), duration=turn.get("duration")
-                        )
-                        cut = cut.with_id(self._make_cut_id(cut, turn))
-                        assert audio_path == turn['value'], (
-                            f"Mismatch between JSONL and tar. JSONL defines audio path={turn['value']} but we got "
-                            f"the following from tar {audio_path=}.\nBad inputs in: {jsonl_path=} {tar_path=}"
-                        )
-                    cuts.append(cut)
+                        break
+                    raise RuntimeError(message) from ex
                 if self._should_skip(data):
                     continue  # Skip only after tar has been iterated, otherwise there will be data mismatch
                 if idx < slice_offset:
@@ -1577,36 +1619,10 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                 jsonl_iter = list(jsonl_iter)
                 rng.shuffle(jsonl_iter)
             for data in jsonl_iter:
-                if self._should_skip(data):
+                convo = self._build_conversation_local(data, manifest_path=path)
+                if convo is None:
                     continue
-                turns = [
-                    (
-                        TextTurn(
-                            value=turn["value"],
-                            role=turn["from"].lower(),
-                        )
-                        if turn["type"] == "text"
-                        else AudioTurn(
-                            cut=(cut := self._build_direct_audio_cut(turn=turn, manifest_path=path)).with_id(
-                                self._make_cut_id(cut, turn)
-                            ),
-                            text=cut.supervisions[0].text if cut.supervisions else None,
-                            role=turn["from"].lower(),
-                            audio_locator_tag=self.audio_locator_tag,
-                        )
-                    )
-                    for turn in data["conversations"]
-                ]
-                if self.context is not None and turns[0].role == "user" and isinstance(turns[0], AudioTurn):
-                    turns = [TextTurn(role="user", value=self.context)] + turns
-                if self.system_prompt is not None and turns[0].role != "system":
-                    turns = [TextTurn(role="system", value=self.system_prompt)] + turns
-                yield NeMoMultimodalConversation(
-                    id=data["id"],
-                    turns=turns,
-                    token_equivalent_duration=self.token_equivalent_duration,
-                    custom=data.get("custom"),
-                )
+                yield convo
 
         self.epoch += 1
 

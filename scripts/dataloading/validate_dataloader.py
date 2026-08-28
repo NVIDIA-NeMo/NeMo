@@ -57,6 +57,7 @@ from omegaconf import OmegaConf
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _validate_dataloader.config_inject import (  # noqa: E402
     inject_groundtruth_flags,
+    inject_missing_manifest_policy,
     inject_validator_flags,
 )
 from _validate_dataloader.cut_id_dataset import _validation_identity  # noqa: E402
@@ -172,6 +173,14 @@ def _finish_validation_process_group(*, initialized_here: bool) -> None:
     help="Override config.{section}.num_workers.",
 )
 @click.option(
+    "--skip-missing-manifest-entries/--fail-on-missing-manifest-entries",
+    default=None,
+    help=(
+        "Override the missing-manifest-entry policy on the complete input graph. "
+        "When omitted, preserve the recipe setting."
+    ),
+)
+@click.option(
     "--mode",
     type=click.Choice(["fast", "full"]),
     default="fast",
@@ -193,6 +202,7 @@ def cli(
     force_finite: bool,
     metadata_only: bool,
     num_workers_override: Optional[int],
+    skip_missing_manifest_entries: Optional[bool],
     mode: str,
     verbose: bool,
 ) -> None:
@@ -243,6 +253,11 @@ def cli(
     inject_validator_flags(
         section_cfg, force_finite=force_finite, metadata_only=metadata_only
     )
+    if skip_missing_manifest_entries is not None:
+        inject_missing_manifest_policy(
+            section_cfg,
+            skip_missing_manifest_entries=skip_missing_manifest_entries,
+        )
     if num_workers_override is not None:
         LOG.info(
             "override num_workers: %s -> %s",

@@ -453,6 +453,7 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
             indexes_root=config.get("indexes_root", None),
             index_pack=_resolve_index_pack(config),
             index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
+            skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
         )
     )
     if not config.get("force_finite", False):
@@ -649,13 +650,24 @@ def parse_and_combine_datasets(
             if "://" not in nested_path and not Path(nested_path).is_absolute():
                 item["input_cfg"] = str(containing_dir / nested_path)
 
-        # Check if we have any attributes that are propagated downwards to each item in the group.
-        # If a key already exists in the item, it takes precedence (we will not overwrite);
-        # otherwise we will assign it.
-        # We also update propagate_atts for the next sub-groups based on what's present in this group
+        # Propagate loader attributes into each leaf. Most leaf values may
+        # override their parent, but missing-entry handling is loader-wide:
+        # SALMDataset and FallbackDataset are shared across the blended graph,
+        # so a per-leaf policy cannot be honored safely for late audio errors.
+        # Keep the top-level value authoritative, including through external
+        # input_cfg YAML references.
         next_propagate_attrs = propagate_attrs.copy()
         for k, v in propagate_attrs.items():
-            if k not in item:
+            if k == "skip_missing_manifest_entries":
+                if k in item and item[k] != v:
+                    logging.info(
+                        "Overriding nested skip_missing_manifest_entries=%s with loader-wide value %s.",
+                        item[k],
+                        v,
+                    )
+                item[k] = v
+                next_propagate_attrs[k] = v
+            elif k not in item:
                 item[k] = v
             else:
                 next_propagate_attrs[k] = item[k]

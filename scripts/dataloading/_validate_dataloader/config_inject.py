@@ -22,7 +22,9 @@ from omegaconf import DictConfig, ListConfig
 LOG = logging.getLogger(__name__)
 
 
-def inject_validator_flags(cfg: DictConfig, *, force_finite: bool, metadata_only: bool) -> DictConfig:
+def inject_validator_flags(
+    cfg: DictConfig, *, force_finite: bool, metadata_only: bool
+) -> DictConfig:
     """Mutate-in-place: set ``force_finite`` and ``metadata_only`` on ``cfg``
     and on every nested ``input_cfg`` entry (recursively). Logs every
     injection so the user can see exactly what was changed.
@@ -36,7 +38,9 @@ def inject_validator_flags(cfg: DictConfig, *, force_finite: bool, metadata_only
         _inject_key(cfg, "force_finite", True, ctx="train_ds (top-level)")
     if metadata_only:
         _inject_key(cfg, "metadata_only", True, ctx="train_ds (top-level)")
-    _walk_input_cfg(cfg.get("input_cfg"), force_finite=force_finite, metadata_only=metadata_only)
+    _walk_input_cfg(
+        cfg.get("input_cfg"), force_finite=force_finite, metadata_only=metadata_only
+    )
     return cfg
 
 
@@ -57,12 +61,42 @@ def inject_groundtruth_flags(cfg: DictConfig) -> DictConfig:
     return cfg
 
 
-def _walk_input_cfg(node: Any, *, force_finite: bool, metadata_only: bool, path: str = "input_cfg") -> None:
+def inject_missing_manifest_policy(
+    cfg: DictConfig, *, skip_missing_manifest_entries: bool
+) -> DictConfig:
+    """Apply one explicit missing-entry policy to the complete input graph.
+
+    Nested input entries normally override inherited values. Validation needs
+    an authoritative policy so an individual source cannot silently weaken a
+    fail-closed run.
+    """
+    _inject_key(
+        cfg,
+        "skip_missing_manifest_entries",
+        skip_missing_manifest_entries,
+        ctx="train_ds (top-level)",
+    )
+    _walk_policy_key(
+        cfg.get("input_cfg"),
+        key="skip_missing_manifest_entries",
+        value=skip_missing_manifest_entries,
+    )
+    return cfg
+
+
+def _walk_input_cfg(
+    node: Any, *, force_finite: bool, metadata_only: bool, path: str = "input_cfg"
+) -> None:
     if node is None:
         return
     if isinstance(node, (list, ListConfig)):
         for i, sub in enumerate(node):
-            _walk_input_cfg(sub, force_finite=force_finite, metadata_only=metadata_only, path=f"{path}[{i}]")
+            _walk_input_cfg(
+                sub,
+                force_finite=force_finite,
+                metadata_only=metadata_only,
+                path=f"{path}[{i}]",
+            )
         return
     if isinstance(node, str):
         return  # input_cfg reference to a YAML file path — resolved later by NeMo
@@ -79,6 +113,25 @@ def _walk_input_cfg(node: Any, *, force_finite: bool, metadata_only: bool, path:
             force_finite=force_finite,
             metadata_only=metadata_only,
             path=f"{path}.input_cfg",
+        )
+
+
+def _walk_policy_key(
+    node: Any, *, key: str, value: Any, path: str = "input_cfg"
+) -> None:
+    if node is None or isinstance(node, str):
+        return
+    if isinstance(node, (list, ListConfig)):
+        for i, sub in enumerate(node):
+            _walk_policy_key(sub, key=key, value=value, path=f"{path}[{i}]")
+        return
+    if not isinstance(node, (dict, DictConfig)):
+        return
+    typ = node.get("type", "<no-type>")
+    _inject_key(node, key, value, ctx=f"{path} (type={typ})")
+    if "input_cfg" in node:
+        _walk_policy_key(
+            node["input_cfg"], key=key, value=value, path=f"{path}.input_cfg"
         )
 
 

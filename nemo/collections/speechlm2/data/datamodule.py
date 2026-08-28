@@ -71,6 +71,17 @@ class DataModule(LightningDataModule):
         self.dataset = dataset
         self._train_dl = None
 
+    def _dataset_for_config(self, cfg, *, training: bool) -> torch.utils.data.Dataset:
+        """Apply the loader's explicit missing-entry policy to the shared dataset."""
+        skip_missing = bool(cfg.get("skip_missing_manifest_entries", False))
+        dataset = self.dataset
+        configure_policy = getattr(dataset, "with_skip_missing_manifest_entries", None)
+        if callable(configure_policy):
+            dataset = configure_policy(skip_missing)
+        if training and skip_missing:
+            dataset = FallbackDataset(dataset)
+        return dataset
+
     def train_dataloader(self):
         if "train_ds" not in self.cfg:
             return None
@@ -81,7 +92,7 @@ class DataModule(LightningDataModule):
                     config=self.cfg.train_ds,
                     global_rank=self._get_dp_rank(),
                     world_size=self._get_world_size(),
-                    dataset=FallbackDataset(self.dataset),
+                    dataset=self._dataset_for_config(self.cfg.train_ds, training=True),
                     tokenizer=self.tokenizer,
                     dp_group=self._get_dp_group(),
                 )
@@ -157,7 +168,7 @@ class DataModule(LightningDataModule):
                     config=cfg,
                     global_rank=self._get_dp_rank(),
                     world_size=self._get_world_size(),
-                    dataset=self.dataset,
+                    dataset=self._dataset_for_config(cfg, training=False),
                     tokenizer=self.tokenizer,
                     dp_group=self._get_dp_group(),
                 )

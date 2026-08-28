@@ -21,6 +21,7 @@ from lightning.pytorch.utilities import CombinedLoader
 from omegaconf import DictConfig
 
 import nemo.collections.speechlm2.data.datamodule as datamodule_module
+from nemo.collections.common.data.fallback import FallbackDataset
 from nemo.collections.common.data.lhotse.broadcasting import BroadcastingDataLoader
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
 from nemo.collections.speechlm2.data import DataModule
@@ -91,6 +92,19 @@ class Identity(torch.utils.data.Dataset):
         return item
 
 
+class PolicyAwareDataset(torch.utils.data.Dataset):
+    def __init__(self, calls, skip_missing=None):
+        self.calls = calls
+        self.skip_missing = skip_missing
+
+    def __getitem__(self, item):
+        return item
+
+    def with_skip_missing_manifest_entries(self, skip_missing):
+        self.calls.append(skip_missing)
+        return PolicyAwareDataset(self.calls, skip_missing=skip_missing)
+
+
 def test_datamodule_train_dataloader(data_config, tokenizer):
     data = DataModule(data_config, tokenizer=tokenizer, dataset=Identity())
     dl = data.train_dataloader()
@@ -101,6 +115,34 @@ def test_datamodule_train_dataloader(data_config, tokenizer):
     assert isinstance(batch, CutSet)
     assert len(batch) == 2
     assert all(c.tag == "train" for c in batch)
+
+
+def test_datamodule_fallback_requires_explicit_skip_missing_manifest_entries():
+    calls = []
+    dataset = PolicyAwareDataset(calls)
+    strict_cfg = DictConfig({"train_ds": {}})
+    strict = DataModule(strict_cfg, tokenizer=None, dataset=dataset)._dataset_for_config(
+        strict_cfg.train_ds, training=True
+    )
+
+    assert isinstance(strict, PolicyAwareDataset)
+    assert not isinstance(strict, FallbackDataset)
+    assert strict.skip_missing is False
+
+    permissive_cfg = DictConfig({"train_ds": {"skip_missing_manifest_entries": True}})
+    permissive = DataModule(permissive_cfg, tokenizer=None, dataset=dataset)._dataset_for_config(
+        permissive_cfg.train_ds, training=True
+    )
+
+    assert isinstance(permissive, FallbackDataset)
+    assert permissive.dataset.skip_missing is True
+
+    validation = DataModule(permissive_cfg, tokenizer=None, dataset=dataset)._dataset_for_config(
+        permissive_cfg.train_ds, training=False
+    )
+    assert isinstance(validation, PolicyAwareDataset)
+    assert validation.skip_missing is True
+    assert calls == [False, True, True]
 
 
 def test_datamodule_train_dataloader_caches_broadcast_wrapper_and_passes_dp_group(data_config, tokenizer, monkeypatch):

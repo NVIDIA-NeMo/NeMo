@@ -13,6 +13,7 @@
 # limitations under the License.
 import logging
 import os
+from copy import copy
 from dataclasses import dataclass
 from itertools import groupby
 from typing import Iterable, Union
@@ -83,10 +84,11 @@ class SALMDataset(torch.utils.data.Dataset):
             ``packing_efficiency`` equal to the measured token sum divided by
             this budget.
         strict_audio_loading (bool):
-            Validation-only mode that re-raises audio collation errors and
+            Re-raises audio collation errors and
             rejects conversations or audio items dropped or reordered by the
-            fault-tolerant collator. Defaults to ``False`` so production
-            training retains its existing fault-tolerant behavior.
+            fault-tolerant collator. Defaults to ``True``. The datamodule sets
+            this to ``False`` only when ``skip_missing_manifest_entries=true``
+            is explicitly configured for that loader.
 
             [ SOT Example for overlapping speakers ]
             Speaker-parallel transcription as a timeline:
@@ -130,7 +132,7 @@ class SALMDataset(torch.utils.data.Dataset):
         pack_audio: bool = False,
         pack_sequences: bool = False,
         batch_tokens: int | None = None,
-        strict_audio_loading: bool = False,
+        strict_audio_loading: bool = True,
     ) -> None:
         self.tokenizer = tokenizer
         self.pad_id = get_pad_id(tokenizer)
@@ -160,10 +162,29 @@ class SALMDataset(torch.utils.data.Dataset):
             else None
         )
 
+    def with_skip_missing_manifest_entries(self, skip_missing_manifest_entries: bool) -> "SALMDataset":
+        """Return a per-loader view with the requested audio failure policy.
+
+        ``DataModule`` shares one dataset factory between train/validation/test,
+        while each loader may have a different missing-entry policy. A shallow
+        copy keeps the tokenizer and model-independent processors shared, and a
+        copied ``AudioSamples`` instance avoids mutating another loader's
+        strictness state.
+        """
+        dataset = copy(self)
+        dataset.strict_audio_loading = not bool(skip_missing_manifest_entries)
+        dataset.load_audio = copy(self.load_audio)
+        dataset.load_audio.fault_tolerant = True
+        if self.load_audio.ais_batch_loader is not None:
+            dataset.load_audio.ais_batch_loader = copy(self.load_audio.ais_batch_loader)
+            dataset.load_audio.ais_batch_loader.skip_failed_fetches = bool(skip_missing_manifest_entries)
+        return dataset
+
     def __getitem__(self, conversations: CutSet) -> dict | None:
-        # Note: the function call below may filter out some or all conversations due to audio loading issues.
-        # If all conversations are filtered out, we'll return None, and expect users to wrap this dataset
-        # in ``nemo.collections.common.data.fallback.FallbackDataset`` to use the previous mini-batch instead.
+        # The collator retains its fault-tolerant 3-tuple API, but strict mode
+        # verifies exact conversation/audio identity and raises on any drop.
+        # Returning None is possible only for an explicitly permissive loader;
+        # DataModule gates FallbackDataset behind that same explicit policy.
         if self.strict_audio_loading:
             requested_conversation_ids = tuple(conversation.id for conversation in conversations)
             requested_audio_cut_ids = tuple(
@@ -212,6 +233,8 @@ class SALMDataset(torch.utils.data.Dataset):
                     f"materialized={len(audio_lens)}"
                 )
         if not conversations:
+            if self.strict_audio_loading:
+                raise RuntimeError("Strict SALM loading produced an empty conversation batch.")
             return None
         input_ids = [c.input_ids for c in conversations]
         loss_masks = [getattr(c, "mask", torch.empty(0)) for c in conversations]

@@ -27,6 +27,7 @@ from nemo.collections.asr.parts.submodules.multi_head_attention import (
     RotaryPositionalEncoding,
 )
 from nemo.collections.asr.parts.submodules.subsampling import FeatureStacking, StackingSubsampling
+from nemo.core.classes.mixins import AccessMixin
 from nemo.core.classes.module import freeze, unfreeze
 from nemo.utils.decorators import experimental
 
@@ -289,7 +290,7 @@ class TransformerBlock(nn.Module):
 
 
 @experimental
-class TransformerEncoder(nn.Module):
+class TransformerEncoder(nn.Module, AccessMixin):
     """Pre-norm Transformer encoder for ASR.
 
     Architecture: PreEncode -> PositionalEncoding -> LayerNorm -> N x TransformerBlock -> FinalNorm
@@ -584,8 +585,23 @@ class TransformerEncoder(nn.Module):
         # For ``abs_pos`` the positional information is already baked into ``x``, so we don't
         # need to thread ``pos_emb`` through each layer; only ``rel_pos`` consumes it.
         layer_pos_emb = pos_emb if self.self_attention_model == "rel_pos" else None
-        for layer in self.layers:
+        interctc_capture_at_layers = None
+        for lth, layer in enumerate(self.layers):
             x = layer(x, block_mask=block_mask, pos_emb=layer_pos_emb)
+            # Saving tensors if required for interctc loss / ConformerMultiLayerFeatureExtractor,
+            # mirroring ConformerEncoder.forward_internal's capture mechanism.
+            if self.is_access_enabled(getattr(self, "model_guid", None)):
+                if interctc_capture_at_layers is None:
+                    interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
+                if lth in interctc_capture_at_layers:
+                    lth_x = x
+                    if self.out_proj is not None:
+                        lth_x = self.out_proj(lth_x)
+                    # shape is [B, D, T], matching the final output layout.
+                    self.register_accessible_tensor(
+                        name=f'interctc/layer_output_{lth}', tensor=torch.transpose(lth_x, 1, 2)
+                    )
+                    self.register_accessible_tensor(name=f'interctc/layer_length_{lth}', tensor=length)
 
         x = self.final_norm(x)
         if self.out_proj is not None:

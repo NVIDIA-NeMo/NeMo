@@ -183,16 +183,6 @@ class FeedForward(nn.Module):
     def __init__(self, cfg: TransformerEncoderConfig):
         super().__init__()
         ff_hidden = int(cfg.ff_expansion * cfg.d_model)
-        # No dropout after the output projection: ``TransformerBlock`` already applies
-        # dropout to this module's output on the residual branch, and stacking the two
-        # gives an effective rate of ``1 - (1 - drop_rate)^2`` (19% at the default 0.1)
-        # with ~2.1x the intended noise variance, in every layer. Matches
-        # ``ConformerFeedForward``, which also drops only after the activation.
-        #
-        # Keep the trailing position free rather than renumbering: the module indices are
-        # state_dict keys (``net.0.*``, ``net.3.*``), so removing this last entry stays
-        # load-compatible with existing checkpoints, while dropping the *inner* Dropout
-        # would shift the second Linear to ``net.2.*`` and break them.
         self.net = nn.Sequential(
             nn.Linear(cfg.d_model, ff_hidden),
             nn.GELU(),

@@ -220,12 +220,139 @@ def ordered_manifest_source_identity_digest(
     )
 
 
+def ordered_manifest_content_digest_from_mirrors(
+    manifest_paths: Sequence[str | Path], mirror_paths: Sequence[str | Path]
+) -> bytes:
+    """Digest local mirror bytes for ordered manifests declared at other paths."""
+    if len(manifest_paths) != len(mirror_paths):
+        raise ValueError(
+            "Expected one content mirror per manifest path, got "
+            f"{len(mirror_paths)} mirrors for {len(manifest_paths)} paths"
+        )
+    digest = hashlib.sha256()
+    for index, mirror_like in enumerate(mirror_paths):
+        mirror = Path(mirror_like)
+        size = mirror.stat().st_size
+        digest.update(_U64.pack(size))
+        consumed = 0
+        with mirror.open("rb") as source:
+            while chunk := source.read(_REMOTE_MANIFEST_BATCH_BYTES):
+                digest.update(chunk)
+                consumed += len(chunk)
+        if consumed != size or mirror.stat().st_size != size:
+            raise RuntimeError(
+                f"Manifest content mirror changed while digesting at position {index}: {mirror}"
+            )
+    return digest.digest()
+
+
+def ordered_manifest_source_identity_digest_from_metadata(
+    manifest_paths: Sequence[str | Path], metadata_records: Sequence[Mapping]
+) -> bytes:
+    """Digest sealed local-manifest identities without mounting their filesystem."""
+    if len(manifest_paths) != len(metadata_records):
+        raise ValueError(
+            "Expected one metadata record per manifest path, got "
+            f"{len(metadata_records)} records for {len(manifest_paths)} paths"
+        )
+    expected_keys = {
+        "path",
+        "size_bytes",
+        "mtime_ns",
+        "object_identity",
+        "device",
+        "inode",
+    }
+    records = []
+    for index, (path_like, record) in enumerate(
+        zip(manifest_paths, metadata_records, strict=True)
+    ):
+        path = os.fspath(path_like)
+        if _is_remote_path(path):
+            raise ValueError(
+                f"Offline local-manifest metadata requires a local path at position {index}: {path!r}"
+            )
+        if not isinstance(record, Mapping) or set(record) != expected_keys:
+            actual = (
+                sorted(record) if isinstance(record, Mapping) else type(record).__name__
+            )
+            raise ValueError(
+                f"Invalid manifest metadata keys at position {index}: expected "
+                f"{sorted(expected_keys)}, got {actual}"
+            )
+        if record["path"] != path:
+            raise ValueError(
+                f"Manifest metadata path mismatch at position {index}: "
+                f"{record['path']!r} != {path!r}"
+            )
+        for field in ("size_bytes", "mtime_ns", "device", "inode"):
+            value = record[field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(
+                    f"Invalid manifest metadata {field} at position {index}: {value!r}"
+                )
+        if record["object_identity"] is not None:
+            raise ValueError(
+                f"Local manifest object_identity must be null at position {index}"
+            )
+        records.append(dict(record))
+    return _length_prefixed_digest(_canonical_json_bytes(record) for record in records)
+
+
 def ordered_tar_catalog_digest(tar_paths: Sequence[str | Path]) -> bytes:
     """Digest ordered tar paths and mutation-sensitive source identities."""
     return _length_prefixed_digest(
         _canonical_json_bytes(_source_identity_record(os.fspath(path)))
         for path in tar_paths
     )
+
+
+def ordered_tar_catalog_digest_from_metadata(
+    tar_paths: Sequence[str | Path], metadata_records: Sequence[Mapping]
+) -> bytes:
+    """Digest sealed remote identities without contacting their object backend."""
+    if len(tar_paths) != len(metadata_records):
+        raise ValueError(
+            "Expected one metadata record per tar path, got "
+            f"{len(metadata_records)} records for {len(tar_paths)} paths"
+        )
+    expected_keys = {"path", "size_bytes", "mtime_ns", "object_identity"}
+    records = []
+    for index, (path_like, record) in enumerate(
+        zip(tar_paths, metadata_records, strict=True)
+    ):
+        path = os.fspath(path_like)
+        if not _is_remote_path(path):
+            raise ValueError(
+                f"Offline tar metadata requires a remote path at position {index}: {path!r}"
+            )
+        if not isinstance(record, Mapping) or set(record) != expected_keys:
+            actual = sorted(record) if isinstance(record, Mapping) else type(record).__name__
+            raise ValueError(
+                f"Invalid tar metadata keys at position {index}: expected "
+                f"{sorted(expected_keys)}, got {actual}"
+            )
+        if record["path"] != path:
+            raise ValueError(
+                f"Tar metadata path mismatch at position {index}: "
+                f"{record['path']!r} != {path!r}"
+            )
+        size = record["size_bytes"]
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValueError(
+                f"Invalid tar metadata size at position {index}: {size!r}"
+            )
+        if record["mtime_ns"] != 0:
+            raise ValueError(
+                f"Remote tar metadata mtime_ns must be zero at position {index}"
+            )
+        identity = record["object_identity"]
+        if not isinstance(identity, str) or not identity:
+            raise ValueError(
+                f"Remote tar metadata has no stable object identity at position {index}"
+            )
+        records.append(dict(record))
+    return _length_prefixed_digest(_canonical_json_bytes(record) for record in records)
 
 
 def extract_sharegpt_audio_paths(

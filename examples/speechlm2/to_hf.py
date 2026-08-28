@@ -193,18 +193,35 @@ def _hf_export_config(
     llm = getattr(model, "llm", None)
     text_config = getattr(llm, "config", None)
     explicit_mtp = config.get("mtp")
-    mtp_enabled = bool(config.get("compute_mtp", False)) or (
-        isinstance(explicit_mtp, dict) and bool(explicit_mtp.get("enabled", True))
+    runtime_mtp_config = getattr(llm, "mtp_config", None)
+    runtime_mtp_depth = getattr(runtime_mtp_config, "num_layers", None)
+    if runtime_mtp_depth is None and text_config is not None:
+        runtime_mtp_depth = getattr(text_config, "num_nextn_predict_layers", 0)
+    runtime_mtp_depth = int(runtime_mtp_depth or 0)
+    mtp_requested = (
+        bool(explicit_mtp.get("enabled", True))
+        if isinstance(explicit_mtp, dict)
+        else bool(config.get("compute_mtp", False))
     )
-    if text_config is not None and mtp_enabled:
-        runtime_mtp_config = getattr(llm, "mtp_config", None)
+    if text_config is not None and mtp_requested and runtime_mtp_depth > 0:
         config["mtp"] = _resolve_speechlm_mtp_config(
             mtp=explicit_mtp,
             compute_mtp=bool(config.get("compute_mtp", False)),
             text_config=text_config,
-            num_nextn_predict_layers=getattr(runtime_mtp_config, "num_layers", None),
+            num_nextn_predict_layers=runtime_mtp_depth,
             use_repeated_layer=getattr(runtime_mtp_config, "use_repeated_layer", None),
         )
+    elif mtp_requested and isinstance(explicit_mtp, dict):
+        raise ValueError(
+            "The root mtp config enables MTP, but the instantiated model has no positive-depth MTP head to export."
+        )
+    elif runtime_mtp_depth <= 0:
+        # ``compute_mtp`` was the legacy switch. Modern SALMAutomodel recipes
+        # require an explicit ``mtp`` block and suppress a checkpoint-native
+        # head when it is absent. Do not let a stale legacy flag make the vLLM
+        # config recreate an MTP module whose weights are absent from the
+        # consolidated state dict.
+        config["compute_mtp"] = False
     return config
 
 

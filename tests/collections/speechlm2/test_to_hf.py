@@ -184,6 +184,26 @@ class _FakeExplicitMTPExportModel:
     llm = _FakeMTPExportModel.llm
 
 
+class _FakeStaleLegacyMTPExportModel:
+    cfg = {
+        **_FakeMTPExportModel.cfg,
+        "compute_mtp": True,
+        "mtp": None,
+    }
+    llm = type(
+        "_FakeDisabledMTPLLM",
+        (),
+        {
+            "config": type(
+                "_FakeDisabledMTPBackboneConfig",
+                (_FakeLLMConfig,),
+                {"num_nextn_predict_layers": 0},
+            )(),
+            "mtp_config": None,
+        },
+    )()
+
+
 def test_save_hf_checkpoint_writes_llm_backbone_config(tmp_path):
     cfg = to_hf.HfExportConfig(
         class_path="fake.Class",
@@ -362,6 +382,13 @@ def test_save_hf_checkpoint_preserves_explicit_mtp_contract_without_compute_flag
 
     root_cfg = json.loads((tmp_path / "config.json").read_text())
     assert root_cfg["mtp"] == _FakeExplicitMTPExportModel.cfg["mtp"]
+
+
+def test_hf_export_config_disables_stale_legacy_mtp_flag_without_runtime_head():
+    exported = to_hf._hf_export_config(_FakeStaleLegacyMTPExportModel(), "bfloat16")
+
+    assert exported["compute_mtp"] is False
+    assert exported["mtp"] is None
 
 
 # ──────────────────────────────────────────────────────────────────────

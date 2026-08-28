@@ -172,6 +172,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
             are not set externally. Defaults to None.
         text_context_remapping: Dict defining mapping of multiple text contexts to a single text context.
         text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
+        use_raw_text_input: Whether to use text instead of normalized_text when both are available.
     """
 
     def __init__(
@@ -202,6 +203,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         phoneme_text_bop_marker: str = "<bop>",
         phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
+        use_raw_text_input: bool = False,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -235,6 +237,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         self.phoneme_text_bop_marker = phoneme_text_bop_marker
         self.phoneme_text_eop_marker = phoneme_text_eop_marker
         self.add_language_to_context_text = add_language_to_context_text
+        self.use_raw_text_input = use_raw_text_input
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
@@ -479,11 +482,11 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
                 context_has_text_context_list.append(has_text_context)
 
             # tokenize transcript
-            # there may exist "normalized_text" in the suprvisionsegement. Prioritize it over "text" if available.
-            if cut.supervisions[0].has_custom("normalized_text"):
-                text_str = cut.supervisions[0].normalized_text
+            supervision = cut.supervisions[0]
+            if not self.use_raw_text_input and supervision.has_custom("normalized_text"):
+                text_str = supervision.normalized_text
             else:
-                text_str = cut.supervisions[0].text
+                text_str = supervision.text
             raw_text_list.append(text_str)
             text_for_tokens = text_str
             if (

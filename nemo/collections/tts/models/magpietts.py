@@ -3619,6 +3619,7 @@ class MagpieTTSModel(ModelPT):
             load_cached_codes_if_available=self.cfg.load_cached_codes_if_available,
             dataset_type=mode,  # train or test used for setting phone prob to 1.0 in test dataset (worker_init_fn)
             load_16khz_audio=False,
+            use_raw_text_input=dataset_cfg.get("use_raw_text_input", False),
             pad_context_text_to_max_duration=self.pad_context_text_to_max_duration,
             context_duration_min=self.cfg.context_duration_min,
             context_duration_max=self.cfg.context_duration_max,

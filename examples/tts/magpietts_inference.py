@@ -310,6 +310,7 @@ def run_inference_and_evaluation(
                 with_prosody_metrics=eval_config.with_prosody_metrics,
                 prosody_model_size=eval_config.prosody_model_size,
                 strip_text_annotations_for_metrics=eval_config.strip_text_annotations_for_metrics,
+                use_raw_text_input=eval_config.use_raw_text_input,
                 device=eval_config.device,
                 asr_batch_size=eval_config.asr_batch_size,
                 eou_batch_size=eval_config.eou_batch_size,
@@ -465,6 +466,7 @@ def main(argv=None):
         with_prosody_metrics=args.with_prosody_metrics,
         prosody_model_size=args.prosody_model_size,
         strip_text_annotations_for_metrics=args.strip_text_annotations_for_metrics,
+        use_raw_text_input=args.use_raw_text_input,
         asr_batch_size=args.asr_batch_size,
         eou_batch_size=args.eou_batch_size,
     )

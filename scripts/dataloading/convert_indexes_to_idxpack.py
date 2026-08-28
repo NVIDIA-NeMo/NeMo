@@ -41,6 +41,7 @@ import logging
 import os
 import re
 import struct
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
@@ -68,6 +69,7 @@ from scripts.dataloading.build_indexes import (
     _load_input_cfg,
     _resolve_input_cfg,
 )
+from scripts.dataloading.validate_idxpack_records import validate_idxpack_json_records
 
 
 def _add_collection(
@@ -92,7 +94,8 @@ def _add_collection(
             continue
         if existing.paths != candidate.paths:
             raise ValueError(
-                f"Collection-key collision for role={role!r}, kind={kind!r}, " f"source_spec={source_spec!r}"
+                f"Collection-key collision for role={role!r}, kind={kind!r}, "
+                f"source_spec={source_spec!r}"
             )
         return
     collections.append(candidate)
@@ -119,7 +122,8 @@ def _resolve_local_sidecar(path: str, indexes_root) -> Path:
     idx_path = index_file_path(path, indexes_root)
     if _is_remote_path(idx_path):
         raise ValueError(
-            "Index-pack conversion requires local .idx sidecars; " f"resolved {path} to remote sidecar {idx_path}."
+            "Index-pack conversion requires local .idx sidecars; "
+            f"resolved {path} to remote sidecar {idx_path}."
         )
     return Path(idx_path)
 
@@ -130,6 +134,16 @@ def _source_size(path: str) -> int:
             return Path(path).stat().st_size
         except FileNotFoundError as ex:
             raise FileNotFoundError(f"Indexed source not found: {path}") from ex
+
+    if str(path).startswith("s3://"):
+        from lhotse.audio.source import resolve_s3_to_local_mirror
+
+        mirrored_path = resolve_s3_to_local_mirror(str(path))
+        if mirrored_path != str(path):
+            try:
+                return Path(mirrored_path).stat().st_size
+            except FileNotFoundError:
+                pass
 
     try:
         from lhotse.ais import AISRangeReader
@@ -188,7 +202,9 @@ def _repair_local_native_tar_sidecar(path: str, repair_root) -> Path:
             f"but source {path} is {source_size} bytes."
         )
     if Path(path).stat().st_mtime_ns > index_stat.st_mtime_ns:
-        raise ValueError(f"Source {path} changed while rebuilding private sidecar {repair_idx}.")
+        raise ValueError(
+            f"Source {path} changed while rebuilding private sidecar {repair_idx}."
+        )
     logging.info(
         "Rebuilt stale local native-tar sidecar privately: source=%s bytes=%d sidecar=%s",
         path,
@@ -218,7 +234,8 @@ def _verify_trailing_zero_padding(path: str, start: int, source_size: int) -> No
             chunk = stream.read(min(1024 * 1024, remaining))
             if not chunk:
                 raise ValueError(
-                    f"Short read while verifying trailing padding for {path}: " f"{remaining} bytes remain"
+                    f"Short read while verifying trailing padding for {path}: "
+                    f"{remaining} bytes remain"
                 )
             if any(chunk):
                 raise ValueError(
@@ -243,7 +260,11 @@ def _validate_native_tar_sidecar(
         if repair_stale_local_sidecars_root is not None and not _is_remote_path(path)
         else None
     )
-    idx_path = repair_idx_path if repair_idx_path is not None and repair_idx_path.exists() else shared_idx_path
+    idx_path = (
+        repair_idx_path
+        if repair_idx_path is not None and repair_idx_path.exists()
+        else shared_idx_path
+    )
     sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
 
     source_size = _source_size(path)
@@ -267,8 +288,13 @@ def _validate_native_tar_sidecar(
                     source_size - sentinel,
                 )
         if not accepted_padding:
-            if not _is_remote_path(path) and repair_stale_local_sidecars_root is not None:
-                idx_path = _repair_local_native_tar_sidecar(path, repair_stale_local_sidecars_root)
+            if (
+                not _is_remote_path(path)
+                and repair_stale_local_sidecars_root is not None
+            ):
+                idx_path = _repair_local_native_tar_sidecar(
+                    path, repair_stale_local_sidecars_root
+                )
                 sentinel, index_stat = _read_raw_tar_sentinel(idx_path)
             else:
                 raise ValueError(
@@ -278,12 +304,18 @@ def _validate_native_tar_sidecar(
 
     if not _is_remote_path(path):
         source_stat = Path(path).stat()
-        if source_stat.st_mtime_ns > index_stat.st_mtime_ns and source_size_override is None:
+        if (
+            source_stat.st_mtime_ns > index_stat.st_mtime_ns
+            and source_size_override is None
+        ):
             if repair_stale_local_sidecars_root is not None:
-                idx_path = _repair_local_native_tar_sidecar(path, repair_stale_local_sidecars_root)
+                idx_path = _repair_local_native_tar_sidecar(
+                    path, repair_stale_local_sidecars_root
+                )
             else:
                 raise ValueError(
-                    f"Source {path} is newer than native tar index {idx_path}. " f"{_REBUILD_TAR_INDEXES_HINT}"
+                    f"Source {path} is newer than native tar index {idx_path}. "
+                    f"{_REBUILD_TAR_INDEXES_HINT}"
                 )
     return idx_path, source_size_override
 
@@ -319,6 +351,7 @@ def _preflight_native_tar_sidecars(
             validated.add(path)
     return source_size_overrides, index_path_overrides
 
+
 def _preflight_wds_v2_sidecars(collections, indexes_root) -> dict[str, Path]:
     index_path_overrides = {}
     validated = set()
@@ -344,7 +377,6 @@ def _path_only_source_sizes(collections) -> dict[str, int]:
         if not collection.offsets_required
         for path in collection.paths
     }
-
 
 
 def _discover_paths_collections(
@@ -379,7 +411,8 @@ def _discover_paths_collections(
 def _require_scalar_spec(value, field: str) -> None:
     if not isinstance(value, (str, Path)):
         raise ValueError(
-            f"Packed {field} must be a string/Path (brace expansion is " "supported); list forms are not supported."
+            f"Packed {field} must be a string/Path (brace expansion is "
+            "supported); list forms are not supported."
         )
 
 
@@ -419,7 +452,8 @@ def _validate_native_pair(manifests: list[str], tars: list[str]) -> None:
     tar_ids = [_shard_number(path) for path in tars]
     if None in manifest_ids or None in tar_ids:
         raise ValueError(
-            "Cannot verify native NeMo manifest/tar shard identity from file " "names; use numbered shard names."
+            "Cannot verify native NeMo manifest/tar shard identity from file "
+            "names; use numbered shard names."
         )
     if manifest_ids != tar_ids:
         raise ValueError(
@@ -437,7 +471,9 @@ def _expand_flat_native_pairs(manifest_specs, tar_specs) -> tuple[list[str], lis
 
     manifests: list[str] = []
     tars: list[str] = []
-    for position, (manifest_spec, tar_spec) in enumerate(zip(manifest_specs, tar_specs)):
+    for position, (manifest_spec, tar_spec) in enumerate(
+        zip(manifest_specs, tar_specs)
+    ):
         pair_manifests = _expand_jsonl(manifest_spec)
         pair_tars = _expand_tars(tar_spec)
         if len(pair_manifests) != len(pair_tars):
@@ -500,8 +536,9 @@ def discover_pack_collections(
         *_TRANSFORM_TYPES,
     }
     if typ not in supported:
-        raise NotImplementedError(f"idxpack conversion does not support dataset type {typ!r}.")
-
+        raise NotImplementedError(
+            f"idxpack conversion does not support dataset type {typ!r}."
+        )
 
     if typ == "share_gpt_webdataset":
         version = int(entry.get("wds_sample_index_version", 1))
@@ -529,18 +566,29 @@ def discover_pack_collections(
         )
         return collections
     if (
-        typ in {"nemo", "nemo_tarred", "multimodal_conversation", "share_gpt", *_TRANSFORM_TYPES}
+        typ
+        in {
+            "nemo",
+            "nemo_tarred",
+            "multimodal_conversation",
+            "share_gpt",
+            *_TRANSFORM_TYPES,
+        }
         and entry.get("manifest_filepath") is not None
     ):
         raw = entry.get("manifest_filepath")
-        collection_mode = typ == "share_gpt" and entry.get("tar_lookup_mode") == "collection"
+        collection_mode = (
+            typ == "share_gpt" and entry.get("tar_lookup_mode") == "collection"
+        )
         if collection_mode:
             route = entry.get("tar_routing_filepath")
             legacy_route = entry.get("tar_routing_index")
             if route and legacy_route and str(route) != str(legacy_route):
                 raise ValueError("tar_routing_filepath and tar_routing_index disagree")
             route = route or legacy_route
-            if not isinstance(route, (str, Path)) or not str(route).endswith(".sgroute"):
+            if not isinstance(route, (str, Path)) or not str(route).endswith(
+                ".sgroute"
+            ):
                 raise ValueError(
                     "Packed ShareGPT collection mode requires tar_routing_filepath "
                     "with the .sgroute suffix."
@@ -548,7 +596,9 @@ def discover_pack_collections(
             _require_scalar_or_flat_path_list(raw, "manifest_filepath")
             raw_tars = entry.get("tarred_audio_filepaths")
             if raw_tars is None:
-                raise ValueError("Packed ShareGPT collection mode requires tarred_audio_filepaths.")
+                raise ValueError(
+                    "Packed ShareGPT collection mode requires tarred_audio_filepaths."
+                )
             _require_scalar_or_flat_path_list(raw_tars, "tarred_audio_filepaths")
             manifests = _expand_jsonl(raw)
             tars = _expand_tars(raw_tars)
@@ -622,6 +672,61 @@ def discover_pack_collections(
     return collections
 
 
+def _fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _write_validated_index_pack(
+    output,
+    collections,
+    *,
+    indexes_root,
+    overwrite: bool,
+    source_size_overrides,
+    index_path_overrides,
+    record_validation_workers: int,
+):
+    """Build privately, validate every JSON record, then publish atomically."""
+    output = Path(output)
+    if output.exists() and not overwrite:
+        raise FileExistsError(f"Index pack already exists: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staged = output.with_name(
+        f".{output.name}.record-validation.{os.getpid()}.{uuid.uuid4().hex}"
+    )
+    try:
+        write_index_pack(
+            staged,
+            collections,
+            indexes_root=indexes_root,
+            source_size_overrides=source_size_overrides,
+            index_path_overrides=index_path_overrides,
+        )
+        summary = validate_idxpack_json_records(
+            staged,
+            collections,
+            report=logging.error,
+            num_workers=record_validation_workers,
+        )
+        if overwrite:
+            os.replace(staged, output)
+        else:
+            try:
+                os.link(staged, output)
+            except FileExistsError as ex:
+                raise FileExistsError(f"Index pack already exists: {output}") from ex
+            staged.unlink()
+        _fsync_directory(output.parent)
+        return summary
+    finally:
+        if staged.exists():
+            staged.unlink()
+
+
 @click.command(context_settings={"show_default": True})
 @click.argument("input_cfg", type=click.Path(exists=True, dir_okay=False))
 @click.option("--output", required=True, type=click.Path(dir_okay=False))
@@ -640,7 +745,9 @@ def discover_pack_collections(
     default=None,
     help="Resolve ${data_blend_dir} in nested input_cfg references.",
 )
-@click.option("--overwrite", is_flag=True, help="Atomically replace an existing output pack.")
+@click.option(
+    "--overwrite", is_flag=True, help="Atomically replace an existing output pack."
+)
 @click.option(
     "--native-tar-paths-only",
     is_flag=True,
@@ -667,7 +774,15 @@ def discover_pack_collections(
         "never repaired by this option."
     ),
 )
-@click.option("--dry-run", is_flag=True, help="Print discovered collections without writing.")
+@click.option(
+    "--record-validation-workers",
+    type=click.IntRange(min=1),
+    default=1,
+    help="Process workers for disjoint exhaustive JSONL record validation.",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Print discovered collections without writing."
+)
 def main(
     input_cfg: str,
     output: str,
@@ -677,6 +792,7 @@ def main(
     native_tar_paths_only: bool,
     accept_trailing_zero_tar_padding: bool,
     repair_stale_local_native_tar_sidecars_root: Optional[str],
+    record_validation_workers: int,
     dry_run: bool,
 ) -> None:
     """Convert one INPUT_CFG dataset and its existing sidecars to one idxpack.
@@ -704,7 +820,9 @@ def main(
             for collection in collections
         ]
     num_paths = sum(len(collection.paths) for collection in collections)
-    click.echo(f"Discovered {len(collections)} collections with {num_paths} ordered paths.")
+    click.echo(
+        f"Discovered {len(collections)} collections with {num_paths} ordered paths."
+    )
     if dry_run:
         for collection in collections:
             click.echo(
@@ -736,20 +854,23 @@ def main(
                 audio_placeholders=route_spec.audio_placeholders,
                 build_if_missing=True,
             )
-        write_index_pack(
+        summary = _write_validated_index_pack(
             output,
             collections,
             indexes_root=indexes_root,
             overwrite=overwrite,
             source_size_overrides=source_size_overrides,
             index_path_overrides=index_path_overrides,
+            record_validation_workers=record_validation_workers,
         )
-    except (FileNotFoundError, ValueError) as ex:
+    except (OSError, ValueError) as ex:
         raise click.ClickException(str(ex)) from ex
     with IndexPack(output) as pack:
         click.echo(
             f"Wrote {output}: collections={pack.num_collections} "
-            f"segments={pack.num_segments} layout={pack.layout_hash.hex()}"
+            f"segments={pack.num_segments} layout={pack.layout_hash.hex()} "
+            f"json_records_validated={summary.records_checked} "
+            f"skip_marker_records={summary.skip_marker_records}"
         )
 
 

@@ -1013,6 +1013,7 @@ def test_legacy_canonical_bundle_requires_explicit_speaker_contract(tmp_path):
         "speaker_feature_config_version": 1,
         "speaker_feature_mode": "continuous",
         "speaker_activity_threshold": None,
+        "sync_max_audio_length": False,
     }
     restored = ParallelExpertEncoderPT.load_from_nemo(
         str(archive),
@@ -1025,6 +1026,21 @@ def test_legacy_canonical_bundle_requires_explicit_speaker_contract(tmp_path):
     assert restored._bundle_config.speaker_feature_config_version == 1
     assert restored._bundle_config.speaker_feature_mode == "continuous"
     assert restored._bundle_config.speaker_activity_threshold is None
+    assert restored._bundle_config.sync_max_audio_length is False
+
+
+@pytest.mark.unit
+def test_sync_max_audio_length_is_disabled_by_portable_config():
+    config = bundle_config(sync_max_audio_length=False)
+    config.asr_encoder_cfg.sync_max_audio_length = True
+    config.diarization_model_cfg.encoder.sync_max_audio_length = True
+
+    restored = ParallelExpertEncoderPT.from_inline_config(config).eval()
+
+    assert restored.sync_max_audio_length is False
+    assert restored.asr_encoder.sync_max_audio_length is False
+    assert restored.diarization_model.encoder.sync_max_audio_length is False
+    assert restored._bundle_config.sync_max_audio_length is False
 
 
 @pytest.mark.unit
@@ -1142,6 +1158,7 @@ def test_exported_inline_config_round_trips_consolidated_weights():
     assert exported["pe_encoder_config"]["speaker_feature_config_version"] == 1
     assert exported["pe_encoder_config"]["speaker_feature_mode"] == "thresholded"
     assert exported["pe_encoder_config"]["speaker_activity_threshold"] == 0.5
+    assert exported["pe_encoder_config"]["sync_max_audio_length"] is False
     mels = torch.randn(1, _MEL_FEATURES, 161)
     lengths = torch.tensor([161])
     with torch.no_grad():

@@ -97,8 +97,16 @@ _BUNDLE_CONFIG_OVERRIDE_KEYS = frozenset(
         "speaker_feature_config_version",
         "speaker_feature_mode",
         "spk_kernel_scale",
+        "sync_max_audio_length",
     }
 )
+
+
+def _disable_max_seq_length_sync(module: nn.Module) -> None:
+    """Disable feature-length collectives in every encoder below ``module``."""
+    for submodule in module.modules():
+        if getattr(submodule, "sync_max_audio_length", False):
+            submodule.sync_max_audio_length = False
 
 
 def _normalize_asr_encoder_type(asr_encoder_type: Optional[str]) -> str:
@@ -332,6 +340,7 @@ class ParallelExpertEncoderPT(ModelPT):
             frame_shift_seconds=self._cfg.get("frame_shift_seconds", 0.01),
             asr_chunk_size_seconds=self._cfg.get("asr_chunk_size_seconds", None),
             diar_chunk_size_seconds=self._cfg.get("diar_chunk_size_seconds", None),
+            sync_max_audio_length=self._cfg.get("sync_max_audio_length", False),
             align_diarization_output_resolution=self._cfg.get(
                 "align_diarization_output_resolution",
                 "parallel_expert_encoder_two_branch"
@@ -354,6 +363,9 @@ class ParallelExpertEncoderPT(ModelPT):
         )
         self.encoder._bundle_config.speaker_activity_threshold = (
             self.encoder.speaker_activity_threshold
+        )
+        self.encoder._bundle_config.sync_max_audio_length = (
+            self.encoder.sync_max_audio_length
         )
 
     @staticmethod
@@ -573,6 +585,7 @@ class ParallelExpertEncoderPT(ModelPT):
         template_cfg.speaker_feature_config_version = _SPEAKER_FEATURE_CONFIG_VERSION
         template_cfg.speaker_feature_mode = encoder.speaker_feature_mode
         template_cfg.speaker_activity_threshold = encoder.speaker_activity_threshold
+        template_cfg.sync_max_audio_length = encoder.sync_max_audio_length
         shell._cfg = template_cfg
         shell.save_to(output_nemo_path)
 
@@ -613,6 +626,7 @@ class ParallelExpertEncoder(nn.Module):
         frame_shift_seconds: float = 0.01,
         asr_chunk_size_seconds: Optional[float] = None,
         diar_chunk_size_seconds: Optional[float] = None,
+        sync_max_audio_length: bool = False,
         align_diarization_output_resolution: bool = False,
     ):
         super().__init__()
@@ -671,6 +685,15 @@ class ParallelExpertEncoder(nn.Module):
                 f"({diarization_subsampling_factor}) instead of the ASR encoder factor "
                 f"({self.asr_encoder.subsampling_factor})."
             )
+
+        # The ASR and diarization experts are called from data-dependent paths
+        # in both packed training and replicated inference. Their positional
+        # buffers are local state, so synchronizing the longest feature length
+        # on the default process group is unnecessary and can deadlock when
+        # ranks process different request shapes.
+        self.sync_max_audio_length = bool(sync_max_audio_length)
+        if not self.sync_max_audio_length:
+            _disable_max_seq_length_sync(self)
 
         self.freeze_diar = bool(freeze_diar)
         self.freeze_asr = bool(freeze_asr)

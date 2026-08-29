@@ -886,10 +886,11 @@ class LazyNeMoTarredIterator(IteratorNode):
 
     def _build_indexed_url_cut(self, data: dict, manifest_path: str, tar_path: str) -> Cut | None:
         """
-        AIS GetBatch counterpart of ``_build_indexed_cut``: produces a Cut backed
-        by a URL/file AudioSource (no audio bytes loaded), so that
-        ``AudioSamples(use_batch_loader=True)`` can fetch the entire minibatch in
-        a single AIS GetBatch request. Mirrors ``_iter_batch_for_ais_get_batch``.
+        Lazy counterpart of ``_build_indexed_cut``: produce a Cut backed by an
+        archive-member URL/file AudioSource without reading the audio payload.
+        ``AudioSamples(use_batch_loader=True)`` may fetch remote minibatches with
+        AIS GetBatch; ordinary ``AudioSamples`` resolves local ``tar/member``
+        paths only after the sampler has selected a minibatch.
         """
         if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
             return None
@@ -908,14 +909,15 @@ class LazyNeMoTarredIterator(IteratorNode):
         # ``open_best`` handles ais://, http(s)://, and local paths uniformly;
         # the AIS GetBatch loader still keys off the URL scheme.
         source_type = "url" if "://" in tar_path else "file"
-        offset = data.get("offset", 0.0)
+        offset = data.get("offset", 0.0) or 0.0
         sampling_rate = data.get("sampling_rate", 16000)
+        recording_duration = offset + duration if offset > 0 else duration
         recording = Recording(
             id=audio_filename,
             sources=[AudioSource(type=source_type, channels=[0], source=audio_url)],
             sampling_rate=sampling_rate,
-            num_samples=compute_num_samples(duration, sampling_rate),
-            duration=duration,
+            num_samples=compute_num_samples(recording_duration, sampling_rate),
+            duration=recording_duration,
         )
         cut = recording.to_cut()
         if offset > 0:
@@ -944,21 +946,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         tar_path = self._packed_tar_path(location.shard_index)
         if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
             return None
-        if self.use_ais_get_batch:
-            return self._build_indexed_url_cut(data, manifest_path, tar_path)
-        expected_name = self._audio_member_name_from_entry(data)
-        try:
-            member_name, audio_bytes = self._packed_tar_reader.get_shard(location.shard_index, expected_name)
-        except KeyError:
-            if self.skip_missing_manifest_entries:
-                return None
-            raise
-        if member_name != expected_name:
-            raise ValueError(
-                f"Packed tar name index returned {member_name!r} for requested {expected_name!r} "
-                f"at global index {idx}"
-            )
-        return self._build_indexed_cut(data, audio_bytes, manifest_path, tar_path)
+        return self._build_indexed_url_cut(data, manifest_path, tar_path)
 
     def _decode_cut_at(self, idx: int) -> Cut | None:
         """Build the Cut for a global index in indexed mode (AIS or local).
@@ -990,16 +978,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         tar_path = self.shard_id_to_tar_path[sid]
         if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
             return None
-        if self.use_ais_get_batch:
-            return self._build_indexed_url_cut(data, manifest_path, tar_path)
-        member_name = self._audio_member_name_from_entry(data)
-        try:
-            audio_bytes = self._tar_readers[sid].get(member_name)
-        except KeyError:
-            if self.skip_missing_manifest_entries:
-                return None
-            raise
-        return self._build_indexed_cut(data, audio_bytes, manifest_path, tar_path)
+        return self._build_indexed_url_cut(data, manifest_path, tar_path)
 
     def __getitem__(self, token):
         if not self.indexed:

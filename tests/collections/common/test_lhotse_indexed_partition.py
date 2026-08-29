@@ -34,6 +34,7 @@ from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 import pytest
 from lhotse import CutSet
 from lhotse.dataset.dataloading import LHOTSE_USE_WORKER_PARTITION
@@ -151,9 +152,8 @@ def test_lazy_nemo_tarred_iterator_indexed_partition(nemo_tarred_manifest, world
     assert sum(len(r) for r in per_rank) == N_CUTS
 
 
-@pytest.mark.parametrize("indexed", [False, True])
-def test_lazy_nemo_tarred_soundfile_failure_obeys_skip_policy(
-    nemo_tarred_manifest, monkeypatch, indexed
+def test_lazy_nemo_tarred_streaming_soundfile_failure_obeys_skip_policy(
+    nemo_tarred_manifest, monkeypatch
 ):
     manifest_path, tar_path = nemo_tarred_manifest
     monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
@@ -166,7 +166,7 @@ def test_lazy_nemo_tarred_soundfile_failure_obeys_skip_policy(
     strict = nemo_adapters.LazyNeMoTarredIterator(
         manifest_path=str(manifest_path),
         tar_paths=str(tar_path),
-        indexed=indexed,
+        indexed=False,
         skip_missing_manifest_entries=False,
     )
     with pytest.raises(RuntimeError, match=r"Failed to decode .*NeMo tarred audio member"):
@@ -175,10 +175,47 @@ def test_lazy_nemo_tarred_soundfile_failure_obeys_skip_policy(
     permissive = nemo_adapters.LazyNeMoTarredIterator(
         manifest_path=str(manifest_path),
         tar_paths=str(tar_path),
-        indexed=indexed,
+        indexed=False,
         skip_missing_manifest_entries=True,
     )
     assert list(permissive) == []
+
+
+def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(
+    nemo_tarred_manifest, monkeypatch
+):
+    manifest_path, tar_path = nemo_tarred_manifest
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
+
+    eager_cut = next(
+        iter(
+            nemo_adapters.LazyNeMoTarredIterator(
+                manifest_path=str(manifest_path), tar_paths=str(tar_path), indexed=False
+            )
+        )
+    )
+    eager_audio = eager_cut.load_audio()
+
+    def fail_info(*args, **kwargs):
+        raise AssertionError("indexed candidate construction must not inspect audio payloads")
+
+    monkeypatch.setattr(nemo_adapters.soundfile, "info", fail_info)
+    adapter = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=True,
+        skip_missing_manifest_entries=False,
+    )
+    cut = next(iter(adapter))
+
+    source = cut.recording.sources[0]
+    assert source.type == "file"
+    assert source.source.startswith(f"{tar_path}/")
+    audio = cut.load_audio()
+    assert audio.shape[-1] == cut.num_samples
+    assert cut.sampling_rate == eager_cut.sampling_rate
+    assert cut.duration == eager_cut.duration
+    np.testing.assert_array_equal(audio, eager_audio)
 
 
 def test_lazy_nemo_tarred_streaming_missing_duration_obeys_skip_policy(

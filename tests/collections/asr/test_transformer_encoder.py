@@ -1519,8 +1519,10 @@ class TestStreamingTransformerEncoder:
         assert enc.streaming_cfg.chunk_size == 8 * 14
         assert enc.streaming_cfg.valid_out_len == 14
         # left_chunks retunes the window itself, so mask and cache cannot disagree.
+        configured_contexts = [list(context) for context in enc.att_context_size_all]
         enc.setup_streaming_params(chunk_size=14, shift_size=14, left_chunks=3)
         assert enc.att_context_size[0] == 42
+        assert enc.att_context_size_all == configured_contexts
         assert enc.streaming_cfg.last_channel_cache_size == 42 == enc.cache_size
 
     @pytest.mark.unit
@@ -1537,10 +1539,11 @@ class TestStreamingTransformerEncoder:
             n_layers=2,
             subsampling_factor=8,
             att_context_style="chunked_limited",
-            att_context_size=[70, 13],
+            att_context_size=[8, 3],
         )
-        with pytest.raises(ValueError, match="exceeds the chunked_limited attention chunk"):
-            enc2.setup_streaming_params(chunk_size=20)  # wider than the 14-frame attention chunk
+        for chunk_size in (2, 5):
+            with pytest.raises(ValueError, match="must equal the chunked_limited attention chunk"):
+                enc2.setup_streaming_params(chunk_size=chunk_size)
 
     @pytest.mark.unit
     def test_pre_encode_cache_size_must_align_to_subsampling(self):

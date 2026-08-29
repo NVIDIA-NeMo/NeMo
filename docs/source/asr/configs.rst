@@ -450,6 +450,14 @@ Attention is bounded by ``att_context_size: [left, right]``, in encoder frames, 
 * ``sliding_window`` (default) — a query attends to ``[t - left, t + right]``. Exact for
   streaming only when ``right == 0``, since a sliding right context compounds across layers.
 
+The read-only ``cache_size`` property reports how many encoder frames the rolling KV cache retains.
+For ``sliding_window`` it equals ``left``. For ``chunked_limited`` it is rounded down to the visible
+whole chunks when ``right`` is finite: ``(left // (right + 1)) * (right + 1)``. An unlimited right
+context uses ``left`` directly. A negative cache size means unbounded left context;
+``setup_streaming_params`` maps it to ``max_context`` (10,000 frames by default) for the allocated
+streaming cache. This is separate from ``pre_encode_cache_size``, which retains input-feature frames
+needed before subsampling.
+
 Passing a list of pairs trains one model across several latencies; one entry is sampled per
 training batch, and evaluation and streaming use the first entry (or whatever
 ``set_default_att_context_size`` pins). Select the operating point at inference with

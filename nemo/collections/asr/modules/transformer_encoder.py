@@ -133,6 +133,13 @@ def _make_sliding_window_mod(left, right):
     context; ``right < 0`` -> unlimited right context / look-ahead). Callers are expected
     to pass at least one non-negative bound — when both are negative the window is
     unbounded (full attention) and this mod should be skipped entirely.
+
+    Args:
+        left (int): Maximum number of positions available to the left of each query.
+        right (int): Maximum number of positions available to the right of each query.
+
+    Returns:
+        mask_mod (Callable): FlexAttention mask function for the requested sliding window.
     """
 
     def sliding_window(b, h, q_idx, kv_idx):
@@ -159,6 +166,13 @@ def _make_chunked_limited_mod(left, right):
     layers: every layer stops at the same chunk boundary, so an N-layer stack still looks
     ahead at most to the end of the current chunk. That is what makes it streamable — see
     :class:`StreamingTransformerEncoder`.
+
+    Args:
+        left (int): Maximum left context in encoder frames; negative means unlimited.
+        right (int): In-chunk right context. The attention chunk size is ``right + 1``.
+
+    Returns:
+        mask_mod (Callable): FlexAttention mask function for chunk-aligned limited context.
     """
     chunk = right + 1
     # ``left_chunks`` is a Python int (or None) known at trace time, so the branch below is
@@ -338,6 +352,18 @@ class MultiHeadAttention(nn.Module):
         position *difference*, so streaming needs no explicit position offset) and returns
         ``score_mod=None``; ``rel_pos`` leaves ``q``/``k`` in place (folding ``pos_bias_u`` into
         ``q``) and returns a relative-position ``score_mod``.
+
+        Args:
+            q (torch.Tensor): Current-chunk queries of shape ``(B, H, num_cur, D)``.
+            k (torch.Tensor): Cached and current keys of shape ``(B, H, num_kv, D)``.
+            pos_emb (Optional[torch.Tensor]): Positional embeddings for relative attention.
+            num_cur (int): Number of query positions in the current chunk.
+            num_kv (int): Total number of cached and current key/value positions.
+
+        Returns:
+            q (torch.Tensor): Position-adjusted queries.
+            k_mod (Optional[torch.Tensor]): Position-adjusted keys, or ``None`` when unchanged.
+            score_mod (Optional[Callable]): FlexAttention score modifier, if required.
         """
         if self.self_attention_model == "rel_pos":
             return self._build_streaming_rel_pos_score_mod(q, pos_emb, num_cur, num_kv)
@@ -368,7 +394,16 @@ class MultiHeadAttention(nn.Module):
         ``i = num_cur - 1 - j + k``. The bias is gathered directly (no square ``rel_shift``),
         which keeps it correct for ``num_cur != num_kv`` and easy to generalize.
 
-        Returns ``(q_with_bias_u, k, score_mod)``.
+        Args:
+            q (torch.Tensor): Current-chunk queries of shape ``(B, H, num_cur, D)``.
+            pos_emb (torch.Tensor): Relative-position embeddings for the full KV span.
+            num_cur (int): Number of query positions in the current chunk.
+            num_kv (int): Total number of cached and current key/value positions.
+
+        Returns:
+            q_with_bias_u (torch.Tensor): Queries with the Transformer-XL content bias applied.
+            k_mod (None): ``None`` because relative attention does not transform the keys.
+            score_mod (Callable): FlexAttention score modifier containing the relative-position bias.
         """
         H, D = self.n_heads, self.head_dim
         device = q.device
@@ -788,6 +823,12 @@ class TransformerEncoder(nn.Module):
         (e.g. :class:`StreamingTransformerEncoder`) override this to inject other attention
         patterns such as a sliding window; the single overridable hook keeps
         ``forward_internal`` agnostic to the masking scheme.
+
+        Args:
+            length (torch.Tensor): Valid sequence length for each batch element.
+
+        Returns:
+            mask_mod (Callable): FlexAttention mask function combining attention and padding constraints.
         """
         pad_mod = _make_padding_mod(length)
         if self.attn_mode == "causal":
@@ -1076,14 +1117,15 @@ class StreamingTransformerEncoder(TransformerEncoder, StreamingEncoder):
                 attention context — ``right + 1`` — which is the true chunk size under
                 ``chunked_limited`` and, under a causal ``sliding_window`` (``right == 0``), the
                 minimum-latency single-frame step. A causal sliding window streams exactly at *any*
-                chunk size, so overriding this is free there; under ``chunked_limited`` it must not
-                exceed ``right + 1`` or streaming stops matching the offline forward.
+                chunk size, so overriding this is free there; under ``chunked_limited`` it must
+                equal ``right + 1`` or streaming stops matching the offline forward.
             shift_size: Encoder frames the buffer advances per step. Defaults to ``chunk_size``.
                 Only equal values are supported — overlapping chunks would recompute frames this
                 encoder already emits exactly.
-            left_chunks: Number of left chunks visible to each chunk. When given, it *retunes the
-                attention window* (``left = left_chunks * chunk_size``) rather than only the cache,
-                so the mask and the cache cannot disagree.
+            left_chunks: Number of left chunks visible to each chunk. When given, it retunes the
+                active evaluation/streaming attention window (``left = left_chunks * chunk_size``)
+                rather than only the cache, so the mask and the cache cannot disagree. Configured
+                training contexts in ``att_context_size_all`` are left unchanged.
             att_context_size: Optional ``[left, right]`` to apply before computing the config.
             max_context: Cache size to use when the left context is unbounded (``left < 0``).
         """
@@ -1098,10 +1140,10 @@ class StreamingTransformerEncoder(TransformerEncoder, StreamingEncoder):
         chunk = implied_chunk if chunk_size is None else int(chunk_size)
         if chunk < 1:
             raise ValueError(f"chunk_size must be >= 1 encoder frames, but got {chunk}.")
-        if self.att_context_style == "chunked_limited" and chunk > implied_chunk:
+        if self.att_context_style == "chunked_limited" and chunk != implied_chunk:
             raise ValueError(
-                f"chunk_size={chunk} exceeds the chunked_limited attention chunk "
-                f"(right + 1 = {implied_chunk}); streaming would stop matching the offline forward."
+                f"chunk_size={chunk} must equal the chunked_limited attention chunk "
+                f"(right + 1 = {implied_chunk}) so streaming matches the offline forward."
             )
         shift = chunk if shift_size is None else int(shift_size)
         if shift != chunk:
@@ -1112,8 +1154,10 @@ class StreamingTransformerEncoder(TransformerEncoder, StreamingEncoder):
             )
 
         if left_chunks is not None:
-            # Retune the window itself, not just the cache — otherwise the mask and the rolling
-            # cache would describe different amounts of history.
+            # Retune the active window itself, not just the cache — otherwise the mask and rolling
+            # cache would describe different amounts of history. Copy first because the initial
+            # active context aliases att_context_size_all[0], which remains the training contract.
+            self.att_context_size = list(self.att_context_size)
             self.att_context_size[0] = int(left_chunks) * chunk
 
         cache_size = self.cache_size

@@ -211,6 +211,8 @@ class BasePipeline(PipelineInterface):
             final = step_output.final_transcript
             partial = step_output.partial_transcript
             if not (final.strip() or partial.strip()):
+                # No new transcript to translate this step: keep the previous partial translation
+                step_output.partial_translation = state.previous_translation_info[0]
                 continue
 
             transcript = final or partial

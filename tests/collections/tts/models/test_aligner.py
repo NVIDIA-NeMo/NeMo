@@ -19,7 +19,9 @@ The test duration breakdowns are shown below. In general, each test for a single
 import pytest
 import torch
 
+from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss
 from nemo.collections.tts.models import AlignerModel
+from nemo.collections.tts.parts.utils.helpers import binarize_attention
 
 available_models = [model.pretrained_model_name for model in AlignerModel.list_available_models()]
 
@@ -48,3 +50,46 @@ def test_inference(pretrained_model, audio_text_pair_example_english):
 
     # Run the Aligner
     _, _ = model(spec=spec, spec_len=spec_len, text=text, text_len=text_len)
+
+
+@pytest.mark.unit
+def test_metrics_applies_bin_loss_scale():
+    """``on_train_epoch_start`` ramps ``self.bin_loss_scale`` from 0 to 1 across
+    ``bin_loss_warmup_epochs`` (mirroring FastPitch's ``bin_loss_weight``, see
+    ``fastpitch.py``'s ``bin_loss = self.bin_loss_fn(...) * bin_loss_weight``). ``_metrics``
+    must multiply the bin loss by that scale before adding it to the total loss, otherwise the
+    warmup config knob has no effect and bin_loss is applied at full weight starting the very
+    epoch it switches on.
+    """
+    torch.manual_seed(0)
+    batch, num_speakers, spec_len_val, text_len_val = 1, 1, 6, 4
+    attn_soft = torch.softmax(torch.randn(batch, num_speakers, spec_len_val, text_len_val), dim=-1)
+    attn_logprob = torch.log_softmax(torch.randn(batch, num_speakers, spec_len_val, text_len_val), dim=-1)
+    spec_len = torch.tensor([spec_len_val])
+    text_len = torch.tensor([text_len_val])
+
+    class _Stub:
+        pass
+
+    def run(bin_loss_scale):
+        self = _Stub()
+        self.forward_sum_loss = ForwardSumLoss()
+        self.bin_loss = BinLoss()
+        self.add_bin_loss = True
+        self.bin_loss_scale = bin_loss_scale
+        return AlignerModel._metrics(self, attn_soft, attn_logprob, spec_len, text_len)
+
+    # Ground truth: the raw (unscaled) bin_loss magnitude, computed independently of _metrics.
+    attn_hard = binarize_attention(attn_soft, text_len, spec_len)
+    raw_bin_loss = BinLoss()(hard_attention=attn_hard, soft_attention=attn_soft)
+
+    loss_start, fsl_start, bl_start, _ = run(bin_loss_scale=0.0)
+    loss_full, fsl_full, bl_full, _ = run(bin_loss_scale=1.0)
+
+    # At the very start of the warmup (scale == 0), bin_loss must not move the total loss...
+    torch.testing.assert_close(loss_start, fsl_start)
+    # ...because it was actually scaled down to (near) zero, not coincidentally cancelled out.
+    torch.testing.assert_close(bl_start, torch.zeros_like(bl_start))
+    # Fully warmed up (scale == 1), bin_loss must contribute at its full, true magnitude.
+    torch.testing.assert_close(bl_full, raw_bin_loss)
+    torch.testing.assert_close(loss_full, fsl_full + raw_bin_loss)

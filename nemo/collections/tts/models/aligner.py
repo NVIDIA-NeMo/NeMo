@@ -127,7 +127,7 @@ class AlignerModel(NeedsNormalizer, ModelPT):
 
         if self.add_bin_loss:
             attn_hard = binarize_attention(attn_soft, text_len, spec_len)
-            bin_loss = self.bin_loss(hard_attention=attn_hard, soft_attention=attn_soft)
+            bin_loss = self.bin_loss(hard_attention=attn_hard, soft_attention=attn_soft) * self.bin_loss_scale
             loss += bin_loss
 
         return loss, forward_sum_loss, bin_loss, attn_hard

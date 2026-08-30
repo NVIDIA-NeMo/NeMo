@@ -117,6 +117,7 @@ model:
   train_ds:
     use_lhotse: ${model.use_lhotse}
     volume_norm: true
+    use_raw_text_input: false
     dataset:
       multi_config: true
       shuffle: true

@@ -25,6 +25,7 @@ from nemo.utils.data_utils import (
     bucket_and_object_from_uri,
     get_datastore_object,
     is_datastore_path,
+    open_datastore_object_with_binary,
     resolve_cache_dir,
 )
 
@@ -106,7 +107,10 @@ class TestDataUtils:
 
         with (
             mock.patch('nemo.utils.data_utils.LHOTSE_AVAILABLE', False),
-            mock.patch('nemo.utils.data_utils.open_datastore_object_with_binary', side_effect=fake_open_datastore_object_with_binary),
+            mock.patch(
+                'nemo.utils.data_utils.open_datastore_object_with_binary',
+                side_effect=fake_open_datastore_object_with_binary,
+            ),
             mock.patch('nemo.utils.data_utils.datastore_path_to_local_path', return_value=str(local_path)),
         ):
             resolved_path = get_datastore_object('ais://bucket/object', num_retries=7)
@@ -114,3 +118,41 @@ class TestDataUtils:
         assert resolved_path == str(local_path)
         assert local_path.read_bytes() == b'payload'
         assert opened_with == {'path': 'ais://bucket/object', 'num_retries': 7}
+
+    @pytest.mark.unit
+    def test_open_datastore_object_with_binary_keeps_stream_open_until_consumed(self, tmp_path):
+        """Test the AIS fallback keeps its real subprocess stream readable after returning."""
+        ais_binary_path = tmp_path / 'ais'
+        ais_binary_path.write_text('#!/bin/sh\nprintf payload\n')
+        ais_binary_path.chmod(0o755)
+
+        with (
+            mock.patch('nemo.utils.data_utils.ais_endpoint', return_value='http://local:123'),
+            mock.patch('nemo.utils.data_utils.ais_binary', return_value=str(ais_binary_path)),
+        ):
+            with open_datastore_object_with_binary('ais://bucket/object', num_retries=1) as stream:
+                assert stream.read() == b'payload'
+
+    @pytest.mark.unit
+    def test_get_datastore_object_does_not_leave_partial_file_on_download_failure(self, tmp_path):
+        """Test a failed datastore download does not create a cache file."""
+        local_path = tmp_path / 'cache' / 'object.bin'
+
+        class FailingStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self, *args):
+                raise RuntimeError('download failed')
+
+        with (
+            mock.patch('nemo.utils.data_utils.open_best', return_value=FailingStream()),
+            mock.patch('nemo.utils.data_utils.datastore_path_to_local_path', return_value=str(local_path)),
+        ):
+            with pytest.raises(RuntimeError, match='download failed'):
+                get_datastore_object('ais://bucket/object')
+
+        assert not local_path.exists()

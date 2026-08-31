@@ -39,6 +39,7 @@ except ImportError:
 
 import torch
 
+import nemo.collections.tts.modules.nemotron_h_decoder as nemotron_h_decoder
 from nemo.collections.tts.modules.nemotron_h_decoder import (
     HybridMambaAttentionDynamicCache,
     MambaRMSNormGated,
@@ -66,7 +67,23 @@ def test_mamba_rmsnorm_gated_pytorch_fallback_matches_grouped_reference():
     grouped = grouped * torch.rsqrt(grouped.square().mean(dim=-1, keepdim=True) + norm.variance_epsilon)
     expected = (grouped.flatten(-2) * norm.weight.float()).to(hidden_states.dtype)
     torch.testing.assert_close(actual, expected)
-    assert actual.dtype == hidden_states.dtype
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or not nemotron_h_decoder.RMSNORM_FN_AVAILABLE,
+    reason="Triton gated RMSNorm requires CUDA and mamba-ssm",
+)
+def test_mamba_rmsnorm_gated_triton_matches_pytorch_fallback(monkeypatch):
+    hidden_states = torch.linspace(-3.0, 3.0, steps=2 * 4 * 64).reshape(2, 4, 64).cuda().half()
+    gate = hidden_states.flip(-1).contiguous()
+    norm = MambaRMSNormGated(hidden_size=64, group_size=16, eps=1e-5).cuda().half()
+    norm.weight.data.copy_(torch.linspace(0.5, 1.5, steps=64, device="cuda", dtype=torch.float16))
+
+    triton_output = norm(hidden_states, gate)
+    monkeypatch.setattr(nemotron_h_decoder, "RMSNORM_FN_AVAILABLE", False)
+    pytorch_output = norm(hidden_states, gate)
+
+    torch.testing.assert_close(triton_output, pytorch_output, rtol=1e-3, atol=1e-3)
 
 
 class TestNemotronHConfig:

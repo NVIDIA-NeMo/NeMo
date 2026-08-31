@@ -78,9 +78,9 @@ model:
     _target_: nemo.collections.asr.modules.transformer_encoder.StreamingTransformerEncoder
     feat_in: ${model.preprocessor.features}
     feat_out: -1  # -1 -> output dim = d_model
-    d_model: 1024
-    n_heads: 8  # d_model / n_heads = 128
-    n_layers: 48
+    d_model: 1536
+    n_heads: 12  # d_model / n_heads = 128
+    n_layers: 21
     drop_rate: 0.1
     qkv_bias: false
     qk_norm: true

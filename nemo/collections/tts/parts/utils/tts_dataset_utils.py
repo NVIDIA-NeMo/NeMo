@@ -13,11 +13,16 @@
 # limitations under the License.
 
 import functools
+import importlib
+import logging
 import os
 import random
+import re
 import traceback
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import librosa
 import numpy as np
@@ -25,8 +30,22 @@ import torch
 from einops import rearrange
 from scipy import ndimage
 from torch.special import gammaln
+from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
+from nemo.collections.asr.models import ASRModel, EncDecHybridRNNTCTCBPEModelWithPrompt
+from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models_prompt import HybridRNNTCTCPromptTranscribeConfig
+from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
+from nemo.collections.audio.parts.utils.transforms import resample
+from nemo.collections.common.parts.utils import mask_sequence_tensor
+
+try:
+    from nemo_text_processing.text_normalization.normalize import Normalizer
+
+    PYNINI_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    Normalizer = None
+    PYNINI_AVAILABLE = False
 
 
 def get_abs_rel_paths(input_path: Path, base_path: Path) -> Tuple[Path, Path]:
@@ -79,6 +98,234 @@ def normalize_volume(audio: np.array, volume_level: float = 0.95) -> np.array:
         return audio
 
     return volume_level * (audio / np.max(np.abs(audio)))
+
+
+def _validate_probability(name: str, value: float):
+    """Validate that a probability lies in the inclusive range ``[0.0, 1.0]``.
+
+    Args:
+        name: Parameter name to include in the error message.
+        value: Probability value to validate.
+
+    Raises:
+        ValueError: If ``value`` is outside the valid probability range.
+    """
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"`{name}` must be in range [0.0, 1.0], received {value}")
+
+
+def _sample_probability_range(name: str, min_value: float, max_value: float) -> float:
+    """Sample a probability uniformly from an inclusive configured range.
+
+    Args:
+        name: Base parameter name to include in validation errors.
+        min_value: Lower bound of the probability range.
+        max_value: Upper bound of the probability range.
+
+    Returns:
+        A uniformly sampled probability between ``min_value`` and ``max_value``.
+
+    Raises:
+        ValueError: If either bound is outside ``[0.0, 1.0]`` or the lower
+            bound is greater than the upper bound.
+    """
+    _validate_probability(f"{name}_min", min_value)
+    _validate_probability(f"{name}_max", max_value)
+    if min_value > max_value:
+        raise ValueError(f"`{name}_min` must be <= `{name}_max`, received {min_value} > {max_value}")
+    return random.uniform(min_value, max_value)
+
+
+def has_phoneme_text_spans(text: str, bop_marker: str = "<bop>", eop_marker: str = "<eop>") -> bool:
+    """Check whether text contains either an opening or closing phoneme-span marker.
+
+    Checking for either marker also identifies malformed or incomplete spans so
+    callers can avoid transforming the marked input before it is validated.
+
+    Args:
+        text: Text to inspect.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
+
+    Returns:
+        ``True`` if either marker occurs in ``text``; otherwise ``False``.
+    """
+    return bop_marker in text or eop_marker in text
+
+
+def _split_text_and_phoneme_spans(
+    text: str,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
+) -> List[Tuple[str, str]]:
+    """Split mixed text into ordered text and phoneme segments.
+
+    Args:
+        text: Input containing regular text and optionally marked phoneme spans.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
+
+    Returns:
+        Non-empty ``("text", segment)`` and ``("phoneme", segment)`` tuples
+        in their original order. Phoneme-span markers are omitted.
+
+    Raises:
+        ValueError: If an opening or closing marker has no matching counterpart.
+    """
+    segments = []
+    cursor = 0
+
+    while cursor < len(text):
+        bop_idx = text.find(bop_marker, cursor)
+        if bop_idx == -1:
+            if eop_marker in text[cursor:]:
+                raise ValueError(f"Found `{eop_marker}` without a matching `{bop_marker}` in text: {text}")
+            segments.append(("text", text[cursor:]))
+            break
+
+        eop_before_bop_idx = text.find(eop_marker, cursor, bop_idx)
+        if eop_before_bop_idx != -1:
+            raise ValueError(f"Found `{eop_marker}` without a matching `{bop_marker}` in text: {text}")
+
+        if bop_idx > cursor:
+            segments.append(("text", text[cursor:bop_idx]))
+
+        span_start = bop_idx + len(bop_marker)
+        eop_idx = text.find(eop_marker, span_start)
+        if eop_idx == -1:
+            raise ValueError(f"Found `{bop_marker}` without a matching `{eop_marker}` in text: {text}")
+
+        segments.append(("phoneme", text[span_start:eop_idx].strip()))
+        cursor = eop_idx + len(eop_marker)
+
+    return [(kind, segment) for kind, segment in segments if segment]
+
+
+def partially_phonemize_text(
+    text: str,
+    ipa_alignment: Optional[List],
+    partial_phoneme_portion: float,
+    full_ipa_text: Optional[str] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
+) -> str:
+    """Replace a sampled portion of aligned words with marked IPA spans.
+
+    The requested portion determines how many aligned words are selected.
+    Adjacent selected words are merged into one span. If every aligned word is
+    selected, the supplied full IPA transcription is emitted as a single span.
+    Invalid or unavailable alignment data leaves the original text unchanged.
+
+    Args:
+        text: Original text whose character offsets are referenced by the alignment.
+        ipa_alignment: Word alignments in the form
+            ``(text_start, text_end, word, ipa_text)``.
+        partial_phoneme_portion: Fraction of aligned words to replace, in
+            ``[0.0, 1.0]``.
+        full_ipa_text: IPA transcription of the complete input text.
+        bop_marker: Marker to place before each generated IPA span.
+        eop_marker: Marker to place after each generated IPA span.
+
+    Returns:
+        Text with sampled words replaced by marked IPA spans, or the original
+        text when replacement cannot be performed.
+
+    Raises:
+        ValueError: If ``partial_phoneme_portion`` is outside ``[0.0, 1.0]``.
+    """
+    _validate_probability("partial_phoneme_portion", partial_phoneme_portion)
+    if partial_phoneme_portion == 0.0 or not text or not ipa_alignment or not full_ipa_text:
+        return text
+
+    num_selected = min(len(ipa_alignment), max(1, round(partial_phoneme_portion * len(ipa_alignment))))
+    if num_selected == len(ipa_alignment):
+        return f"{bop_marker}{full_ipa_text}{eop_marker}"
+
+    ipa_ranges = []
+    ipa_cursor = 0
+    for _, _, _, ipa_text in ipa_alignment:
+        ipa_start = full_ipa_text.find(ipa_text.strip(), ipa_cursor)
+        if ipa_start < 0:
+            return text
+        ipa_end = ipa_start + len(ipa_text.strip())
+        ipa_ranges.append((ipa_start, ipa_end))
+        ipa_cursor = ipa_end
+
+    selected_indices = sorted(random.sample(range(len(ipa_alignment)), num_selected))
+    selected_runs = []
+    for index in selected_indices:
+        if selected_runs and index == selected_runs[-1][1] + 1:
+            selected_runs[-1] = (selected_runs[-1][0], index)
+        else:
+            selected_runs.append((index, index))
+
+    output_parts = []
+    cursor = 0
+    for first_index, last_index in selected_runs:
+        start = ipa_alignment[first_index][0]
+        end = ipa_alignment[last_index][1]
+        ipa_start = ipa_ranges[first_index][0]
+        ipa_end = ipa_ranges[last_index][1]
+        output_parts.append(text[cursor:start])
+        output_parts.append(f"{bop_marker}{full_ipa_text[ipa_start:ipa_end]}{eop_marker}")
+        cursor = end
+    output_parts.append(text[cursor:])
+
+    return ''.join(output_parts)
+
+
+def tokenize_text_with_phoneme_spans(
+    text_tokenizer,
+    text_str: str,
+    tokenizer_name: str,
+    enable_phoneme_text_input: bool = False,
+    phoneme_tokenizer=None,
+    text_phoneme_token_offset: Optional[int] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
+) -> List[int]:
+    """Tokenize regular text with optional inline IPA spans marked by ``<bop>...<eop>``.
+
+    Span markers are syntax only and are not emitted as token IDs. IPA span IDs are encoded with the phoneme tokenizer
+    and shifted by ``text_phoneme_token_offset`` so they live in the text-channel vocabulary.
+
+    Args:
+        text_tokenizer: Text tokenizer that supports named tokenizer selection.
+        text_str: Text to encode, optionally containing marked IPA spans.
+        tokenizer_name: Name of the text tokenizer used for regular text segments.
+        enable_phoneme_text_input: Whether to parse and separately encode marked
+            phoneme spans. If disabled, the complete input is encoded as text.
+        phoneme_tokenizer: Tokenizer used to encode IPA span contents. Required
+            when ``enable_phoneme_text_input`` is enabled.
+        text_phoneme_token_offset: Offset added to every phoneme token ID so it
+            occupies the text-channel vocabulary. Required when phoneme text
+            input is enabled.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
+
+    Returns:
+        Token IDs containing interleaved text IDs and offset phoneme IDs.
+
+    Raises:
+        ValueError: If phoneme text input is enabled without its tokenizer or
+            token offset, or if span markers are unmatched.
+    """
+    if not enable_phoneme_text_input:
+        return text_tokenizer.encode(text=text_str, tokenizer_name=tokenizer_name)
+
+    if phoneme_tokenizer is None:
+        raise ValueError("`phoneme_tokenizer` is required when `enable_phoneme_text_input=True`.")
+    if text_phoneme_token_offset is None:
+        raise ValueError("`text_phoneme_token_offset` is required when `enable_phoneme_text_input=True`.")
+
+    token_ids = []
+    for segment_type, segment in _split_text_and_phoneme_spans(text_str, bop_marker=bop_marker, eop_marker=eop_marker):
+        if segment_type == "text":
+            token_ids.extend(text_tokenizer.encode(text=segment, tokenizer_name=tokenizer_name))
+        else:
+            token_ids.extend(text_phoneme_token_offset + token_id for token_id in phoneme_tokenizer.encode(segment))
+
+    return token_ids
 
 
 class BetaBinomialInterpolator:
@@ -402,21 +649,17 @@ def split_by_sentence(
     """
     Split a paragraph into sentences based on sentence-ending punctuation.
 
-    Handles multiple languages with appropriate splitting behavior:
-    - Special language punctuation (ja/zh: 。？！…, hi: ।॥): splits regardless of
-      following whitespace, since these languages typically don't use spaces.
-    - Western punctuation (. ? !): splits only when followed by whitespace or
-      end-of-string, to avoid false splits on abbreviations.
-    - Title abbreviations (Dr., Mr., Mrs., Prof., etc.): never splits on these
-      since they are always followed by names.
-
+    Sentence separators are chosen from the given language (e.g. ".", "?", "!"
+    for English; "。", "？", "！" plus Western punctuation for Japanese/Chinese).
+    Handles edge cases like abbreviations (e.g., "Dr.", "Mr.", "a.m.") by
+    requiring a space after the separator before splitting for Western punctuation;
+    for languages like ja/zh/hi, native punctuation splits without requiring a space.
     Sentence-ending punctuation is preserved with each sentence.
 
     Args:
         paragraph: The input text paragraph to split into sentences.
-        language: Language code (e.g., "en", "ja", "hi", "zh"). Defaults to "en".
-            Special languages (ja, zh, hi) use their native punctuation that
-            splits regardless of following whitespace.
+        language: Language code (e.g. "en", "ja", "zh", "hi"). Determines which
+            sentence-ending characters are used. Defaults to "en".
 
     Returns:
         List of sentence strings with punctuation preserved.
@@ -454,9 +697,9 @@ def split_by_sentence(
     for i, char in enumerate(paragraph):
         if char not in sentence_separators:
             continue
-
+        # Check if current char is a separator and next char is a space
+        # This avoids splitting abbreviations like "Dr." or "a.m."
         next_char = paragraph[i + 1] if i + 1 < len(paragraph) else ""
-
         # Determine if we should split at this position
         # Special language punctuation: split regardless of following character (no spaces in these languages)
         # Western punctuation: require whitespace or end-of-string
@@ -522,52 +765,17 @@ def _get_sentence_separators_for_language(language: str) -> List[str]:
     return _SENTENCE_ENDINGS.get(language, _DEFAULT_SENTENCE_ENDINGS)
 
 
-def get_word_count(text: str, language: str = "en") -> int:
-    """
-    Get word count for text in a language-aware manner.
-
-    For Japanese, uses pyopenjtalk morphological analysis for accurate word segmentation.
-    Falls back to character count if pyopenjtalk is unavailable or returns no words.
-    For Chinese, counts characters (as words are not space-separated).
-    For other languages, uses whitespace splitting.
-
-    Args:
-        text: Input text to count words for.
-        language: Language code (e.g., "en", "ja", "zh", "hi").
-
-    Returns:
-        Number of words (or characters for Chinese/Japanese fallback) in the text.
-    """
-    if not text or not text.strip():
-        return 0
-
-    if language == "zh":
-        # Chinese: count characters (no word boundaries)
-        return len([c for c in text if not c.isspace()])
-
-    if language == "ja":
-        try:
-            import pyopenjtalk
-
-            # run_frontend returns list of word dictionaries (NJD format)
-            njd = pyopenjtalk.run_frontend(text)
-            # Filter out None/invalid entries and count words
-            word_count = sum(1 for word in njd if isinstance(word, dict) and word.get('string', '').strip())
-            return word_count if word_count > 0 else len([c for c in text if not c.isspace()])
-        except ImportError:
-            # Fallback: use character count for Japanese if pyopenjtalk not available
-            return len([c for c in text if not c.isspace()])
-
-    # Default: whitespace splitting for English, Hindi, and other languages
-    return len(text.split())
-
-
 def chunk_and_tokenize_text_by_sentence(
     text: str,
     tokenizer_name: str,
     text_tokenizer: Any,
     eos_token_id: int,
     language: str = "en",
+    enable_phoneme_text_input: bool = False,
+    phoneme_tokenizer=None,
+    text_phoneme_token_offset: Optional[int] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
     """
     Tokenize text split by sentences, adding EOS token after each sentence.
@@ -580,6 +788,14 @@ def chunk_and_tokenize_text_by_sentence(
         language: Language code for selecting appropriate sentence separators.
             Supported: "en", "ja", "hi", "zh", "es", "fr", "it", "de", "vi".
             Defaults to "en".
+        enable_phoneme_text_input: Whether to parse and separately encode marked
+            phoneme spans.
+        phoneme_tokenizer: Tokenizer used for marked phoneme spans. Required
+            when ``enable_phoneme_text_input`` is enabled.
+        text_phoneme_token_offset: Offset added to phoneme token IDs in the
+            text-channel vocabulary.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span.
 
     Returns:
         Tuple of:
@@ -595,7 +811,16 @@ def chunk_and_tokenize_text_by_sentence(
 
     for sentence in split_sentences:
         chunked_text.append(sentence)
-        tokens = text_tokenizer.encode(text=sentence, tokenizer_name=tokenizer_name)
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=text_tokenizer,
+            text_str=sentence,
+            tokenizer_name=tokenizer_name,
+            enable_phoneme_text_input=enable_phoneme_text_input,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=text_phoneme_token_offset,
+            bop_marker=bop_marker,
+            eop_marker=eop_marker,
+        )
         tokens = tokens + [eos_token_id]
         tokens = torch.tensor(tokens, dtype=torch.int32)
         tokens_len = tokens.shape[0]
@@ -603,3 +828,531 @@ def chunk_and_tokenize_text_by_sentence(
         chunked_tokens_len.append(tokens_len)
 
     return chunked_tokens, chunked_tokens_len, chunked_text
+
+
+@dataclass
+class LanguageThresholds:
+    """Language-specific word/character thresholds for determining when to split text.
+
+    Text exceeding the threshold for its language will be split into sentences.
+    Text below the threshold will be processed as a single chunk.
+
+    The thresholds approximate ~20 seconds of audio per language.
+
+    Attributes:
+        thresholds: Dict mapping language code to word count threshold.
+            For character-based languages (like Chinese, Japanese), this is character count;
+            see get_word_count() for which languages use character vs word count.
+    """
+
+    thresholds: Dict[str, int] = field(
+        default_factory=lambda: {
+            "en": 45,  # English: ~20 seconds of audio
+            "es": 73,  # Spanish
+            "fr": 69,  # French
+            "de": 50,  # German
+            "it": 53,  # Italian
+            "vi": 50,  # Vietnamese
+            "zh": 100,  # Chinese (character count)
+            "hi": 50,  # Hindi
+            "ja": 80,  # Japanese (character count)
+        }
+    )
+
+    def get_word_count(self, text: str, language: str) -> int:
+        """Get word/character count for text based on language.
+
+        Args:
+            text: Input text to count.
+            language: Language code (e.g., "en", "zh").
+
+        Returns:
+            Word count for most languages, character count for character-based languages.
+        """
+        if not text or not text.strip():
+            return 0
+
+        if language == "zh":
+            # Chinese: count characters (no word boundaries)
+            return len([c for c in text if not c.isspace()])
+
+        if language == "ja":
+            try:
+                import pyopenjtalk
+
+                # run_frontend returns list of word dictionaries (NJD format)
+                njd = pyopenjtalk.run_frontend(text)
+                # Filter out None/invalid entries and count words
+                word_count = sum(1 for word in njd if isinstance(word, dict) and word.get('string', '').strip())
+                return word_count if word_count > 0 else len([c for c in text if not c.isspace()])
+            except ImportError:
+                # Fallback: use character count for Japanese if pyopenjtalk not available
+                return len([c for c in text if not c.isspace()])
+
+        # Default: whitespace splitting for English, Hindi, and other languages
+        return len(text.split())
+
+    def exceeds_threshold(self, text: str, language: str) -> bool:
+        """Check if text exceeds the threshold for the given language.
+
+        Args:
+            text: Input text to check.
+            language: Language code.
+
+        Returns:
+            True if text should be split into sentences, False for single chunk.
+        """
+        threshold = self.thresholds.get(language, self.thresholds.get("en", 45))
+        count = self.get_word_count(text, language)
+        return count >= threshold
+
+
+# Default language thresholds instance
+DEFAULT_LANGUAGE_THRESHOLDS = LanguageThresholds()
+
+
+# Centralized mapping from language codes to tokenizer name candidates
+# Used by both do_tts() and ChunkedTTSInferenceDataset
+LANGUAGE_TOKENIZER_MAP: Dict[str, List[str]] = {
+    "en": ["english_phoneme", "english"],
+    "de": ["german_phoneme", "german"],
+    "es": ["spanish_phoneme", "spanish"],
+    "fr": ["french_chartokenizer", "french"],
+    "it": ["italian_phoneme", "italian"],
+    "vi": ["vietnamese_phoneme", "vietnamese"],
+    "zh": ["mandarin_phoneme", "mandarin", "chinese"],
+    "hi": ["hindi_chartokenizer", "hindi"],
+    "ja": ["japanese_phoneme", "japanese"],
+}
+
+
+def get_tokenizer_for_language(
+    language: str,
+    available_tokenizers: List[str],
+    default_tokenizer: str = "english_phoneme",
+    language_tokenizer_map: Optional[Mapping[str, Union[str, Sequence[str]]]] = None,
+) -> str:
+    """Get the appropriate tokenizer name for a language.
+
+    Searches language_tokenizer_map for candidate tokenizers and returns
+    the first one available. Falls back to default if no match found.
+
+    Args:
+        language: Language code (e.g., "en", "de", "zh").
+        available_tokenizers: List of tokenizer names available in the model.
+        default_tokenizer: Fallback tokenizer if no match found.
+        language_tokenizer_map: Mapping of languages to a tokenizer or ordered tokenizer candidates.
+            Defaults to ``LANGUAGE_TOKENIZER_MAP``.
+
+    Returns:
+        Tokenizer name to use.
+    """
+    if language_tokenizer_map is None:
+        language_tokenizer_map = LANGUAGE_TOKENIZER_MAP
+    if language in language_tokenizer_map:
+        candidates = language_tokenizer_map[language]
+        if isinstance(candidates, str):
+            candidates = [candidates]
+        for candidate in candidates:
+            if candidate in available_tokenizers:
+                return candidate
+
+    # Fallback to default if available, else first available
+    if default_tokenizer in available_tokenizers:
+        return default_tokenizer
+    return available_tokenizers[0] if available_tokenizers else default_tokenizer
+
+
+def chunk_text_for_inference(
+    text: str,
+    language: str,
+    tokenizer_name: str,
+    text_tokenizer: Any,
+    eos_token_id: int,
+    language_thresholds: Optional[LanguageThresholds] = None,
+    enable_phoneme_text_input: bool = False,
+    phoneme_tokenizer=None,
+    text_phoneme_token_offset: Optional[int] = None,
+    bop_marker: str = "<bop>",
+    eop_marker: str = "<eop>",
+) -> Tuple[List[torch.Tensor], List[int], List[str]]:
+    """
+    Unified text chunking for inference: returns single chunk if below threshold,
+    multiple sentence chunks if above threshold.
+
+    This function unifies the standard and chunked inference paths by automatically
+    determining whether to split text based on language-specific thresholds.
+
+    Args:
+        text: Input text to tokenize and potentially split.
+        language: Language code (e.g., "en", "de", "zh").
+        tokenizer_name: Name of the tokenizer to use (e.g., "english_phoneme").
+        text_tokenizer: The tokenizer instance.
+        eos_token_id: End-of-sequence token ID to append.
+        language_thresholds: Optional custom thresholds. Uses defaults if None.
+        enable_phoneme_text_input: Whether to parse and separately encode marked
+            phoneme spans.
+        phoneme_tokenizer: Tokenizer used for marked phoneme spans. Required
+            when ``enable_phoneme_text_input`` is enabled.
+        text_phoneme_token_offset: Offset added to phoneme token IDs in the
+            text-channel vocabulary.
+        bop_marker: Marker that opens an inline phoneme span.
+        eop_marker: Marker that closes an inline phoneme span. Text containing
+            either span marker is kept as one chunk to preserve span boundaries.
+
+    Returns:
+        Tuple of:
+            - chunked_tokens: List of token tensors. Single element for short text,
+              multiple elements (one per sentence) for long text.
+            - chunked_tokens_len: List of token lengths.
+            - chunked_text: List of text strings (original or split sentences).
+
+    Examples:
+        >>> # Short text - returns single chunk
+        >>> tokens, lens, texts = chunk_text_for_inference(
+        ...     "Hello world.", "en", "english_phoneme", tokenizer, eos_id
+        ... )
+        >>> len(tokens)
+        1
+
+        >>> # Long text - returns multiple chunks (sentences)
+        >>> long_text = "First sentence. " * 50  # ~50 sentences
+        >>> tokens, lens, texts = chunk_text_for_inference(
+        ...     long_text, "en", "english_phoneme", tokenizer, eos_id
+        ... )
+        >>> len(tokens) > 1
+        True
+    """
+    if language_thresholds is None:
+        language_thresholds = DEFAULT_LANGUAGE_THRESHOLDS
+
+    # Check if text exceeds threshold for this language
+    has_explicit_phoneme_spans = has_phoneme_text_spans(text, bop_marker=bop_marker, eop_marker=eop_marker)
+    should_split = language_thresholds.exceeds_threshold(text, language) and not has_explicit_phoneme_spans
+
+    if should_split:
+        # Long text: split by sentences
+        return chunk_and_tokenize_text_by_sentence(
+            text=text,
+            tokenizer_name=tokenizer_name,
+            text_tokenizer=text_tokenizer,
+            eos_token_id=eos_token_id,
+            language=language,
+            enable_phoneme_text_input=enable_phoneme_text_input,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=text_phoneme_token_offset,
+            bop_marker=bop_marker,
+            eop_marker=eop_marker,
+        )
+    else:
+        # Short text: return as single chunk
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=text_tokenizer,
+            text_str=text,
+            tokenizer_name=tokenizer_name,
+            enable_phoneme_text_input=enable_phoneme_text_input,
+            phoneme_tokenizer=phoneme_tokenizer,
+            text_phoneme_token_offset=text_phoneme_token_offset,
+            bop_marker=bop_marker,
+            eop_marker=eop_marker,
+        )
+        tokens = tokens + [eos_token_id]
+        tokens_tensor = torch.tensor(tokens, dtype=torch.int32)
+        tokens_len = tokens_tensor.shape[0]
+
+        return [tokens_tensor], [tokens_len], [text]
+
+
+def resample_batch(audio, audio_len, input_sample_rate, output_sample_rate):
+    audio = resample(waveform=audio, orig_freq=input_sample_rate, new_freq=output_sample_rate)
+    audio_len_scaled = audio_len.long() * output_sample_rate
+    new_audio_len = audio_len_scaled / input_sample_rate
+    # To avoid rounding issues at lower precisions, do not call torch.ceil when the length is divisible by the sample rate
+    audio_len = torch.where(audio_len_scaled % input_sample_rate == 0, new_audio_len, torch.ceil(new_audio_len))
+    audio_len = audio_len.int()
+    audio = mask_sequence_tensor(audio, audio_len)
+    return audio, audio_len
+
+
+def normalize_text_by_pattern(text: str, pattern: str, replacement: str) -> str:
+    """Normalize input text using a regular expression.
+
+    This function will search for and replace any string matching the input 'pattern' surrounded by any punctuation.
+
+    Example:
+        >>> text = "Mr holmes told mr. watson to be careful."
+        >>> normalized_text = normalize_text_by_pattern(text=text, pattern="[mM]r\.?", replacement="mister")
+        >>> normalized_text
+        "mister holmes told mister watson to be careful."
+
+    Args:
+        text: Text to normalize
+        pattern: Text pattern to find and replace
+        replacement: Text to substitute for the input pattern
+
+    Returns:
+        The normalized text string
+
+    """
+    # Finds all occurrences of the pattern, capturing any punctuation before and after it (including start and end of sentence).
+    regex = re.compile(f"(^|[^A-Za-zÀ-ÖØ-öø-ÿ]){pattern}($|[^A-Za-zÀ-ÖØ-öø-ÿ])")
+    match = regex.findall(string=text)
+
+    output = text
+    for surrounding_punct in match:
+        repl = f"{surrounding_punct[0]}{replacement}{surrounding_punct[1]}"
+        output = regex.sub(string=output, repl=repl, count=1)
+
+    return output
+
+
+class TextProcessor(ABC):
+    """Interface for preprocessing text for TTS training, inference, and evaluation"""
+
+    @abstractmethod
+    def normalize_text(self, text: str) -> str:
+        """
+        Preprocess text for model training and inference.
+            Usually this involves language-specific rules for converting written text to spoken form.
+
+        Args:
+            text: Raw text string
+
+        Returns:
+            Normalized text string
+        """
+        pass
+
+    @abstractmethod
+    def process_text_for_wer(self, text: str) -> str:
+        """
+        Preprocess text for calculating word error rate and character error rate.
+            This should include conversion of text to lower case, removal of punctuation, normalization,
+            and possible post-processing steps for ASR model output.
+
+        Args:
+            text: Raw text string
+
+        Returns:
+            Processed text string
+        """
+        pass
+
+
+class DefaultTextProcessor(TextProcessor):
+    """Default text processing behavior, if language-specific processing is not yet implemented."""
+
+    def normalize_text(self, text: str) -> str:
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        text = text.lower()
+        # Replace dash with a single space
+        text = text.replace("-", " ")
+        # Replace whitespace with a single space
+        text = re.sub(pattern=r"\s\s+", string=text, repl=" ")
+        # Remove all non-alphanumeric characters, making sure to keep accented and foreign characters
+        text = "".join([c for c in text if c == " " or c.isalnum()])
+        # Fix common ASR transcript artifacts
+        text = text.replace("h t t p", "http")
+        text = text.replace("w w w", "www")
+        text = text.strip()
+        return text
+
+
+class NoSpaceTextProcessor(TextProcessor):
+    """WER text processor for languages where ASR/tokenization spaces should be ignored."""
+
+    def __init__(self):
+        super().__init__()
+        self.default_processor = DefaultTextProcessor()
+
+    def normalize_text(self, text: str) -> str:
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        text = self.default_processor.process_text_for_wer(text)
+        text = text.replace(" ", "")
+        return text
+
+
+class JapaneseTextProcessor(NoSpaceTextProcessor):
+    """Japanese WER text processor with Katakana reading conversion."""
+
+    def __init__(self):
+        super().__init__()
+        try:
+            self.pyopenjtalk = importlib.import_module("pyopenjtalk")
+        except ImportError as e:
+            raise ImportError(
+                "JapaneseTextProcessor requires pyopenjtalk for Katakana CER computation. "
+                "Install pyopenjtalk or do not request Japanese evaluation text processing."
+            ) from e
+
+    def text_to_katakana(self, text: str) -> str:
+        """Convert Japanese text to its Katakana reading via pyopenjtalk.
+
+        Used for an additional, reading-based Japanese CER metric that is robust to
+        kanji/kana spelling variation between the reference and the ASR hypothesis.
+        """
+        if not text:
+            return ""
+        try:
+            return self.pyopenjtalk.g2p(text, kana=True).strip()
+        except Exception as e:  # noqa: BLE001
+            logging.warning(f"pyopenjtalk failed for '{text[:40]}': {e}")
+            return ""
+
+
+class EnglishTextProcessor(TextProcessor):
+    """English text processing, which catches some edge cases not covered by normal text normalization.
+
+    English TN does not work on abbreviations when a period is missing. For example, "mr." will be normalized to "mister",
+    but "mr" will not be. This class manually normalizes abbreviations commonly found in public datasets and ASR transcriptions.
+    """
+
+    def __init__(self, input_case: str = "cased"):
+        super().__init__()
+        self.default_processor = DefaultTextProcessor()
+
+        if not PYNINI_AVAILABLE:
+            logging.warning("`nemo_text_processing` is not installed, will skip default text normalization")
+            self.normalizer = None
+        else:
+            self.normalizer = Normalizer(lang="en", input_case=input_case)
+
+    def normalize_text(self, text: str) -> str:
+        if self.normalizer is not None:
+            text = self.normalizer.normalize(text)
+
+        text = normalize_text_by_pattern(text=text, pattern="[mM]r\.?", replacement="mister")
+        text = normalize_text_by_pattern(text=text, pattern="[mM]s\.?", replacement="miss")
+        text = normalize_text_by_pattern(text=text, pattern="[mM]rs\.?", replacement="missus")
+        text = normalize_text_by_pattern(text=text, pattern="[mM]me\.?", replacement="madame")
+        text = normalize_text_by_pattern(text=text, pattern="[dD]r\.?", replacement="doctor")
+        text = normalize_text_by_pattern(text=text, pattern="[eE]tc\.?", replacement="et cetera")
+        return text
+
+    def process_text_for_wer(self, text: str) -> str:
+        text = self.normalize_text(text)
+        text = self.default_processor.process_text_for_wer(text)
+        return text
+
+
+def get_text_processor(language: str) -> TextProcessor:
+    language = (language or "").replace("_", "-").lower().split("-")[0]
+    if language == "en":
+        return EnglishTextProcessor()
+    if language == "ja":
+        return JapaneseTextProcessor()
+    elif language == "zh":
+        return NoSpaceTextProcessor()
+    else:
+        logging.info(f"Text processing not implemented for language {language}; using default processor")
+        return DefaultTextProcessor()
+
+
+class Transcriber(ABC):
+    """Interface for transcribing TTS outputs with different ASR models"""
+
+    @abstractmethod
+    def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
+        """
+        Run batch transcription of a list of audio files.
+
+        Args:
+            audio_paths: list of paths to audio files to transcribe
+            batch_size: batch size to use for inference
+            language: optional language of input audio
+
+        Returns:
+            List with transcribed text for each audio path
+        """
+        pass
+
+
+class NemoTranscriber(Transcriber):
+    """Transcriber for NeMo ASR models"""
+
+    def __init__(self, device, model_name="stt_en_conformer_transducer_large"):
+        if model_name.endswith('.nemo'):
+            model = ASRModel.restore_from(restore_path=model_name)
+        else:
+            model = ASRModel.from_pretrained(model_name=model_name)
+
+        self.model = model.to(device).eval()
+
+    def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
+        override_config = TranscribeConfig(batch_size=batch_size, use_lhotse=False)
+        transcribe_results = self.model.transcribe(audio_paths, override_config=override_config)
+        transcriptions = [result.text for result in transcribe_results]
+        return transcriptions
+
+
+class NemoTranscriberWithPrompt(Transcriber):
+    """Transcriber for NeMo ASR models that accept language as an optional prompt"""
+
+    def __init__(self, device, model_name):
+        if model_name.endswith('.nemo'):
+            model = ASRModel.restore_from(restore_path=model_name)
+        else:
+            model = ASRModel.from_pretrained(model_name=model_name)
+
+        self.model = model.to(device).eval()
+        if not isinstance(self.model, EncDecHybridRNNTCTCBPEModelWithPrompt):
+            raise ValueError(f"Model {model_name} does not support prompting")
+
+        self.language_prompt_map = {
+            "en": "en-US",
+            "ar": "ar",
+            "ko": "ko-KR",
+            "hi": "hi-IN",
+            "zh": "zh-CN",
+            "it": "it-IT",
+            "es": "es-ES",
+            "de": "de-DE",
+            "fr": "fr-FR",
+            "ja": "ja-JP",
+        }
+
+    def transcribe(self, audio_paths: List[Path], batch_size: int, language: Optional[str]) -> List[str]:
+        if language:
+            prompt_lang = self.language_prompt_map[language]
+            override_config = HybridRNNTCTCPromptTranscribeConfig(
+                batch_size=batch_size, use_lhotse=False, target_lang=prompt_lang
+            )
+        else:
+            override_config = HybridRNNTCTCPromptTranscribeConfig(batch_size=batch_size, use_lhotse=False)
+
+        transcribe_results = self.model.transcribe(audio_paths, override_config=override_config)
+        transcriptions = [result.text for result in transcribe_results]
+        return transcriptions
+
+
+class WhisperTranscriber(Transcriber):
+    """Transcriber for Whisper ASR models"""
+
+    def __init__(self, device, model_name="openai/whisper-large-v3"):
+        self.processor = WhisperProcessor.from_pretrained(model_name)
+        self.model = WhisperForConditionalGeneration.from_pretrained(model_name).to(device).eval()
+        self.input_sample_rate = 16000
+
+    def transcribe(self, audio_paths: List[Path], language: str, batch_size: int) -> List[str]:
+        if language:
+            forced_decoder_ids = self.processor.get_decoder_prompt_ids(language=language, task="transcribe")
+        else:
+            forced_decoder_ids = None
+
+        all_transcriptions = []
+        for start in range(0, len(audio_paths), batch_size):
+            batch_paths = audio_paths[start : start + batch_size]
+            speech_arrays = [librosa.load(p, sr=self.input_sample_rate)[0] for p in batch_paths]
+            inputs = self.processor(
+                speech_arrays, sampling_rate=self.input_sample_rate, return_tensors="pt", padding=True
+            ).input_features
+            inputs = inputs.half().to(self.model.device)
+            with torch.inference_mode():
+                predicted_ids = self.model.generate(inputs, forced_decoder_ids=forced_decoder_ids)
+            transcriptions = self.processor.batch_decode(predicted_ids, skip_special_tokens=True)
+            all_transcriptions.extend(transcriptions)
+        return all_transcriptions

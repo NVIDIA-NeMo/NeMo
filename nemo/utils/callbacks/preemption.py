@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import signal
-import sys
 
 import torch
 from lightning.pytorch.callbacks import Callback
@@ -24,14 +23,16 @@ from nemo.utils import logging
 class PreemptionCallback(Callback):
     """
     PreemptionCallback class creates a callback that checks for preemption during training at the end of every step.
-    Upon preemption the callback provides a function to gracefully exit the training immediately and also saves the current state in a checkpoint as *last.ckpt.
+    Upon preemption the callback provides a function to gracefully exit the training immediately and also saves the
+    current state in a checkpoint as *last.ckpt.
     (to be able to start from the same step without wasting any compute while resuming the next time).
 
-    PreemptionCallback is always enabled by default via the arg create_preemption_callback under ExpManagerConfig. To disable please pass
-    create_preemption_callback: False in your config file.
+    PreemptionCallback is always enabled by default via the arg create_preemption_callback under ExpManagerConfig.
+    To disable please pass create_preemption_callback: False in your config file.
     """
 
     def __init__(self, checkpoint_callback, sig=None):
+        """Store the checkpoint callback and the signal to listen for (defaults to SIGTERM)."""
         self.sig = sig
         if self.sig is None:
             self.sig = signal.SIGTERM
@@ -40,6 +41,7 @@ class PreemptionCallback(Callback):
 
     @property
     def interrupted(self):
+        """Return whether a preemption signal was received, broadcasting rank 0's state to all ranks."""
         interrupted = torch.tensor(self._interrupted, device=torch.cuda.current_device(), dtype=torch.int32)
         torch.distributed.broadcast(interrupted, 0)
         interrupted = bool(interrupted.item())
@@ -51,7 +53,7 @@ class PreemptionCallback(Callback):
         preemption signal is received.
         """
 
-        # Check if torch distributed is initialised, as its needed for broadcasting the preemption signal to all the ranks
+        # Check if torch distributed is initialised, required for broadcasting the preemption signal to all the ranks
         if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
             logging.info("Preemption requires torch distributed to be initialized, disabling preemption")
         else:
@@ -61,8 +63,9 @@ class PreemptionCallback(Callback):
             self.released = False
             self.original_handler = signal.getsignal(self.sig)
 
-            # Master handler executed only by rank 0 when the preemption siganal is received, to avoid deadlock conditions
+            # Master handler on rank 0 only upon preemption signal to avoid deadlock conditions
             def master_handler(signum, frame):
+                logging.info("Received preemption signal on rank 0; checkpoint save will run after current batch")
                 self.release()
                 self._interrupted = True
 
@@ -73,16 +76,19 @@ class PreemptionCallback(Callback):
             self.private_rank = torch.distributed.get_rank()
             if self.private_rank == 0:
                 signal.signal(self.sig, master_handler)
+                logging.info(f"PreemptionCallback enabled on rank 0 for signal {getattr(self.sig, 'name', self.sig)}")
             else:
                 signal.signal(self.sig, ignoring_handler)
 
         return self
 
     def on_train_end(self, trainer, pl_module):
+        """Restore the original signal handler when training finishes."""
         if self.preemption_enabled:
             self.release()
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx: int):
+        """Check for preemption after each batch and, if signaled, save a last checkpoint and exit."""
         if self.preemption_enabled:
             # check if the job was preempted at the end of every training step/iteration
             # NOTE: "self.interrupted" is a property which triggers a
@@ -91,12 +97,15 @@ class PreemptionCallback(Callback):
             # a regular local variable
             interrupted = self.interrupted
             if interrupted:
-                logging.info("Received SIGTERM, saving checkpoint and exiting")
-                monitor_candidates = self.checkpoint_callback._monitor_candidates(trainer)
-                self.checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
-                sys.exit(0)
+                from nemo.utils.exp_manager import _save_last_checkpoint_and_exit
+
+                _save_last_checkpoint_and_exit(
+                    trainer,
+                    "PreemptionCallback observed SIGTERM at train batch end",
+                )
 
     def release(self):
+        """Restore the original signal handler; returns False if already released, True otherwise."""
         if self.released:
             return False
 

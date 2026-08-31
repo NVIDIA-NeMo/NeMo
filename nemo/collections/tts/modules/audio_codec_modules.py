@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import math
-import os
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -22,13 +22,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from transformers import AutoModel
+from transformers import AutoFeatureExtractor, AutoModel, Wav2Vec2BertModel
 
 from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor
 from nemo.collections.audio.parts.utils.transforms import MelSpectrogram, Resample
 from nemo.collections.common.parts.utils import ClampActivation, HalfSnake, Snake, mask_sequence_tensor
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.module import NeuralModule
+from nemo.core.neural_types import IntType
 from nemo.core.neural_types.elements import (
     AudioSignal,
     EncodedRepresentation,
@@ -39,16 +40,6 @@ from nemo.core.neural_types.elements import (
 )
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging
-
-try:
-    import fsspec
-
-    HAVE_FSSPEC = True
-except ModuleNotFoundError:
-    HAVE_FSSPEC = False
-
-
-from contextlib import contextmanager
 
 
 @contextmanager
@@ -177,6 +168,157 @@ class SLMDiscriminator(NeuralModule):
         return [y_d_r.unsqueeze(1)], [y_d_g.unsqueeze(1)], [fmap_r], [fmap_g]
 
 
+class SLMEncoder(NeuralModule):
+    """Encoder wrapping a speech language model (SLM) which produces semantic embeddings for use in semantic distillation.
+
+    Args:
+        slm_model_name: Name of Hugging Face model.
+        slm_sr: Sample rate SLM model requires for input.
+        input_sr: Sampling rate of audio that will be input to this encoder.
+        hidden_layer: Index of hidden layer to extract embeddings from.
+            Defaults to 16, which for research suggests is effective for w2v-bert and TTS.
+        padding: Number of audio samples to pad before encoding to ensure output has a frame rate compatible with the audio codec.
+        scaling_factor: Constant factor to divide output embedding by. Defaults to 5 to produce embeddings with values in [-1, 1].
+    """
+
+    def __init__(
+        self,
+        slm_model_name="facebook/w2v-bert-2.0",
+        slm_sr=16000,
+        input_sr=22050,
+        hidden_layer=16,
+        padding=80,
+        scaling_factor=5.0,
+    ):
+        super().__init__()
+
+        self.slm_sr = slm_sr
+        if input_sr == self.slm_sr:
+            self.resample = None
+        else:
+            self.resample = Resample(orig_freq=input_sr, new_freq=self.slm_sr)
+
+        self.feature_extractor = AutoFeatureExtractor.from_pretrained(slm_model_name)
+        self.semantic_model = Wav2Vec2BertModel.from_pretrained(slm_model_name, output_hidden_states=True)
+        self.semantic_model.eval()
+
+        self.hidden_layer = hidden_layer
+        self.padding = padding
+        self.scaling_factor = scaling_factor
+
+    @property
+    def input_types(self):
+        return {
+            "audio": NeuralType(('B', 'T'), AudioSignal()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "slm_embeddings": [NeuralType(('B', 'D', 'T'), VoidType())],
+        }
+
+    @typecheck()
+    def forward(self, audio):
+        if self.resample is not None:
+            audio = self.resample(audio)
+
+        audio = torch.nn.functional.pad(audio, (0, self.padding)).float()
+        feats = self.feature_extractor(audio.cpu(), sampling_rate=self.slm_sr, return_tensors="pt").data[
+            'input_features'
+        ]
+        feats = feats.to(device=audio.device, dtype=audio.dtype)
+
+        with torch.no_grad():
+            out = self.semantic_model(feats)
+            slm_emb = out.hidden_states[self.hidden_layer] / self.scaling_factor
+
+        slm_emb = rearrange(slm_emb, 'B T D -> B D T')
+
+        return slm_emb
+
+
+class SLMPredictor(NeuralModule):
+    """Module for predicting SLM embeddings for semantic distillation. This decoder uses transposed convolutions to upsample from
+    the codecs frame rate to the frame rate of the SLM model.
+
+    Args:
+        in_channels: Input dimension of quantized codec encoding.
+        hidden_dim: Hidden dimension that input will be projected to.
+        out_channels: Dimension of decoder embedding
+        up_sample_rate: Rate to up sample by to match SLM frame rate.
+        kernel_size:  Kernel size of convolutions.
+        padding_mode:  Padding used with convolutions.
+        activation: Activation to use in between convolutions
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_dim: int,
+        out_channels: int,
+        up_sample_rate: int = 1,
+        kernel_size: int = 3,
+        padding_mode: str = "replicate",
+        activation: str = "lrelu",
+    ):
+        super().__init__()
+        padding = get_padding(kernel_size=kernel_size)
+        self.activation = CodecActivation(activation=activation)
+        self.input_layer = nn.Conv1d(
+            in_channels=in_channels,
+            out_channels=hidden_dim,
+            kernel_size=kernel_size,
+            padding=padding,
+            padding_mode=padding_mode,
+        )
+        self.output_layer = nn.Conv1d(
+            in_channels=hidden_dim,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            padding=padding,
+            padding_mode=padding_mode,
+        )
+
+        if up_sample_rate > 1:
+            up_kernel_size = 2 * up_sample_rate
+            up_padding, output_padding = get_up_sample_padding(up_kernel_size, up_sample_rate)
+            self.upsample_layer = nn.Sequential(
+                nn.ConvTranspose1d(
+                    in_channels=hidden_dim,
+                    out_channels=hidden_dim,
+                    kernel_size=up_kernel_size,
+                    stride=up_sample_rate,
+                    padding=up_padding,
+                    output_padding=output_padding,
+                ),
+                self.activation,
+            )
+        else:
+            self.upsample_layer = nn.Identity()
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": NeuralType(('B', 'D', 'T'), VoidType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "output": NeuralType(('B', 'C', 'T'), VoidType()),
+        }
+
+    @typecheck()
+    def forward(self, inputs):
+        out = self.input_layer(inputs)
+        out = self.activation(out)
+        out = self.upsample_layer(out)
+        out = self.activation(out)
+        out = self.output_layer(out)
+        return out
+
+
 # Torch version of transformers.models.wav2vec2.feature_extraction_wav2vec2.Wav2Vec2FeatureExtractor.zero_mean_unit_var_norm
 def zero_mean_unit_var_norm(input_values):
     """
@@ -186,33 +328,6 @@ def zero_mean_unit_var_norm(input_values):
         input_values.var(dim=1).unsqueeze(-1) + 1e-7
     )
     return normed_input_values
-
-
-##############
-# Speaker encoder #
-##############
-def load_fsspec(path: str, map_location: str = None, **kwargs):
-    """Like torch.load but can load from other locations (e.g. s3:// , gs://).
-
-    Args:
-        path: Any path or url supported by fsspec.
-        map_location: torch.device or str.
-        cache: If True, cache a remote file locally for subsequent calls. It is cached under `get_user_data_dir()/tts_cache`. Defaults to True.
-        **kwargs: Keyword arguments forwarded to torch.load.
-
-    Returns:
-        Object stored in path.
-    """
-    is_local = os.path.isdir(path) or os.path.isfile(path)
-    if is_local:
-        return torch.load(path, map_location=map_location, **kwargs)
-    else:
-        if HAVE_FSSPEC:
-            with fsspec.open(path, "rb") as f:
-                return torch.load(f, map_location=map_location, **kwargs)
-        else:
-            logging.error('Could not import fsspec. Loading a checkpoint link is not supported!')
-            raise ModuleNotFoundError("fsspec is not installed but is necessary to download remote checkpoints !!")
 
 
 class PreEmphasis(NeuralModule):
@@ -457,7 +572,7 @@ class ResNetSpeakerEncoder(NeuralModule):
         )
 
     def load_checkpoint(self, checkpoint_path: str, strict=True):
-        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"))
+        state = torch.load(checkpoint_path, map_location=torch.device("cpu"))
         self.load_state_dict(state["model"], strict=strict)
 
 
@@ -1192,6 +1307,27 @@ class VectorQuantizerBase(NeuralModule, ABC):
     def decode(self, indices: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
         pass
 
+    @typecheck(
+        input_types={
+            "encoded": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+            "num_codebooks": NeuralType(tuple('B'), IntType(), optional=True),
+        },
+        output_types={
+            "outputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+        },
+    )
+    def dropout_codebooks(self, encoded: torch.Tensor, num_codebooks: Optional[int]) -> torch.Tensor:
+        """Dropout encoder output so that only 'num_codebooks' are left as decoder_input.
+
+        Args:
+            encoded: encoder output (B, D, T)
+            num_codebooks: number of codebooks to keep (B)
+
+        Returns:
+            Encoder output with all codebooks above index 'num_codebooks' dropped out
+        """
+        raise NotImplementedError(f"Codebook dropout not implemented for {self.__class__.__name__}")
+
 
 class FiniteScalarQuantizer(VectorQuantizerBase):
     """This quantizer is based on the Finite Scalar Quantization (FSQ) method.
@@ -1256,7 +1392,7 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
 
         Note that the codebook entries are implicitly defined by the number of levels.
         """
-        indices = torch.arange(self.codebook_size)
+        indices = torch.arange(self.codebook_size, device=self.dim_base_index.device)
         # [D, B, T]
         indices = rearrange(indices, 'B -> 1 B 1')
         # [B, D, T]
@@ -1533,6 +1669,39 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
         indices = torch.stack(indices, dim=1)
 
         return indices
+
+    @typecheck(
+        input_types={
+            "encoded": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+            "num_codebooks": NeuralType(tuple('B'), IntType(), optional=True),
+        },
+        output_types={
+            "outputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+        },
+    )
+    def dropout_codebooks(self, encoded: torch.Tensor, num_codebooks: torch.Tensor) -> torch.Tensor:
+        """Sets all embedding values in dimensions above (num_codebooks * codebook_dim) to 0.
+
+        Args:
+            encoded: encoder output (B, D, T)
+            num_codebooks: number of codebooks to keep (B)
+
+        Returns:
+            Encoder output with all codebooks above index 'num_codebooks' masked out
+        """
+        batch_size, embed_dim, num_frames = encoded.shape
+        # [B, D, T]
+        embed_indices = (
+            torch.arange(start=0, end=embed_dim, device=encoded.device)
+            .unsqueeze(0)
+            .unsqueeze(2)
+            .repeat(batch_size, 1, num_frames)
+        )
+        emb_unmask_dim = self.codebook_dim_per_group * num_codebooks
+        emb_unmask_dim = rearrange(emb_unmask_dim, 'B -> B 1 1')
+        codebook_mask = embed_indices < emb_unmask_dim
+        out = encoded * codebook_mask
+        return out
 
 
 class ResidualBlock(NeuralModule):

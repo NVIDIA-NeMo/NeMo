@@ -55,7 +55,7 @@ class CacheAwareASRInferenceWrapper(ASRInferenceWrapper):
         Returns:
             (tuple[Tensor, Tensor, Tensor]) the initial cache state of the encoder.
         """
-        return self.asr_model.encoder.get_initial_cache_state(batch_size=batch_size)
+        return self.asr_model.encoder.get_initial_cache_state(batch_size=batch_size, dtype=self.cast_dtype)
 
     def get_drop_extra_pre_encoded(self) -> int:
         """
@@ -125,6 +125,19 @@ class CacheAwareASRInferenceWrapper(ASRInferenceWrapper):
             shift_size: (int) the shift size.
         """
         self.asr_model.encoder.setup_streaming_params(chunk_size=chunk_size, shift_size=shift_size)
+
+    def set_streaming_cuda_graphs(self, enabled: bool = True) -> None:
+        """
+        Enable or disable CUDA-graph replay for the encoder streaming step (inference only).
+        Steady-state chunks are captured once into a CUDA graph and replayed with a single
+        kernel launch; for the covered non-autocast configurations the graph path is expected to
+        preserve eager execution semantics, and non-steady-state steps (including under CUDA
+        autocast) fall back to eager. See
+        :class:`~nemo.collections.asr.parts.submodules.streaming_encoder_cuda_graphs.CudaGraphsStreamingEncoderStep`.
+        Args:
+            enabled: (bool) whether to enable CUDA graphs for the encoder streaming step.
+        """
+        self.asr_model.encoder.set_streaming_cuda_graphs(enabled=enabled)
 
     def stream_step(self, *args, **kwargs) -> Any:
         """

@@ -32,26 +32,6 @@ class DiarizerComponentConfig:
 
 
 @dataclass
-class ASRDiarizerCTCDecoderParams:
-    pretrained_language_model: Optional[str] = None  # KenLM model file: .arpa model file or .bin binary file.
-    beam_width: int = 32
-    alpha: float = 0.5
-    beta: float = 2.5
-
-
-@dataclass
-class ASRRealigningLMParams:
-    # Provide a KenLM language model in .arpa format.
-    arpa_language_model: Optional[str] = None
-    # Min number of words for the left context.
-    min_number_of_words: int = 3
-    # Max number of words for the right context.
-    max_number_of_words: int = 10
-    # The threshold for the difference between two log probability values from two hypotheses.
-    logprob_diff_threshold: float = 1.2
-
-
-@dataclass
 class ASRDiarizerParams(DiarizerComponentConfig):
     # if True, speech segmentation for diarization is based on word-timestamps from ASR inference.
     asr_based_vad: bool = False
@@ -79,8 +59,6 @@ class ASRDiarizerParams(DiarizerComponentConfig):
 class ASRDiarizerConfig(DiarizerComponentConfig):
     model_path: Optional[str] = "stt_en_conformer_ctc_large"
     parameters: ASRDiarizerParams = field(default_factory=lambda: ASRDiarizerParams())
-    ctc_decoder_parameters: ASRDiarizerCTCDecoderParams = field(default_factory=lambda: ASRDiarizerCTCDecoderParams())
-    realigning_lm_parameters: ASRRealigningLMParams = field(default_factory=lambda: ASRRealigningLMParams())
 
 
 @dataclass
@@ -113,7 +91,7 @@ class SpeakerEmbeddingsParams(DiarizerComponentConfig):
     shift_length_in_sec: Tuple[float] = (0.75, 0.625, 0.5, 0.375, 0.25)
     # Weight for each scale. None (for single scale) or list with window/shift scale count. ex) [0.33,0.33,0.33]
     multiscale_weights: Tuple[float] = (1, 1, 1, 1, 1)
-    # save speaker embeddings in pickle format. True if clustering result is used for other models, such as MSDD.
+    # save speaker embeddings in torch format.
     save_embeddings: bool = True
 
 
@@ -146,30 +124,6 @@ class ClusteringConfig(DiarizerComponentConfig):
 
 
 @dataclass
-class MSDDParams(DiarizerComponentConfig):
-    # If True, use speaker embedding model in checkpoint, else provided speaker embedding model in config will be used.
-    use_speaker_model_from_ckpt: bool = True
-    # Batch size for MSDD inference.
-    infer_batch_size: int = 25
-    # Sigmoid threshold for generating binarized speaker labels. The smaller the more generous on detecting overlaps.
-    sigmoid_threshold: Tuple[float] = (0.7,)
-    # If True, use oracle number of speaker and evaluate F1 score for the given speaker sequences. Default is False.
-    seq_eval_mode: bool = False
-    # If True, break the input audio clip to short sequences and calculate cluster average embeddings for inference.
-    split_infer: bool = True
-    # The length of split short sequence when split_infer is True.
-    diar_window_length: int = 50
-    # If the estimated number of speakers are larger than this number, overlap speech is not estimated.
-    overlap_infer_spk_limit: int = 5
-
-
-@dataclass
-class MSDDConfig(DiarizerComponentConfig):
-    model_path: Optional[str] = "diar_msdd_telephonic"
-    parameters: MSDDParams = field(default_factory=lambda: MSDDParams())
-
-
-@dataclass
 class DiarizerConfig(DiarizerComponentConfig):
     manifest_filepath: Optional[str] = None
     out_dir: Optional[str] = None
@@ -179,27 +133,4 @@ class DiarizerConfig(DiarizerComponentConfig):
     vad: VADConfig = field(default_factory=lambda: VADConfig())
     speaker_embeddings: SpeakerEmbeddingsConfig = field(default_factory=lambda: SpeakerEmbeddingsConfig())
     clustering: ClusteringConfig = field(default_factory=lambda: ClusteringConfig())
-    msdd_model: MSDDConfig = field(default_factory=lambda: MSDDConfig())
     asr: ASRDiarizerConfig = field(default_factory=lambda: ASRDiarizerConfig())
-
-
-@dataclass
-class NeuralDiarizerInferenceConfig(DiarizerComponentConfig):
-    diarizer: DiarizerConfig = field(default_factory=lambda: DiarizerConfig())
-    device: str = "cpu"
-    verbose: bool = False
-    batch_size: int = 64
-    num_workers: int = 1
-    sample_rate: int = 16000
-    name: str = ""
-
-    @classmethod
-    def init_config(cls, diar_model_path: str, vad_model_path: str, map_location: str, verbose: bool):
-        return NeuralDiarizerInferenceConfig(
-            DiarizerConfig(
-                vad=VADConfig(model_path=vad_model_path),
-                msdd_model=MSDDConfig(model_path=diar_model_path),
-            ),
-            device=map_location,
-            verbose=verbose,
-        )

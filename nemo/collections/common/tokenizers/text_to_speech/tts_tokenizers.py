@@ -14,18 +14,26 @@
 # limitations under the License.
 
 import itertools
+import os
 import string
+import warnings
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import List, Optional, Union
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
+from omegaconf import open_dict
+from packaging.version import InvalidVersion, Version
+from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerBase
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
+    DEFAULT_PUNCTUATION,
     get_grapheme_character_set,
     get_ipa_punctuation_list,
     validate_locale,
 )
+
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     any_locale_text_preprocessing,
     chinese_text_preprocessing,
@@ -36,7 +44,131 @@ from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     spanish_text_preprocessing,
     vietnamese_text_preprocessing,
 )
+from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
+
+_TOKENIZER_MODULE = 'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers'
+_HINDI_CHARS_TOKENIZER_TARGET = f'{_TOKENIZER_MODULE}.HindiCharsTokenizer'
+_ARABIC_CHARS_TOKENIZER_TARGET = f'{_TOKENIZER_MODULE}.ArabicCharsTokenizer'
+_IPA_TOKENIZER_TARGET = f'{_TOKENIZER_MODULE}.IPATokenizer'
+
+DEFAULT_CHARSET_VERSION = 2
+DEFAULT_PUNCT_VERSION = 2
+DEFAULT_LOCALE_SPECIFIC_PUNCT = True
+
+
+@dataclass(frozen=True)
+class VersionedTokenizerField:
+    """A tokenizer default that changed after checkpoints had already been trained and released.
+
+    A config that leaves ``field`` unset is ambiguous: it is either an archive that predates the field
+    (whose vocabulary was built with ``legacy``) or a config written since (which means ``current``).
+    ``changed_in`` is what dates it, against the config's own ``nemo_version`` stamp.
+
+    Attributes:
+        field: The config key this entry resolves.
+        current: Value in force today. Must *be* the tokenizer's own default, not a copy of it.
+        legacy: Value in force before ``changed_in``.
+        changed_in: NeMo release that introduced ``current``.
+        applies_to: Whether the field is meaningful for a given tokenizer config node. Must exclude
+            tokenizers that do not accept the argument, and configs that already fix the vocabulary by
+            other means (an explicit ``chars`` makes ``charset_version`` inert).
+    """
+
+    field: str
+    current: Any
+    legacy: Any
+    changed_in: str
+    applies_to: Callable[[Mapping], bool]
+
+
+# Adding a versioned field, or flipping a default, is one new row. Both PRs that introduced these
+# (#15567, #15614) landed during 2.8.0rc0, each shipping the current default from day one. pt-BR is the
+# only locale with released checkpoints built on DEFAULT_PUNCTUATION instead of its own punctuation.
+# Test unset-ness with ``.get(...) is None``, never ``not in``: an explicit ``chars: null`` must read as
+# unset, since that is how the tokenizers themselves gate their version branches.
+VERSIONED_TOKENIZER_FIELDS = (
+    VersionedTokenizerField(
+        field='charset_version',
+        current=DEFAULT_CHARSET_VERSION,
+        legacy=1,
+        changed_in="2.8.0",
+        applies_to=lambda cfg: cfg.get('_target_') in (_HINDI_CHARS_TOKENIZER_TARGET, _ARABIC_CHARS_TOKENIZER_TARGET)
+        and cfg.get('chars') is None,
+    ),
+    VersionedTokenizerField(
+        field='punct_version',
+        current=DEFAULT_PUNCT_VERSION,
+        legacy=1,
+        changed_in="2.8.0",
+        applies_to=lambda cfg: cfg.get('_target_') == _HINDI_CHARS_TOKENIZER_TARGET
+        and cfg.get('non_default_punct_list') is None,
+    ),
+    VersionedTokenizerField(
+        field='locale_specific_punct',
+        current=DEFAULT_LOCALE_SPECIFIC_PUNCT,
+        legacy=False,
+        changed_in="2.8.0",
+        applies_to=lambda cfg: cfg.get('_target_') == _IPA_TOKENIZER_TARGET
+        and cfg.get('locale') == "pt-BR"
+        and cfg.get('non_default_punct_list') is None,
+    ),
+)
+
+
+def _predates_nemo_release(cfg_nemo_version: Optional[str], changed_in: str) -> bool:
+    """Whether a config stamped ``cfg_nemo_version`` was authored before ``changed_in``.
+
+    An unstamped config was hand-authored for fresh training, not serialized by ``ModelPT``, so it gets
+    today's defaults. Comparison is on ``Version.release`` so "2.8.0rc0" reads as 2.8.0 rather than as
+    older than it (PEP 440 orders pre-releases first). That resolves the entire 2.8.0rc0 window to the
+    current defaults even though the fields landed mid-window -- genuinely undecidable from the stamp,
+    tie-broken toward current because ArabicCharsTokenizer was added by the very commit that added
+    ``charset_version`` (so for Arabic this reading is always right), and because guessing legacy
+    downgrades new training silently while guessing current fails loudly. Released checkpoints from
+    that window pin their fields anyway, so none of them reach here.
+    """
+    if cfg_nemo_version is None:
+        return False
+    try:
+        return Version(str(cfg_nemo_version)).release < Version(changed_in).release
+    except InvalidVersion:
+        logging.warning(f"Unparseable nemo_version={cfg_nemo_version!r}; assuming current tokenizer defaults.")
+        return False
+
+
+def resolve_versioned_tokenizer_defaults(tokenizer_config, cfg_nemo_version: Optional[str] = None) -> Dict[str, Any]:
+    """Pin every unset versioned field of one tokenizer config node, in place.
+
+    Pinning the values rather than leaning on the class defaults is what makes a vocabulary survive a
+    ``.nemo`` round-trip, and leaves the config unambiguous for downstream ``setup_tokenizers`` calls.
+
+    Returns the fields that were backfilled, mapped to the values chosen for them.
+    """
+    if tokenizer_config.get('_target_') is None:
+        return {}
+
+    backfilled, legacy = {}, {}
+    for spec in VERSIONED_TOKENIZER_FIELDS:
+        if tokenizer_config.get(spec.field) is not None or not spec.applies_to(tokenizer_config):
+            continue
+        is_legacy = _predates_nemo_release(cfg_nemo_version, spec.changed_in)
+        value = spec.legacy if is_legacy else spec.current
+        with open_dict(tokenizer_config):
+            tokenizer_config[spec.field] = value
+        backfilled[spec.field] = value
+        if is_legacy:
+            legacy[spec.field] = value
+
+    # Only the legacy direction is worth reporting: it silently reproduces an older vocabulary.
+    if legacy:
+        settings = ", ".join(f"{field}={value}" for field, value in legacy.items())
+        logging.warning(
+            f"{tokenizer_config['_target_'].rsplit('.', 1)[-1]}: assuming {settings} from "
+            f"nemo_version={cfg_nemo_version}, which predates those fields. This reproduces the vocabulary "
+            f"the checkpoint was trained with; set them explicitly to opt into the current defaults."
+        )
+    return backfilled
 
 
 class BaseTokenizer(ABC):
@@ -107,14 +239,7 @@ class BaseCharsTokenizer(BaseTokenizer):
         text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
     """
 
-    # fmt: off
-    # TODO @xueyang: unify definition of the default PUNCT_LIST and import from ipa_lexicon.py
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
-    # fmt: on
+    PUNCT_LIST = DEFAULT_PUNCTUATION
 
     def __init__(
         self,
@@ -165,9 +290,8 @@ class BaseCharsTokenizer(BaseTokenizer):
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 
         # Remove trailing spaces
-        if cs:
-            while cs[-1] == space:
-                cs.pop()
+        while cs and cs[-1] == space:
+            cs.pop()
 
         if self.pad_with_space:
             cs = [space] + cs + [space]
@@ -383,12 +507,26 @@ class ItalianCharsTokenizer(BaseCharsTokenizer):
 class HindiCharsTokenizer(BaseCharsTokenizer):
     """Hindi grapheme tokenizer (character-based, no phonemes).
     Args:
+        chars: Explicit character set string. When provided, ``charset_version`` is ignored.
+        charset_version: Controls which default character set to use (only when ``chars`` is None).
+            ``2`` (default) — ``case="upper"`` Devanagari + ``ascii_letters``.
+            Hindi/Devanagari has no case distinction, so ``case="upper"`` avoids duplicating
+            every code-point. ``ascii_letters`` covers both upper- and lower-case English for
+            mixed-language text.
+            ``1`` — legacy ``case="mixed"`` Devanagari + ``ascii_lowercase``. Use this value to
+            restore models that were trained before the charset fix.
         punct: Whether to reserve grapheme for basic punctuation or not.
         apostrophe: Whether to use apostrophe or not.
         add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
             if None then no blank in labels.
         pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
         non_default_punct_list: List of punctuation marks which will be used instead default.
+            Overrides ``punct_version`` when explicitly provided.
+        punct_version: Punctuation set version (default 2).
+            2 — expanded set from ``get_ipa_punctuation_list("hi-IN")`` including dandas.
+            1 — legacy ``sorted(list(DEFAULT_PUNCTUATION))`` without dandas; emits
+            ``DeprecationWarning`` and will be removed in a future release.
+            Ignored when ``non_default_punct_list`` is explicitly provided.
         text_preprocessing_func: Text preprocessing function. Keeps Devanagari unchanged.
 
         Each Unicode code point becomes 1 token (not visual grapheme clusters)
@@ -401,19 +539,53 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
 
     _LOCALE = "hi-IN"
     _PUNCT_LIST = get_ipa_punctuation_list(_LOCALE)
-    _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="mixed")
-    _CHARSET_STR += string.ascii_lowercase
+    _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="upper") + string.ascii_letters
+    _PUNCT_LIST_V1 = sorted(list(DEFAULT_PUNCTUATION))
+    _CHARSET_STR_V1 = get_grapheme_character_set(locale=_LOCALE, case="mixed") + string.ascii_lowercase
 
     def __init__(
         self,
-        chars=_CHARSET_STR,
+        chars=None,
+        charset_version=DEFAULT_CHARSET_VERSION,
         punct=True,
         apostrophe=True,
         add_blank_at=None,
         pad_with_space=False,
-        non_default_punct_list=_PUNCT_LIST,
+        non_default_punct_list=None,
+        punct_version=DEFAULT_PUNCT_VERSION,
         text_preprocessing_func=any_locale_text_preprocessing,
     ):
+        if chars is None:
+            if charset_version == 1:
+                warnings.warn(
+                    "HindiCharsTokenizer charset_version=1 (case='mixed' + ascii_lowercase) is frozen: it is "
+                    "retained so that checkpoints trained on it stay loadable, and receives no further "
+                    "changes. New models should use charset_version=2 (case='upper' + ascii_letters).",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                chars = self._CHARSET_STR_V1
+            elif charset_version == 2:
+                chars = self._CHARSET_STR
+            else:
+                raise ValueError(
+                    f"HindiCharsTokenizer: unsupported charset_version={charset_version!r}. Use 1 (legacy) or 2."
+                )
+        if non_default_punct_list is None:
+            if punct_version == 1:
+                warnings.warn(
+                    "HindiCharsTokenizer: punct_version=1 uses DEFAULT_PUNCTUATION without dandas. It is frozen "
+                    "so that checkpoints trained on it stay loadable; new models should use punct_version=2.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                non_default_punct_list = self._PUNCT_LIST_V1
+            elif punct_version == 2:
+                non_default_punct_list = self._PUNCT_LIST
+            else:
+                raise ValueError(
+                    f"HindiCharsTokenizer: unsupported punct_version={punct_version}. Use 1 (legacy) or 2."
+                )
         super().__init__(
             chars=chars,
             punct=punct,
@@ -445,9 +617,100 @@ class HindiCharsTokenizer(BaseCharsTokenizer):
                 logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
 
         # Remove trailing spaces
-        if cs:
-            while cs[-1] == space:
-                cs.pop()
+        while cs and cs[-1] == space:
+            cs.pop()
+
+        if self.pad_with_space:
+            cs = [space] + cs + [space]
+
+        return [self._token2id[p] for p in cs]
+
+
+class ArabicCharsTokenizer(BaseCharsTokenizer):
+    """Arabic grapheme tokenizer (character-based, no phonemes).
+    Args:
+        chars: Explicit character set string. When provided, ``charset_version`` is ignored.
+        charset_version: Controls which default character set to use (only when ``chars`` is None).
+            ``2`` (default) — ``case="upper"`` Arabic + ``ascii_letters``.
+            Arabic script has no case distinction, so ``case="upper"`` avoids duplicating
+            every code-point. ``ascii_letters`` covers both upper- and lower-case English for
+            mixed-language text.
+            ``1`` — legacy ``case="mixed"`` Arabic + ``ascii_letters``. Use this value to
+            restore models that were trained before the charset fix.
+        punct: Whether to reserve grapheme for basic punctuation or not.
+        apostrophe: Whether to use apostrophe or not.
+        add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+        pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+        non_default_punct_list: List of punctuation marks which will be used instead default.
+        text_preprocessing_func: Text preprocessing function. Keeps Arabic unchanged.
+
+        Each Unicode code point becomes 1 token (letters, diacritics, and Arabic punct from ipa_lexicon).
+        Supports both upper and lower English letters (e.g. mixed-language text).
+
+        Input Text: مرحبا Hello
+        Chars: ['م', 'ر', 'ح', 'ب', 'ا', ' ', 'H', 'e', 'l', 'l', 'o']
+    """
+
+    _LOCALE = "ar-MSA"
+    _PUNCT_LIST = get_ipa_punctuation_list(_LOCALE)
+    _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="upper") + string.ascii_letters
+    _CHARSET_STR_V1 = get_grapheme_character_set(locale=_LOCALE, case="mixed") + string.ascii_letters
+
+    def __init__(
+        self,
+        chars=None,
+        charset_version=DEFAULT_CHARSET_VERSION,
+        punct=True,
+        apostrophe=True,
+        add_blank_at=None,
+        pad_with_space=False,
+        non_default_punct_list=_PUNCT_LIST,
+        text_preprocessing_func=any_locale_text_preprocessing,
+    ):
+        if chars is None:
+            if charset_version == 1:
+                warnings.warn(
+                    "ArabicCharsTokenizer charset_version=1 (case='mixed' + ascii_letters) is frozen: it is "
+                    "retained so that checkpoints trained on it stay loadable (the released v2607 MagpieTTS "
+                    "pins it), and receives no further changes. New models should use charset_version=2.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                chars = self._CHARSET_STR_V1
+            elif charset_version == 2:
+                chars = self._CHARSET_STR
+            else:
+                raise ValueError(
+                    f"ArabicCharsTokenizer: unsupported charset_version={charset_version!r}. Use 1 (legacy) or 2."
+                )
+        super().__init__(
+            chars=chars,
+            punct=punct,
+            apostrophe=apostrophe,
+            add_blank_at=add_blank_at,
+            pad_with_space=pad_with_space,
+            non_default_punct_list=non_default_punct_list,
+            text_preprocessing_func=text_preprocessing_func,
+        )
+
+    def encode(self, text):
+        """Encode Arabic text, handling diacritics and English (upper/lower) correctly."""
+        cs, space, tokens = [], self.tokens[self.space], set(self.tokens)
+
+        text = self.text_preprocessing_func(text)
+        for c in text:
+            if c == space and len(cs) > 0 and cs[-1] != space:
+                cs.append(c)
+            elif c in tokens and c != space:
+                cs.append(c)
+            elif (c in self.PUNCT_LIST) and self.punct:
+                cs.append(c)
+            elif c != space:
+                logging.warning(f"Text: [{text}] contains unknown char: [{c}]. Symbol will be skipped.")
+
+        while cs and cs[-1] == space:
+            cs.pop()
 
         if self.pad_with_space:
             cs = [space] + cs + [space]
@@ -467,14 +730,6 @@ class GermanPhonemesTokenizer(BaseCharsTokenizer):
         text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
             Currently, it only applies lower() function.
     """
-
-    # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
-    # fmt: on
 
     def __init__(
         self,
@@ -625,12 +880,9 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
             handled by g2p).
     """
 
+    PUNCT_LIST = DEFAULT_PUNCTUATION
+
     # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
     VOWELS = (
         'AA', 'AE', 'AH', 'AO', 'AW',
         'AY', 'EH', 'ER', 'EY', 'IH',
@@ -770,10 +1022,14 @@ class IPATokenizer(BaseTokenizer):
     Args:
         g2p: Grapheme to phoneme module, should be IpaG2p or some subclass thereof.
         locale: Locale used to determine default text processing logic and punctuation.
-            Supports ["en-US", "de-DE", "es-ES", "fr-FR"]. Defaults to "en-US".
+            See ``SUPPORTED_LOCALES`` in ``ipa_lexicon.py`` for the full list. Defaults to "en-US".
             Specify None if implementing custom logic for a new locale.
         punct: Whether to reserve grapheme for basic punctuation or not.
         non_default_punct_list: List of punctuation marks which will be used instead default, if any.
+        locale_specific_punct: Whether to use locale-specific punctuation (via ``get_ipa_punctuation_list``)
+            or only ``DEFAULT_PUNCTUATION``. Defaults to True. Set to False to preserve the token
+            vocabulary of checkpoints trained before locale-specific punctuation was introduced.
+            Currently only affects pt-BR. Ignored when ``non_default_punct_list`` is provided.
         fixed_vocab: List of valid grapheme/phoneme tokens for the model.
             Set only if overriding the default vocab generation process (reading from G2P dict).
             If set, any dataset entries that have unincluded graphemes will be filtered out, and any words whose
@@ -796,6 +1052,7 @@ class IPATokenizer(BaseTokenizer):
         locale="en-US",
         punct=True,
         non_default_punct_list=None,
+        locale_specific_punct=DEFAULT_LOCALE_SPECIFIC_PUNCT,
         fixed_vocab=None,
         *,
         space=' ',
@@ -848,8 +1105,10 @@ class IPATokenizer(BaseTokenizer):
         if punct:
             if non_default_punct_list is not None:
                 self.punct_list = non_default_punct_list
-            else:
+            elif locale_specific_punct:
                 self.punct_list = get_ipa_punctuation_list(locale)
+            else:
+                self.punct_list = sorted(list(DEFAULT_PUNCTUATION))
 
             tokens.update(self.punct_list)
 
@@ -961,14 +1220,8 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             handled by g2p).
     """
 
-    # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
+    PUNCT_LIST = DEFAULT_PUNCTUATION
     ZH_PUNCT_LIST = list("，。？！；：、‘’“”（）【】「」《》") + list(PUNCT_LIST)
-    # fmt: on
 
     def __init__(
         self,
@@ -1172,8 +1425,82 @@ class JapanesePhonemeTokenizer(BaseTokenizer):
         return [self._token2id[p] for p in ps]
 
 
+class IPABPETokenizer(TokenizerSpec):
+    """Simple IPA BPE tokenizer wrapper around HuggingFace tokenizers.
+
+    Args:
+        tokenizer_path: Path to the tokenizer.json file (or directory containing it).
+    """
+
+    def __init__(self, tokenizer_path: str):
+        if os.path.isdir(tokenizer_path):
+            tokenizer_file = os.path.join(tokenizer_path, "tokenizer.json")
+        else:
+            tokenizer_file = tokenizer_path
+
+        if not os.path.exists(tokenizer_file):
+            raise ValueError(f"Tokenizer file not found: {tokenizer_file}")
+
+        self._tokenizer = Tokenizer.from_file(tokenizer_file)
+        self.tokens = self._tokenizer.get_vocab()
+        phoneme_vocab_size = len(self.tokens)
+        self.bos_token_id = phoneme_vocab_size
+        self.eos_token_id = phoneme_vocab_size + 1
+        self.unk_token_id = phoneme_vocab_size + 2
+        self.vocab_size = phoneme_vocab_size + 3
+        self.tokens["<sp_bos>"] = self.bos_token_id
+        self.tokens["<sp_eos>"] = self.eos_token_id
+        self.tokens["<sp_unk>"] = self.unk_token_id
+        self._inv_vocab = {idx: token for token, idx in self.tokens.items()}
+        self.pad_token_id = self.tokens.get("<pad>", None)
+
+    def encode(self, text: str) -> List[int]:
+        """Encode IPA text to token IDs."""
+        return self._tokenizer.encode(text).ids
+
+    def decode(self, tokens: List[int]) -> str:
+        """Decode token IDs back to IPA text."""
+        return self._tokenizer.decode(tokens)
+
+    def text_to_tokens(self, text: str) -> List[str]:
+        """Convert text into token pieces."""
+        return self._tokenizer.encode(text).tokens
+
+    def tokens_to_text(self, tokens: List[str]) -> str:
+        """Convert token pieces back into text."""
+        return self.ids_to_text(self.tokens_to_ids(tokens))
+
+    def tokens_to_ids(self, tokens: List[str]) -> List[int]:
+        """Convert token pieces into IDs."""
+        return [self.tokens.get(token, self.unk_token_id) for token in tokens]
+
+    def ids_to_tokens(self, ids: List[int]) -> List[str]:
+        """Convert IDs into token pieces."""
+        return [self._inv_vocab.get(idx, "<sp_unk>") for idx in ids]
+
+    def text_to_ids(self, text: str) -> List[int]:
+        """Convert text directly into IDs."""
+        return self.encode(text)
+
+    def ids_to_text(self, ids: List[int]) -> str:
+        """Convert IDs back into text."""
+        return self.decode(ids)
+
+    @property
+    def bos(self):
+        return self.bos_token_id
+
+    @property
+    def eos(self):
+        return self.eos_token_id
+
+    @property
+    def pad(self):
+        return self.pad_token_id
+
+
 # TODO @xueyang: subclassing from `nemo/collections/common/tokenizers/tokenizer_spec.py::TokenizerSpec`, and/or
-#  adjust to reuse `nemo/collections/common/tokenizers/aggregate_tokenizer.py::AggregateTokenizer`
+# adjust to reuse `nemo/collections/common/tokenizers/aggregate_tokenizer.py::AggregateTokenizer`
 class AggregatedTTSTokenizer:
     """A simple aggregated tokenizer. Aggregates multiple tokenizers into one by combining (simply concatenating)
     their tokens into one vocabulary.
@@ -1202,7 +1529,13 @@ class AggregatedTTSTokenizer:
                 _tokens = list(tokenizer.get_vocab().keys())
                 tokens.extend(_tokens)
                 num_tokens = len(_tokens)
-                tokenizer_pad_ids[tokenizer_name] = tokenizer.pad_token_id + tokenizer_offset
+                pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.unk_token_id
+                if pad_token_id is None:
+                    raise ValueError(
+                        f"Tokenizer '{tokenizer_name}' has no pad_token_id or unk_token_id. "
+                        "Please set one before using with AggregatedTTSTokenizer."
+                    )
+                tokenizer_pad_ids[tokenizer_name] = pad_token_id + tokenizer_offset
             else:
                 raise ValueError("Tokenizers must be either BaseTokenizer or HuggingFace PreTrainedTokenizerBase.")
             tokenizer_offset += num_tokens
@@ -1216,8 +1549,11 @@ class AggregatedTTSTokenizer:
         self.tokenizer_pad_ids = tokenizer_pad_ids
         # Define aggregated token's pad value from the first tokenizer's pad value
         first_tokenizer = self.tokenizers[tokenizer_names[0]]
-        if hasattr(first_tokenizer, "pad_token_id"):  # Defined in PreTrainedTokenizerBase subclasses
+        self.first_tokenizer = first_tokenizer
+        if hasattr(first_tokenizer, "pad_token_id") and first_tokenizer.pad_token_id is not None:
             self.pad = first_tokenizer.pad_token_id
+        elif hasattr(first_tokenizer, "unk_token_id") and first_tokenizer.unk_token_id is not None:
+            self.pad = first_tokenizer.unk_token_id
         elif hasattr(first_tokenizer, "pad"):  # Defined in BaseTokenizer subclasses
             self.pad = first_tokenizer.pad
         else:

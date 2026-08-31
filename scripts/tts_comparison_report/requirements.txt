@@ -1,0 +1,7 @@
+boto3
+jinja2
+matplotlib
+numpy
+paramiko
+scipy
+tqdm

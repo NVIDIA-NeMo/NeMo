@@ -352,38 +352,9 @@ class TestSaveRestore:
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
-    def test_EncDecCTCModel(self):
-        # TODO: Switch to using named configs because here we don't really care about weights
-        qn = EncDecCTCModel.from_pretrained(model_name="QuartzNet15x5Base-En")
-        self.__test_restore_elsewhere(model=qn, attr_for_eq_check=set(["decoder._feat_in", "decoder._num_classes"]))
-
-    @pytest.mark.with_downloads()
-    @pytest.mark.unit
-    def test_EncDecCTCModelBPE(self):
-        # TODO: Switch to using named configs because here we don't really care about weights
-        cn = EncDecCTCModelBPE.from_pretrained(model_name="stt_en_citrinet_256")
-        self.__test_restore_elsewhere(model=cn, attr_for_eq_check=set(["decoder._feat_in", "decoder._num_classes"]))
-
-    @pytest.mark.with_downloads()
-    @pytest.mark.unit
     def test_EncDecCTCModelBPE_v2(self):
         # TODO: Switch to using named configs because here we don't really care about weights
         cn = EncDecCTCModelBPE.from_pretrained(model_name="stt_en_conformer_ctc_small")
-        self.__test_restore_elsewhere(model=cn, attr_for_eq_check=set(["decoder._feat_in", "decoder._num_classes"]))
-
-    @pytest.mark.with_downloads()
-    @pytest.mark.unit
-    def test_EncDecCTCModelBPE_v3(self):
-        # TODO: Switch to using named configs because here we don't really care about weights
-        cn = EncDecCTCModelBPE.from_pretrained(model_name="stt_en_squeezeformer_ctc_xsmall_ls")
-        self.__test_restore_elsewhere(model=cn, attr_for_eq_check=set(["decoder._feat_in", "decoder._num_classes"]))
-
-    @pytest.mark.with_downloads()
-    @pytest.mark.unit
-    def test_EncDecCTCModelBPE_HF(self):
-        # TODO: Switch to using named configs because here we don't really care about weights
-        # Specifically use ModelPT instead of EncDecCTCModelBPE in order to test target class resolution.
-        cn = ModelPT.from_pretrained(model_name="nvidia/stt_en_citrinet_256_ls")
         self.__test_restore_elsewhere(model=cn, attr_for_eq_check=set(["decoder._feat_in", "decoder._num_classes"]))
 
     @pytest.mark.unit
@@ -1336,7 +1307,7 @@ class TestSaveRestore:
     def test_hf_model_filter(self):
         filt = ModelPT.get_hf_model_filter()
         assert isinstance(filt, dict)
-        assert filt['library'] == 'nemo'
+        assert 'nemo' in filt['filter']
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
@@ -1446,3 +1417,23 @@ class TestSaveRestore:
                 assert expected_paths == observed_paths
         finally:
             os.chdir(cwd)
+
+
+class _NonTensorPayload:
+    """A non-tensor, picklable object that torch's weights_only unpickler rejects."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+@pytest.mark.unit
+def test_load_state_dict_honors_force_no_weights_only(tmp_path, monkeypatch):
+    """TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD must let a checkpoint with non-tensor objects load."""
+    ckpt = tmp_path / "weights.ckpt"
+    torch.save({"w": torch.zeros(2), "meta": _NonTensorPayload(11)}, ckpt)
+    monkeypatch.setenv("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+
+    state = save_restore_connector.SaveRestoreConnector._load_state_dict_from_disk(str(ckpt))
+
+    assert torch.equal(state["w"], torch.zeros(2))
+    assert state["meta"].value == 11

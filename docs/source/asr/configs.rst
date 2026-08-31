@@ -10,7 +10,7 @@ for audio files, parameters for any augmentation being performed, as well as the
 this page cover each of these in more detail.
 
 Example configuration files for all of the NeMo ASR scripts can be found in the
-`config directory of the examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/conf>`_.
+`config directory of the examples <https://github.com/NVIDIA-NeMo/Speech/tree/stable/examples/asr/conf>`_.
 
 .. _asr-configs-dataset-configuration:
 
@@ -98,98 +98,6 @@ For example, training data setup can be deferred as follows:
 
 .. _asr-configs-metric-configuration:
 
-Metric Configurations
----------------------
-
-NeMo ASR models supports WER and BLEU metric logging during training and validation. All metrics are based on the TorchMetrics backend, allowing for distributed training without additional code.
-
-Word Error Rate (WER)
-~~~~~~~~~~~~~~~~~~~~~
-
-WER is the default metric for all ASR models and measures transcription accuracy at the word or character level.
-
-.. code-block:: yaml
-
-  model:
-    use_cer: false                  # Set to true for Character Error Rate instead (default: false)
-    log_prediction: true            # Whether to log a sample prediction during training (default: true)
-    batch_dim_index: 0              # Index of batch dimension in prediction tensors output. Set to 1 for RNNT models.
-
-BLEU Score
-~~~~~~~~~~
-
-BLEU score can be used for ASR models to evaluate translation quality. NeMo's BLEU implementation is based on SacreBLEU for standardized, reproducible scoring:
-
-.. code-block:: yaml
-
-  model:
-    bleu_tokenizer: "13a"        # SacreBLEU tokenizer type (see below). (default: "13a")
-    n_gram: 4                    # Maximum n-gram order for BLEU calculation. (default: 4)
-    lowercase: false             # Whether to lowercase before computing BLEU. (default: False)
-    weights: null                # Optional custom weights for n-gram orders. (default: null)
-    smooth: false                # Whether to apply smoothing to BLEU calculation. (default: False)
-    check_cuts_for_bleu_tokenizers: false  # Enable per-sample tokenizer selection. (See below for more details.) (default: False)
-    log_prediction: true         # Whether to log sample predictions. (default: True)
-    batch_dim_index: 0           # Index of batch dimension in prediction tensors output. Set to 1 for RNNT models. (default: 0)
-
-BLEU score relies on TorchMetrics' SacreBLEU implementation and supports all SacreBLEU tokenization options. Valid strings may be passed to ``bleu_tokenizer`` parameter to configure base tokenizer behavior during BLEU calculation. Available options are:
-
-* ``"13a"`` - Default WMT tokenizer (mteval-v13a script compatible)
-* ``"none"`` - No tokenization applied
-* ``"intl"`` - International tokenization (mteval-v14 script compatible)  
-* ``"char"`` - Character-level tokenization (language-agnostic)
-* ``"zh"`` - Chinese tokenization (separates Chinese characters, uses 13a for non-Chinese)
-* ``"ja-mecab"`` - Japanese tokenization using MeCab morphological analyzer
-* ``"ko-mecab"`` - Korean tokenization using MeCab-ko morphological analyzer
-* ``"flores101"`` / ``"flores200"`` - SentencePiece models from Flores datasets
-
-**Note** Due to their unique orthographies, it is highly recommended to use ``zh``, ``ja-mecab``, or ``ko-mecab`` tokenizers for Chinese, Japanese, and Korean target evaluations, respectively. For more information on SacreBLEU tokenizers, please refer to the `SacreBLEU documentation <https://github.com/mjpost/sacrebleu>`__.
-
-**Dynamic Tokenizer Selection**
-
-In multilingual training scenarios, it is somtimes desireable to configure the BLEU tokenizer per sample to avoid sub-optimal parsing (e.g. tokenizing Chinese characters as English words). This can be toggled with ``check_cuts_for_bleu_tokenizers: true``. When enabled with Lhotse dataloading, BLEU will check individual ``cuts`` in a batch's Lhotse ``CutSet`` for the ``bleu_tokenizer`` attribute. If found, the tokenizer will be used for that sample. If not, the default ``bleu_tokenizer`` from config will be used.
-
-MultiTask Metrics
-~~~~~~~~~~~~~~~~~
-
-Multiple metrics can be configured simultaneously using a ``MultiTaskMetric`` config. This is done by specifying in the config each desired metric as a DictConfig entry with a custom key name and ``_target_`` path, along with desired properties. All properties specified within a metric config will be passed only to the metric class. All properties specified at the top level of the config will be inherited by all submetrics.
-
-.. code-block:: yaml
-
-  model:
-    multitask_metrics_config:
-      log_prediction: true
-      metrics:
-        wer:
-          _target_: nemo.collections.asr.metrics.wer.WER
-          use_cer: true
-          constraint: ".task==transcribe"  # Only apply WER to transcription samples
-        bleu:
-          _target_: nemo.collections.asr.metrics.bleu.BLEU
-          bleu_tokenizer: flores101
-          lowercase: true
-          check_cuts_for_bleu_tokenizers: true
-          constraint: ".task==translate"   # Only apply BLEU to translation samples
-
-**Metric Constraints**
-
-Each metric within ``MultiTaskMetric`` can be configured with an optional boolean ``constraint`` pattern that filters batch samples before metric computation. This allows validation to be limited to only applicable samples in a batch (e.g. only apply WER to transcription samples, only apply BLEU to translation samples). Constraint patterns match against property keywords in the batch's Lhotse CutSet.
-
-.. code-block:: yaml
-
-  model:
-    multitask_metrics_config:
-      metrics:
-        pnc_wer:
-          _target_: nemo.collections.asr.metrics.wer.WER
-          constraint: ".task==transcribe and .pnc==true"
-
-        multilingual_bleu:
-          _target_: nemo.collections.asr.metrics.bleu.BLEU
-          constraint: "(.source_lang!=.target_lang) or .task==translate"
-
-**Note:** MultiTaskMetric is currently only supported for AED multitask models.
-
 
 .. _asr-configs-preprocessor-configuration:
 
@@ -249,12 +157,15 @@ and ``time_*`` parameters).
 
 You can use any combination of ``Cutout``, frequency/time ``SpecAugment``, or neither of them.
 
-With NeMo ASR, you can also add augmentation pipelines that can be used to simulate various kinds of noise
-added to audio in the channel. Augmentors in a pipeline are applied on the audio data read in the data layer. Online
-augmentors can be specified in the config file using an ``augmentor`` section in ``train_ds``. The following example
-adds an augmentation pipeline that first adds white noise to an audio sample with a probability of 0.5 and at a level
-randomly picked between -50 dB and -10 dB and then passes the resultant samples through a room impulse response randomly
-picked from the manifest file provided for ``impulse`` augmentation in the config file.
+You can also add audio augmentation pipelines via an ``augmentor`` section in ``train_ds``.
+
+.. caution::
+   The ``augmentor`` pipeline is not supported by the Lhotse dataloader, which provides its own set of augmentation options.
+   See :doc:`Lhotse Dataloading </dataloaders>` for details.
+
+Augmentors are applied on-the-fly to audio data in the data layer. The following example
+adds white noise (probability 0.5, level between -50 dB and -10 dB) and room impulse response
+augmentation (probability 0.3, from a manifest of impulse responses):
 
 .. code-block:: yaml
 
@@ -272,6 +183,100 @@ picked from the manifest file provided for ``impulse`` augmentation in the confi
                 manifest_path: /path/to/impulse_manifest.json
 
 Refer to the :ref:`Audio Augmentors <asr-api-audio-augmentors>` API section for more details.
+
+
+Metric Configurations
+---------------------
+
+NeMo ASR models supports WER and BLEU metric logging during training and validation. All metrics are based on the TorchMetrics backend, allowing for distributed training without additional code.
+
+Word Error Rate (WER)
+~~~~~~~~~~~~~~~~~~~~~
+
+WER is the default metric for all ASR models and measures transcription accuracy at the word or character level.
+
+.. code-block:: yaml
+
+  model:
+    use_cer: false                  # Set to true for Character Error Rate instead (default: false)
+    log_prediction: true            # Whether to log a sample prediction during training (default: true)
+    batch_dim_index: 0              # Index of batch dimension in prediction tensors output. Set to 1 for RNNT models.
+
+BLEU Score
+~~~~~~~~~~
+
+BLEU score can be used for ASR models to evaluate translation quality. NeMo's BLEU implementation is based on SacreBLEU for standardized, reproducible scoring:
+
+.. code-block:: yaml
+
+  model:
+    bleu_tokenizer: "13a"        # SacreBLEU tokenizer type (see below). (default: "13a")
+    n_gram: 4                    # Maximum n-gram order for BLEU calculation. (default: 4)
+    lowercase: false             # Whether to lowercase before computing BLEU. (default: False)
+    weights: null                # Optional custom weights for n-gram orders. (default: null)
+    smooth: false                # Whether to apply smoothing to BLEU calculation. (default: False)
+    check_cuts_for_bleu_tokenizers: false  # Enable per-sample tokenizer selection. (See below for more details.) (default: False)
+    log_prediction: true         # Whether to log sample predictions. (default: True)
+    batch_dim_index: 0           # Index of batch dimension in prediction tensors output. Set to 1 for RNNT models. (default: 0)
+
+BLEU score relies on TorchMetrics' SacreBLEU implementation and supports all SacreBLEU tokenization options. Valid strings may be passed to ``bleu_tokenizer`` parameter to configure base tokenizer behavior during BLEU calculation. Available options are:
+
+* ``"13a"`` - Default WMT tokenizer (mteval-v13a script compatible)
+* ``"none"`` - No tokenization applied
+* ``"intl"`` - International tokenization (mteval-v14 script compatible)  
+* ``"char"`` - Character-level tokenization (language-agnostic)
+* ``"zh"`` - Chinese tokenization (separates Chinese characters, uses 13a for non-Chinese)
+* ``"ja-mecab"`` - Japanese tokenization using MeCab morphological analyzer
+* ``"ko-mecab"`` - Korean tokenization using MeCab-ko morphological analyzer
+* ``"flores101"`` / ``"flores200"`` - SentencePiece models from Flores datasets
+
+**Note** Due to their unique orthographies, it is highly recommended to use ``zh``, ``ja-mecab``, or ``ko-mecab`` tokenizers for Chinese, Japanese, and Korean target evaluations, respectively. For more information on SacreBLEU tokenizers, please refer to the `SacreBLEU documentation <https://github.com/mjpost/sacrebleu>`__.
+
+**Dynamic Tokenizer Selection**
+
+In multilingual training scenarios, it is sometimes desirable to configure the BLEU tokenizer per sample to avoid sub-optimal parsing (e.g. tokenizing Chinese characters as English words). This can be toggled with ``check_cuts_for_bleu_tokenizers: true``. When enabled with Lhotse dataloading, BLEU will check individual ``cuts`` in a batch's Lhotse ``CutSet`` for the ``bleu_tokenizer`` attribute. If found, the tokenizer will be used for that sample. If not, the default ``bleu_tokenizer`` from config will be used.
+
+MultiTask Metrics
+~~~~~~~~~~~~~~~~~
+
+Multiple metrics can be configured simultaneously using a ``MultiTaskMetric`` config. This is done by specifying in the config each desired metric as a DictConfig entry with a custom key name and ``_target_`` path, along with desired properties. All properties specified within a metric config will be passed only to the metric class. All properties specified at the top level of the config will be inherited by all submetrics.
+
+.. code-block:: yaml
+
+  model:
+    multitask_metrics_config:
+      log_prediction: true
+      metrics:
+        wer:
+          _target_: nemo.collections.asr.metrics.wer.WER
+          use_cer: true
+          constraint: ".task==transcribe"  # Only apply WER to transcription samples
+        bleu:
+          _target_: nemo.collections.asr.metrics.bleu.BLEU
+          bleu_tokenizer: flores101
+          lowercase: true
+          check_cuts_for_bleu_tokenizers: true
+          constraint: ".task==translate"   # Only apply BLEU to translation samples
+
+**Metric Constraints**
+
+Each metric within ``MultiTaskMetric`` can be configured with an optional boolean ``constraint`` pattern that filters batch samples before metric computation. This allows validation to be limited to only applicable samples in a batch (e.g. only apply WER to transcription samples, only apply BLEU to translation samples). Constraint patterns match against property keywords in the batch's Lhotse CutSet.
+
+.. code-block:: yaml
+
+  model:
+    multitask_metrics_config:
+      metrics:
+        pnc_wer:
+          _target_: nemo.collections.asr.metrics.wer.WER
+          constraint: ".task==transcribe and .pnc==true"
+
+        multilingual_bleu:
+          _target_: nemo.collections.asr.metrics.bleu.BLEU
+          constraint: "(.source_lang!=.target_lang) or .task==translate"
+
+**Note:** MultiTaskMetric is currently only supported for AED multitask models.
+
 
 Tokenizer Configurations
 ------------------------
@@ -394,265 +399,7 @@ Here is the list of the parameters in the model section which are shared among m
 |                         |                  |                                                                                                               | :code:`mean`, :code:`sum`       |
 +-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
 
-The following sections go into more detail about the specific configurations of each model architecture.
-
-For more information about the ASR models, refer to the :doc:`Models <./models>` section.
-
-Jasper and QuartzNet
-~~~~~~~~~~~~~~~~~~~~
-
-The :ref:`Jasper <Jasper_model>` and :ref:`QuartzNet <Quartznet_model>` models are very similar, and as such the components in their
-configs are very similar as well.
-
-Both architectures use the ``ConvASREncoder`` for the ``encoder``, with parameters detailed in the table below. The encoder parameters
-include details about the Jasper/QuartzNet ``[BxR]`` encoder architecture, including how many blocks to use (``B``), how many times
-to repeat each sub-block (``R``), and the convolution parameters for each block.
-
-The number of blocks ``B`` is determined by the number of list elements under ``jasper`` minus the one prologue and two epilogue blocks.
-The number of sub-blocks ``R`` is determined by setting the ``repeat`` parameter.
-
-To use QuartzNet (which uses more compact time-channel separable convolutions) instead of Jasper, add :code:`separable: true` to all
-but the last block in the architecture.
-
-Change the parameter name ``jasper``.
-
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+-------------------------------------+
-| **Parameter**           | **Datatype**     | **Description**                                                                                               | **Supported Values**                |
-+=========================+==================+===============================================================================================================+=====================================+
-| :code:`feat_in`         | int              | The number of input features. Should be equal to :code:`features` in the preprocessor parameters.             |                                     |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+-------------------------------------+
-| :code:`activation`      | string           | Which activation function to use in the encoder.                                                              | :code:`hardtanh`, :code:`relu`,     |
-|                         |                  |                                                                                                               | :code:`selu`, :code:`swish`         |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+-------------------------------------+
-| :code:`conv_mask`       | bool             | Whether to use masked convolutions in the encoder. Defaults to ``true``.                                      |                                     |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+-------------------------------------+
-| :code:`jasper`          |                  | A list of blocks that specifies your encoder architecture. Each entry in this list represents one block in    |                                     |
-|                         |                  | the architecture and contains the parameters for that block, including convolution parameters, dropout, and   |                                     |
-|                         |                  | the number of times the block is repeated. Refer to the `Jasper <https://arxiv.org/pdf/1904.03288.pdf>`_ and  |                                     |
-|                         |                  | `QuartzNet <https://arxiv.org/pdf/1910.10261.pdf>`_ papers for details about specific model configurations.   |                                     |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+-------------------------------------+
-
-A QuartzNet 15x5 (fifteen blocks, each sub-block repeated five times) encoder configuration should look similar to the following example:
-
-.. code-block:: yaml
-
-  # Specified at the beginning of the file for convenience
-  n_mels: &n_mels 64    # Used for both the preprocessor and encoder as number of input features
-  repeat: &repeat 5     # R=5
-  dropout: &dropout 0.0
-  separable: &separable true  # Set to true for QN. Set to false for Jasper.
-
-  model:
-    ...
-    encoder:
-      _target_: nemo.collections.asr.modules.ConvASREncoder
-      feat_in: *n_mels  # Should match "features" in the preprocessor.
-      activation: relu
-      conv_mask: true
-
-      jasper:   # This field name should be "jasper" for both types of models.
-
-      # Prologue block
-      - dilation: [1]
-        dropout: *dropout
-        filters: 256
-        kernel: [33]
-        repeat: 1   # Prologue block is not repeated.
-        residual: false
-        separable: *separable
-        stride: [2]
-
-      # Block 1
-      - dilation: [1]
-        dropout: *dropout
-        filters: 256
-        kernel: [33]
-        repeat: *repeat
-        residual: true
-        separable: *separable
-        stride: [1]
-
-      ... # Entries for blocks 2~14
-
-      # Block 15
-      - dilation: [1]
-        dropout: *dropout
-        filters: 512
-        kernel: [75]
-        repeat: *repeat
-        residual: true
-        separable: *separable
-        stride: [1]
-
-      # Two epilogue blocks
-      - dilation: [2]
-        dropout: *dropout
-        filters: 512
-        kernel: [87]
-        repeat: 1   # Epilogue blocks are not repeated
-        residual: false
-        separable: *separable
-        stride: [1]
-
-      - dilation: [1]
-        dropout: *dropout
-        filters: &enc_filters 1024
-        kernel: [1]
-        repeat: 1   # Epilogue blocks are not repeated
-        residual: false
-        stride: [1]
-
-Both Jasper and QuartzNet use the ``ConvASRDecoder`` as the decoder. The decoder parameters are detailed in the following table.
-
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
-| **Parameter**           | **Datatype**     | **Description**                                                                                               | **Supported Values**            |
-+=========================+==================+===============================================================================================================+=================================+
-| :code:`feat_in`         | int              | The number of input features to the decoder. Should be equal to the number of filters in the last block of    |                                 |
-|                         |                  | the encoder.                                                                                                  |                                 |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
-| :code:`vocabulary`      | list             | A list of the valid output characters for your model. For example, for an English dataset, this could be a    |                                 |
-|                         |                  | list of all lowercase letters, space, and apostrophe.                                                         |                                 |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
-| :code:`num_classes`     | int              | Number of output classes, i.e. the length of :code:`vocabulary`.                                              |                                 |
-+-------------------------+------------------+---------------------------------------------------------------------------------------------------------------+---------------------------------+
-
-For example, a decoder config corresponding to the encoder above should look similar to the following:
-
-.. code-block:: yaml
-
-  model:
-    ...
-    decoder:
-      _target_: nemo.collections.asr.modules.ConvASRDecoder
-      feat_in: *enc_filters
-      vocabulary: *labels
-      num_classes: 28   # Length of the vocabulary list
-
-Citrinet
-~~~~~~~~
-
-The :ref:`Citrinet <Citrinet_model>` and :ref:`QuartzNet <Quartznet_model>` models are very similar, and as such the
-components in their configs are very similar as well. Citrinet utilizes Squeeze and Excitation, as well as sub-word tokenization, in
-contrast to QuartzNet. Depending on the dataset, we utilize different tokenizers. For Librispeech, we utilize the HuggingFace WordPiece
-tokenizer, and for all other datasets we utilize the Google Sentencepiece tokenizer - usually the ``unigram`` tokenizer type.
-
-Both architectures use the ``ConvASREncoder`` for the ``encoder``, with parameters detailed above. The encoder parameters include
-details about the Citrinet-C encoder architecture, including how many filters are used per channel (``C``). The Citrinet-C
-configuration is a shortform notation for Citrinet-21x5xC, such that ``B = 21`` and ``R = 5`` are the default and should generally
-not be changed.
-
-To use Citrinet instead of QuartzNet, refer to the ``citrinet_512.yaml`` configuration found inside the ``examples/asr/conf/citrinet``
-directory. Citrinet is primarily comprised of the same :class:`~nemo.collections.asr.parts.submodules.jasper.JasperBlock` as ``Jasper`` or
-``QuartzNet``.
-
-While the configs for Citrinet and QuartzNet are similar, we note the additional flags used for Citrinet below. Refer to the
-``JasperBlock`` documentation for the meaning of these arguments.
-
-+---------------------------+------------------+-----------------------------------------------------------------------------------------------------------+-----------------------------------+
-| **Parameter**             | **Datatype**     | **Description**                                                                                           | **Supported Values**              |
-+===========================+==================+===========================================================================================================+===================================+
-| :code:`se`                | bool             | Whether to apply squeeze-and-excitation mechanism or not.                                                 | :code:`true` or :code:`false`     |
-+---------------------------+------------------+-----------------------------------------------------------------------------------------------------------+-----------------------------------+
-| :code:`se_context_size`   | int              | SE context size. -1 means global context.                                                                 | :code:`-1` or :code:`+ve int`     |
-+---------------------------+------------------+-----------------------------------------------------------------------------------------------------------+-----------------------------------+
-| :code:`stride_last`       | bool             | Stride on the final repeated block or all repeated blocks.                                                | :code:`true` or :code:`false`     |
-+---------------------------+------------------+-----------------------------------------------------------------------------------------------------------+-----------------------------------+
-| :code:`residual_mode`     | str              | Type of residual branch to construct.                                                                     | :code:`"add"` or                  |
-|                           |                  | Can be pointwise residual addition or pointwise strided residual attention                                | :code:`"stride_add"`              |
-+---------------------------+------------------+-----------------------------------------------------------------------------------------------------------+-----------------------------------+
-
-A Citrinet-512 config should look similar to the following:
-
-.. code-block:: yaml
-
-  model:
-    ...
-    # Specify some defaults across the entire model
-    model_defaults:
-      repeat: 5
-      dropout: 0.1
-      separable: true
-      se: true
-      se_context_size: -1
-    ...
-    encoder:
-      _target_: nemo.collections.asr.modules.ConvASREncoder
-      feat_in: *n_mels  # Should match "features" in the preprocessor.
-      activation: relu
-      conv_mask: true
-
-      jasper:   # This field name should be "jasper" for the JasperBlock (which constructs Citrinet).
-
-      # Prologue block
-      - filters: 512
-        repeat: 1
-        kernel: [5]
-        stride: [1]
-        dilation: [1]
-        dropout: 0.0
-        residual: false
-        separable: ${model.model_defaults.separable}
-        se: ${model.model_defaults.se}
-        se_context_size: ${model.model_defaults.se_context_size}
-
-      # Block 1
-      - filters: 512
-        repeat: ${model.model_defaults.repeat}
-        kernel: [11]
-        stride: [2]
-        dilation: [1]
-        dropout: ${model.model_defaults.dropout}
-        residual: true
-        separable: ${model.model_defaults.separable}
-        se: ${model.model_defaults.se}
-        se_context_size: ${model.model_defaults.se_context_size}
-        stride_last: true
-        residual_mode: "stride_add"
-
-      ... # Entries for blocks 2~21
-
-      # Block 22
-      - filters: 512
-        repeat: ${model.model_defaults.repeat}
-        kernel: [39]
-        stride: [1]
-        dilation: [1]
-        dropout: ${model.model_defaults.dropout}
-        residual: true
-        separable: ${model.model_defaults.separable}
-        se: ${model.model_defaults.se}
-        se_context_size: ${model.model_defaults.se_context_size}
-
-      # Epilogue block
-
-      - filters: &enc_final 640
-        repeat: 1
-        kernel: [41]
-        stride: [1]
-        dilation: [1]
-        dropout: 0.0
-        residual: false
-        separable: ${model.model_defaults.separable}
-        se: ${model.model_defaults.se}
-        se_context_size: ${model.model_defaults.se_context_size}
-
-As mentioned above, Citrinet uses the ``ConvASRDecoder`` as the decoder layer similar to QuartzNet. Only the configuration must be
-changed slightly as Citrinet utilizes sub-word tokenization.
-
-.. note::
-    The following information is relevant to any of the above models that implements its encoder as an :class:`~nemo.collections.asr.modules.conv_asr.ConvASREncoder`, and utilized the ``SqueezeExcite`` mechanism.
-
-The ``SqueezeExcite`` block within a :class:`~nemo.collections.asr.modules.conv_asr.ConvASREncoder` network can be modified to utilize a different context window after the model has been instantiated (even after the model has been trained) so as to evaluate the model with limited context. This can be achieved using the :meth:`~nemo.collections.asr.parts.mixins.mixins.ASRModuleMixin.change_conv_asr_se_context_window`
-
-.. code-block:: python
-
-    # Here, model can be any model that has a `ConvASREncoder` as its encoder, and utilized `SqueezeExcite` blocks
-    # `context_window` : It is an integer representing the number of timeframes (each corresponding to some window stride).
-    # `update_config` : Bool flag which determines whether the config of the model should be updated to reflect the new context window.
-
-    # Here, we specify that 128 timeframes of 0.01s stride should be the context window
-    # This is equivalent to 128 * 0.01s context window for `SqueezeExcite`
-    model.change_conv_asr_se_context_window(context_window=128, update_config=True)
+For more information about the ASR models, refer to the :doc:`Featured Models <./featured_models>` section.
 
 
 .. _asr-configs-conformer-ctc:
@@ -665,103 +412,24 @@ The config files for Conformer-CTC model contain character-based encoding and su
 respectively. Some components of the configs of :ref:`Conformer-CTC <Conformer-CTC_model>` include the following datasets:
 
 * ``train_ds``, ``validation_ds``, and ``test_ds``
-* opimizer (``optim``)
+* optimizer (``optim``)
 * augmentation (``spec_augment``)
 * ``decoder``
 * ``trainer``
 * ``exp_manager``
 
-These datasets are similar to other ASR models like :ref:`QuartzNet <Quartznet_model>`. There should be a tokenizer section where you can
+There should be a tokenizer section where you can
 specify the tokenizer if you want to use sub-word encoding instead of character-based encoding.
 
 
 The encoder section includes the details about the Conformer-CTC encoder architecture. You may find more information in the
 config files and also :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`.
 
-.. _asr-configs-squeezeformer-ctc:
-
-Squeezeformer-CTC
-~~~~~~~~~~~~~~~~~
-
-The config files for Squeezeformer-CTC model contain character-based encoding and sub-word encoding at
-``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_char.yaml`` and ``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_bpe.yaml``
-respectively. Components of the configs of :ref:`Squeezeformer-CTC <Squeezeformer-CTC_model>` are similar to :ref:`Conformer config <asr-configs-conformer-ctc>`.
-
-The encoder section includes the details about the Squeezeformer-CTC encoder architecture. You may find more information in the
-config files and also :ref:`nemo.collections.asr.modules.SqueezeformerEncoder <squeezeformer-encoder-api>`.
-
-
-ContextNet
-~~~~~~~~~~
-
-Please refer to the model page of :ref:`ContextNet <ContextNet_model>` for more information on this model.
 
 Conformer-Transducer
 ~~~~~~~~~~~~~~~~~~~~
 
 Please refer to the model page of :ref:`Conformer-Transducer <Conformer-Transducer_model>` for more information on this model.
-
-.. _asr-configs-lstm-transducer-and-ctc:
-
-LSTM-Transducer and LSTM-CTC
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The config files for LSTM-Transducer and LSTM-CTC models can be found at ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_transducer_bpe.yaml`` and ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_ctc_bpe.yaml`` respectively.
-Most of the of the configs of are similar to other ctc or transducer models. The main difference is the encoder part.
-The encoder section includes the details about the RNN-based encoder architecture. You may find more information in the
-config files and also :ref:`nemo.collections.asr.modules.RNNEncoder <rnn-encoder-api>`.
-
-
-InterCTC Config
----------------
-
-All CTC-based models also support `InterCTC loss <https://arxiv.org/abs/2102.03216>`_. To use it, you need to specify
-2 parameters as in example below
-
-.. code-block:: yaml
-
-   model:
-      # ...
-      interctc:
-        loss_weights: [0.3]
-        apply_at_layers: [8]
-
-which can be used to reproduce the default setup from the paper (assuming the total number of layers is 18).
-You can also specify multiple CTC losses from different layers, e.g., to get 2 losses from layers 3 and 8 with
-weights 0.1 and 0.3, specify:
-
-.. code-block:: yaml
-
-   model:
-      # ...
-      interctc:
-        loss_weights: [0.1, 0.3]
-        apply_at_layers: [3, 8]
-
-Note that the final-layer CTC loss weight is automatically computed to normalize
-all weight to 1 (0.6 in the example above).
-
-
-Stochastic Depth Config
------------------------
-
-`Stochastic Depth <https://arxiv.org/abs/2102.03216>`_ is a useful technique for regularizing ASR model training.
-Currently it's only supported for :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`. To
-use it, specify the following parameters in the encoder config file to reproduce the default setup from the paper:
-
-.. code-block:: yaml
-
-   model:
-      # ...
-      encoder:
-        # ...
-        stochastic_depth_drop_prob: 0.3
-        stochastic_depth_mode: linear  # linear or uniform
-        stochastic_depth_start_layer: 1
-
-See :ref:`documentation of ConformerEncoder <conformer-encoder-api>` for more details. Note that stochastic depth
-is supported for both CTC and Transducer model variations (or any other kind of model/loss that's using
-conformer as encoder).
 
 
 Transducer Configurations
@@ -806,7 +474,7 @@ The only condition that needs to be met is that **the final layer of the acousti
 Decoder / Prediction Model
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The Prediction model is generally an autoregressive, causal model that consumes text tokens and returns embeddings that will be used by the Joint model. The base config for an LSTM based Prediction network can be found in the the ``decoder`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+The Prediction model is generally an autoregressive, causal model that consumes text tokens and returns embeddings that will be used by the Joint model. The base config for an LSTM based Prediction network can be found in the ``decoder`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 
@@ -833,7 +501,7 @@ Let us discuss some of the important arguments:
 Joint Model
 ~~~~~~~~~~~
 
-The Joint model is a simple feed-forward Multi-Layer Perceptron network. This MLP accepts the output of the Acoustic and Prediction models and computes a joint probability distribution over the entire vocabulary space. The base config for the Joint network can be found in the the ``joint`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+The Joint model is a simple feed-forward Multi-Layer Perceptron network. This MLP accepts the output of the Acoustic and Prediction models and computes a joint probability distribution over the entire vocabulary space. The base config for the Joint network can be found in the ``joint`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 
@@ -907,13 +575,13 @@ Take the following example.
 
 BS=32 ; T (after 2x stride) = 800, U (with character encoding) = 400-450 tokens, Vocabulary size V = 28 (26 alphabet chars, space and apostrophe). Let the hidden dimension of the Joint model be 640 (Most Google Transducer papers use hidden dimension of 640).
 
-* :math:`Memory \, (Hidden, \, gb) = 32 \times 800 \times 450 \times 640 \times 4 = 29.49` gigabytes (4 bytes per float).
+* Memory (Hidden, gb) = 32 x 800 x 450 x 640 x 4 = 29.49 gigabytes (4 bytes per float).
 
-* :math:`Memory \, (Joint, \, gb) = 32 \times 800 \times 450 \times 28 \times 4 = 1.290` gigabytes (4 bytes per float)
+* Memory (Joint, gb) = 32 x 800 x 450 x 28 x 4 = 1.290 gigabytes (4 bytes per float)
 
 **NOTE**: This is just for the forward pass! We need to double this memory to store gradients! This much memory is also just for the Joint model **alone**. Far more memory is required for the Prediction model as well as the large Acoustic model itself and its gradients!
 
-Even with mixed precision, that's $\sim 30$ GB of GPU RAM for just 1 part of the network + its gradients.
+Even with mixed precision, that's ~30 GB of GPU RAM for just 1 part of the network + its gradients.
 
 Effect of Fused Batch Step
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -930,17 +598,17 @@ The fused operation goes as follows :
 
 2) Split the Acoustic Model's logits by ``fused_batch_size`` and loop over these sub-batches.
 
-3) Construct a sub-batch of same ``fused_batch_size`` for the Prediction model. Now the target sequence length is :math:`U_{sub-batch} < U`.
+3) Construct a sub-batch of same ``fused_batch_size`` for the Prediction model. Now the target sequence length is U_sub-batch < U.
 
-4) Feed this :math:`U_{sub-batch}` into the Joint model, along with a sub-batch from the Acoustic model (with :math:`T_{sub-batch} < T)`. Remember, we only have to slice off a part of the acoustic model here since we have the full batch of samples :math:`(B, T, D)` from the acoustic model.
+4) Feed this U_sub-batch into the Joint model, along with a sub-batch from the Acoustic model (with T_sub-batch < T). Remember, we only have to slice off a part of the acoustic model here since we have the full batch of samples (B, T, D) from the acoustic model.
 
-5) Performing steps (3) and (4) yields :math:`T_{sub-batch}` and :math:`U_{sub-batch}`. Perform sub-batch joint step - costing an intermediate :math:`(B, T_{sub-batch}, U_{sub-batch}, V)` in memory.
+5) Performing steps (3) and (4) yields T_sub-batch and U_sub-batch. Perform sub-batch joint step - costing an intermediate (B, T_sub-batch, U_sub-batch, V) in memory.
 
 6) Compute loss on sub-batch and preserve in a list to be later concatenated.
 
 7) Compute sub-batch metrics (such as Character / Word Error Rate) using the above Joint tensor and sub-batch of ground truth labels. Preserve the scores to be averaged across the entire batch later.
 
-8) Delete the sub-batch joint matrix  :math:`(B, T_{sub-batch}, U_{sub-batch}, V)`. Only gradients from .backward() are preserved now in the computation graph.
+8) Delete the sub-batch joint matrix (B, T_sub-batch, U_sub-batch, V). Only gradients from .backward() are preserved now in the computation graph.
 
 9) Repeat steps (3) - (8) until all sub-batches are consumed.
 
@@ -949,7 +617,7 @@ The fused operation goes as follows :
 Transducer Decoding
 ~~~~~~~~~~~~~~~~~~~
 
-Models which have been trained with CTC can transcribe text simply by performing a regular argmax over the output of their decoder. For transducer-based models, the three networks must operate in a synchronized manner in order to transcribe the acoustic features. The base config for the Transducer decoding step can be found in the the ``decoding`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+Models which have been trained with CTC can transcribe text simply by performing a regular argmax over the output of their decoder. For transducer-based models, the three networks must operate in a synchronized manner in order to transcribe the acoustic features. The base config for the Transducer decoding step can be found in the ``decoding`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 
@@ -977,7 +645,7 @@ The most important component at the top level is the ``strategy``. It can take o
 
     # Overrides the fused batch size after training.
     # Setting it to -1 will process whole batch at once when combined with `greedy_batch` decoding strategy
-    fused_batch_size: Optional[int] = -1
+    fused_batch_size: -1
 
     # greedy strategy config
     greedy:
@@ -998,7 +666,7 @@ The most important component at the top level is the ``strategy``. It can take o
 Transducer Loss
 ~~~~~~~~~~~~~~~
 
-This section configures the type of Transducer loss itself, along with possible sub-sections. By default, an optimized implementation of Transducer loss will be used which depends on Numba for CUDA acceleration. The base config for the Transducer loss section can be found in the the ``loss`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+This section configures the type of Transducer loss itself, along with possible sub-sections. By default, an optimized implementation of Transducer loss will be used which depends on Numba for CUDA acceleration. The base config for the Transducer loss section can be found in the ``loss`` section of Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 
@@ -1022,6 +690,60 @@ FastEmit Regularization
 FastEmit Regularization is supported for the default Numba based WarpRNNT loss. Recently proposed regularization approach - `FastEmit: Low-latency Streaming ASR with Sequence-level Emission Regularization <https://arxiv.org/abs/2010.11148>`_ allows us near-direct control over the latency of transducer models.
 
 Refer to the above paper for results and recommendations of ``fastemit_lambda``.
+
+For decoding customization (confidence scores, CUDA graphs, language models, word boosting), see :doc:`ASR Language Modeling and Customization <./asr_language_modeling_and_customization>`.
+
+
+InterCTC Config
+---------------
+
+All CTC-based models also support `InterCTC loss <https://arxiv.org/abs/2102.03216>`_. To use it, you need to specify
+2 parameters as in example below
+
+.. code-block:: yaml
+
+   model:
+      # ...
+      interctc:
+        loss_weights: [0.3]
+        apply_at_layers: [8]
+
+which can be used to reproduce the default setup from the paper (assuming the total number of layers is 18).
+You can also specify multiple CTC losses from different layers, e.g., to get 2 losses from layers 3 and 8 with
+weights 0.1 and 0.3, specify:
+
+.. code-block:: yaml
+
+   model:
+      # ...
+      interctc:
+        loss_weights: [0.1, 0.3]
+        apply_at_layers: [3, 8]
+
+Note that the final-layer CTC loss weight is automatically computed to normalize
+all weight to 1 (0.6 in the example above).
+
+
+Stochastic Depth Config
+-----------------------
+
+`Stochastic Depth <https://arxiv.org/abs/2102.03216>`_ is a useful technique for regularizing ASR model training.
+Currently it's only supported for :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`. To
+use it, specify the following parameters in the encoder config file to reproduce the default setup from the paper:
+
+.. code-block:: yaml
+
+   model:
+      # ...
+      encoder:
+        # ...
+        stochastic_depth_drop_prob: 0.3
+        stochastic_depth_mode: linear  # linear or uniform
+        stochastic_depth_start_layer: 1
+
+See :ref:`documentation of ConformerEncoder <conformer-encoder-api>` for more details. Note that stochastic depth
+is supported for both CTC and Transducer model variations (or any other kind of model/loss that's using
+conformer as encoder).
 
 
 .. _Hybrid-Transducer-CTC-Prompt_model__Config:
@@ -1105,98 +827,99 @@ A complete example configuration can be found at:
       model.tokenizer.dir=<path_to_tokenizer> \
       model.test_ds.manifest_filepath=<path_to_test_manifest>
 
-Fine-tuning Configurations
---------------------------
 
-All ASR scripts support easy fine-tuning by partially/fully loading the pretrained weights from a checkpoint into the **currently instantiated model**. Note that the currently instantiated model should have parameters that match the pre-trained checkpoint (such that weights may load properly). In order to directly fine-tune a pre-existing checkpoint, please follow the tutorial  `ASR Language Fine-tuning. <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_CTC_Language_Finetuning.ipynb>`_
+.. _RNNT-Prompt_model__Config:
 
-Models can be fine-tuned in two ways:
-* By updating or retaining current tokenizer alone
-* By updating model architecture and tokenizer
+RNN-T with Prompt Conditioning Configuration
+--------------------------------------------
 
-Fine-tuning by updating or retaining current tokenizer
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The :ref:`RNN-T model with prompt conditioning <RNNT-Prompt_model>`
+(``EncDecRNNTBPEModelWithPrompt``) is the RNN-T-only counterpart of the hybrid prompt model
+(no auxiliary CTC head). It targets cache-aware streaming multilingual ASR using the same
+one-hot language-ID prompt concatenation as the hybrid variant.
 
-In this case, the model architecture is not updated. The model is initialized with the pre-trained weights by
-two ways:
+**Key Configuration Parameters:**
 
-1) Providing a path to a NeMo model (via ``init_from_nemo_model``)
-2) Providing a name of a pretrained NeMo model (which will be downloaded via the cloud) (via ``init_from_pretrained_model``)
-
-Then users can use existing tokenizer or update the tokenizer with new vocabulary. This is useful when users don't want to update the model architecture
-but want to update the tokenizer with new vocabulary.
-
-The same script can be used to finetune CTC, RNNT or Hybrid models as well.
-
-<NeMo_repo>/examples/asr/speech_to_text_finetune.py script supports this type of fine-tuning with the following arguments:
-
-.. code-block:: sh
-
-    python examples/asr/speech_to_text_finetune.py \
-        --config-path=<path to dir of configs> \
-        --config-name=<name of config without .yaml>) \
-        model.train_ds.manifest_filepath="<path to manifest file>" \
-        model.validation_ds.manifest_filepath="<path to manifest file>" \
-        model.tokenizer.update_tokenizer=<True/False> \ # True to update tokenizer, False to retain existing tokenizer
-        model.tokenizer.dir=<path to tokenizer dir> \ # Path to tokenizer dir when update_tokenizer=True
-        model.tokenizer.type=<tokenizer type> \ # tokenizer type when update_tokenizer=True
-        trainer.devices=-1 \
-        trainer.accelerator='gpu' \
-        trainer.max_epochs=50 \
-        +init_from_nemo_model="<path to .nemo model file>" (or +init_from_pretrained_model="<name of pretrained checkpoint>")
-
-
-Refer to <NeMo_repo>/examples/asr/conf/asr_finetune/speech_to_text_finetune.yaml for more details.
-
-Finetune ASR Models using HuggingFace Datasets
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Users can utilize HuggingFace Datasets for finetuning NeMo ASR models. The following config file can be used for this purpose:
-`<NeMo_repo>/examples/asr/conf/asr_finetune/speech_to_text_hf_finetune.yaml`
-
-As mentioned earlier, users can update the tokenizer or use an existing one based on their requirements. If users want to create a new tokenizer
-from HuggingFace Datasets, they can use the following script:
-`<NeMo_repo>/scripts/tokenizers/get_hf_text_data.py`
-
-Fine-tuning by changing model architecture and tokenizer
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-If users want to update the model architecture as well they can use the following script:
-
-For providing pretrained model, users can provide Pre-trained weights in multiple ways -
-
-1) Providing a path to a NeMo model (via ``init_from_nemo_model``)
-2) Providing a name of a pretrained NeMo model (which will be downloaded via the cloud) (via ``init_from_pretrained_model``)
-3) Providing a path to a Pytorch Lightning checkpoint file (via ``init_from_ptl_ckpt``)
-
-There are multiple ASR subtasks inside the ``examples/asr/`` directory, you can substitute the ``<subtask>`` tag below.
-
-.. code-block:: sh
-
-    python examples/asr/<subtask>/script_to_<script_name>.py \
-        --config-path=<path to dir of configs> \
-        --config-name=<name of config without .yaml>) \
-        model.train_ds.manifest_filepath="<path to manifest file>" \
-        model.validation_ds.manifest_filepath="<path to manifest file>" \
-        trainer.devices=-1 \
-        trainer.accelerator='gpu' \
-        trainer.max_epochs=50 \
-        +init_from_nemo_model="<path to .nemo model file>" # (or +init_from_pretrained_model, +init_from_ptl_ckpt )
-
-To reinitialize part of the model, to make it different from the pretrained model, users can mention them through config:
+The prompt-specific parameters live in the ``model_defaults`` section, mirroring the hybrid
+variant:
 
 .. code-block:: yaml
 
-    init_from_nemo_model: "<path to .nemo model file>"
-        asr_model:
-            include: ["preprocessor","encoder"]
-            exclude: ["decoder"]
+  model:
+    model_defaults:
+      # Prompt Feature Configuration
+      initialize_prompt_feature: true  # Enable prompt conditioning
+      num_prompts: 128                 # Number of supported prompt categories
+      prompt_dictionary: {             # Mapping from identifiers to prompt indices
+        'en-US': 0,
+        'de-DE': 1,
+        'fr-FR': 2,
+        'es-ES': 3,
+        # ... additional language codes ...
+        'auto': 127,                   # Per-sample dynamic language (read from manifest)
+      }
 
-Fine-tuning Execution Flow Diagram
-----------------------------------
+**Dataset Configuration:**
 
-When preparing your own training or fine-tuning scripts, please follow the execution flow diagram order for correct inference.
+The model uses the same index-based Lhotse dataset
+(``LhotseSpeechToTextBpeDatasetWithPromptIndex``) as the hybrid model:
 
-Depending on the type of model, there may be extra steps that must be performed -
+.. code-block:: yaml
 
-* CTC Models - `Examples directory for CTC Models <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/asr_ctc/README.md>`_
-* RNN Transducer Models - `Examples directory for Transducer Models <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/asr_transducer/README.md>`_
+  model:
+    train_ds:
+      use_lhotse: true
+      initialize_prompt_feature: true
+      prompt_field: "target_lang"     # Field name for per-sample prompt extraction
+      prompt_dictionary: ${model.model_defaults.prompt_dictionary}
+      num_prompts: ${model.model_defaults.num_prompts}
+
+    validation_ds:
+      use_lhotse: true
+      initialize_prompt_feature: true
+      prompt_field: "target_lang"
+      prompt_dictionary: ${model.model_defaults.prompt_dictionary}
+      num_prompts: ${model.model_defaults.num_prompts}
+
+**Manifest Format:**
+
+Identical to the hybrid model — each entry needs a ``target_lang`` field:
+
+.. code-block:: json
+
+  {
+    "audio_filepath": "/path/to/audio.wav",
+    "text": "transcription text",
+    "duration": 10.5,
+    "target_lang": "en-US"
+  }
+
+**Example Configuration:**
+
+A cache-aware streaming RNN-T prompt config ships at:
+``<NeMo_git_root>/examples/asr/conf/fastconformer/cache_aware_streaming/fastconformer_transducer_bpe_streaming_prompt.yaml``
+
+**Training Command:**
+
+.. code-block:: bash
+
+  python <NeMo_git_root>/examples/asr/asr_transducer/speech_to_text_rnnt_bpe_prompt.py \
+      --config-path=<NeMo_git_root>/examples/asr/conf/fastconformer/cache_aware_streaming/ \
+      --config-name=fastconformer_transducer_bpe_streaming_prompt.yaml \
+      model.train_ds.manifest_filepath=<path_to_train_manifest> \
+      model.validation_ds.manifest_filepath=<path_to_val_manifest> \
+      model.tokenizer.dir=<path_to_tokenizer> \
+      model.test_ds.manifest_filepath=<path_to_test_manifest>
+
+**Streaming Inference:**
+
+The standard cache-aware streaming inference script accepts ``target_lang`` (and the optional
+``strip_lang_tags`` / ``lang_tag_pattern`` flags) for prompt-conditioned models:
+
+.. code-block:: bash
+
+  python <NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py \
+      model_path=<path_to_nemo_checkpoint> \
+      dataset_manifest=<path_to_manifest> \
+      target_lang=<en-US|auto|...> \
+      strip_lang_tags=true

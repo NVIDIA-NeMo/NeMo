@@ -13,10 +13,13 @@
 # limitations under the License.
 
 import os
+from types import SimpleNamespace
+
 import pytest
 import torch
 from lhotse import CutSet, SupervisionSegment
 from lhotse.testing.dummies import dummy_cut, dummy_recording
+from omegaconf import DictConfig
 
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.speechlm2.data.duplex_ear_tts_dataset import (
@@ -31,11 +34,31 @@ if torch.cuda.is_available():
     torch.set_default_device('cuda')
 
 
+def test_load_language_model_uses_configured_remote_code_policy(monkeypatch):
+    captured = {}
+
+    class DummyLanguageModel:
+        def eval(self):
+            return self
+
+    def fake_load_pretrained_hf(*args, **kwargs):
+        captured.update(kwargs)
+        return DummyLanguageModel()
+
+    monkeypatch.setattr("nemo.collections.speechlm2.models.duplex_ear_tts.load_pretrained_hf", fake_load_pretrained_hf)
+    cfg = DictConfig({"pretrained_lm_name": "untrusted/repository", "trust_remote_code": False})
+
+    DuplexEARTTS._load_language_model(SimpleNamespace(cfg=cfg), cfg)
+
+    assert captured["trust_remote_code"] is False
+
+
 test_eartts_config = {
     "model": {
         "pretrained_lm_name": "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
         "pretrained_ae_dir": None,
         "pretrained_tts_model": None,
+        "trust_remote_code": True,
         "scoring_asr": "stt_en_fastconformer_transducer_large",
         "freeze_params": [
             r"^audio_codec\..+$",  # Keep audio codec frozen as it only provides supervision for training.
@@ -53,6 +76,7 @@ test_eartts_config = {
         "inference_guidance_enabled": False,
         "subword_mask_exactly_as_eartts": False,
         "context_hidden_mask_exactly_as_eartts": False,
+        "exclude_norm_from_wd": True,
         "optimizer": {
             "_target_": "torch.optim.AdamW",
             "lr": 4e-5,
@@ -190,7 +214,7 @@ test_eartts_config = {
 }
 
 # set CI cached path
-if os.path.exists("/home/TestData/"):
+if os.path.exists("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"):
     test_eartts_config["model"]["pretrained_lm_name"] = "/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/"
 
 
@@ -277,7 +301,7 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         "target_texts",
         "audio_prompt",
         "audio_prompt_lens",
-        "formatter",
+        "task",
     }
 
     for key in expected_keys:
@@ -416,8 +440,8 @@ def test_eartts_dataset(dataset, training_cutset_batch):
         ]
     ]
 
-    # Check formatter
-    assert batch["formatter"] == ["s2s_duplex"]
+    # Check task
+    assert batch["task"] == ["s2s_duplex"]
 
 
 # test extra functions inside of eartts dataset

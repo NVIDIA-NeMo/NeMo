@@ -192,7 +192,7 @@ def main(cfg: EvaluationConfig):
             hypothesis_field="pred_text",
             metrics=metrics_to_compute,
             punctuation_marks=cfg.text_processing.punctuation_marks,
-            output_manifest_path=cfg.output_filename,
+            output_manifest_path=transcription_cfg.output_filename,
         )
 
     # Compute the WER

@@ -22,6 +22,8 @@ The script performs the following steps:
     (3) Runs inference on the input audio files.
     (4) Writes the transcriptions to an output json/jsonl file. Word/Segment level output is written to a separate JSON file.
 
+For cache-aware streaming, pass ``asr.use_cuda_graphs=true`` to enable encoder CUDA graphs.
+
 Example usage:
 python asr_streaming_infer.py \
         --config-path=../conf/asr_streaming_inference/ \
@@ -29,7 +31,6 @@ python asr_streaming_infer.py \
         audio_file=<path to audio file, directory of audio files, or manifest file> \
         output_filename=<path to output jsonfile> \
         lang=en \
-        enable_pnc=False \
         enable_itn=False \
         enable_nmt=False \
         asr_output_granularity=segment \
@@ -47,7 +48,11 @@ import hydra
 from nemo.collections.asr.inference.factory.pipeline_builder import PipelineBuilder
 
 from nemo.collections.asr.inference.utils.manifest_io import calculate_duration, dump_output, prepare_audio_data
-from nemo.collections.asr.inference.utils.pipeline_eval import calculate_pipeline_laal, evaluate_pipeline
+from nemo.collections.asr.inference.utils.pipeline_eval import (
+    calculate_asr_laal,
+    calculate_translation_laal,
+    evaluate_pipeline,
+)
 from nemo.collections.asr.inference.utils.progressbar import TQDMProgressBar
 
 from nemo.utils import logging
@@ -73,7 +78,11 @@ def main(cfg):
         raise ValueError("run_steps must be at least 1")
 
     # Reading audio filepaths
-    audio_filepaths, manifest, options, filepath_order = prepare_audio_data(cfg.audio_file, sort_by_duration=True)
+    audio_filepaths, manifest, options, filepath_order = prepare_audio_data(
+        cfg.audio_file,
+        per_stream_biasing_defaults=cfg.asr.get("per_stream_biasing_defaults", None),
+        sort_by_duration=True,
+    )
     logging.info(f"Found {len(audio_filepaths)} audio files")
     if manifest:
         keys = list(manifest[0].keys())
@@ -108,10 +117,15 @@ def main(cfg):
     rtfx = data_dur / exec_dur if exec_dur > 0 else float('inf')
     logging.info(f"RTFx: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")
 
-    # Calculate LAAL
-    laal = calculate_pipeline_laal(output, durations, manifest, cfg)
-    if laal is not None:
-        logging.info(f"LAAL: {laal:.2f}ms")
+    # Calculate ASR LAAL
+    asr_laal = calculate_asr_laal(output, durations, manifest, cfg)
+    if asr_laal is not None:
+        logging.info(f"ASR LAAL: {asr_laal:.2f}ms")
+
+    # Calculate Translation LAAL
+    st_laal = calculate_translation_laal(output, durations, manifest, cfg)
+    if st_laal is not None:
+        logging.info(f"ST LAAL: {st_laal:.2f}ms")
 
     # Dump the transcriptions to a output file
     dump_output(

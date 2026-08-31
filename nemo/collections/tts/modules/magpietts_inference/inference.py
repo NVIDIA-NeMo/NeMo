@@ -12,16 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Core inference logic for MagpieTTS.
+Core inference logic for MagpieTTS models.
 
-This module provides:
-- InferenceConfig: Dataclass for inference hyperparameters
-- MagpieInferenceRunner: Class for running batch inference with a loaded model
-  (supports auto-detection of longform text via longform_mode="auto")
+This module provides a strategy-pattern based inference framework with:
+- BaseInferenceConfig / MagpieInferenceConfig / EasyMagpieInferenceConfig
+- BaseInferenceRunner / MagpieInferenceRunner / EasyMagpieInferenceRunner
+
+MagpieInferenceRunner handles the encoder-decoder MagpieTTSModel
+(chunked text, generate_speech + codes_to_audio).
+
+EasyMagpieInferenceRunner handles the decoder-only EasyMagpieTTSInferenceModel
+(infer_batch, returns audio directly).
 """
 from __future__ import annotations
 
+import abc
 import glob
+import json
 import os
 import shutil
 import time
@@ -30,57 +37,72 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import soundfile as sf
 import torch
-from PIL import Image
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
+from nemo.collections.audio.parts.utils.transforms import resample
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import AggregatedTTSTokenizer, IPATokenizer
-from nemo.collections.tts.data.text_to_speech_dataset import LongFormTTSInferenceDataset, MagpieTTSDataset
-from nemo.collections.tts.models import MagpieTTSModel
+from nemo.collections.tts.data.text_to_speech_dataset import ChunkedTTSInferenceDataset, MagpieTTSDataset
+from nemo.collections.tts.models.easy_magpietts_inference import EasyModelInferenceParameters
 from nemo.collections.tts.models.magpietts import ModelInferenceParameters
-from nemo.collections.tts.parts.utils.tts_dataset_utils import stack_tensors
+from nemo.collections.tts.parts.utils.tts_dataset_utils import normalize_volume, stack_tensors
 from nemo.utils import logging
 
 
 @dataclass
-class InferenceConfig:
-    """Configuration for MagpieTTS inference.
+class BaseInferenceConfig(abc.ABC):
+    """Shared inference configuration fields.
+
+    Subclasses must declare their own ``model_inference_parameters`` field
+    with the appropriate type (ModelInferenceParameters or
+    EasyModelInferenceParameters).
 
     Attributes:
         batch_size: Batch size for inference.
         use_cfg: Whether to use classifier-free guidance.
-        apply_attention_prior: Whether to apply attention prior during decoding.
+        use_local_transformer: Whether to use local transformer for inference.
+    """
 
+    batch_size: int = 32
+    use_cfg: bool = False
+    use_local_transformer: bool = False
+    default_tokenizer_name: str = "english_phoneme"
+
+    @abc.abstractmethod
+    def build_identifier(self) -> str:
+        """Build a unique identifier string for naming output directories."""
+        pass
+
+    @staticmethod
+    def _format_layer_list(layers: Optional[List[int]]) -> str:
+        """Format a list of layer indices as a compact string."""
+        if layers is None:
+            return "None"
+        return "".join(str(_layer) for _layer in layers)
+
+
+@dataclass
+class MagpieInferenceConfig(BaseInferenceConfig):
+    """Configuration for encoder-decoder MagpieTTSModel inference.
+
+    Attributes:
         # Model specific inference parameters
         model_inference_parameters: See ModelInferenceParameters dataclass
 
-        # Local transformer / MaskGit parameters
-        use_local_transformer: Whether to use local transformer for inference.
+        # MaskGit parameters
         maskgit_n_steps: Number of MaskGit refinement steps.
         maskgit_noise_scale: Noise scale for MaskGit sampling.
         maskgit_fixed_schedule: Fixed schedule for MaskGit (optional).
         maskgit_sampling_type: Type of MaskGit sampling.
-
-        # Longform inference mode
-        longform_mode: Longform inference mode ("auto", "always", "never").
-        longform_word_threshold: Word threshold for auto-detection.
     """
 
-    # Core sampling parameters
-    batch_size: int = 32
-    use_cfg: bool = False
-    apply_attention_prior: bool = False
     model_inference_parameters: ModelInferenceParameters = field(default_factory=ModelInferenceParameters)
+    apply_attention_prior: bool = False
 
-    # Local transformer / MaskGit parameters
-    use_local_transformer: bool = False
+    # MaskGit parameters
     maskgit_n_steps: int = 3
     maskgit_noise_scale: float = 0.0
     maskgit_fixed_schedule: Optional[List[int]] = None
     maskgit_sampling_type: Optional[str] = None
-
-    # Longform inference mode
-    longform_mode: str = "auto"  # "auto" | "always" | "never"
-    longform_word_threshold: int = 40  # Word threshold for auto-detection
 
     def build_identifier(self) -> str:
         """Build a unique identifier string for this configuration.
@@ -111,7 +133,6 @@ class InferenceConfig:
         parts.extend(
             [
                 f"LT_{self.use_local_transformer}",
-                f"MaskGit_{self.maskgit_n_steps}_{self.maskgit_sampling_type}",
                 self._format_layer_list(self.maskgit_fixed_schedule),
                 f"EOS_{self.model_inference_parameters.eos_detection_method}",
                 f"IgnoreFST_{self.model_inference_parameters.ignore_finished_sentence_tracking}",
@@ -120,30 +141,51 @@ class InferenceConfig:
 
         return "_".join(parts)
 
-    @staticmethod
-    def _format_layer_list(layers: Optional[List[int]]) -> str:
-        """Format a list of layer indices as a compact string."""
-        if layers is None:
-            return "None"
-        return "".join(str(_layer) for _layer in layers)
 
+@dataclass
+class EasyMagpieInferenceConfig(BaseInferenceConfig):
+    """Configuration for decoder-only EasyMagpieTTSInferenceModel inference.
 
-class MagpieInferenceRunner:
-    """Runner class for MagpieTTS batch inference.
-
-    Encapsulates the logic for running inference on a dataset, saving outputs,
-    and collecting metrics.
+    Attributes:
+        model_inference_parameters: See EasyModelInferenceParameters dataclass
+        phoneme_input_type: Type of phoneme input ('gt' or 'predicted').
+        phoneme_sampling_method: Method of sampling phonemes ('argmax' or 'multinomial').
+        dropout_text_input: Whether to dropout text input.
     """
 
-    def __init__(
-        self,
-        model: MagpieTTSModel,
-        config: InferenceConfig,
-    ):
+    model_inference_parameters: EasyModelInferenceParameters = field(default_factory=EasyModelInferenceParameters)
+    phoneme_input_type: str = "gt"
+    phoneme_sampling_method: str = "argmax"
+    dropout_text_input: bool = False
+
+    def build_identifier(self) -> str:
+        parts = [
+            f"Temp{self.model_inference_parameters.temperature}",
+            f"Topk{self.model_inference_parameters.topk}",
+            f"Cfg_{self.use_cfg}_{self.model_inference_parameters.cfg_scale}",
+            f"LT_{self.use_local_transformer}",
+            f"Phoneme_{self.phoneme_input_type}_{self.phoneme_sampling_method}",
+        ]
+        return "_".join(parts)
+
+
+# Backwards-compatible aliases
+InferenceConfig = MagpieInferenceConfig
+
+
+class BaseInferenceRunner(abc.ABC):
+    """Abstract base for TTS inference runners.
+
+    Provides shared utilities (batch-to-cuda, file cleanup, reference audio
+    copying, RTF metrics) and declares the interface that concrete runners
+    must implement.
+    """
+
+    def __init__(self, model, config: BaseInferenceConfig):
         """Initialize the inference runner.
 
         Args:
-            model: Loaded MagpieTTS model (should be on GPU and in eval mode).
+            model: Loaded TTS model (should be on GPU and in eval mode).
             config: Inference configuration.
         """
         self.model = model
@@ -153,294 +195,112 @@ class MagpieInferenceRunner:
         self._configure_tokenizer()
 
         # Cached state from create_dataset (set when create_dataset is called)
-        self._use_longform: Optional[bool] = None
         self._manifest_records: Optional[List[dict]] = None
         self._audio_base_dir: Optional[str] = None
 
-    def _configure_tokenizer(self) -> None:
-        """Configure the tokenizer for inference (phoneme prob = 1.0)."""
-        g2p = None
-        if isinstance(self.model.tokenizer, AggregatedTTSTokenizer):
-            g2p = self.model.tokenizer.tokenizers["english_phoneme"].g2p
-        elif isinstance(self.model.tokenizer, IPATokenizer):
-            g2p = self.model.tokenizer.g2p
-
-        if g2p is not None:
-            g2p.phoneme_probability = 1.0
-
-    def _needs_longform_inference(self, manifest_records: List[dict]) -> bool:
-        """Determine if any manifest entry needs longform inference.
-
-        Checks if text exceeds character threshold OR has multiple sentences.
-
-        Args:
-            manifest_records: List of manifest record dictionaries.
-
-        Returns:
-            True if longform inference should be used, False otherwise.
-        """
-        if self.config.longform_mode == "always":
-            return True
-        if self.config.longform_mode == "never":
-            return False
-
-        # Auto-detection based on text characteristics
-        for record in manifest_records:
-            text = record.get('text', '')
-
-            # Check word count
-            word_count = len(text.split())
-            if word_count >= self.config.longform_word_threshold:
-                return True
-
-        return False
-
+    @abc.abstractmethod
     def create_dataset(
         self,
         dataset_meta: dict,
         context_duration_min: Optional[float] = None,
         context_duration_max: Optional[float] = None,
-    ) -> Union[MagpieTTSDataset, LongFormTTSInferenceDataset]:
-        """Create a dataset for inference.
-
-        Automatically creates the appropriate dataset type based on longform detection:
-        - LongFormTTSInferenceDataset if longform text is detected
-        - MagpieTTSDataset for standard inference
+    ) -> Union[ChunkedTTSInferenceDataset, MagpieTTSDataset]:
+        """Create an inference dataset from dataset metadata.
 
         Args:
-            dataset_meta: Dataset metadata dictionary with 'manifest_path' and 'audio_dir'.
-            context_duration_min: Minimum context duration (uses model default if None).
-            context_duration_max: Maximum context duration (uses model default if None).
+            dataset_meta: Dataset metadata dictionary with manifest and audio root.
+            context_duration_min: Minimum context duration in seconds, or None to use defaults.
+            context_duration_max: Maximum context duration in seconds, or None to use defaults.
 
         Returns:
-            Configured dataset instance (MagpieTTSDataset or LongFormTTSInferenceDataset).
+            A model-compatible inference dataset implementation.
         """
-        # Use model defaults if not specified
-        if context_duration_min is None:
-            context_duration_min = self.model.cfg.get('context_duration_min', 5.0)
-        if context_duration_max is None:
-            context_duration_max = self.model.cfg.get('context_duration_max', 5.0)
+        pass
 
-        # For multi-encoder models, use fixed 5s context for fair evaluation
-        if context_duration_min < 5.0 and context_duration_max > 5.0:
-            context_duration_min = 5.0
-            context_duration_max = 5.0
-
-        # Read manifest and cache for later use
-        dataset_name = list(dataset_meta.keys())[0]
-        dataset_info = dataset_meta[dataset_name]
-        manifest_path = dataset_info.get('manifest_path')
-        audio_dir = dataset_info.get('audio_dir', '')
-        logging.info(f"Dataset name: {dataset_name}, manifest_path: {manifest_path}, audio_dir: {audio_dir}")
-
-        self._manifest_records = read_manifest(manifest_path)
-        self._audio_base_dir = audio_dir
-        # Determine longform mode and cache
-        self._use_longform = self._needs_longform_inference(self._manifest_records)
-        logging.info(f"Longform detection: {self._use_longform} (mode: {self.config.longform_mode})")
-
-        # Create appropriate dataset type based on longform detection
-        if self._use_longform:
-            logging.info("Creating LongFormTTSInferenceDataset for longform inference")
-            dataset = self._create_longform_dataset(dataset_meta, context_duration_min, context_duration_max)
-        else:
-            logging.info("Creating MagpieTTSDataset for standard inference")
-            dataset = MagpieTTSDataset(
-                dataset_meta=dataset_meta,
-                sample_rate=self.model.output_sample_rate,
-                min_duration=0.5,
-                max_duration=20,
-                codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
-                bos_id=self.model.bos_id,
-                eos_id=self.model.eos_id,
-                num_audio_codebooks=self.model.num_audio_codebooks,
-                prior_scaling_factor=None,
-                load_cached_codes_if_available=False,
-                dataset_type='test',
-                tokenizer_config=None,
-                load_16khz_audio=self.model.model_type == 'single_encoder_sv_tts',
-                use_text_conditioning_tokenizer=self.model.use_text_conditioning_encoder,
-                text_conditioning_tokenizer_name=self.model.text_conditioning_tokenizer_name,
-                pad_context_text_to_max_duration=self.model.pad_context_text_to_max_duration,
-                context_duration_min=context_duration_min,
-                context_duration_max=context_duration_max,
-            )
-            # Attach model's tokenizer for standard dataset
-            dataset.text_tokenizer = self.model.tokenizer
-
-        return dataset
-
+    @abc.abstractmethod
     def run_inference_on_dataset(
         self,
-        dataset: Union[MagpieTTSDataset, LongFormTTSInferenceDataset],
+        dataset,
         output_dir: str,
         manifest_records: Optional[List[dict]] = None,
         audio_base_dir: Optional[str] = None,
         save_cross_attention_maps: bool = True,
         save_context_audio: bool = True,
         save_predicted_codes: bool = True,
-    ) -> Tuple[List[dict], List[str]]:
-        """Run inference on a dataset.
-
-        Routes to standard or longform inference based on the cached detection
-        from create_dataset(). Uses cached manifest_records and audio_base_dir
-        if not provided.
+    ) -> Tuple[List[dict], List[str], List[str]]:
+        """Run inference on a dataset and persist generated artifacts.
 
         Args:
-            dataset: The inference dataset (created by create_dataset()).
-            output_dir: Directory to save generated audio and artifacts.
-            manifest_records: Original manifest records (uses cached if None).
-            audio_base_dir: Base directory for audio paths (uses cached if None).
-            save_cross_attention_maps: Whether to save attention map images.
-            save_context_audio: Whether to copy context audio files.
-            save_predicted_codes: Whether to save predicted code files.
+            dataset: The inference dataset created by ``create_dataset``.
+            output_dir: Directory to save generated outputs.
+            manifest_records: Original manifest records (uses cached records if None).
+            audio_base_dir: Base directory for audio paths (uses cached value if None).
+            save_cross_attention_maps: Whether to save attention maps, if supported.
+            save_context_audio: Whether to copy context/target reference audio to output.
+            save_predicted_codes: Whether to save predicted codec tokens.
 
         Returns:
             Tuple of:
-                - rtf_metrics: List of real-time factor metrics per batch.
-                - generated_audio_paths: List of paths to generated audio files.
-                - codec_file_paths: List of paths to predicted codes files.
+                - rtf_metrics: Per-batch real-time factor metrics.
+                - generated_audio_paths: Paths to generated audio files.
+                - codec_file_paths: Paths to predicted codec token files.
         """
-        # Use cached values if not provided
+        pass
+
+    def _configure_tokenizer(self) -> None:
+        """Configure the tokenizer for inference (phoneme prob = 1.0)."""
+        g2p = None
+        if isinstance(self.model.tokenizer, AggregatedTTSTokenizer):
+            if "english_phoneme" in self.model.tokenizer.tokenizers and hasattr(
+                self.model.tokenizer.tokenizers["english_phoneme"], "g2p"
+            ):
+                g2p = self.model.tokenizer.tokenizers["english_phoneme"].g2p
+        elif isinstance(self.model.tokenizer, IPATokenizer):
+            g2p = self.model.tokenizer.g2p
+
+        if g2p is not None:
+            g2p.phoneme_probability = 1.0
+
+    def _resolve_manifest_and_audio_dir(
+        self,
+        manifest_records: Optional[List[dict]],
+        audio_base_dir: Optional[str],
+    ) -> Tuple[List[dict], str]:
         if manifest_records is None:
             if self._manifest_records is None:
                 raise ValueError("manifest_records not provided and not cached from create_dataset()")
             manifest_records = self._manifest_records
-
         if audio_base_dir is None:
             if self._audio_base_dir is None:
                 raise ValueError("audio_base_dir not provided and not cached from create_dataset()")
             audio_base_dir = self._audio_base_dir
+        return manifest_records, audio_base_dir
 
-        # Route based on cached longform detection
-        if self._use_longform:
-            logging.info("Using longform inference path")
-            return self._run_longform_inference(
-                dataset, output_dir, manifest_records, audio_base_dir, save_context_audio, save_predicted_codes
-            )
-        else:
-            logging.info("Using standard inference path")
-            return self._run_standard_inference(
-                dataset,
-                output_dir,
-                manifest_records,
-                audio_base_dir,
-                save_cross_attention_maps,
-                save_context_audio,
-                save_predicted_codes,
-            )
+    def _read_and_cache_manifest(self, dataset_meta: dict) -> Tuple[str, str]:
+        """Read manifest from dataset_meta, cache records, return (manifest_path, audio_dir)."""
+        dataset_name = list(dataset_meta.keys())[0]
+        dataset_info = dataset_meta[dataset_name]
+        manifest_path = dataset_info.get('manifest_path')
+        audio_dir = dataset_info.get('audio_dir', '')
+        logging.info(f"Dataset name: {dataset_name}, manifest_path: {manifest_path}, audio_dir: {audio_dir}")
+        self._manifest_records = read_manifest(manifest_path)
+        self._audio_base_dir = audio_dir
+        return manifest_path, audio_dir
 
-    def _run_standard_inference(
+    def _get_context_durations(
         self,
-        dataset: MagpieTTSDataset,
-        output_dir: str,
-        manifest_records: List[dict],
-        audio_base_dir: str,
-        save_cross_attention_maps: bool = True,
-        save_context_audio: bool = True,
-        save_predicted_codes: bool = True,
-    ) -> Tuple[List[dict], List[str]]:
-        """Run standard single-pass inference on a dataset.
-
-        Args:
-            dataset: The inference dataset.
-            output_dir: Directory to save generated audio and artifacts.
-            manifest_records: Original manifest records for metadata.
-            audio_base_dir: Base directory for resolving audio paths.
-            save_cross_attention_maps: Whether to save attention map images.
-            save_context_audio: Whether to copy context audio files.
-            save_predicted_codes: Whether to save predicted code files.
-
-        Returns:
-            Tuple of:
-                - rtf_metrics: List of real-time factor metrics per batch.
-                - generated_audio_paths: List of paths to generated audio files.
-                - codec_file_paths: List of paths to predicted codes files.
-        """
-        os.makedirs(output_dir, exist_ok=True)
-        self._delete_old_generated_files(output_dir)
-
-        dataloader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=self.config.batch_size,
-            collate_fn=dataset.collate_fn,
-            num_workers=2,
-            shuffle=False,
-        )
-
-        item_idx = 0
-        all_rtf_metrics = []
-        generated_audio_paths = []
-        codec_file_paths = []
-
-        for batch_idx, batch in enumerate(dataloader):
-            logging.info(f"Processing batch {batch_idx + 1}/{len(dataloader)}")
-
-            # Move batch to GPU
-            batch = self._batch_to_cuda(batch)
-
-            batch['sample_rate'] = self.model.output_sample_rate
-            batch['context_sample_rate'] = self.model.output_sample_rate
-
-            # Overwrite the model's parameters since we want to use the arguments from the commandline
-            self.model.inference_parameters = self.config.model_inference_parameters
-
-            # Run inference
-            start_time = time.time()
-            output = self.model.infer_batch(
-                batch,
-                use_cfg=self.config.use_cfg,
-                return_cross_attn_probs=save_cross_attention_maps,
-                use_local_transformer_for_inference=self.config.use_local_transformer,
-                maskgit_n_steps=self.config.maskgit_n_steps,
-                maskgit_noise_scale=self.config.maskgit_noise_scale,
-                maskgit_fixed_schedule=self.config.maskgit_fixed_schedule,
-                maskgit_sampling_type=self.config.maskgit_sampling_type,
-            )
-
-            predicted_audio = output.predicted_audio
-            predicted_audio_lens = output.predicted_audio_lens
-            predicted_codes = output.predicted_codes
-            predicted_codes_lens = output.predicted_codes_lens
-            rtf_metrics = output.rtf_metrics
-            cross_attention_maps = output.cross_attention_maps
-
-            all_rtf_metrics.append(rtf_metrics)
-            elapsed = time.time() - start_time
-            logging.info(f"Batch inference time: {elapsed:.2f}s, output shape: {predicted_audio.size()}")
-
-            # Save outputs for each item in batch
-            for idx in range(predicted_audio.size(0)):
-                # Save cross attention map
-                if save_cross_attention_maps and cross_attention_maps is not None:
-                    attn_map_image = Image.fromarray(cross_attention_maps[idx])
-                    attn_map_path = os.path.join(output_dir, f"cross_attn_map_{item_idx}.png")
-                    attn_map_image.save(attn_map_path)
-
-                # Save predicted audio
-                audio_np = predicted_audio[idx].float().detach().cpu().numpy()
-                audio_np = audio_np[: predicted_audio_lens[idx]]
-                audio_path = os.path.join(output_dir, f"predicted_audio_{item_idx}.wav")
-                sf.write(audio_path, audio_np, self.model.output_sample_rate)
-                generated_audio_paths.append(audio_path)
-
-                # Copy context and target audio if available
-                if save_context_audio:
-                    self._copy_reference_audio(
-                        manifest_records[item_idx],
-                        audio_base_dir,
-                        output_dir,
-                        item_idx,
-                    )
-
-                if save_predicted_codes:
-                    codes_path = os.path.join(output_dir, f"predicted_codes_{item_idx}.pt")
-                    predicted_codes_current = predicted_codes[idx, :, : predicted_codes_lens[idx]]  # C, T
-                    torch.save(predicted_codes_current, codes_path)
-                    codec_file_paths.append(codes_path)
-                item_idx += 1
-
-        return all_rtf_metrics, generated_audio_paths, codec_file_paths
+        context_duration_min: Optional[float],
+        context_duration_max: Optional[float],
+    ) -> Tuple[float, float]:
+        if context_duration_min is None:
+            context_duration_min = self.model.cfg.get('context_duration_min', 5.0)
+        if context_duration_max is None:
+            context_duration_max = self.model.cfg.get('context_duration_max', 5.0)
+        # For multi-encoder models, use fixed 5s context for fair evaluation
+        if context_duration_min < 5.0 and context_duration_max > 5.0:
+            context_duration_min = 5.0
+            context_duration_max = 5.0
+        return context_duration_min, context_duration_max
 
     @staticmethod
     def _batch_to_cuda(batch: dict) -> dict:
@@ -494,51 +354,95 @@ class MagpieInferenceRunner:
         """Compute mean RTF metrics across batches."""
         if not rtf_metrics_list or not rtf_metrics_list[0]:
             return {}
-
         mean_metrics = {}
         for key in rtf_metrics_list[0]:
             values = [m[key] for m in rtf_metrics_list if key in m]
             mean_metrics[key] = float(sum(values) / len(values)) if values else 0.0
-
         return mean_metrics
 
-    def _create_longform_dataset(
+
+class MagpieInferenceRunner(BaseInferenceRunner):
+    """Runner for encoder-decoder MagpieTTSModel.
+
+    Uses ChunkedTTSInferenceDataset and model.generate_speech() per chunk,
+    then codes_to_audio() to produce waveforms.
+    """
+
+    def __init__(self, model, config: MagpieInferenceConfig):
+        super().__init__(model, config)
+
+    def create_dataset(
         self,
         dataset_meta: dict,
         context_duration_min: Optional[float] = None,
         context_duration_max: Optional[float] = None,
-    ) -> LongFormTTSInferenceDataset:
-        """Create a longform dataset for inference.
+    ) -> ChunkedTTSInferenceDataset:
+        """Create a unified dataset for inference.
+
+        Always creates ChunkedTTSInferenceDataset which uses language-aware chunking
+        to automatically handle both short and long texts:
+        - Short text (below threshold): processed as single chunk
+        - Long text (above threshold): split into sentence chunks
 
         Args:
-            dataset_meta: Dataset metadata dictionary (same format as MagpieTTSDataset).
+            dataset_meta: Dataset metadata dictionary with 'manifest_path' and 'audio_dir'.
             context_duration_min: Minimum context duration (uses model default if None).
             context_duration_max: Maximum context duration (uses model default if None).
 
         Returns:
-            Configured LongFormTTSInferenceDataset instance.
+            Configured ChunkedTTSInferenceDataset instance.
         """
-        # Use model defaults if not specified
-        if context_duration_min is None:
-            context_duration_min = self.model.cfg.get('context_duration_min', 5.0)
-        if context_duration_max is None:
-            context_duration_max = self.model.cfg.get('context_duration_max', 5.0)
+        context_duration_min, context_duration_max = self._get_context_durations(
+            context_duration_min, context_duration_max
+        )
+        self._read_and_cache_manifest(dataset_meta)
 
-        # For multi-encoder models, use fixed 5s context for fair evaluation
-        if context_duration_min < 5.0 and context_duration_max > 5.0:
-            context_duration_min = 5.0
-            context_duration_max = 5.0
+        # Always use unified dataset (handles both short and long texts automatically)
+        # Language for chunking thresholds is determined per-sample from manifest
+        logging.info("Creating unified inference dataset")
+        dataset = self._create_chunked_inference_dataset(dataset_meta, context_duration_min, context_duration_max)
+        return dataset
 
-        # Determine tokenizer name
-        tokenizer_name = "english_phoneme"
-        if isinstance(self.model.tokenizer, AggregatedTTSTokenizer):
-            tokenizer_name = "english_phoneme"
+    def run_inference_on_dataset(
+        self,
+        dataset: ChunkedTTSInferenceDataset,
+        output_dir: str,
+        manifest_records: Optional[List[dict]] = None,
+        audio_base_dir: Optional[str] = None,
+        save_cross_attention_maps: bool = True,
+        save_context_audio: bool = True,
+        save_predicted_codes: bool = True,
+    ) -> Tuple[List[dict], List[str], List[str]]:
+        """Use the unified chunked inference path for encoder-decoder models."""
+        manifest_records, audio_base_dir = self._resolve_manifest_and_audio_dir(manifest_records, audio_base_dir)
+        logging.info("Using unified inference path")
+        return self._run_unified_inference(
+            dataset, output_dir, manifest_records, audio_base_dir, save_context_audio, save_predicted_codes
+        )
 
-        # Create dataset - inherits from MagpieTTSDataset, so uses same dataset_meta format
-        dataset = LongFormTTSInferenceDataset(
+    def _create_chunked_inference_dataset(
+        self,
+        dataset_meta: dict,
+        context_duration_min: float,
+        context_duration_max: float,
+    ) -> ChunkedTTSInferenceDataset:
+        """Create a unified inference dataset.
+
+        Creates ChunkedTTSInferenceDataset which uses language-aware chunking
+        to automatically handle both short and long texts.
+
+        Args:
+            dataset_meta: Dataset metadata dictionary (same format as MagpieTTSDataset).
+            context_duration_min: Minimum context duration.
+            context_duration_max: Maximum context duration.
+
+        Returns:
+            Configured ChunkedTTSInferenceDataset instance.
+        """
+        # Create unified dataset - language and tokenizer are determined per-sample from manifest
+        dataset = ChunkedTTSInferenceDataset(
             dataset_meta=dataset_meta,
             sample_rate=self.model.output_sample_rate,
-            tokenizer_name=tokenizer_name,
             codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
             eos_id=self.model.eos_id,
             num_audio_codebooks=self.model.num_audio_codebooks,
@@ -552,24 +456,25 @@ class MagpieInferenceRunner:
 
         # Attach model's tokenizer
         dataset.text_tokenizer = self.model.tokenizer
-
         return dataset
 
-    def _run_longform_inference(
+    def _run_unified_inference(
         self,
-        dataset: LongFormTTSInferenceDataset,
+        dataset: ChunkedTTSInferenceDataset,
         output_dir: str,
         manifest_records: List[dict],
         audio_base_dir: str,
         save_context_audio: bool = True,
         save_predicted_codes: bool = True,
     ) -> Tuple[List[dict], List[str], List[str]]:
-        """Run longform inference with automatic sentence chunking.
+        """Run unified inference with automatic single/multi-chunk handling.
 
-        Processes text sentence-by-sentence using generate_long_form_speech().
+        Processes all samples through generate_speech, passing
+        beginning_of_text and end_of_text so the model can handle both
+        single-chunk (short text) and multi-chunk (long text) cases correctly.
 
         Args:
-            dataset: LongFormTTSInferenceDataset created by create_dataset().
+            dataset: ChunkedTTSInferenceDataset created by create_dataset().
             output_dir: Directory to save generated audio and artifacts.
             manifest_records: List of manifest record dictionaries.
             audio_base_dir: Base directory for resolving audio paths.
@@ -599,19 +504,24 @@ class MagpieInferenceRunner:
         global_item_idx = 0
 
         for batch_idx, batch in enumerate(dataloader):
-            logging.info(f"Processing batch {batch_idx + 1}/{len(dataloader)} (longform)")
+            logging.info(f"Processing batch {batch_idx + 1}/{len(dataloader)}")
 
             # Move batch tensors to CUDA
             batch = self._batch_to_cuda(batch)
-
             batch['sample_rate'] = self.model.output_sample_rate
             batch['context_sample_rate'] = self.model.output_sample_rate
 
             batch_size = len(batch['chunked_tokens'])
             max_num_chunks = max(len(tokens) for tokens in batch['chunked_tokens'])
 
-            # Create longform chunk state for this batch
-            chunk_state = self.model.create_longform_chunk_state(batch_size=batch_size)
+            # Clear stale KV cache from prior inference calls (e.g., the previous batch or dataset
+            # may have left with populated tensors).
+            logging.info(f"Resetting KV cache for decoder: {self.model.use_kv_cache_for_inference}")
+            use_kv_cache_for_this_batch = self.model.use_kv_cache_for_inference if max_num_chunks == 1 else False
+            self.model.decoder.reset_cache(use_cache=use_kv_cache_for_this_batch)
+
+            # Create chunk state for this batch
+            chunk_state = self.model.create_chunk_state(batch_size=batch_size)
 
             # Accumulators for predicted codes
             predicted_codes_per_sample = [[] for _ in range(batch_size)]
@@ -621,7 +531,7 @@ class MagpieInferenceRunner:
             self.model.inference_parameters = self.config.model_inference_parameters
 
             start_time = time.time()
-            # Iterate over text chunks (sentences)
+            # Iterate over text chunks (1 for short text, N for long text)
             for chunk_idx in range(max_num_chunks):
                 # Extract current chunk tokens for each sample
                 current_tokens = []
@@ -635,15 +545,15 @@ class MagpieInferenceRunner:
                 batch['text'] = stack_tensors(current_tokens, max_lens=[max_len]).cuda()
                 batch['text_lens'] = torch.tensor(current_tokens_lens, dtype=torch.int32).cuda()
 
-                # Compute is_end_of_text flags
+                # Compute is_end_of_text flags (per-sample)
                 is_end_of_text = self._compute_end_of_text_flags(
                     batch, chunk_idx, max_num_chunks, current_tokens_lens, batch_size
                 )
 
                 beginning_of_text = chunk_idx == 0
 
-                # Call generate_long_form_speech
-                output = self.model.generate_long_form_speech(
+                # Call generate_speech (unified entry point)
+                output = self.model.generate_speech(
                     batch,
                     chunk_state=chunk_state,
                     end_of_text=is_end_of_text,
@@ -656,7 +566,7 @@ class MagpieInferenceRunner:
                     maskgit_sampling_type=self.config.maskgit_sampling_type,
                 )
 
-                # Unpack output - generate_long_form_speech returns InferBatchOutput
+                # Unpack output
                 chunk_codes = output.predicted_codes
                 chunk_codes_lens = output.predicted_codes_lens
 
@@ -665,7 +575,6 @@ class MagpieInferenceRunner:
                     # Skip if this sample's text has ended (padding chunks)
                     if is_end_of_text[b_idx] and current_tokens_lens[b_idx] == 1:
                         continue
-
                     code_len = chunk_codes_lens[b_idx]
                     if code_len > 0:
                         codes_slice = chunk_codes[b_idx][:, :code_len]
@@ -673,7 +582,7 @@ class MagpieInferenceRunner:
                         predicted_codes_lens[b_idx] += code_len
 
             elapsed = time.time() - start_time
-            logging.info(f"Batch longform inference time: {elapsed:.2f}s")
+            logging.info(f"Batch inference time: {elapsed:.2f}s")
 
             # Concatenate codes and convert to audio
             predicted_codes_list = []
@@ -690,8 +599,9 @@ class MagpieInferenceRunner:
             predicted_codes = stack_tensors(predicted_codes_list, max_lens=[max_code_len]).cuda()
             predicted_codes_lens_tensor = torch.tensor(predicted_codes_lens, dtype=torch.long, device='cuda')
 
-            predicted_audio, predicted_audio_lens, _ = self.model.codes_to_audio(
-                predicted_codes, predicted_codes_lens_tensor
+            predicted_audio, predicted_audio_lens, predicted_codes = self.model._codec_helper.codes_to_audio(
+                predicted_codes,
+                predicted_codes_lens_tensor,
             )
 
             # Compute RTF metrics
@@ -736,8 +646,8 @@ class MagpieInferenceRunner:
 
         return all_rtf_metrics, generated_audio_paths, codec_file_paths
 
+    @staticmethod
     def _compute_end_of_text_flags(
-        self,
         batch: Dict[str, Any],
         chunk_idx: int,
         max_num_chunks: int,
@@ -769,5 +679,1508 @@ class MagpieInferenceRunner:
                 is_end_of_text.append(True)
             else:
                 is_end_of_text.append(False)
-
         return is_end_of_text
+
+
+@dataclass
+class EasyMagpieMultiturnUserAudioInferenceConfig(EasyMagpieInferenceConfig):
+    """Configuration for EasyMagpie multiturn user-audio inference.
+
+    This mode keeps the standard EasyMagpie/MagpieTTS evaluation contract by
+    writing one evaluation row per generated agent turn:
+
+      predicted_audio_<idx>.wav
+      predicted_codes_<idx>.pt
+      target_audio_<idx>.wav
+      context_audio_<idx>.wav
+
+    The generated turn-level manifest is cached on the runner as
+    ``evaluation_manifest_path`` so the top-level inference script can pass it
+    to ``evaluate_generated_audio_dir``.
+    """
+
+    max_eval_turns: int = 6
+    save_debug_multiturn_audio: bool = True
+
+    def build_identifier(self) -> str:
+        return super().build_identifier() + f"_MTUserAudio_MaxTurns{self.max_eval_turns}"
+
+
+class EasyMagpieMultiturnUserAudioDataset(torch.utils.data.Dataset):
+    """Manifest dataset for turn-level multiturn user-audio EasyMagpie inference."""
+
+    def __init__(
+        self,
+        manifest_path: str,
+        audio_dir: str,
+        model,
+        max_eval_turns: int = 6,
+        normalize_audio: bool = True,
+    ):
+        self.manifest_path = manifest_path
+        self.audio_dir = audio_dir or ""
+        self.model = model
+        self.max_eval_turns = max_eval_turns
+        self.normalize_audio = normalize_audio
+        self.records = read_manifest(manifest_path)
+
+    def __len__(self):
+        return len(self.records)
+
+    def __getitem__(self, idx: int):
+        item = dict(self.records[idx])
+        item["idx"] = idx
+        return item
+
+    def _resolve_path(self, path: Optional[str]) -> Optional[str]:
+        if path is None or path == "":
+            return None
+        if os.path.isabs(path):
+            return path
+        return os.path.join(self.audio_dir, path)
+
+    def _load_audio_1d(self, path: str, sample_rate: int) -> torch.Tensor:
+        path = self._resolve_path(path)
+        if path is None or not os.path.exists(path):
+            raise FileNotFoundError(f"Missing audio path: {path}")
+
+        audio, sr = sf.read(path, dtype="float32", always_2d=False)
+
+        if audio.ndim == 2:
+            audio = audio.mean(axis=1)
+
+        if self.normalize_audio:
+            audio = normalize_volume(audio)
+
+        wav = torch.as_tensor(audio, dtype=torch.float32).flatten()
+
+        if sr != sample_rate:
+            wav = resample(wav.unsqueeze(0), sr, sample_rate).squeeze(0)
+
+        return wav.contiguous()
+
+    @staticmethod
+    def _as_turn_list(value) -> List[str]:
+        if isinstance(value, list):
+            return [str(x) for x in value]
+        return [str(value)]
+
+    @staticmethod
+    def _has_valid_turn_text(text: str) -> bool:
+        return any(ch.isalnum() for ch in str(text or ""))
+
+    def collate_fn(self, batch: List[dict]) -> Dict[str, Any]:
+        if len(batch) != 1:
+            raise RuntimeError("multiturn_user_audio inference currently requires batch_size=1.")
+
+        sample = batch[0]
+        model = self.model
+        sample_rate = model.sample_rate
+        main_tokenizer_name = list(model.cfg.text_tokenizers.keys())[0]
+
+        raw_turn_texts = self._as_turn_list(sample["text"])[: self.max_eval_turns]
+        max_turns = len(raw_turn_texts)
+
+        user_audio_paths = sample.get("user_audio_file_path", None)
+        if not isinstance(user_audio_paths, list):
+            user_audio_paths = []
+
+        # make the user audios path absolute if needed
+        user_audio_paths = [self._resolve_path(path) for path in user_audio_paths]
+
+        raw_user_audio_turns = []
+        for turn_id in range(max_turns):
+            if turn_id < len(user_audio_paths) and user_audio_paths[turn_id]:
+                wav = self._load_audio_1d(user_audio_paths[turn_id], sample_rate)
+            else:
+                wav = torch.zeros(int(2 * sample_rate), dtype=torch.float32)
+            raw_user_audio_turns.append(wav)
+
+        batched_turns = []
+        batched_turn_lens = []
+        valid_turn_masks = []
+        user_audio_turns = []
+        user_audio_turns_lens = []
+        turn_ids = []
+        pending_user_audio_turns = []
+        skipped_turns = 0
+        for turn_id, turn_text in enumerate(raw_turn_texts):
+            pending_user_audio_turns.append(raw_user_audio_turns[turn_id])
+            if not self._has_valid_turn_text(turn_text):
+                skipped_turns += 1
+                continue
+
+            ids = model.tokenizer.encode(turn_text, tokenizer_name=main_tokenizer_name) + [model.eos_id]
+            batched_turns.append(torch.tensor([ids], dtype=torch.long))
+            batched_turn_lens.append(torch.tensor([len(ids)], dtype=torch.long))
+            valid_turn_masks.append(torch.tensor([True], dtype=torch.bool))
+            wav = (
+                torch.cat(pending_user_audio_turns, dim=0)
+                if pending_user_audio_turns
+                else raw_user_audio_turns[turn_id]
+            )
+            user_audio_turns.append(wav.unsqueeze(0))
+            user_audio_turns_lens.append(torch.tensor([wav.numel()], dtype=torch.long))
+            turn_ids.append(turn_id)
+            pending_user_audio_turns = []
+
+        if skipped_turns > 0:
+            logging.info(
+                f"Skipping {skipped_turns} empty or punctuation-only multiturn agent turns "
+                f"for sample_idx={sample.get('idx')}"
+            )
+
+        context_path = self._resolve_path(sample.get("context_audio_filepath"))
+        context_audio = self._load_audio_1d(context_path, sample_rate).unsqueeze(0)
+        context_audio_lens = torch.tensor([context_audio.size(1)], dtype=torch.long)
+
+        target_turn_audio_paths = sample.get("target_audio_file_path", sample.get("target_audio_filepath", None))
+        if target_turn_audio_paths is None:
+            target_turn_audio_paths = []
+        elif not isinstance(target_turn_audio_paths, list):
+            target_turn_audio_paths = [target_turn_audio_paths]
+
+        # make the target audio path absolute if needed
+        target_turn_audio_paths = [self._resolve_path(path) for path in target_turn_audio_paths]
+        target_audio_path = self._resolve_path(sample.get("audio_filepath"))
+
+        return {
+            "idx": torch.tensor([int(sample["idx"])], dtype=torch.long),
+            "raw_record": sample,
+            "raw_turn_texts": [raw_turn_texts],
+            "batched_turns": batched_turns,
+            "batched_turn_lens": batched_turn_lens,
+            "valid_turn_masks": valid_turn_masks,
+            "turn_ids": turn_ids,
+            "context_audio": context_audio,
+            "context_audio_lengths": context_audio_lens,
+            "user_audio_turns": user_audio_turns,
+            "user_audio_turns_lens": user_audio_turns_lens,
+            "target_audio_path": target_audio_path,
+            "target_turn_audio_paths": target_turn_audio_paths,
+            "languages": [sample.get("language", "en")],
+        }
+
+
+class _InferenceSubset(torch.utils.data.Dataset):
+    """Subset wrapper that preserves the wrapped dataset collate_fn."""
+
+    def __init__(self, dataset, indices: List[int]):
+        self.dataset = dataset
+        self.indices = list(indices)
+        self.collate_fn = getattr(dataset, "collate_fn", None)
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx: int):
+        return self.dataset[self.indices[idx]]
+
+
+class EasyMagpieInferenceRunner(BaseInferenceRunner):
+    """Runner for decoder-only EasyMagpieTTSInferenceModel.
+
+    Uses MagpieTTSDataset and model.infer_batch() which returns audio directly.
+    """
+
+    def __init__(self, model, config: EasyMagpieInferenceConfig):
+        super().__init__(model, config)
+
+    def create_dataset(
+        self,
+        dataset_meta: dict,
+        context_duration_min: Optional[float] = None,
+        context_duration_max: Optional[float] = None,
+    ) -> MagpieTTSDataset:
+        context_duration_min, context_duration_max = self._get_context_durations(
+            context_duration_min, context_duration_max
+        )
+        self._read_and_cache_manifest(dataset_meta)
+
+        logging.info("Creating inference dataset for decoder-only model")
+        dataset = MagpieTTSDataset(
+            dataset_meta=dataset_meta,
+            sample_rate=self.model.sample_rate,
+            min_duration=None,
+            max_duration=None,
+            codec_model_samples_per_frame=self.model.codec_model_samples_per_frame,
+            bos_id=getattr(self.model, "bos_id", None),
+            eos_id=self.model.eos_id,
+            num_audio_codebooks=self.model.num_audio_codebooks,
+            prior_scaling_factor=None,
+            load_cached_codes_if_available=False,
+            dataset_type='test',
+            tokenizer_config=None,
+            load_16khz_audio=False,
+            use_text_conditioning_tokenizer=True,
+            text_conditioning_tokenizer_name=self.model.text_conditioning_tokenizer_name,
+            pad_context_text_to_max_duration=False,
+            context_duration_min=context_duration_min,
+            context_duration_max=context_duration_max,
+            ignore_phoneme_languages=self.model.cfg.get('ignore_phoneme_languages', []),
+            enable_phoneme_text_input=self.model.enable_phoneme_text_input,
+            text_phoneme_token_offset=self.model.text_phoneme_token_offset,
+            phoneme_text_bop_marker=self.model.phoneme_text_bop_marker,
+            phoneme_text_eop_marker=self.model.phoneme_text_eop_marker,
+            add_language_to_context_text=self.model.add_language_to_context_text,
+            default_tokenizer_name=self.config.default_tokenizer_name,
+        )
+        dataset.text_tokenizer = self.model.tokenizer
+
+        if hasattr(self.model, 'phoneme_tokenizer'):
+            dataset.phoneme_tokenizer = self.model.phoneme_tokenizer
+
+        return dataset
+
+    def run_inference_on_dataset(
+        self,
+        dataset: MagpieTTSDataset,
+        output_dir: str,
+        manifest_records: Optional[List[dict]] = None,
+        audio_base_dir: Optional[str] = None,
+        save_cross_attention_maps: bool = True,
+        save_context_audio: bool = True,
+        save_predicted_codes: bool = True,
+    ) -> Tuple[List[dict], List[str], List[str]]:
+        manifest_records, audio_base_dir = self._resolve_manifest_and_audio_dir(manifest_records, audio_base_dir)
+        logging.info("Using decoder-only inference path")
+        return self._run_decoder_only_inference(
+            dataset, output_dir, manifest_records, audio_base_dir, save_context_audio, save_predicted_codes
+        )
+
+    def _run_decoder_only_inference(
+        self,
+        dataset: MagpieTTSDataset,
+        output_dir: str,
+        manifest_records: List[dict],
+        audio_base_dir: str,
+        save_context_audio: bool = True,
+        save_predicted_codes: bool = True,
+    ) -> Tuple[List[dict], List[str], List[str]]:
+        os.makedirs(output_dir, exist_ok=True)
+        self._delete_old_generated_files(output_dir)
+
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=self.config.batch_size,
+            collate_fn=dataset.collate_fn,
+            num_workers=0,
+            shuffle=False,
+        )
+
+        all_rtf_metrics = []
+        generated_audio_paths = []
+        codec_file_paths = []
+        item_idx = 0
+        phoneme_sampling_method = (
+            "argmax" if self.config.phoneme_sampling_method == "greedy" else self.config.phoneme_sampling_method
+        )
+
+        for batch_idx, batch in enumerate(dataloader):
+            logging.info(f"Processing batch {batch_idx + 1}/{len(dataloader)}")
+            batch = self._batch_to_cuda(batch)
+            output = self.model.infer_batch(
+                batch,
+                max_decoder_steps=self.config.model_inference_parameters.max_decoder_steps,
+                temperature=self.config.model_inference_parameters.temperature,
+                topk=self.config.model_inference_parameters.topk,
+                use_cfg=self.config.use_cfg,
+                cfg_scale=self.config.model_inference_parameters.cfg_scale,
+                use_local_transformer_for_inference=self.config.use_local_transformer,
+                phoneme_input_type=self.config.phoneme_input_type,
+                phoneme_sampling_method=phoneme_sampling_method,
+                force_dropout_text=self.config.dropout_text_input,
+            )
+            predicted_audio = output.predicted_audio
+            predicted_audio_lens = output.predicted_audio_lens
+            predicted_codes = output.predicted_codes
+            predicted_codes_lens = output.predicted_codes_lens
+            rtf_metrics = output.rtf_metrics
+
+            all_rtf_metrics.append(rtf_metrics)
+            logging.info(f"Output shape: {predicted_audio.size()}")
+
+            for idx in range(predicted_audio.size(0)):
+                audio_len = predicted_audio_lens[idx].item()
+                audio_np = predicted_audio[idx].float().detach().cpu().numpy()[:audio_len]
+                audio_path = os.path.join(output_dir, f"predicted_audio_{item_idx}.wav")
+                sample_rate = getattr(self.model, "output_sample_rate", self.model.sample_rate)
+                sf.write(audio_path, audio_np, sample_rate)
+                generated_audio_paths.append(audio_path)
+
+                if save_context_audio and item_idx < len(manifest_records):
+                    self._copy_reference_audio(
+                        manifest_records[item_idx],
+                        audio_base_dir,
+                        output_dir,
+                        item_idx,
+                    )
+
+                if save_predicted_codes:
+                    code_len = predicted_codes_lens[idx].item()
+                    codes_path = os.path.join(output_dir, f"predicted_codes_{item_idx}.pt")
+                    torch.save(predicted_codes[idx, :, :code_len].detach().cpu(), codes_path)
+                    codec_file_paths.append(codes_path)
+
+                item_idx += 1
+
+        return all_rtf_metrics, generated_audio_paths, codec_file_paths
+
+
+class EasyMagpieMultiturnUserAudioInferenceRunner(BaseInferenceRunner):
+    """Runner for decoder-only EasyMagpieTTS multiturn user-audio inference.
+
+    It generates one agent turn at a time using user-audio prefill, but writes
+    outputs using the standard EasyMagpie evaluation contract. Therefore the
+    existing magpietts_inference.py evaluation code can call
+    evaluate_generated_audio_dir() unchanged.
+    """
+
+    produces_turn_level_evaluation: bool = True
+
+    def __init__(self, model, config: EasyMagpieMultiturnUserAudioInferenceConfig):
+        if config.batch_size != 1:
+            raise ValueError("EasyMagpie multiturn user-audio inference requires batch_size=1.")
+        super().__init__(model, config)
+        self.evaluation_manifest_path: Optional[str] = None
+        self.evaluation_audio_dir: Optional[str] = None
+        self.evaluation_manifest_records: Optional[List[dict]] = None
+
+        # Used by examples/tts/magpietts_inference.py for torchrun sharding.
+        self.distributed_rank: int = int(os.environ.get("RANK", "0"))
+        self.distributed_world_size: int = int(os.environ.get("WORLD_SIZE", "1"))
+
+    def create_dataset(
+        self,
+        dataset_meta: dict,
+        context_duration_min: Optional[float] = None,
+        context_duration_max: Optional[float] = None,
+    ) -> EasyMagpieMultiturnUserAudioDataset:
+        manifest_path, audio_dir = self._read_and_cache_manifest(dataset_meta)
+        logging.info("Creating multiturn user-audio inference dataset for decoder-only model")
+        return EasyMagpieMultiturnUserAudioDataset(
+            manifest_path=manifest_path,
+            audio_dir=audio_dir,
+            model=self.model,
+            max_eval_turns=self.config.max_eval_turns,
+            normalize_audio=True,
+        )
+
+    def set_distributed_context(self, rank: int, world_size: int) -> None:
+        self.distributed_rank = int(rank)
+        self.distributed_world_size = int(world_size)
+
+    def run_inference_on_dataset(
+        self,
+        dataset: EasyMagpieMultiturnUserAudioDataset,
+        output_dir: str,
+        manifest_records: Optional[List[dict]] = None,
+        audio_base_dir: Optional[str] = None,
+        save_cross_attention_maps: bool = True,
+        save_context_audio: bool = True,
+        save_predicted_codes: bool = True,
+    ) -> Tuple[List[dict], List[str], List[str]]:
+        manifest_records, audio_base_dir = self._resolve_manifest_and_audio_dir(manifest_records, audio_base_dir)
+        return self._run_multiturn_user_audio_inference(
+            dataset=dataset,
+            output_dir=output_dir,
+            manifest_records=manifest_records,
+            audio_base_dir=audio_base_dir,
+            save_context_audio=save_context_audio,
+            save_predicted_codes=save_predicted_codes,
+        )
+
+    @staticmethod
+    def _move_batch_to_device(batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
+        out = {}
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor):
+                out[key] = value.to(device)
+            elif isinstance(value, list):
+                out[key] = [v.to(device) if isinstance(v, torch.Tensor) else v for v in value]
+            else:
+                out[key] = value
+        return out
+
+    @staticmethod
+    def _copy_file(src: Optional[str], dst: str, required: bool = False, description: str = "audio") -> Optional[str]:
+        """Copy an audio artifact and optionally fail fast if missing.
+
+        Evaluation later expects target_audio_*.wav/context_audio_*.wav to exist.
+        Silently skipping those files makes evaluate_generated_audio_dir fail much
+        later with a less useful FileNotFoundError, so target/context paths should
+        call this with required=True.
+        """
+        if src is None or src == "":
+            if required:
+                raise FileNotFoundError(f"Missing required {description}: source path is empty for destination {dst}")
+            return None
+        if not os.path.exists(src):
+            if required:
+                raise FileNotFoundError(
+                    f"Missing required {description}: source path does not exist: {src}; destination would be: {dst}"
+                )
+            return None
+
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.lexists(dst):
+            os.remove(dst)
+        shutil.copy(src, dst)
+
+        if required and not os.path.exists(dst):
+            raise FileNotFoundError(f"Failed to materialize required {description}: src={src}, dst={dst}.")
+        return dst
+
+    def _resolve_audio_path(self, path: Optional[str], audio_base_dir: str) -> Optional[str]:
+        if path is None or path == "":
+            return None
+        if os.path.isabs(path):
+            return path
+        return os.path.join(audio_base_dir, path)
+
+    def _ensure_codec_silence_codes(self) -> torch.Tensor:
+        """Ensure silence codec codes exist before streaming_prefill.
+
+        Newer EasyMagpieTTSInferenceModel exposes codec_sil_codes as a @property
+        backed by _codec_sil_codes_buffer. Some older branches/checkpoints do not
+        have that property, but still have _generate_codec_silence_buffer(). This
+        helper supports both cases and creates a plain module attribute fallback
+        when the property is absent.
+        """
+        if not hasattr(self.model, "_codec_sil_codes_buffer"):
+            if not hasattr(self.model, "_generate_codec_silence_buffer"):
+                raise AttributeError(
+                    "Model does not have _codec_sil_codes_buffer or _generate_codec_silence_buffer(); "
+                    "cannot run multiturn_user_audio prefill."
+                )
+            self.model._generate_codec_silence_buffer()
+
+        class_codec_sil_codes = getattr(type(self.model), "codec_sil_codes", None)
+        if class_codec_sil_codes is None:
+            # Compatibility with branches where streaming_prefill expects
+            # self.codec_sil_codes but the @property was not added.
+            self.model.codec_sil_codes = self.model._codec_sil_codes_buffer
+            if hasattr(self.model, "_codec_sil_codes_buffer_unconverted"):
+                self.model.codec_sil_codes_unconverted = self.model._codec_sil_codes_buffer_unconverted
+
+        return self.model._codec_sil_codes_buffer.to(self.model.device).long()
+
+    @staticmethod
+    def _left_pad_raw_audio_if_short(
+        user_audio: torch.Tensor,
+        user_audio_lens: torch.Tensor,
+        min_len: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Left-pad one raw user-audio turn with silence only when it is shorter than min_len."""
+        min_len = int(min_len)
+        if min_len <= 0:
+            return user_audio, user_audio_lens
+        if user_audio_lens.numel() != 1:
+            raise RuntimeError("multiturn_user_audio raw-audio left padding expects batch_size=1.")
+
+        # In this runner each user turn is kept as its own [1, T] tensor, so T
+        # is the valid raw-audio length. Checking size(-1) avoids a CUDA sync
+        # from user_audio_lens[0].item() in the common no-padding path.
+        current_len = int(user_audio.size(-1))
+        if current_len >= min_len:
+            return user_audio, user_audio_lens
+
+        padded_audio = user_audio.new_zeros(user_audio.shape[:-1] + (min_len,))
+        if current_len > 0:
+            padded_audio[..., -current_len:] = user_audio
+
+        padded_lens = user_audio_lens.new_full(user_audio_lens.shape, min_len)
+        return padded_audio, padded_lens
+
+    def _run_multiturn_generation(self, batch: Dict[str, Any]):
+        model = self.model
+        device = model.device
+        B = int(batch["context_audio"].size(0))
+        if B != 1:
+            raise RuntimeError("multiturn_user_audio generation requires batch_size=1.")
+
+        with torch.inference_mode():
+            # streaming_prefill reads self.model.codec_sil_codes, so make
+            # sure the silence buffer/property exists before entering the turn loop.
+            self._ensure_codec_silence_codes()
+
+            wav = batch["context_audio"]
+            wav_len = batch["context_audio_lengths"]
+            codes, codes_lens = model._codec_helper.audio_to_codes(wav, wav_len)
+
+            # add language on context if needed
+            use_lang = bool(getattr(model, "add_language_to_context_text", False))
+
+            languages = batch.get("languages", None)
+            if languages is None:
+                raise RuntimeError("Missing batch['languages']; collate_fn must provide one language per sample.")
+
+            if not isinstance(languages, (list, tuple)):
+                raise RuntimeError(f"Expected batch['languages'] to be a list/tuple, got {type(languages)}")
+
+            if len(languages) != B:
+                raise RuntimeError(f"Expected {B} language entries from collate_fn, got {len(languages)}")
+
+            ctx_texts = []
+            for b, language in enumerate(languages):
+                if language is None or language == "":
+                    raise RuntimeError(f"Missing language for batch item {b}")
+                ctx_texts.append(f"[{str(language).upper()}]" if use_lang else "[NO TEXT CONTEXT]")
+
+            ctx_text_ids_list = [
+                model.tokenizer.encode(ctx_text, tokenizer_name=model.text_conditioning_tokenizer_name)
+                for ctx_text in ctx_texts
+            ]
+
+            ctx_toks_lens = torch.tensor(
+                [len(ctx_text_ids) for ctx_text_ids in ctx_text_ids_list],
+                dtype=torch.long,
+                device=device,
+            )
+
+            max_ctx_len = int(ctx_toks_lens.max().item())
+            ctx_pad_id = int(getattr(model, "pad_id", 0))
+            ctx_toks = torch.full((B, max_ctx_len), ctx_pad_id, dtype=torch.long, device=device)
+
+            for b, ctx_text_ids in enumerate(ctx_text_ids_list):
+                ctx_toks[b, : len(ctx_text_ids)] = torch.tensor(ctx_text_ids, dtype=torch.long, device=device)
+
+            params = self.config.model_inference_parameters
+            state = model.streaming_init(
+                context_audio_codes=codes,
+                context_audio_codes_lens=codes_lens,
+                context_text_tokens=ctx_toks,
+                context_text_tokens_lens=ctx_toks_lens,
+                use_cfg=self.config.use_cfg,
+                cfg_scale=params.cfg_scale,
+                use_local_transformer=self.config.use_local_transformer,
+                temperature=params.temperature,
+                topk=params.topk,
+                phoneme_input_type="pred",
+                phoneme_sampling_method=self.config.phoneme_sampling_method,
+                use_inference_mode=True,
+            )
+
+            turn_frame_ranges = []
+            turn_phoneme_outputs = []
+            decode_start_frame = 0
+            max_decoder_steps = params.max_decoder_steps
+
+            turn_ids = batch.get("turn_ids", list(range(len(batch["batched_turns"]))))
+            for local_turn_idx in range(len(batch["batched_turns"])):
+                turn_id = int(turn_ids[local_turn_idx])
+                turn_text = batch["batched_turns"][local_turn_idx].to(device)
+                turn_lens = batch["batched_turn_lens"][local_turn_idx].to(device)
+                valid_mask = batch["valid_turn_masks"][local_turn_idx].to(device)
+                if not bool(valid_mask[0].item()):
+                    continue
+
+                phoneme_start_step = len(getattr(state, "all_phoneme_predictions", []) or [])
+
+                state.finished.zero_()
+                state.text_finished.zero_()
+                state.audio_prediction_end_idx.fill_(-1)
+                for attr in [
+                    "turn_text_tokens_seen",
+                    "phoneme_steps",
+                    "phoneme_stream_ended",
+                    "phoneme_eos_detected",
+                ]:
+                    if hasattr(state, attr):
+                        getattr(state, attr).zero_()
+                state.last_phoneme_tokens = None
+
+                delay_tokens = int(state.config.training_mode.streaming_speech_delay)
+                samples_per_streaming_step = int(model.codec_model_samples_per_frame * model.frame_stacking_factor)
+
+                if not model.cfg.get("condition_on_user_speech", False):
+                    user_audio = batch["user_audio_turns"][local_turn_idx]
+                    user_audio_prefill_steps = int(round(user_audio.size(-1) / samples_per_streaming_step))
+                    user_audio_prefill_tokens = torch.full(
+                        (1, user_audio_prefill_steps), model.pad_id, dtype=torch.long, device=device
+                    )
+                    user_audio_channel_embedding = None
+                else:
+                    user_audio = batch["user_audio_turns"][local_turn_idx]
+                    user_audio_lens = batch["user_audio_turns_lens"][local_turn_idx]
+                    min_user_audio_len = delay_tokens * samples_per_streaming_step
+                    user_audio, user_audio_lens = self._left_pad_raw_audio_if_short(
+                        user_audio=user_audio,
+                        user_audio_lens=user_audio_lens,
+                        min_len=min_user_audio_len,
+                    )
+
+                    user_audio_codes, user_audio_codes_lens = model._codec_helper.audio_to_codes(
+                        user_audio, user_audio_lens
+                    )
+
+                    if model._codec_converter is not None:
+                        user_audio_codes = model._codec_converter.convert_original_to_new(
+                            audio_tokens=user_audio_codes,
+                            audio_lens=user_audio_codes_lens,
+                        ).long()
+
+                    user_audio_codes, user_audio_codes_lens = model.stack_codes(
+                        user_audio_codes,
+                        user_audio_codes_lens,
+                        model.audio_bos_id,
+                        model.audio_eos_id,
+                        model.frame_stacking_factor,
+                        model.num_audio_codebooks,
+                    )
+
+                    user_audio_embedded = model.embed_audio_tokens(user_audio_codes)
+                    real_start = 0
+                    real_end = int(user_audio_codes_lens[0].item())
+                    user_audio_embedded = user_audio_embedded[:, real_start:real_end]
+
+                    bos_user_pad = torch.zeros(
+                        user_audio_embedded.size(0),
+                        1,
+                        user_audio_embedded.size(2),
+                        device=user_audio_embedded.device,
+                        dtype=user_audio_embedded.dtype,
+                    )
+                    user_audio_embedded = torch.cat([bos_user_pad, user_audio_embedded], dim=1)
+                    user_audio_prefill_steps = user_audio_embedded.size(1)
+                    user_audio_prefill_tokens = torch.full(
+                        (B, user_audio_prefill_steps), model.pad_id, dtype=torch.long, device=device
+                    )
+                    user_audio_channel_embedding = user_audio_embedded
+
+                if user_audio_channel_embedding is None:
+                    delay_tokens = min(delay_tokens, user_audio_prefill_steps)
+                elif user_audio_prefill_steps < delay_tokens:
+                    raise RuntimeError(
+                        "Raw user-audio left padding did not produce enough warmup steps: "
+                        f"user_audio_prefill_steps={user_audio_prefill_steps}, delay_tokens={delay_tokens}."
+                    )
+
+                num_warmup_text_tokens = min(delay_tokens, int(turn_lens[0].item()), turn_text.size(1))
+                # handle short turns so that it does not advance the text channel and keep the delay_tokens.
+                warmup_tokens = torch.full(
+                    (B, delay_tokens),
+                    model.pad_id,
+                    dtype=turn_text.dtype,
+                    device=device,
+                )
+
+                if num_warmup_text_tokens > 0:
+                    warmup_tokens[:, :num_warmup_text_tokens] = turn_text[:, :num_warmup_text_tokens]
+
+                turn_text = turn_text[:, num_warmup_text_tokens:]
+                turn_lens = torch.clamp(turn_lens - num_warmup_text_tokens, min=0)
+
+                if user_audio_channel_embedding is not None and delay_tokens > 0:
+                    warmup_user_audio = user_audio_channel_embedding[:, -delay_tokens:]
+                    user_audio_channel_embedding = user_audio_channel_embedding[:, :-delay_tokens]
+                    user_audio_prefill_tokens = user_audio_prefill_tokens[:, :-delay_tokens]
+                else:
+                    warmup_user_audio = None
+
+                if user_audio_prefill_tokens.size(1) > 0:
+                    state = model.streaming_prefill(
+                        state=state,
+                        text_tokens=user_audio_prefill_tokens,
+                        use_inference_mode=True,
+                        user_audio_channel_embedding=user_audio_channel_embedding,
+                    )
+
+                for i in range(delay_tokens):
+                    user_step_emb = warmup_user_audio[:, i] if warmup_user_audio is not None else None
+                    state.finished.zero_()
+                    state, _, _ = model.streaming_step(
+                        state=state,
+                        text_tokens=warmup_tokens[:, i],
+                        user_audio_channel_embedding=user_step_emb,
+                        prefill_like_step=True,
+                        prefill_like_is_last_step=(i == delay_tokens - 1),
+                        use_inference_mode=True,
+                    )
+
+                turn_start_frame = sum(p.size(-1) for p in state.all_predictions)
+                if not turn_frame_ranges:
+                    state.audio_prediction_start_idx.fill_(turn_start_frame)
+                    decode_start_frame = turn_start_frame
+
+                turn_offset = state.text_tokens_seen.clone()
+                steps = 0
+                while steps < max_decoder_steps:
+                    steps += 1
+                    state.finished.zero_()
+                    relative_position = state.text_tokens_seen - turn_offset
+                    text_exhausted = relative_position >= turn_lens
+
+                    if turn_text.size(1) == 0:
+                        current_tokens = torch.full((B,), model.eos_id, dtype=torch.long, device=device)
+                    else:
+                        position = relative_position.clamp(min=0, max=turn_text.size(1) - 1)
+                        current_tokens = turn_text[torch.arange(B, device=device), position]
+                        current_tokens = torch.where(
+                            text_exhausted,
+                            torch.full_like(current_tokens, model.eos_id),
+                            current_tokens,
+                        )
+
+                    state, _, _ = model.streaming_step(
+                        state=state,
+                        text_tokens=current_tokens,
+                        use_inference_mode=True,
+                    )
+
+                    if bool(text_exhausted[0].item()) and bool(state.finished[0].item()):
+                        break
+
+                state.audio_prediction_end_idx.fill_(-1)
+                state.finished.zero_()
+                turn_end_frame = sum(p.size(-1) for p in state.all_predictions)
+                phoneme_end_step = len(getattr(state, "all_phoneme_predictions", []) or [])
+                (
+                    predicted_phoneme_text,
+                    predicted_phoneme_tokens,
+                    predicted_phoneme_token_labels,
+                ) = self._decode_phoneme_prediction_slice(
+                    getattr(state, "all_phoneme_predictions", []),
+                    phoneme_start_step,
+                    phoneme_end_step,
+                )
+                turn_frame_ranges.append((turn_id, turn_start_frame, turn_end_frame))
+                turn_phoneme_outputs.append(
+                    {
+                        "turn_id": turn_id,
+                        "predicted_phoneme_text": predicted_phoneme_text,
+                        "predicted_phoneme_tokens": predicted_phoneme_tokens,
+                        "predicted_phoneme_token_labels": predicted_phoneme_token_labels,
+                    }
+                )
+
+            codec_sil_codes = self._ensure_codec_silence_codes()
+            bos_id = getattr(model, "audio_bos_id", -1)
+            eos_id = getattr(model, "audio_eos_id", -1)
+            speaking_id = getattr(model, "audio_user_speaking_id", -1)
+            speaking_end_id = getattr(model, "audio_user_speaking_end_id", -1)
+            sil_injection = codec_sil_codes.view(1, -1, 1)
+
+            for step_idx in range(len(state.all_predictions)):
+                pred = state.all_predictions[step_idx]
+                mask = (pred == bos_id) | (pred == eos_id) | (pred == speaking_id) | (pred == speaking_end_id)
+                frame_mask = mask.any(dim=1, keepdim=True)
+                if frame_mask.any():
+                    state.all_predictions[step_idx] = torch.where(frame_mask, sil_injection.expand_as(pred), pred)
+
+            state.audio_prediction_end_idx.fill_(-1)
+            generated_codes = None
+            if getattr(state, "all_predictions", None):
+                generated_codes = torch.cat(state.all_predictions, dim=-1).detach()
+
+            finalize_output = model.streaming_finalize(state, use_inference_mode=True)
+
+        return finalize_output, turn_frame_ranges, turn_phoneme_outputs, decode_start_frame, generated_codes
+
+    @staticmethod
+    def _gpt2_byte_decoder() -> Dict[str, int]:
+        """Return GPT-2/byte-level-BPE unicode-char -> byte lookup.
+
+        Some NeMo tokenizer wrappers expose byte-level BPE pieces instead of
+        fully decoded text. Those pieces look like ``ËĪ``/``Ġ`` in JSON. They
+        are not mojibake from JSON itself; they are the reversible GPT-2 byte
+        alphabet. Reversing that alphabet gives readable IPA again.
+        """
+        byte_values = list(range(ord("!"), ord("~") + 1))
+        byte_values += list(range(ord("¡"), ord("¬") + 1))
+        byte_values += list(range(ord("®"), ord("ÿ") + 1))
+        unicode_values = list(byte_values)
+        n = 0
+        for byte in range(256):
+            if byte not in byte_values:
+                byte_values.append(byte)
+                unicode_values.append(256 + n)
+                n += 1
+        return {chr(unicode_value): byte for byte, unicode_value in zip(byte_values, unicode_values)}
+
+    @classmethod
+    def _decode_byte_level_bpe_text(cls, text: str) -> str:
+        """Decode GPT-2 byte-level BPE artifacts such as ``ËĪ`` and ``Ġ``.
+
+        If ``text`` is already normal Unicode IPA, it is returned unchanged.
+        """
+        if not text:
+            return ""
+
+        byte_artifact_markers = ("Ġ", "Ċ", "Ë", "É", "Ê", "Ã", "Å", "Î")
+        if not any(marker in text for marker in byte_artifact_markers):
+            return text.strip()
+
+        byte_decoder = cls._gpt2_byte_decoder()
+        byte_values = bytearray()
+        for ch in text:
+            value = byte_decoder.get(ch)
+            if value is not None:
+                byte_values.append(value)
+
+        if not byte_values:
+            return text.strip()
+
+        try:
+            decoded = byte_values.decode("utf-8")
+        except UnicodeDecodeError:
+            return text.replace("Ġ", " ").replace("Ċ", "\n").strip()
+
+        return " ".join(decoded.split())
+
+    @staticmethod
+    def _token_id_as_int(value) -> Optional[int]:
+        """Return a scalar token id as int, or None when it is not a valid id."""
+        if value is None:
+            return None
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                return None
+            value = value.detach().cpu().item()
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+            signless = value[1:] if value[0] in ("+", "-") else value
+            if signless.isdigit():
+                return int(value)
+        return None
+
+    @staticmethod
+    def _phoneme_special_token_map(tokenizer) -> Dict[int, str]:
+        """Map phoneme special token ids to stable debug labels.
+
+        IPABPETokenizer stores its specials directly in ``_inv_vocab`` as
+        ``<sp_bos>``, ``<sp_eos>``, and ``<sp_unk>``. Prefer those labels so
+        the exported debug JSON matches the tokenizer vocabulary.
+        """
+        special: Dict[int, str] = {}
+
+        inv_vocab = getattr(tokenizer, "_inv_vocab", None)
+        if isinstance(inv_vocab, dict):
+            for token_id, piece in inv_vocab.items():
+                token_id = EasyMagpieMultiturnUserAudioInferenceRunner._token_id_as_int(token_id)
+                if token_id is None:
+                    continue
+                piece = str(piece)
+                if piece.startswith("<") and piece.endswith(">"):
+                    special[token_id] = piece
+
+        special_attrs = [
+            ("bos_token_id", "<sp_bos>"),
+            ("bos", "<sp_bos>"),
+            ("eos_token_id", "<sp_eos>"),
+            ("eos", "<sp_eos>"),
+            ("pad_token_id", "<pad>"),
+            ("pad", "<pad>"),
+            ("unk_token_id", "<sp_unk>"),
+            ("mask_token_id", "<sp_mask>"),
+        ]
+        for attr, label in special_attrs:
+            token_id = EasyMagpieMultiturnUserAudioInferenceRunner._token_id_as_int(getattr(tokenizer, attr, None))
+            if token_id is not None:
+                special.setdefault(token_id, label)
+
+        return special
+
+    @classmethod
+    def _phoneme_token_pieces(cls, tokenizer, token_ids: List[int]) -> List[str]:
+        """Return tokenizer pieces for ids without dropping special tokens."""
+        token_ids = [int(token_id) for token_id in token_ids]
+
+        inv_vocab = getattr(tokenizer, "_inv_vocab", None)
+        if isinstance(inv_vocab, dict):
+            return [str(inv_vocab.get(token_id, "<sp_unk>")) for token_id in token_ids]
+
+        internal_tokenizer = getattr(tokenizer, "_tokenizer", None)
+        if internal_tokenizer is not None and hasattr(internal_tokenizer, "id_to_token"):
+            pieces = []
+            for token_id in token_ids:
+                piece = internal_tokenizer.id_to_token(token_id)
+                pieces.append("<sp_unk>" if piece is None else str(piece))
+            return pieces
+
+        tokens = getattr(tokenizer, "tokens", None)
+        if isinstance(tokens, dict):
+            inv = {int(idx): str(piece) for piece, idx in tokens.items() if cls._token_id_as_int(idx) is not None}
+            return [inv.get(token_id, "<sp_unk>") for token_id in token_ids]
+
+        return [str(token_id) for token_id in token_ids]
+
+    def _decode_phoneme_id_run(self, token_ids: List[int]) -> str:
+        """Decode a contiguous non-special phoneme-id span to readable IPA."""
+        if self.model.phoneme_tokenizer is None or not token_ids:
+            return ""
+
+        tokenizer = self.model.phoneme_tokenizer
+        pieces = self._phoneme_token_pieces(tokenizer, token_ids)
+        if pieces:
+            # IPABPETokenizer piece strings are byte-level BPE symbols. Joining
+            # and byte-decoding them produces readable IPA, e.g. ``ËĪÉĳËĲ`` -> ``ˈɑː``.
+            decoded_from_pieces = self._decode_byte_level_bpe_text("".join(pieces))
+            if decoded_from_pieces:
+                return decoded_from_pieces
+
+        decoder = getattr(tokenizer, "decode", None)
+        if callable(decoder):
+            decoded = decoder([int(token_id) for token_id in token_ids])
+            return self._decode_byte_level_bpe_text(str(decoded or ""))
+
+        return " ".join(pieces)
+
+    def _format_phoneme_debug_sequence(self, token_ids: List[int]) -> Tuple[str, List[str]]:
+        """Return readable text and per-token labels while keeping specials.
+
+        ``predicted_phoneme_tokens`` keeps the integer ids, including special
+        markers. This function creates the human-readable companion fields:
+        ``predicted_phoneme_text`` and ``predicted_phoneme_token_labels``.
+        """
+        tokenizer = self.model.phoneme_tokenizer
+        special = self._phoneme_special_token_map(tokenizer)
+        labels: List[str] = []
+        text_parts: List[str] = []
+        run: List[int] = []
+
+        def flush_run() -> None:
+            if not run:
+                return
+            decoded_run = self._decode_phoneme_id_run(run)
+            if decoded_run:
+                text_parts.append(decoded_run)
+            run.clear()
+
+        for token_id in token_ids:
+            token_id = int(token_id)
+            special_label = special.get(token_id)
+            if special_label is not None:
+                flush_run()
+                text_parts.append(special_label)
+                labels.append(f"{special_label}:{token_id}")
+            else:
+                run.append(token_id)
+                decoded_piece = self._decode_phoneme_id_run([token_id])
+                labels.append(f"{token_id}:{decoded_piece}" if decoded_piece else str(token_id))
+        flush_run()
+
+        return " ".join(part for part in text_parts if part), labels
+
+    def _decode_phoneme_prediction_slice(
+        self,
+        phoneme_predictions,
+        start_step: int,
+        end_step: int,
+    ) -> Tuple[str, List[int], List[str]]:
+        if self.model.phoneme_tokenizer is None or not phoneme_predictions:
+            return "", [], []
+
+        start_step = max(0, min(int(start_step), len(phoneme_predictions)))
+        end_step = max(start_step, min(int(end_step), len(phoneme_predictions)))
+        if end_step <= start_step:
+            return "", [], []
+
+        phoneme_tensor = torch.stack(phoneme_predictions[start_step:end_step], dim=-1)
+        raw_tokens = phoneme_tensor[0].detach().cpu().T.reshape(-1).long().tolist()
+
+        tokenizer = self.model.phoneme_tokenizer
+        eos_id = self._token_id_as_int(getattr(tokenizer, "eos_token_id", None))
+        bos_id = self._token_id_as_int(getattr(tokenizer, "bos_token_id", None))
+
+        # The streaming phoneme predictor is seeded with BOS as input before the
+        # first predicted phoneme. Add it explicitly to the debug sequence so the
+        # exported JSON shows the same boundary condition used by inference.
+        debug_tokens: List[int] = []
+        if bos_id is not None:
+            debug_tokens.append(bos_id)
+
+        for token in raw_tokens:
+            token = int(token)
+            debug_tokens.append(token)
+            if eos_id is not None and token == eos_id:
+                break
+
+        if not debug_tokens:
+            return "", [], []
+
+        phoneme_text, token_labels = self._format_phoneme_debug_sequence(debug_tokens)
+        return phoneme_text, debug_tokens, token_labels
+
+    @staticmethod
+    def _save_code_slice(
+        generated_codes, batch_idx: int, start_frame: int, end_frame: int, path: str
+    ) -> Optional[str]:
+        if generated_codes is None:
+            return None
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        total_frames = int(generated_codes.size(-1))
+        start_frame = max(0, min(int(start_frame), total_frames))
+        end_frame = max(start_frame, min(int(end_frame), total_frames))
+        if end_frame <= start_frame:
+            return None
+        codes = generated_codes[batch_idx, :, start_frame:end_frame].detach().cpu().long()
+        torch.save(codes, path)
+        return path
+
+    def _resolve_target_audio_for_turn(
+        self,
+        raw_record: dict,
+        target_turn_audio_paths,
+        local_turn_idx: int,
+        audio_base_dir: str,
+    ) -> Optional[str]:
+        """Resolve the GT target audio for one evaluation turn.
+
+        Prefer per-turn GT if present; otherwise fall back to sample-level audio_filepath.
+        If no candidate exists, returns None so the caller can fall back to
+        context audio and keep EasyMagpie evaluation from failing on missing
+        target_audio_*.wav.
+        """
+        candidates = []
+
+        if isinstance(target_turn_audio_paths, list) and local_turn_idx < len(target_turn_audio_paths):
+            candidates.append(target_turn_audio_paths[local_turn_idx])
+        elif isinstance(target_turn_audio_paths, str):
+            candidates.append(target_turn_audio_paths)
+
+        # Common manifest keys.
+        candidates.extend(
+            [
+                raw_record.get("target_audio_file_path"),
+                raw_record.get("target_audio_filepath"),
+                raw_record.get("audio_filepath"),
+            ]
+        )
+
+        tried = []
+        for candidate in candidates:
+            if candidate is None or candidate == "":
+                continue
+            if isinstance(candidate, list):
+                if local_turn_idx < len(candidate):
+                    candidate = candidate[local_turn_idx]
+                else:
+                    continue
+            resolved = self._resolve_audio_path(candidate, audio_base_dir)
+            tried.append(resolved)
+            if resolved is not None and os.path.exists(resolved):
+                return resolved
+
+        logging.warning(
+            "Could not resolve target audio for multiturn_user_audio evaluation turn; "
+            "caller will fall back to context audio. "
+            f"sample_idx={raw_record.get('idx')}, local_turn_idx={local_turn_idx}, "
+            f"audio_base_dir={audio_base_dir}, tried={tried}, "
+            f"raw_record_keys={sorted(raw_record.keys())}"
+        )
+        return None
+
+    @staticmethod
+    def _get_multiturn_debug_output_dir(output_dir: str) -> str:
+        """Return a sibling audios_MT path for debug/listening artifacts.
+
+        Examples:
+          <eval_dir>/audio/repeat_0
+            -> <eval_dir>/audios_MT/repeat_0
+          <eval_dir>/audio/repeat_0/rank_0003
+            -> <eval_dir>/audios_MT/repeat_0/rank_0003
+
+        Evaluation files stay in the standard audio/ directory; only
+        human-listening/debug multiturn files go under audios_MT/.
+        """
+        normalized = os.path.normpath(output_dir)
+        parts = normalized.split(os.sep)
+        for i in range(len(parts) - 1, -1, -1):
+            if parts[i] == "audio":
+                parts[i] = "audios_MT"
+                prefix = os.sep if normalized.startswith(os.sep) else ""
+                return prefix + os.path.join(*[p for p in parts if p != ""])
+        return normalized + "_MT"
+
+    @staticmethod
+    def _safe_audio_stem(path_or_name: Optional[str], fallback: str) -> str:
+        if path_or_name is None or path_or_name == "":
+            stem = fallback
+        else:
+            stem = os.path.splitext(os.path.basename(str(path_or_name)))[0] or fallback
+        safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in stem)
+        return safe or fallback
+
+    def _target_audio_stem_for_debug(
+        self,
+        raw_record: dict,
+        sample_idx: int,
+        local_turn_idx: Optional[int] = None,
+    ) -> str:
+        """Choose a readable debug/listening filename stem from original manifest target audio.
+
+        This does not affect evaluator file names. It is only used under audios_MT/.
+        Prefer per-turn target fields when present; otherwise use sample-level
+        audio_filepath. Fall back to sample_<idx>.
+        """
+        fallback = f"sample_{sample_idx}"
+        candidates = [
+            raw_record.get("target_audio_file_path"),
+            raw_record.get("target_audio_filepath"),
+            raw_record.get("audio_filepath"),
+        ]
+        for candidate in candidates:
+            if candidate is None or candidate == "":
+                continue
+            if isinstance(candidate, list):
+                if local_turn_idx is None:
+                    candidate = candidate[0] if candidate else None
+                elif local_turn_idx < len(candidate):
+                    candidate = candidate[local_turn_idx]
+                else:
+                    candidate = None
+            if candidate:
+                return self._safe_audio_stem(candidate, fallback)
+        return fallback
+
+    def _run_multiturn_user_audio_inference(
+        self,
+        dataset: EasyMagpieMultiturnUserAudioDataset,
+        output_dir: str,
+        manifest_records: List[dict],
+        audio_base_dir: str,
+        save_context_audio: bool = True,
+        save_predicted_codes: bool = True,
+    ) -> Tuple[List[dict], List[str], List[str]]:
+        os.makedirs(output_dir, exist_ok=True)
+        self._delete_old_generated_files(output_dir)
+
+        mt_debug_output_dir = self._get_multiturn_debug_output_dir(output_dir)
+        debug_mixed_dir = os.path.join(mt_debug_output_dir, "debug_mixed_user_agent")
+        if self.config.save_debug_multiturn_audio:
+            os.makedirs(debug_mixed_dir, exist_ok=True)
+            logging.info(f"Saving multiturn debug/listening audios under audios_MT: {mt_debug_output_dir}")
+
+        rank = int(getattr(self, "distributed_rank", 0))
+        world_size = int(getattr(self, "distributed_world_size", 1))
+        total_samples = len(dataset)
+
+        if world_size > 1:
+            rank_indices = list(range(rank, total_samples, world_size))
+            logging.info(
+                f"[MT_USER_AUDIO_SPLIT] rank={rank}/{world_size} "
+                f"total_samples={total_samples} local_samples={len(rank_indices)} "
+                f"indices={rank_indices}"
+            )
+            dataset_for_rank = _InferenceSubset(dataset, rank_indices)
+        else:
+            rank_indices = list(range(total_samples))
+            logging.info(
+                f"[MT_USER_AUDIO_SPLIT] rank=0/1 "
+                f"total_samples={total_samples} local_samples={len(rank_indices)} "
+                f"indices={rank_indices}"
+            )
+            dataset_for_rank = dataset
+
+        dataloader = torch.utils.data.DataLoader(
+            dataset_for_rank,
+            batch_size=1,
+            collate_fn=dataset_for_rank.collate_fn,
+            num_workers=0,
+            shuffle=False,
+        )
+
+        all_rtf_metrics = []
+        generated_audio_paths = []
+        codec_file_paths = []
+        turn_manifest_records = []
+        item_idx = 0
+
+        sample_rate = getattr(self.model, "output_sample_rate", self.model.sample_rate)
+
+        for batch_idx, batch in enumerate(dataloader):
+            logging.info(f"Processing multiturn user-audio sample {batch_idx + 1}/{len(dataloader)}")
+            batch = self._move_batch_to_device(batch, self.model.device)
+            sample_idx = int(batch["idx"][0].item())
+            raw_record = batch["raw_record"]
+            raw_turn_texts = batch["raw_turn_texts"][0]
+            logging.info(
+                f"[MT_USER_AUDIO_PROCESS] rank={rank}/{world_size} "
+                f"local_batch={batch_idx} global_sample_idx={sample_idx} "
+                f"num_turns={len(raw_turn_texts)}"
+            )
+
+            if not batch["batched_turns"]:
+                logging.warning(
+                    "Skipping multiturn_user_audio sample with no valid agent text turns after filtering; "
+                    f"sample_idx={sample_idx}"
+                )
+                continue
+
+            start_time = time.time()
+            output, turn_frame_ranges, turn_phoneme_outputs, decode_start_frame, generated_codes = (
+                self._run_multiturn_generation(batch)
+            )
+            elapsed = time.time() - start_time
+
+            predicted_audio = output.audio.float().detach().cpu()
+            predicted_audio_lens = output.audio_len.int().detach().cpu()
+            full_len = int(predicted_audio_lens[0].item())
+            full_wav = predicted_audio[0, :full_len]
+
+            samples_per_prediction_frame = self.model.codec_model_samples_per_frame / (
+                self.model.sample_rate / sample_rate
+            )
+            aligned_agent = torch.zeros_like(full_wav)
+
+            context_len = int(batch["context_audio_lengths"][0].detach().cpu().item())
+            context_wav = batch["context_audio"][0, :context_len].detach().cpu().float()
+            context_audio_path = os.path.join(output_dir, f"context_audio_sample_{sample_idx}.wav")
+            # Always write context audio because evaluate_generated_audio_dir reads
+            # context_audio_filepath from the generated turn-level manifest for every repeat.
+            sf.write(context_audio_path, context_wav.numpy(), self.model.sample_rate)
+
+            target_turn_audio_paths = batch.get("target_turn_audio_paths")
+
+            for local_turn_idx, (turn_id, start_frame, end_frame) in enumerate(turn_frame_ranges):
+                source_turn_idx = int(turn_id)
+                phoneme_output = (
+                    turn_phoneme_outputs[local_turn_idx] if local_turn_idx < len(turn_phoneme_outputs) else {}
+                )
+                rel_start_frame = start_frame - decode_start_frame
+                rel_end_frame = end_frame - decode_start_frame
+                start_sample = int(round(rel_start_frame * samples_per_prediction_frame))
+                end_sample = int(round(rel_end_frame * samples_per_prediction_frame))
+                start_sample = max(0, min(start_sample, full_len))
+                end_sample = max(start_sample, min(end_sample, full_len))
+
+                aligned_agent[start_sample:end_sample] = full_wav[start_sample:end_sample]
+                turn_wav = aligned_agent[start_sample:end_sample].float()
+
+                predicted_audio_path = os.path.join(output_dir, f"predicted_audio_{item_idx}.wav")
+                sf.write(predicted_audio_path, turn_wav.numpy(), sample_rate)
+                generated_audio_paths.append(predicted_audio_path)
+
+                if save_predicted_codes:
+                    code_path = os.path.join(output_dir, f"predicted_codes_{item_idx}.pt")
+                    saved_code_path = self._save_code_slice(generated_codes, 0, start_frame, end_frame, code_path)
+                    if saved_code_path is not None:
+                        codec_file_paths.append(saved_code_path)
+
+                turn_context_path = os.path.join(output_dir, f"context_audio_{item_idx}.wav")
+                self._copy_file(
+                    context_audio_path,
+                    turn_context_path,
+                    required=True,
+                    description=f"context audio for sample_idx={sample_idx}, turn_id={turn_id}",
+                )
+
+                target_src = self._resolve_target_audio_for_turn(
+                    raw_record=raw_record,
+                    target_turn_audio_paths=target_turn_audio_paths,
+                    local_turn_idx=source_turn_idx,
+                    audio_base_dir=audio_base_dir,
+                )
+                if target_src is None or not os.path.exists(target_src):
+                    logging.warning(
+                        "Target audio is missing for multiturn_user_audio evaluation; "
+                        "using context audio as target fallback to avoid evaluator failure. "
+                        f"sample_idx={sample_idx}, turn_id={turn_id}, missing_target={target_src}, "
+                        f"context_audio_path={context_audio_path}"
+                    )
+                    target_src = context_audio_path
+
+                target_dst = os.path.join(output_dir, f"target_audio_{item_idx}.wav")
+                self._copy_file(
+                    target_src,
+                    target_dst,
+                    required=True,
+                    description=f"target audio fallback/context for sample_idx={sample_idx}, turn_id={turn_id}",
+                )
+
+                turn_manifest_records.append(
+                    {
+                        "audio_filepath": f"target_audio_{item_idx}.wav",
+                        "context_audio_filepath": f"context_audio_{item_idx}.wav",
+                        "text": raw_turn_texts[source_turn_idx] if source_turn_idx < len(raw_turn_texts) else "",
+                        "predicted_phoneme_text": phoneme_output.get("predicted_phoneme_text", ""),
+                        "predicted_phoneme_tokens": phoneme_output.get("predicted_phoneme_tokens", []),
+                        "predicted_phoneme_token_labels": phoneme_output.get("predicted_phoneme_token_labels", []),
+                        "speaker": str(sample_idx),
+                        "source_sample_idx": sample_idx,
+                        "turn_id": int(turn_id),
+                    }
+                )
+                logging.info(
+                    f"[MT_USER_AUDIO_TURN] rank={rank}/{world_size} "
+                    f"global_sample_idx={sample_idx} turn_id={int(turn_id)} "
+                    f"rank_local_item_idx={item_idx} "
+                    f"predicted_audio=predicted_audio_{item_idx}.wav "
+                    f"target_audio=target_audio_{item_idx}.wav "
+                    f"context_audio=context_audio_{item_idx}.wav"
+                )
+                item_idx += 1
+
+            if self.config.save_debug_multiturn_audio and "user_audio_turns" in batch:
+                self._save_debug_user_agent_audio(
+                    batch=batch,
+                    sample_idx=sample_idx,
+                    raw_record=raw_record,
+                    turn_frame_ranges=turn_frame_ranges,
+                    decode_start_frame=decode_start_frame,
+                    aligned_agent=aligned_agent,
+                    samples_per_prediction_frame=samples_per_prediction_frame,
+                    output_dir=output_dir,
+                    debug_mixed_dir=debug_mixed_dir,
+                )
+
+            audio_seconds = (
+                sum(
+                    max(0, int(round((end - start) * samples_per_prediction_frame)))
+                    for _, start, end in turn_frame_ranges
+                )
+                / sample_rate
+            )
+            all_rtf_metrics.append(
+                {
+                    "inference_time": elapsed,
+                    "audio_seconds": audio_seconds,
+                    "rtf": elapsed / audio_seconds if audio_seconds > 0 else 0.0,
+                }
+            )
+
+        self.evaluation_audio_dir = output_dir
+        rank = int(getattr(self, "distributed_rank", 0))
+        self.evaluation_manifest_path = os.path.join(
+            output_dir, f"multiturn_user_audio_turn_manifest_rank{rank:04d}.jsonl"
+        )
+        self.evaluation_manifest_records = turn_manifest_records
+        with open(self.evaluation_manifest_path, "w", encoding="utf-8") as f:
+            for record in turn_manifest_records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        logging.info(
+            f"[MT_USER_AUDIO_SUMMARY] rank={rank}/{world_size} "
+            f"assigned_samples={rank_indices} "
+            f"generated_turns={len(turn_manifest_records)} "
+            f"generated_audio_paths={len(generated_audio_paths)} "
+            f"predicted_code_paths={len(codec_file_paths)} "
+            f"manifest={self.evaluation_manifest_path}"
+        )
+        logging.info(f"Wrote multiturn turn-level evaluation manifest: {self.evaluation_manifest_path}")
+        return all_rtf_metrics, generated_audio_paths, codec_file_paths
+
+    def _save_debug_user_agent_audio(
+        self,
+        batch: Dict[str, Any],
+        sample_idx: int,
+        raw_record: dict,
+        turn_frame_ranges: List[Tuple[int, int, int]],
+        decode_start_frame: int,
+        aligned_agent: torch.Tensor,
+        samples_per_prediction_frame: float,
+        output_dir: str,
+        debug_mixed_dir: str,
+    ) -> None:
+        sample_rate = getattr(self.model, "output_sample_rate", self.model.sample_rate)
+        debug_sample_stem = self._target_audio_stem_for_debug(raw_record, sample_idx)
+        first_user_len_in = int(batch["user_audio_turns_lens"][0][0].detach().cpu().item())
+        first_user_delay_out = int(round(first_user_len_in * sample_rate / self.model.sample_rate))
+
+        def load_debug_audio(path: Optional[str]) -> Optional[torch.Tensor]:
+            if path is None or path == "" or not os.path.exists(path):
+                return None
+            audio, sr = sf.read(path, dtype="float32", always_2d=False)
+            wav = torch.as_tensor(audio, dtype=torch.float32)
+            if wav.ndim == 2:
+                wav = wav.mean(dim=1)
+            wav = wav.flatten()
+            if sr != sample_rate:
+                wav = resample(wav.unsqueeze(0), sr, sample_rate).squeeze(0)
+            return wav.contiguous()
+
+        user_segments = []
+        user_turns_for_gt = []
+        for local_turn_idx, (turn_id, _, _) in enumerate(turn_frame_ranges):
+            if local_turn_idx >= len(batch["user_audio_turns"]):
+                continue
+            turn_audio = batch["user_audio_turns"][local_turn_idx][0].detach().cpu().float()
+            turn_audio_len = int(batch["user_audio_turns_lens"][local_turn_idx][0].detach().cpu().item())
+            turn_audio = turn_audio[:turn_audio_len]
+            turn_audio_out = resample(turn_audio.unsqueeze(0), self.model.sample_rate, sample_rate).squeeze(0)
+            user_turns_for_gt.append((int(turn_id), turn_audio_out))
+
+            if local_turn_idx == 0:
+                user_start_sample = 0
+            else:
+                prev_turn_end_frame = turn_frame_ranges[local_turn_idx - 1][2]
+                rel_prev_end_frame = prev_turn_end_frame - decode_start_frame
+                user_start_sample = first_user_delay_out + int(
+                    round(rel_prev_end_frame * samples_per_prediction_frame)
+                )
+            user_segments.append((user_start_sample, turn_audio_out))
+
+        total_user_len = 0
+        for start, wav in user_segments:
+            total_user_len = max(total_user_len, start + wav.numel())
+        user_ch = torch.zeros(total_user_len)
+        for start, wav in user_segments:
+            user_ch[start : start + wav.numel()] += wav
+
+        agent_ch = torch.cat([torch.zeros(first_user_delay_out, dtype=aligned_agent.dtype), aligned_agent])
+        stereo_len = max(user_ch.numel(), agent_ch.numel())
+        user_pad = torch.zeros(stereo_len)
+        agent_pad = torch.zeros(stereo_len)
+        user_pad[: user_ch.numel()] = user_ch
+        agent_pad[: agent_ch.numel()] = agent_ch
+
+        stereo = torch.stack([user_pad, agent_pad], dim=1).numpy()
+        sf.write(
+            os.path.join(
+                debug_mixed_dir,
+                f"{debug_sample_stem}__sample_{sample_idx}__user_agent_aligned_stereo.wav",
+            ),
+            stereo,
+            sample_rate,
+        )
+
+        target_turn_audio_paths = batch.get("target_turn_audio_paths", []) or []
+        if isinstance(target_turn_audio_paths, str):
+            target_turn_audio_paths = [target_turn_audio_paths]
+
+        gt_user_segments = []
+        gt_agent_segments = []
+        cursor = 0
+        for source_turn_idx, user_wav in user_turns_for_gt:
+            gt_user_segments.append((cursor, user_wav))
+            cursor += user_wav.numel()
+
+            target_wav = None
+            if source_turn_idx < len(target_turn_audio_paths):
+                target_wav = load_debug_audio(target_turn_audio_paths[source_turn_idx])
+
+            if target_wav is None:
+                logging.warning(
+                    "Could not load target turn audio for multiturn ground-truth debug stereo; "
+                    f"sample_idx={sample_idx}, source_turn_idx={source_turn_idx}"
+                )
+                continue
+
+            gt_agent_segments.append((cursor, target_wav))
+            cursor += target_wav.numel()
+
+        if gt_user_segments or gt_agent_segments:
+            gt_len = 0
+            for start, wav in gt_user_segments + gt_agent_segments:
+                gt_len = max(gt_len, start + wav.numel())
+            gt_user_ch = torch.zeros(gt_len)
+            gt_agent_ch = torch.zeros(gt_len)
+            for start, wav in gt_user_segments:
+                gt_user_ch[start : start + wav.numel()] += wav
+            for start, wav in gt_agent_segments:
+                gt_agent_ch[start : start + wav.numel()] += wav
+
+            gt_stereo = torch.stack([gt_user_ch, gt_agent_ch], dim=1).numpy()
+            sf.write(
+                os.path.join(
+                    debug_mixed_dir,
+                    f"{debug_sample_stem}__sample_{sample_idx}__user_agent_ground_truth_stereo.wav",
+                ),
+                gt_stereo,
+                sample_rate,
+            )

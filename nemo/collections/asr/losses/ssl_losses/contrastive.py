@@ -137,7 +137,13 @@ class ContrastiveLoss(Loss):
         # y - T'xBxC or T'xC
 
         high = y.shape[0]
-        neg_idxs = torch.multinomial(torch.ones((num, high), device=y.device), self.num_negatives)
+        # When fewer candidate frames are available than the number of negatives
+        # requested (e.g. very short utterances), sampling without replacement is
+        # impossible, so fall back to sampling with replacement.
+        replacement = high < self.num_negatives
+        neg_idxs = torch.multinomial(
+            torch.ones((num, high), device=y.device), self.num_negatives, replacement=replacement
+        )
 
         negs = y[neg_idxs.view(-1)]
         negs = negs.view((num, self.num_negatives) + y.shape[1:])

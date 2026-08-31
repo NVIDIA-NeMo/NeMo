@@ -20,6 +20,7 @@ import sys
 import time
 import warnings
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -274,9 +275,6 @@ class ExpManagerConfig:
     # log step time with nemo logger instead of lightning logger to avoid lightning logger overhead
     log_delta_step_timing: Optional[bool] = False
     step_timing_kwargs: Optional[StepTimingParams] = field(default_factory=lambda: StepTimingParams())
-    # Configures creation of log files for different ranks
-    log_local_rank_0_only: Optional[bool] = False
-    log_global_rank_0_only: Optional[bool] = False
     # disable initial validation when resuming from a checkpoint saved during validation
     disable_validation_on_resume: Optional[bool] = True
     ema: Optional[EMAParams] = field(default_factory=lambda: EMAParams())
@@ -558,14 +556,6 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
             - create_fault_tolerance_callback (bool): Use fault tolerance callback. Default is False.
             - files_to_copy (list): A list of files to copy to the experiment logging directory.
                 Defaults to None which copies no files.
-            - log_local_rank_0_only (bool): Whether to only create log files for local rank 0.
-                Defaults to False.
-                Set this to True if you are using DDP with many GPUs and do not want many log files
-                in your exp dir.
-            - log_global_rank_0_only (bool): Whether to only create log files for global rank 0.
-                Defaults to False.
-                Set this to True if you are using DDP with many GPUs and do not want many log files
-                in your exp dir.
             - max_time (str): The maximum wall clock time *per run*. This is intended to be used on
                 clusters where you want a checkpoint to be saved after this specified time and be
                 able to resume from that checkpoint. Defaults to None.
@@ -659,25 +649,9 @@ def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictCo
     logging.info(f'Experiments will be logged at {log_dir}')
     trainer._default_root_dir = log_dir
 
-    if cfg.log_local_rank_0_only is True and cfg.log_global_rank_0_only is True:
-        raise ValueError(
-            "Cannot set both log_local_rank_0_only and log_global_rank_0_only to True."
-            "Please set either one or neither."
-        )
-
-    # This is set if the env var NEMO_TESTING is set to True.
-    nemo_testing = get_envbool(NEMO_ENV_VARNAME_TESTING, False)
-
-    # Handle logging to file
-    log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
-    if cfg.log_local_rank_0_only is True and not nemo_testing:
-        if local_rank == 0:
-            logging.add_file_handler(log_file)
-    elif cfg.log_global_rank_0_only is True and not nemo_testing:
-        if global_rank == 0:
-            logging.add_file_handler(log_file)
-    else:
-        # Logs on all ranks.
+    # Only log on all ranks when NEMO_TESTING is True
+    if get_envbool(NEMO_ENV_VARNAME_TESTING, False):
+        log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
         logging.add_file_handler(log_file)
 
     # For some reason, LearningRateLogger requires trainer to have a logger. Safer to create logger on all ranks
@@ -1479,21 +1453,135 @@ class StatelessTimer(Timer):
         """_check_time_remaining"""
         super()._check_time_remaining(trainer)
         if trainer.should_stop:
+            before_flush = _describe_batch_progress(trainer)
+            logging.info(
+                "StatelessTimer deadline reached; saving last checkpoint "
+                f"global_step={getattr(trainer, 'global_step', None)} "
+                f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+                f"batch_progress_before_flush={before_flush}"
+            )
+            # PTL's TrainingEpochLoop.advance() calls the on_train_batch_end hooks (which is where
+            # Timer._check_time_remaining fires) BEFORE batch_progress.increment_completed(). The
+            # current batch's optim step has already advanced global_step, so saving here would
+            # capture batch_progress.current.completed lagging one behind optim_progress. On
+            # resume, reset_on_restart rewinds batch_progress to .completed, PTL replays the
+            # in-flight batch, and its optim step runs a second time — double-counting one
+            # global_step per wall-time resume. Flush the in-flight batch first to keep the
+            # saved state self-consistent.
+            _flush_in_flight_batch_progress(trainer)
+            after_flush = _describe_batch_progress(trainer)
             checkpoint_callback: Optional[NeMoModelCheckpoint] = trainer.checkpoint_callback
             if checkpoint_callback:
+                save_started = time.monotonic()
                 monitor_candidates = checkpoint_callback._monitor_candidates(trainer)
                 checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
+                logging.info(
+                    "StatelessTimer last checkpoint save finished "
+                    f"global_step={getattr(trainer, 'global_step', None)} "
+                    f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+                    f"batch_progress_after_flush={after_flush} "
+                    f"last_model_path={getattr(checkpoint_callback, 'last_model_path', None)} "
+                    f"save_duration_sec={time.monotonic() - save_started:.3f}"
+                )
+            else:
+                logging.warning("StatelessTimer deadline reached but trainer.checkpoint_callback is not configured")
             # Throw this exception to signal to Lightning to terminate gracefully.
             from lightning.pytorch.utilities.exceptions import _TunerExitException
 
             raise _TunerExitException()
 
 
+def _describe_batch_progress(trainer: lightning.pytorch.Trainer) -> Dict[str, Any]:
+    """Return a compact, log-friendly snapshot of Lightning's train batch progress."""
+    try:
+        batch_progress = trainer.fit_loop.epoch_loop.batch_progress
+    except AttributeError:
+        return {}
+
+    return {
+        "current_ready": getattr(batch_progress.current, "ready", None),
+        "current_processed": getattr(batch_progress.current, "processed", None),
+        "current_completed": getattr(batch_progress.current, "completed", None),
+        "total_ready": getattr(batch_progress.total, "ready", None),
+        "total_processed": getattr(batch_progress.total, "processed", None),
+        "total_completed": getattr(batch_progress.total, "completed", None),
+        "is_last_batch": getattr(batch_progress, "is_last_batch", None),
+    }
+
+
+def _flush_in_flight_batch_progress(trainer: lightning.pytorch.Trainer) -> None:
+    """Bring batch_progress.current.completed up to .ready if a batch is in flight.
+
+    Meant to be called from an ``on_train_batch_end`` hook before a checkpoint save,
+    where PTL has not yet incremented ``batch_progress.current.completed`` but the
+    batch's optim step has already advanced ``global_step``. See
+    :meth:`StatelessTimer._check_time_remaining` for the off-by-one it avoids.
+    """
+    try:
+        batch_progress = trainer.fit_loop.epoch_loop.batch_progress
+    except AttributeError:
+        return
+    if batch_progress.current.ready > batch_progress.current.completed:
+        batch_progress.increment_completed()
+
+
+def _save_last_checkpoint_and_exit(trainer: lightning.pytorch.Trainer, reason: str) -> None:
+    """Save the last checkpoint for graceful shutdown and exit Lightning.
+
+    ``reason`` should describe the caller-visible shutdown trigger. The
+    checkpoint policy itself is unchanged: this only asks the configured
+    ``NeMoModelCheckpoint`` to update its existing ``*-last.ckpt`` target.
+    """
+    before_flush = _describe_batch_progress(trainer)
+    logging.info(
+        f"{reason}; saving last checkpoint "
+        f"global_step={getattr(trainer, 'global_step', None)} "
+        f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+        f"batch_progress_before_flush={before_flush}"
+    )
+    _flush_in_flight_batch_progress(trainer)
+    after_flush = _describe_batch_progress(trainer)
+
+    checkpoint_callback: Optional[NeMoModelCheckpoint] = getattr(trainer, "checkpoint_callback", None)
+    if checkpoint_callback:
+        save_started = time.monotonic()
+        monitor_candidates = checkpoint_callback._monitor_candidates(trainer)
+        checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
+        logging.info(
+            "Graceful shutdown last checkpoint save finished "
+            f"global_step={getattr(trainer, 'global_step', None)} "
+            f"current_epoch={getattr(trainer, 'current_epoch', None)} "
+            f"batch_progress_after_flush={after_flush} "
+            f"last_model_path={getattr(checkpoint_callback, 'last_model_path', None)} "
+            f"save_duration_sec={time.monotonic() - save_started:.3f}"
+        )
+    else:
+        logging.warning(f"{reason}; trainer.checkpoint_callback is not configured")
+
+    from lightning.pytorch.utilities.exceptions import _TunerExitException
+
+    raise _TunerExitException()
+
+
 def configure_no_restart_validation_training_loop(trainer: lightning.pytorch.Trainer) -> None:
     """configure_no_restart_validation_training_loop"""
-    if type(trainer.fit_loop.epoch_loop) != _TrainingEpochLoop:
+    if type(trainer.fit_loop.epoch_loop) is not _TrainingEpochLoop:
         warnings.warn("Detected custom epoch loop. Skipping no validation on restart support.", UserWarning)
         return
+
+    fit_loop = trainer.fit_loop
+    if not getattr(fit_loop, "_nemo_restart_loader_state_cache_installed", False):
+        original_load_combined_loader_states = fit_loop._load_combined_loader_states
+
+        def _load_combined_loader_states_with_cache() -> None:
+            states = getattr(fit_loop, "_combined_loader_states_to_load", None)
+            if getattr(fit_loop, "restarting", False) and states:
+                fit_loop._nemo_restart_combined_loader_states = deepcopy(states)
+            original_load_combined_loader_states()
+
+        fit_loop._load_combined_loader_states = _load_combined_loader_states_with_cache
+        fit_loop._nemo_restart_loader_state_cache_installed = True
+
     # Pass trainer object to avoid trainer getting overwritten as None
     loop = SkipResumeTrainingValidationLoop(trainer, trainer.min_steps, trainer.max_steps)
     trainer.fit_loop.epoch_loop = loop
@@ -1506,8 +1594,43 @@ class SkipResumeTrainingValidationLoop(_TrainingEpochLoop):
     the training state before validation has run.
     """
 
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize skip-validation bookkeeping."""
+        super().__init__(*args, **kwargs)
+        self._skip_resume_validation_once = False
+
+    def advance(self, data_fetcher) -> None:
+        """Skip restart validation without replaying an already-completed train batch."""
+        if self.restarting and super()._should_check_val_fx(data_fetcher):
+            logging.info("Skipping restart validation without replaying a completed training batch")
+            self._reload_unconsumed_restart_dataloader_state()
+            self._skip_resume_validation_once = True
+            self.restarting = False
+            return
+        super().advance(data_fetcher)
+
+    def _reload_unconsumed_restart_dataloader_state(self) -> None:
+        """Reapply the checkpoint dataloader cursor after skipping restart validation."""
+        fit_loop = self.trainer.fit_loop
+        states = getattr(fit_loop, "_nemo_restart_combined_loader_states", None)
+        combined_loader = getattr(fit_loop, "_combined_loader", None)
+        if not states or combined_loader is None or not hasattr(combined_loader, "_load_state_dicts"):
+            return
+
+        combined_loader._load_state_dicts(deepcopy(states))
+        fit_loop._nemo_restart_combined_loader_states = None
+
+    def on_advance_end(self, data_fetcher) -> None:
+        """Clear the one-shot restart-validation skip after normal epoch-loop bookkeeping."""
+        try:
+            return super().on_advance_end(data_fetcher)
+        finally:
+            self._skip_resume_validation_once = False
+
     def _should_check_val_fx(self, data_fetcher) -> bool:
         """_should_check_val_fx"""
+        if self._skip_resume_validation_once:
+            return False
         if self.restarting:
             return False
         return super()._should_check_val_fx(data_fetcher)

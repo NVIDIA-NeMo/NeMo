@@ -37,18 +37,33 @@ class EvaluationConfig:
     Attributes:
         sv_model: Speaker verification model type ("titanet" or "wavlm").
         asr_model_name: ASR model for transcription (e.g., "nvidia/parakeet-tdt-1.1b").
-        language: Language code for transcription (e.g., "en").
+       asr_model_name: ASR model for transcription (e.g., "nvidia/parakeet-tdt-1.1b").
+       eou_model_name: Hugging Face model id or local path to the EoU model.
+       language: Language code for transcription (e.g., "en").
         with_utmosv2: Whether to compute UTMOSv2 (Mean Opinion Score) metrics.
         with_fcd: Whether to compute Frechet Codec Distance metric.
         codec_model_path: Path to the audio codec model. If None, will skip computing Frechet Codec Distance metric.
+        with_prosody_metrics: Whether to compute ESIM/EMS plus pitch,
+            intensity, and speech-rate distance metrics.
+        prosody_model_size: Emotion encoder size ("small" or "large").
+        strip_text_annotations_for_metrics: Whether to strip annotation/control markers from reference and ASR hypothesis text before text metrics.
+        device: Device to use for running models used during evaluation.
     """
 
     sv_model: str = "titanet"
     asr_model_name: str = "nvidia/parakeet-tdt-1.1b"
+    asr_model_type: str = "nemo"
+    eou_model_name: str = "facebook/wav2vec2-base-960h"
     language: str = "en"
     with_utmosv2: bool = True
     with_fcd: bool = True
     codec_model_path: str = None
+    with_prosody_metrics: bool = False
+    prosody_model_size: str = "small"
+    strip_text_annotations_for_metrics: bool = False
+    device: str = "cuda"
+    asr_batch_size: int = 32
+    eou_batch_size: int = 32
 
 
 def evaluate_generated_audio_dir(
@@ -85,9 +100,17 @@ def evaluate_generated_audio_dir(
         language=config.language,
         sv_model_type=config.sv_model,
         asr_model_name=config.asr_model_name,
+        asr_model_type=config.asr_model_type,
         with_utmosv2=config.with_utmosv2,
         with_fcd=config.with_fcd,
         codec_model_path=config.codec_model_path,
+        with_prosody_metrics=config.with_prosody_metrics,
+        prosody_model_size=config.prosody_model_size,
+        strip_text_annotations_for_metrics=config.strip_text_annotations_for_metrics,
+        device=config.device,
+        eou_model_name=config.eou_model_name,
+        asr_batch_size=config.asr_batch_size,
+        eou_batch_size=config.eou_batch_size,
     )
 
     return avg_metrics, filewise_metrics
@@ -95,19 +118,19 @@ def evaluate_generated_audio_dir(
 
 def compute_mean_with_confidence_interval(
     metrics_list: List[dict],
-    metric_keys: List[str],
     confidence: float = 0.95,
 ) -> Dict[str, str]:
-    """Compute mean and confidence interval for specified metrics.
+    """Compute mean and confidence interval for all metrics present in the dicts.
 
     Args:
         metrics_list: List of metric dictionaries (one per repeat/run).
-        metric_keys: List of metric names to compute statistics for.
         confidence: Confidence level (default: 0.95 for 95% CI).
 
     Returns:
         Dictionary mapping metric names to [mean, CI].
     """
+    metric_keys = list(metrics_list[0].keys())
+
     if len(metrics_list) < 2:
         # Can't compute CI with fewer than 2 samples
         return {key: f"{metrics_list[0].get(key, 0):.4f} (single sample)" for key in metric_keys}
@@ -115,11 +138,6 @@ def compute_mean_with_confidence_interval(
     results = {}
     for key in metric_keys:
         measurements = [m[key] for m in metrics_list if key in m]
-        if not measurements:
-            logging.warning(f"Metric '{key}' not found in any measurements")
-            results[key] = "N/A"
-            continue
-
         mean = np.mean(measurements)
         std_err = stats.sem(measurements)
 
@@ -132,24 +150,4 @@ def compute_mean_with_confidence_interval(
     return results
 
 
-# Define the standard metric keys used in evaluation
-STANDARD_METRIC_KEYS = [
-    'cer_filewise_avg',
-    'wer_filewise_avg',
-    'cer_cumulative',
-    'wer_cumulative',
-    'ssim_pred_gt_avg',
-    'ssim_pred_context_avg',
-    'ssim_gt_context_avg',
-    'ssim_pred_gt_avg_alternate',
-    'ssim_pred_context_avg_alternate',
-    'ssim_gt_context_avg_alternate',
-    'cer_gt_audio_cumulative',
-    'wer_gt_audio_cumulative',
-    'utmosv2_avg',
-    'total_gen_audio_seconds',
-    'frechet_codec_distance',
-]
-
-# Default metrics to show in violin plots
 DEFAULT_VIOLIN_METRICS = ['cer', 'pred_context_ssim', 'utmosv2']

@@ -95,7 +95,7 @@ def get_tokenizer(
         except (ImportError, ModuleNotFoundError):
             raise ImportError(
                 "Megatron-core was not found. Please see the NeMo README for installation instructions: "
-                " https://github.com/NVIDIA/NeMo#megatron-gpt."
+                " https://github.com/NVIDIA-NeMo/Speech#megatron-gpt."
             )
         if vocab_file is None:
             vocab_file = get_megatron_vocab_file(tokenizer_name)
@@ -149,6 +149,8 @@ def get_tokenizer(
     return tokenizer
 
 
+# TODO: this is unused code, should remove all unused tokenizers
+# Should also remove it from docs/source/core/core.rst
 def get_nmt_tokenizer(
     library: str = "sentencepiece",
     model_name: Optional[str] = None,
@@ -253,10 +255,6 @@ def get_nmt_tokenizer(
             special_tokens=special_tokens_dict,
             chat_template=chat_template,
         )
-    elif library == "tabular":
-        from nemo.collections.common.tokenizers.tabular_tokenizer import TabularTokenizer
-
-        return TabularTokenizer(vocab_file, delimiter=delimiter)
     elif library == "tiktoken":
         from nemo.collections.common.tokenizers.tiktoken_tokenizer import TiktokenTokenizer
 

@@ -42,13 +42,28 @@ inputs:
     required: false
     default: '["all"]'
   image:
-    description: "Image to use for test"
+    description: "Full image URL with tag (e.g., 766267172432.dkr.ecr.us-east-1.amazonaws.com/nemo-speech:nemo_container-12345)"
+    required: true
+  test-data-path:
+    description: "Host path to mount as /home/TestData inside the container"
     required: false
-    default: "nemo_container"
+    default: /mnt/datadrive/TestData
   cpu-only:
     description: "Run tests on CPU only"
     required: false
     default: "false"
+  test_dir:
+    description: "Directory under tests/ containing the test scripts"
+    required: false
+    default: "functional_tests"
+  download-artifact-name:
+    description: "Optional workflow artifact to place in the test checkout"
+    required: false
+    default: ""
+  download-artifact-path:
+    description: "Destination path relative to the test checkout"
+    required: false
+    default: ".ci-artifacts"
 runs:
   using: "composite"
   steps:
@@ -66,7 +81,7 @@ runs:
     - name: Docker pull image
       shell: bash
       run: |
-        docker pull nemoci.azurecr.io/${{ inputs.image }}:${{ github.run_id }}
+        docker pull ${{ inputs.image }}
 
     - name: Clean repos
       shell: bash
@@ -79,11 +94,19 @@ runs:
         echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
     - name: Checkout NeMo
-      uses: actions/checkout@v4
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       env:
         DIR: ${{ github.run_id }}
       with:
         path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
+
+    - name: Download input artifact
+      if: ${{ inputs.download-artifact-name != '' }}
+      uses: actions/download-artifact@v7
+      with:
+        name: ${{ inputs.download-artifact-name }}
+        path: >-
+          ${{ github.run_id }}/${{ steps.uuid.outputs.id }}/NeMo/${{ inputs.download-artifact-path }}
 
     - name: Start container
       shell: bash
@@ -113,12 +136,15 @@ runs:
           -d \
           --name nemo_container_${{ github.run_id }}_${{ inputs.runner }} ${ARG[@]} \
           --shm-size=64g \
-          --env TRANSFORMERS_OFFLINE=0 \
+          --env HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-0}" \
+          --env HF_DATASETS_OFFLINE="${HF_DATASETS_OFFLINE:-0}" \
+          --env TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-0}" \
+          --env NEMO_HOME="/home/TestData/nemo_home" \
           --env HYDRA_FULL_ERROR=1 \
           --env HF_HOME=/home/TestData/HF_HOME \
           --env RUN_ID=${{ github.run_id }} \
           --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
-          --volume /mnt/datadrive/TestData:/home/TestData nemoci.azurecr.io/${{ inputs.image }}:${{ github.run_id }} \
+          --volume ${{ inputs.test-data-path }}:/home/TestData ${{ inputs.image }} \
           bash -c "sleep $(( ${{ inputs.timeout }} * 60 + 60 ))"
         RUN_TEST_EOF
         )
@@ -146,8 +172,7 @@ runs:
           set -e
 
           docker exec -t nemo_container_${{ github.run_id }}_${{ inputs.runner }} bash -c '\
-            cp -r /opt/Megatron-LM/ /workspace/ && \
-            bash tests/functional_tests/${{ inputs.script }}.sh && \
+            bash tests/${{ inputs.test_dir }}/${{ inputs.script }}.sh && \
             echo "Finished successfully." || echo "Did not finish."'
         ) 2>&1 | tee $DIR/err.log
 
@@ -158,7 +183,7 @@ runs:
         echo "$cmd" | tee "$DIR/job.sh"
 
     - name: Run main script
-      uses: nick-fields/retry@v3
+      uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08 # v3
       with:
         timeout_seconds: ${{ steps.create.outputs.timeout_in_seconds }}
         max_attempts: 3
@@ -186,7 +211,7 @@ runs:
         docker cp nemo_container_${{ github.run_id }}_${{ inputs.runner }}:/workspace/.coverage $DIR/.coverage
         docker cp nemo_container_${{ github.run_id }}_${{ inputs.runner }}:/workspace/coverage.xml $DIR/coverage.xml
 
-        coverage_report=coverage-${{ steps.create.outputs.coverage-prefix }}-${{ github.run_id }}-$(uuidgen)
+        coverage_report=coverage-${{ steps.create.outputs.coverage-prefix }}-${{ github.run_id }}-$(python3 -c "import uuid; print(uuid.uuid4())")
         echo "coverage_report=$coverage_report" >> "$GITHUB_OUTPUT"
 
         IS_SUCCESS=$(tail -n 1 $DIR/err.log | grep -q "Finished successfully." && echo "true" || echo "false")
@@ -209,7 +234,7 @@ runs:
         docker exec -t nemo_container_${{ github.run_id }}_${{ inputs.runner }} coverage report -i
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       if: ${{ steps.check.outputs.coverage_report != 'none' }}
       with:
         name: ${{ steps.check.outputs.coverage_report }}

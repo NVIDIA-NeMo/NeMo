@@ -22,27 +22,35 @@ from dataclasses import dataclass
 from itertools import repeat
 from math import ceil, floor
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-import IPython.display as ipd
 import librosa
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import yaml
+from lhotse import SupervisionSegment
 from omegaconf import DictConfig, OmegaConf
-from pyannote.core import Annotation, Segment
-from pyannote.metrics import detection
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import ParameterGrid
 from tqdm import tqdm
+
+from nemo.collections.asr.metrics.der import make_diar_segment
+from nemo.collections.asr.metrics.md_eval import (
+    EPSILON,
+    _annotation_to_rttm_data,
+    _merge_rttm_dicts,
+    _merge_uem_dicts,
+    _uem_list_to_uem_data,
+    evaluate,
+)
 from nemo.collections.asr.models import EncDecClassificationModel, EncDecFrameClassificationModel
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.utils import logging
+from nemo.utils.dependency import import_optional_dependency
 
 """
-This file contains all the utility functions required for voice activity detection. 
+This file contains all the utility functions required for voice activity detection.
 """
 
 
@@ -79,7 +87,7 @@ def load_postprocessing_from_yaml(postprocessing_yaml: str = None) -> PostProces
     postprocessing_params = OmegaConf.structured(PostProcessingParams())
     if postprocessing_yaml is None:
         logging.info(
-            f"No postprocessing YAML file has been provided. Default postprocessing configurations will be applied."
+            "No postprocessing YAML file has been provided. Default postprocessing configurations will be applied."
         )
     else:
         # Load postprocessing params from the provided YAML file
@@ -332,14 +340,15 @@ def generate_overlap_vad_seq(
     if num_workers is not None and num_workers > 1:
         with multiprocessing.Pool(processes=num_workers) as p:
             inputs = zip(frame_filepathlist, repeat(per_args))
-            results = list(
-                tqdm(
-                    p.imap(generate_overlap_vad_seq_per_file_star, inputs),
-                    total=len(frame_filepathlist),
-                    desc='generating preds',
-                    leave=True,
-                )
-            )
+            # Force-consume ``imap`` so the worker pool actually runs each task;
+            # the per-file results are written to disk by the worker, not returned.
+            for _ in tqdm(
+                p.imap(generate_overlap_vad_seq_per_file_star, inputs),
+                total=len(frame_filepathlist),
+                desc='generating preds',
+                leave=True,
+            ):
+                pass
 
     else:
         for frame_filepath in tqdm(frame_filepathlist, desc='generating preds', leave=False):
@@ -416,7 +425,7 @@ def generate_overlap_vad_seq_per_tensor(
                 if j <= target_len - 1:
                     preds[j] = torch.cat((preds[j], og_pred.unsqueeze(0)), 0)
 
-        preds = torch.stack([torch.nanquantile(l, q=0.5) for l in preds])
+        preds = torch.stack([torch.nanquantile(per_frame_preds, q=0.5) for per_frame_preds in preds])
         nan_idx = torch.isnan(preds)
         last_non_nan_pred = preds[~nan_idx][-1]
         preds[nan_idx] = last_non_nan_pred
@@ -524,7 +533,8 @@ def binarization(sequence: torch.Tensor, per_args: Dict[str, float]) -> torch.Te
     Reference
     Paper: Gregory Gelly and Jean-Luc Gauvain. "Minimum Word Error Training of RNN-based Voice
            Activity Detection", InterSpeech 2015.
-    Implementation: https://github.com/pyannote/pyannote-audio/blob/master/pyannote/audio/utils/signal.py
+    Implementation: see the equivalent reference implementation in the External
+    Annotation Library's audio toolkit (``utils/signal.py``).
 
     Args:
         sequence (torch.Tensor) : A tensor of frame level predictions.
@@ -616,8 +626,8 @@ def filtering(speech_segments: torch.Tensor, per_args: Dict[str, float]) -> torc
     Reference:
         Paper: Gregory Gelly and Jean-Luc Gauvain. "Minimum Word Error Training of RNN-based Voice
         Activity Detection", InterSpeech 2015.
-        Implementation:
-        https://github.com/pyannote/pyannote-audio/blob/master/pyannote/audio/utils/signal.py
+        Implementation: see the equivalent reference implementation in the
+        External Annotation Library's audio toolkit (``utils/signal.py``).
 
     Args:
         speech_segments (torch.Tensor):
@@ -742,9 +752,9 @@ def generate_vad_segment_table_per_file(pred_filepath: str, per_args: dict) -> s
     if preds.shape[0] == 0:
         with open(save_path, "w", encoding='utf-8') as fp:
             if per_args.get("use_rttm", False):
-                fp.write(f"SPEAKER <NA> 1 0 0 <NA> <NA> speech <NA> <NA>\n")
+                fp.write("SPEAKER <NA> 1 0 0 <NA> <NA> speech <NA> <NA>\n")
             else:
-                fp.write(f"0 0 speech\n")
+                fp.write("0 0 speech\n")
     else:
         with open(save_path, "w", encoding='utf-8') as fp:
             for i in preds:
@@ -825,32 +835,38 @@ def generate_vad_segment_table_per_file_star(args):
     return generate_vad_segment_table_per_file(*args)
 
 
-def vad_construct_pyannote_object_per_file(
+def vad_construct_supervisions_per_file(
     vad_table_filepath: str, groundtruth_RTTM_file: str
-) -> Tuple[Annotation, Annotation]:
-    """
-    Construct a Pyannote object for evaluation.
+) -> Tuple[List[SupervisionSegment], List[SupervisionSegment]]:
+    """Construct annotation objects for VAD evaluation.
+
+    Returns lists of :class:`lhotse.SupervisionSegment` that are accepted by
+    every NeMo DER helper.
+
     Args:
         vad_table_filepath(str) : path of vad rttm-like table.
         groundtruth_RTTM_file(str): path of groundtruth rttm file.
     Returns:
-        reference(pyannote.Annotation): groundtruth
-        hypothesis(pyannote.Annotation): prediction
+        reference(List[SupervisionSegment]): groundtruth
+        hypothesis(List[SupervisionSegment]): prediction
     """
 
     pred = pd.read_csv(vad_table_filepath, sep=" ", header=None)
     label = pd.read_csv(groundtruth_RTTM_file, sep=" ", delimiter=None, header=None)
     label = label.rename(columns={3: "start", 4: "dur", 7: "speaker"})
 
-    # construct reference
-    reference = Annotation()
-    for index, row in label.iterrows():
-        reference[Segment(row['start'], row['start'] + row['dur'])] = row['speaker']
+    rec_id = os.path.splitext(os.path.basename(groundtruth_RTTM_file))[0]
+    reference: List[SupervisionSegment] = []
+    for _index, row in label.iterrows():
+        start = float(row['start'])
+        end = start + float(row['dur'])
+        reference.append(make_diar_segment(start, end, str(row['speaker']), recording_id=rec_id))
 
-    # construct hypothsis
-    hypothesis = Annotation()
-    for index, row in pred.iterrows():
-        hypothesis[Segment(float(row[0]), float(row[0]) + float(row[1]))] = 'Speech'
+    hypothesis: List[SupervisionSegment] = []
+    for _index, row in pred.iterrows():
+        start = float(row[0])
+        end = start + float(row[1])
+        hypothesis.append(make_diar_segment(start, end, "Speech", recording_id=rec_id))
     return reference, hypothesis
 
 
@@ -870,6 +886,143 @@ def get_parameter_grid(params: dict) -> list:
         for i in params_grid:
             i['filter_speech_first'] = filter_speech_first
     return params_grid
+
+
+class _DetectionErrorRateAccumulator:
+    """md-eval-backed replacement for the external library's DetectionErrorRate.
+
+    Detection Error Rate (DetER) is the fraction of reference-speech time that
+    is either missed or falsely detected:
+
+        DetER = (false_alarm + missed) / scored
+
+    Equivalent to Diarization Error Rate (DER) when the *speaker confusion*
+    component is dropped (which is appropriate for VAD, where every speech
+    frame is collapsed into a single "speech" speaker).
+
+    This class mimics the call surface used in :func:`vad_tune_threshold_on_dev`
+    and :func:`frame_vad_eval_detection_error`:
+
+    * ``metric(reference, hypothesis)`` accumulates one file pair.
+    * ``metric.report(display=False)`` returns a pandas ``DataFrame`` whose
+      last row carries the cumulative percentages (``("detection error rate", "%")``,
+      ``("false alarm", "%")``, ``("miss", "%")``).
+    * ``metric.reset()`` clears the accumulator.
+    """
+
+    _CUM_INDEX = "TOTAL"
+
+    def __init__(self) -> None:
+        self._files: List[Tuple[str, Dict[str, float]]] = []
+        self._counter = 0
+
+    def __call__(
+        self,
+        reference,
+        hypothesis,
+        uem=None,
+        file_id: Optional[str] = None,
+    ) -> None:
+        """Accumulate the (FA, MISS) for a single ``(reference, hypothesis)`` pair.
+
+        Args:
+            reference: Annotation-like object accepted by md_eval (e.g. list of
+                :class:`lhotse.SupervisionSegment`).
+            hypothesis: Annotation-like object accepted by md_eval.
+            uem: Optional UEM as a list of ``[start, end]`` pairs or
+                annotation-like object iterable of ``SupervisionSegment``.
+            file_id: Optional unique file id; auto-generated when omitted.
+        """
+        self._counter += 1
+        fid = file_id or f"file_{self._counter:06d}"
+
+        ref_data = _merge_rttm_dicts([_annotation_to_rttm_data(fid, reference)])
+        sys_data = _merge_rttm_dicts([_annotation_to_rttm_data(fid, hypothesis)])
+
+        uem_data = None
+        if uem is not None:
+            if hasattr(uem, "__iter__") and not isinstance(uem, (list, tuple)):
+                uem = list(uem)
+            if uem and hasattr(uem[0], "start"):
+                uem_pairs = [[float(s.start), float(s.end)] for s in uem]
+            else:
+                uem_pairs = [[float(s), float(e)] for s, e in uem]
+            if uem_pairs:
+                uem_data = _merge_uem_dicts([_uem_list_to_uem_data(fid, uem_pairs)])
+
+        _, cum = evaluate(
+            ref_data,
+            sys_data,
+            uem_data=uem_data,
+            collar=0.0,
+            opt_1=False,
+            verbose=False,
+        )
+        scored = cum.get("SCORED_SPEAKER", 0.0)
+        falarm = cum.get("FALARM_SPEAKER", 0.0)
+        missed = cum.get("MISSED_SPEAKER", 0.0)
+        self._files.append((fid, {"scored": scored, "false_alarm": falarm, "missed": missed}))
+
+    def reset(self) -> None:
+        """Clear the internal accumulator."""
+        self._files.clear()
+        self._counter = 0
+
+    def report(self, display: bool = False):
+        """Return a pandas DataFrame report of per-file and cumulative DetER.
+
+        Mirrors the column layout consumed by the existing call sites:
+        ``report.iloc[[-1]][('detection error rate', '%')]``,
+        ``report.iloc[[-1]][('false alarm', '%')]``, and
+        ``report.iloc[[-1]][('miss', '%')]``. The last row is labelled
+        ``"TOTAL"`` and holds the aggregate metrics.
+
+        Args:
+            display: Kept for API compatibility; ignored (no printing).
+
+        Returns:
+            ``pandas.DataFrame`` with a 2-level column header
+            ``(metric, unit)`` and one row per accumulated file plus a final
+            ``TOTAL`` row.
+        """
+        del display  # interface compatibility
+        rows = []
+        index = []
+        total_scored = 0.0
+        total_falarm = 0.0
+        total_missed = 0.0
+        for fid, stats in self._files:
+            scored = stats["scored"]
+            fa = stats["false_alarm"]
+            miss = stats["missed"]
+            deter = 100.0 * (fa + miss) / scored if scored > EPSILON else 0.0
+            fa_pct = 100.0 * fa / scored if scored > EPSILON else 0.0
+            miss_pct = 100.0 * miss / scored if scored > EPSILON else 0.0
+            rows.append(
+                {
+                    ("detection error rate", "%"): deter,
+                    ("false alarm", "%"): fa_pct,
+                    ("miss", "%"): miss_pct,
+                }
+            )
+            index.append(fid)
+            total_scored += scored
+            total_falarm += fa
+            total_missed += miss
+
+        deter_total = 100.0 * (total_falarm + total_missed) / total_scored if total_scored > EPSILON else 0.0
+        fa_total = 100.0 * total_falarm / total_scored if total_scored > EPSILON else 0.0
+        miss_total = 100.0 * total_missed / total_scored if total_scored > EPSILON else 0.0
+        rows.append(
+            {
+                ("detection error rate", "%"): deter_total,
+                ("false alarm", "%"): fa_total,
+                ("miss", "%"): miss_total,
+            }
+        )
+        index.append(self._CUM_INDEX)
+
+        return pd.DataFrame(rows, index=index)
 
 
 def vad_tune_threshold_on_dev(
@@ -905,7 +1058,7 @@ def vad_tune_threshold_on_dev(
         raise ValueError("Please check if the parameters are valid")
 
     paired_filenames, groundtruth_RTTM_dict, vad_pred_dict = pred_rttm_map(vad_pred, groundtruth_RTTM, vad_pred_method)
-    metric = detection.DetectionErrorRate()
+    metric = _DetectionErrorRateAccumulator()
     params_grid = get_parameter_grid(params)
 
     for param in params_grid:
@@ -922,9 +1075,7 @@ def vad_tune_threshold_on_dev(
             for filename in paired_filenames:
                 groundtruth_RTTM_file = groundtruth_RTTM_dict[filename]
                 vad_table_filepath = os.path.join(vad_table_dir, filename + ".txt")
-                reference, hypothesis = vad_construct_pyannote_object_per_file(
-                    vad_table_filepath, groundtruth_RTTM_file
-                )
+                reference, hypothesis = vad_construct_supervisions_per_file(vad_table_filepath, groundtruth_RTTM_file)
                 metric(reference, hypothesis)  # accumulation
 
             # delete tmp table files
@@ -1038,7 +1189,7 @@ def plot(
     unit_frame_len: float = 0.01,
     label_repeat: int = 1,
     xticks_step: int = 5,
-) -> ipd.Audio:
+) -> Any:
     """
     Plot Audio and/or VAD output and/or groundtruth labels for visualization
     Args:
@@ -1056,6 +1207,7 @@ def plot(
                             frame lengths in preds and labels.
         xticks_step (int): step size for xticks.
     """
+    ipd, plt = _get_notebook_plotting_modules()
     plt.figure(figsize=[20, 2])
 
     audio, sample_rate = librosa.load(
@@ -1506,6 +1658,7 @@ def plot_sample_from_rttm(
     """
     Plot audio signal and frame-level labels from RTTM file
     """
+    ipd, plt = _get_notebook_plotting_modules()
     plt.figure(figsize=[20, 2])
 
     audio, sample_rate = librosa.load(path=audio_file, sr=16000, mono=True, offset=offset, duration=max_duration)
@@ -1600,23 +1753,27 @@ def align_labels_to_frames(probs, labels, threshold=0.2):
         return labels.long().tolist()
 
 
-def read_rttm_as_pyannote_object(rttm_file: str, speaker_override: Optional[str] = None) -> Annotation:
-    """
-    Read rttm file and construct a Pyannote object.
+def read_rttm_as_supervisions(rttm_file: str, speaker_override: Optional[str] = None) -> List[SupervisionSegment]:
+    """Read an RTTM file and return it as a list of supervision segments.
+
+    Returns a ``list`` of :class:`lhotse.SupervisionSegment`, which is the
+    annotation type used throughout NeMo's DER pipeline.
+
     Args:
         rttm_file(str) : path of rttm file.
         speaker_override(str) : if not None, all speakers will be replaced by this value.
     Returns:
-        annotation(pyannote.Annotation): annotation object
+        annotation(List[SupervisionSegment]): annotation object
     """
-    annotation = Annotation()
+    rec_id = os.path.splitext(os.path.basename(rttm_file))[0]
+    annotation: List[SupervisionSegment] = []
     data = pd.read_csv(rttm_file, sep=r"\s+", delimiter=None, header=None)
     data = data.rename(columns={3: "start", 4: "dur", 7: "speaker"})
-    for index, row in data.iterrows():
-        if speaker_override is not None:
-            annotation[Segment(row['start'], row['start'] + row['dur'])] = speaker_override
-        else:
-            annotation[Segment(row['start'], row['start'] + row['dur'])] = row['speaker']
+    for _index, row in data.iterrows():
+        start = float(row['start'])
+        end = start + float(row['dur'])
+        speaker = speaker_override if speaker_override is not None else str(row['speaker'])
+        annotation.append(make_diar_segment(start, end, speaker, recording_id=rec_id))
     return annotation
 
 
@@ -1644,41 +1801,46 @@ def convert_labels_to_speech_segments(labels: List[float], frame_length_in_sec: 
     return segments
 
 
-def frame_vad_construct_pyannote_object_per_file(
+def frame_vad_construct_supervisions_per_file(
     prediction: Union[str, List[float]], groundtruth: Union[str, List[float]], frame_length_in_sec: float = 0.01
-) -> Tuple[Annotation, Annotation]:
-    """
-    Construct a Pyannote object for evaluation.
+) -> Tuple[List[SupervisionSegment], List[SupervisionSegment]]:
+    """Construct annotation objects for frame-level VAD evaluation.
+
+    Returns lists of :class:`lhotse.SupervisionSegment`.
+
     Args:
         prediction (str) : path of VAD predictions stored as RTTM or CSV-like txt.
         groundtruth (str): path of groundtruth rttm file.
         frame_length_in_sec(float): frame length in seconds
     Returns:
-        reference(pyannote.Annotation): groundtruth
-        hypothesis(pyannote.Annotation): prediction
+        reference(List[SupervisionSegment]): groundtruth
+        hypothesis(List[SupervisionSegment]): prediction
     """
 
-    hypothesis = Annotation()
+    rec_id = "frame_vad"
+    hypothesis: List[SupervisionSegment] = []
     if isinstance(groundtruth, str) and prediction.endswith('.rttm'):
-        hypothesis = read_rttm_as_pyannote_object(prediction, speaker_override='speech')
+        hypothesis = read_rttm_as_supervisions(prediction, speaker_override='speech')
     elif isinstance(groundtruth, str) and prediction.endswith('.txt'):
         pred = pd.read_csv(prediction, sep=" ", header=None)
-        for index, row in pred.iterrows():
-            hypothesis[Segment(float(row[0]), float(row[0]) + float(row[1]))] = 'speech'
+        for _index, row in pred.iterrows():
+            start = float(row[0])
+            end = start + float(row[1])
+            hypothesis.append(make_diar_segment(start, end, 'speech', recording_id=rec_id))
     elif isinstance(groundtruth, list):
         segments = convert_labels_to_speech_segments(prediction, frame_length_in_sec)
         for segment in segments:
-            hypothesis[Segment(segment[0], segment[1])] = 'speech'
+            hypothesis.append(make_diar_segment(float(segment[0]), float(segment[1]), 'speech', recording_id=rec_id))
     else:
         raise ValueError('prediction must be a path to rttm file or a list of frame labels.')
 
-    reference = Annotation()
+    reference: List[SupervisionSegment] = []
     if isinstance(groundtruth, str) and groundtruth.endswith('.rttm'):
-        reference = read_rttm_as_pyannote_object(groundtruth, speaker_override='speech')
+        reference = read_rttm_as_supervisions(groundtruth, speaker_override='speech')
     elif isinstance(groundtruth, list):
         segments = convert_labels_to_speech_segments(groundtruth, frame_length_in_sec)
         for segment in segments:
-            reference[Segment(segment[0], segment[1])] = 'speech'
+            reference.append(make_diar_segment(float(segment[0]), float(segment[1]), 'speech', recording_id=rec_id))
     else:
         raise ValueError('groundtruth must be a path to rttm file or a list of frame labels.')
     return reference, hypothesis
@@ -1749,11 +1911,13 @@ def frame_vad_eval_detection_error(
         frame_length_in_sec: frame length in seconds, e.g. 0.02s
     Returns:
         auroc: AUROC score in 0~100%
-        report: Pyannote detection.DetectionErrorRate() report
+        report: pandas DataFrame with per-file and cumulative detection error
+            rate, false alarm, and miss percentages (matches the historical
+            external-engine report layout).
     """
     all_probs = []
     all_labels = []
-    metric = detection.DetectionErrorRate()
+    metric = _DetectionErrorRateAccumulator()
     key_probs_map = {}
     predictions_list = list(Path(pred_dir).glob("*.frame"))
     for frame_pred in tqdm(predictions_list, desc="Evaluating VAD results", total=len(predictions_list)):
@@ -1775,7 +1939,7 @@ def frame_vad_eval_detection_error(
         else:
             groundtruth = key_labels_map[key]
 
-        reference, hypothesis = frame_vad_construct_pyannote_object_per_file(
+        reference, hypothesis = frame_vad_construct_supervisions_per_file(
             prediction=key_pred_rttm_map[key],
             groundtruth=groundtruth,
             frame_length_in_sec=frame_length_in_sec,
@@ -1836,6 +2000,91 @@ def ts_vad_post_processing(
     return speech_segments
 
 
+def binarization_vectorized(sequence: torch.Tensor, per_args: Dict[str, float]) -> torch.Tensor:
+    """
+    Fully vectorized binarization with hysteresis support.
+
+    When onset is greater than or equal to offset, values between the thresholds
+    retain the previous state. When onset is less than offset, values strictly
+    between the thresholds toggle the previous state.
+
+    Args:
+        sequence (torch.Tensor): Frame-level predictions (num_frames,).
+        per_args (Dict[str, float]): Parameters with keys onset, offset, pad_onset,
+            pad_offset, and frame_length_in_sec.
+
+    Returns:
+        speech_segments (torch.Tensor): Tensor with shape (num_segments, 2)
+            containing [start, end] in seconds. Empty output has shape (0, 2).
+    """
+    frame_length_in_sec = per_args.get('frame_length_in_sec', 0.01)
+    onset = per_args.get('onset', 0.5)
+    offset = per_args.get('offset', 0.5)
+    pad_onset = per_args.get('pad_onset', 0.0)
+    pad_offset = per_args.get('pad_offset', 0.0)
+
+    device = sequence.device
+    empty_segments = torch.empty((0, 2), dtype=torch.float32, device=device)
+
+    if len(sequence) == 0:
+        return empty_segments
+
+    num_frames = sequence.shape[0]
+    positions = torch.arange(1, num_frames + 1, device=device)
+
+    if onset >= offset:
+        force_on = sequence > onset
+        force_off = sequence < offset
+        has_event = force_on | force_off
+        event_positions = torch.where(has_event, positions, torch.zeros_like(positions))
+        last_event_positions = torch.cummax(event_positions, dim=0).values
+
+        event_states = torch.cat([torch.zeros(1, dtype=torch.bool, device=device), force_on])
+        above = event_states[last_event_positions]
+    else:
+        force_on = sequence >= offset
+        force_off = sequence <= onset
+        toggle = (sequence > onset) & (sequence < offset)
+
+        has_reset = force_on | force_off
+        reset_positions = torch.where(has_reset, positions, torch.zeros_like(positions))
+        last_reset_positions = torch.cummax(reset_positions, dim=0).values
+
+        reset_states = torch.cat([torch.zeros(1, dtype=torch.long, device=device), force_on.to(torch.long)])
+        base_state = reset_states[last_reset_positions]
+
+        toggle_prefix = torch.cat(
+            [
+                torch.zeros(1, dtype=torch.long, device=device),
+                torch.cumsum(toggle.to(torch.long), dim=0),
+            ]
+        )
+        toggles_since_reset = toggle_prefix[positions] - toggle_prefix[last_reset_positions]
+        above = torch.logical_xor(base_state.bool(), toggles_since_reset.remainder(2).bool())
+
+    padded = torch.nn.functional.pad(above.float(), (1, 1), value=0.0)
+    diff = padded[1:] - padded[:-1]
+    starts = torch.where(diff > 0.5)[0]
+    ends = torch.where(diff < -0.5)[0]
+
+    if len(starts) == 0:
+        return empty_segments
+
+    start_times = starts.float() * frame_length_in_sec - pad_onset
+    start_times = torch.clamp(start_times, min=0.0)
+    end_times = ends.float() * frame_length_in_sec + pad_offset
+
+    valid = end_times > start_times
+    if not valid.any():
+        return empty_segments
+    speech_segments = torch.stack([start_times[valid], end_times[valid]], dim=1)
+
+    if pad_onset > 0 or pad_offset > 0:
+        speech_segments = merge_overlap_segment(speech_segments)
+
+    return speech_segments
+
+
 def predlist_to_timestamps(
     batch_preds_list: List[torch.Tensor],
     audio_rttm_map_dict: Dict[str, Dict[str, Union[float, int]]],
@@ -1843,10 +2092,14 @@ def predlist_to_timestamps(
     unit_10ms_frame_count: int,
     bypass_postprocessing: bool = False,
     precision: int = 2,
-) -> List[List[float]]:
+) -> List[List[List[float]]]:
     """
     Converts floating point number tensor diarization results to timestamps using VAD style
     post-processing methods.
+
+    Uses binarization_vectorized (a fully vectorized binarization with hysteresis support)
+    instead of a Python-level frame loop, and operates at native frame resolution
+    (no repeat_interleave to 10ms frames), making it significantly faster.
 
     Args:
         batch_preds_list (List[Tensor]):
@@ -1857,10 +2110,9 @@ def predlist_to_timestamps(
         cfg_vad_params (OmegaConf):
             Configuration (omega config) of VAD parameters.
         unit_10ms_frame_count (int):
-            an integer indicating the number of 10ms frames in a unit.
-            For example, if unit_10ms_frame_count is 8, then each frame is 0.08 seconds.
+            Number of 10ms frames in a unit (e.g. 8 for 80ms frames).
         bypass_postprocessing (bool, optional):
-            If True, diarization post-processing will be bypassed.
+            If True, only binarization is applied. Defaults to False.
         precision (int, optional):
             The number of decimal places to round the timestamps. Defaults to 2.
 
@@ -1874,22 +2126,55 @@ def predlist_to_timestamps(
     """
     total_speaker_timestamps = []
     pp_message = "Binarization" if bypass_postprocessing else "Post-processing"
+    actual_frame_length = 0.01 * unit_10ms_frame_count
+
     for sample_idx, (uniq_id, audio_rttm_values) in tqdm(
         enumerate(audio_rttm_map_dict.items()), total=len(audio_rttm_map_dict), desc=pp_message
     ):
         offset = audio_rttm_values['offset']
         speaker_assign_mat = batch_preds_list[sample_idx].squeeze(dim=0)
         speaker_timestamps = [[] for _ in range(speaker_assign_mat.shape[-1])]
+
+        if bypass_postprocessing:
+            pp_params = {
+                'onset': 0.5,
+                'offset': 0.5,
+                'pad_onset': 0.0,
+                'pad_offset': 0.0,
+                'frame_length_in_sec': actual_frame_length,
+            }
+        else:
+            pp_params = {
+                'onset': float(cfg_vad_params.get('onset', 0.5)),
+                'offset': float(cfg_vad_params.get('offset', 0.5)),
+                'pad_onset': float(cfg_vad_params.get('pad_onset', 0.0)),
+                'pad_offset': float(cfg_vad_params.get('pad_offset', 0.0)),
+                'frame_length_in_sec': actual_frame_length,
+                'min_duration_on': float(cfg_vad_params.get('min_duration_on', 0.0)),
+                'min_duration_off': float(cfg_vad_params.get('min_duration_off', 0.0)),
+                'filter_speech_first': float(cfg_vad_params.get('filter_speech_first', 1.0)),
+            }
+
         for spk_id in range(speaker_assign_mat.shape[-1]):
-            ts_mat = ts_vad_post_processing(
-                speaker_assign_mat[:, spk_id],
-                cfg_vad_params=cfg_vad_params,
-                unit_10ms_frame_count=unit_10ms_frame_count,
-                bypass_postprocessing=bypass_postprocessing,
-            )
-            ts_mat = ts_mat + offset
-            ts_seg_raw_list = ts_mat.tolist()
-            ts_seg_list = [[round(stt, precision), round(end, precision)] for (stt, end) in ts_seg_raw_list]
+            speech_segments = binarization_vectorized(speaker_assign_mat[:, spk_id], pp_params)
+
+            if not bypass_postprocessing and speech_segments.numel() > 0:
+                speech_segments = filtering(speech_segments, pp_params)
+
+            if speech_segments.numel() > 0:
+                ts_mat = speech_segments + offset
+                ts_seg_raw_list = ts_mat.tolist()
+                ts_seg_list = [[round(stt, precision), round(end, precision)] for (stt, end) in ts_seg_raw_list]
+            else:
+                ts_seg_list = []
+
             speaker_timestamps[spk_id].extend(ts_seg_list)
+
         total_speaker_timestamps.append(speaker_timestamps)
     return total_speaker_timestamps
+
+
+def _get_notebook_plotting_modules():
+    ipd = import_optional_dependency("IPython.display", pip_name="IPython")
+    plt = import_optional_dependency("matplotlib.pyplot", pip_name="matplotlib")
+    return ipd, plt

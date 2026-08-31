@@ -14,17 +14,20 @@
 
 import numpy as np
 import pytest
-from pyannote.core import Annotation, Segment
+import torch
+from lhotse import SupervisionSegment
 
 from nemo.collections.asr.parts.utils.vad_utils import (
     align_labels_to_frames,
+    binarization_vectorized,
     convert_labels_to_speech_segments,
-    frame_vad_construct_pyannote_object_per_file,
+    frame_vad_construct_supervisions_per_file,
     get_frame_labels,
     get_nonspeech_segments,
     load_speech_overlap_segments_from_rttm,
     load_speech_segments_from_rttm,
-    read_rttm_as_pyannote_object,
+    predlist_to_timestamps,
+    read_rttm_as_supervisions,
 )
 
 
@@ -101,26 +104,163 @@ class TestVADUtils:
         assert speech_segments_new == speech_segments
 
     @pytest.mark.unit
-    def test_read_rttm_as_pyannote_object(self, test_data_dir):
+    def test_read_rttm_as_supervisions(self, test_data_dir):
         rttm_file, speech_segments = get_simple_rttm_without_overlap(test_data_dir + "/test6.rttm")
-        pyannote_object = read_rttm_as_pyannote_object(rttm_file)
-        pyannote_object_gt = Annotation()
-        pyannote_object_gt[Segment(0.0, 2.0)] = 'speech'
-        assert pyannote_object == pyannote_object_gt
+        annotation = read_rttm_as_supervisions(rttm_file)
+        assert _annotation_equals(annotation, [(0.0, 2.0, 'speech')])
 
     @pytest.mark.unit
-    def test_frame_vad_construct_pyannote_object_per_file(self, test_data_dir):
+    def test_frame_vad_construct_supervisions_per_file(self, test_data_dir):
         rttm_file, speech_segments = get_simple_rttm_without_overlap(test_data_dir + "/test7.rttm")
         # test for rttm input
-        ref, hyp = frame_vad_construct_pyannote_object_per_file(rttm_file, rttm_file)
-        pyannote_object_gt = Annotation()
-        pyannote_object_gt[Segment(0.0, 2.0)] = 'speech'
-        assert ref == hyp == pyannote_object_gt
+        ref, hyp = frame_vad_construct_supervisions_per_file(rttm_file, rttm_file)
+        expected = [(0.0, 2.0, 'speech')]
+        assert _annotation_equals(ref, expected)
+        assert _annotation_equals(hyp, expected)
 
         # test for list input
         speech_segments = load_speech_segments_from_rttm(rttm_file)
         frame_labels = get_frame_labels(speech_segments, 0.02, 0.0, 3.0, as_str=False)
         speech_segments_new = convert_labels_to_speech_segments(frame_labels, 0.02)
         assert speech_segments_new == speech_segments
-        ref, hyp = frame_vad_construct_pyannote_object_per_file(frame_labels, frame_labels, 0.02)
-        assert ref == hyp == pyannote_object_gt
+        ref, hyp = frame_vad_construct_supervisions_per_file(frame_labels, frame_labels, 0.02)
+        assert _annotation_equals(ref, expected)
+        assert _annotation_equals(hyp, expected)
+
+    @pytest.mark.parametrize(
+        ("predictions", "onset", "offset", "frame_length_in_sec", "expected"),
+        [
+            pytest.param(
+                [0.6, 0.5, 0.6, 0.4],
+                0.5,
+                0.5,
+                1.0,
+                [[0.0, 3.0]],
+                id="equal-threshold-holds-active-state",
+            ),
+            pytest.param(
+                [0.5, 0.5, 0.6, 0.5, 0.4],
+                0.5,
+                0.5,
+                1.0,
+                [[2.0, 4.0]],
+                id="initial-equality-does-not-start-speech",
+            ),
+            pytest.param(
+                [0.7, 0.5, 0.5, 0.3],
+                0.6,
+                0.4,
+                1.0,
+                [[0.0, 3.0]],
+                id="conventional-hysteresis-dead-zone",
+            ),
+            pytest.param(
+                [0.5, 0.5, 0.5, 0.7, 0.5, 0.3],
+                0.4,
+                0.6,
+                1.0,
+                [[0.0, 1.0], [2.0, 4.0]],
+                id="overlap-regime-toggles-state",
+            ),
+            pytest.param(
+                [0.75, 0.25],
+                0.25,
+                0.75,
+                1.0,
+                [[0.0, 1.0]],
+                id="overlap-regime-exact-boundaries",
+            ),
+            pytest.param(
+                [0.6, 0.6],
+                0.5,
+                0.5,
+                0.08,
+                [[0.0, 0.16]],
+                id="final-active-frame-uses-full-duration",
+            ),
+        ],
+    )
+    @pytest.mark.unit
+    def test_binarization_vectorized_hysteresis(self, predictions, onset, offset, frame_length_in_sec, expected):
+        segments = binarization_vectorized(
+            torch.tensor(predictions),
+            {
+                'onset': onset,
+                'offset': offset,
+                'pad_onset': 0.0,
+                'pad_offset': 0.0,
+                'frame_length_in_sec': frame_length_in_sec,
+            },
+        )
+
+        torch.testing.assert_close(segments, torch.tensor(expected))
+
+    @pytest.mark.parametrize(
+        "predictions",
+        [
+            pytest.param([], id="empty-input"),
+            pytest.param([0.1, 0.2], id="no-speech"),
+        ],
+    )
+    @pytest.mark.unit
+    def test_binarization_vectorized_empty_result_shape(self, predictions):
+        segments = binarization_vectorized(
+            torch.tensor(predictions),
+            {
+                'onset': 0.5,
+                'offset': 0.5,
+                'pad_onset': 0.0,
+                'pad_offset': 0.0,
+                'frame_length_in_sec': 1.0,
+            },
+        )
+
+        assert segments.shape == (0, 2)
+
+    @pytest.mark.parametrize(
+        ("predictions", "recording_offset", "unit_10ms_frame_count", "expected"),
+        [
+            pytest.param(
+                [
+                    [0.6, 0.4],
+                    [0.5, 0.6],
+                    [0.6, 0.5],
+                    [0.4, 0.4],
+                    [0.4, 0.6],
+                ],
+                1.25,
+                8,
+                [[[[1.25, 1.49]], [[1.33, 1.49], [1.57, 1.65]]]],
+                id="two-speakers-with-offset-and-eight-frame-units",
+            )
+        ],
+    )
+    @pytest.mark.unit
+    def test_predlist_to_timestamps_preserves_speakers_offset_and_frame_length(
+        self, predictions, recording_offset, unit_10ms_frame_count, expected
+    ):
+        timestamps = predlist_to_timestamps(
+            batch_preds_list=[torch.tensor([predictions])],
+            audio_rttm_map_dict={'session': {'offset': recording_offset}},
+            cfg_vad_params={},
+            unit_10ms_frame_count=unit_10ms_frame_count,
+            bypass_postprocessing=True,
+        )
+
+        assert timestamps == expected
+
+
+def _annotation_equals(annotation, expected_segments, *, atol=1e-6):
+    """Compare a list of :class:`lhotse.SupervisionSegment` to expected ``(start, end, speaker)`` tuples."""
+    assert isinstance(annotation, list)
+    assert all(isinstance(s, SupervisionSegment) for s in annotation)
+    if len(annotation) != len(expected_segments):
+        return False
+    for seg, (exp_start, exp_end, exp_spk) in zip(annotation, expected_segments):
+        if abs(float(seg.start) - exp_start) > atol:
+            return False
+        if abs(float(seg.end) - exp_end) > atol:
+            return False
+        if seg.speaker != exp_spk:
+            return False
+    return True

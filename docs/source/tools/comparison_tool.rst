@@ -19,7 +19,7 @@ The Comparison Tool (CT) allows to compare predictions of different ASR models a
 
 Getting Started
 ---------------
-The Comparison Tool is integrated in NeMo Speech Data Explorer (SDE) that could be found at `NeMo/tools/speech_data_explorer <https://github.com/NVIDIA/NeMo/tree/main/tools/speech_data_explorer>`__.
+The Comparison Tool is integrated in NeMo Speech Data Explorer (SDE) that could be found at `NeMo/tools/speech_data_explorer <https://github.com/NVIDIA-NeMo/Speech/tree/main/tools/speech_data_explorer>`__.
 
 Please install the SDE requirements:
 
@@ -50,8 +50,8 @@ Then run:
                             estimate frequency bandwidth and signal level of audio recordings
     --debug, -d           enable debug mode
     --audio-base-path A base path for the relative paths in manifest. It defaults to manifest path.
-    --names_compared, -nc names of the two fields that will be compared, example: pred_text_contextnet pred_text_conformer.
-    --show_statistics, -shst field name for which you want to see statistics (optional). Example: pred_text_contextnet.
+    --names_compared, -nc names of the two fields that will be compared, example: pred_text_model1 pred_text_model2.
+    --show_statistics, -shst field name for which you want to see statistics (optional). Example: pred_text_model1.
 
 CT takes a JSON manifest file (that describes speech datasets in NeMo) as an input. It should contain the following fields:
 
@@ -124,7 +124,7 @@ If there is a pre-trained ASR model, then the JSON manifest file can be extended
     python examples/asr/transcribe_speech.py pretrained_name=<ASR_MODEL_NAME> dataset_manifest=<JSON_FILENAME> append_pred=False pred_name_postfix=<model_name_1>
     
 
-More information about transcribe_speech parameters is available in the code: `NeMo/examples/asr/transcribe_speech.py <https://github.com/NVIDIA/NeMo/blob/main/examples/asr/transcribe_speech.py>`__.
+More information about transcribe_speech parameters is available in the code: `NeMo/examples/asr/transcribe_speech.py <https://github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/transcribe_speech.py>`__.
 .
 
     .. image:: images/scrsh_2.png

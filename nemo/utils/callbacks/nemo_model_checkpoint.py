@@ -16,7 +16,6 @@ import os
 import re
 import shutil
 import time
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
@@ -236,18 +235,11 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 return output
 
             self.previous_best_path = self.best_model_path
-            old_state_dict = deepcopy(pl_module.state_dict())
-            checkpoint = torch.load(maybe_injected_best_model_path, map_location='cpu')
-            if 'state_dict' in checkpoint:
-                checkpoint = checkpoint['state_dict']
-            # get a new instanace of the model
-            pl_module.load_state_dict(checkpoint, strict=True)
             if torch.distributed.is_initialized():
                 torch.distributed.barrier()
             backup_path = self._backup_existing_nemo_ckpt(trainer)
             pl_module.save_to(save_path=app_state.model_restore_path)
             logging.info(f"New best .nemo model saved to: {app_state.model_restore_path}")
-            pl_module.load_state_dict(old_state_dict, strict=True)
         else:
             if torch.distributed.is_initialized():
                 torch.distributed.barrier()
@@ -298,8 +290,16 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 trainer._checkpoint_connector.restore(self.best_model_path)
 
         if self.save_nemo_on_train_end:
+            save_to = getattr(pl_module, "save_to", None)
+            if not callable(save_to):
+                logging.warning(
+                    f"{type(pl_module).__name__} does not implement save_to(); "
+                    "skipping automatic .nemo export at train end."
+                )
+                return
+
             backup_path = self._backup_existing_nemo_ckpt(trainer)
-            pl_module.save_to(save_path=self._format_nemo_checkpoint_name())
+            save_to(save_path=self._format_nemo_checkpoint_name())
             if backup_path is not None and is_global_rank_zero():
                 logging.info(f'Removing old .nemo backup {backup_path}')
                 get_filesystem(backup_path).rm(backup_path)
@@ -693,7 +693,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 if f.is_file()
             }
 
-            checkpoint_filepaths = {f.resolve() for f in checkpoint_dir.rglob("*.ckpt")}
+            checkpoint_filepaths = {f.resolve() for f in checkpoint_dir.rglob("*.ckpt") if f.is_file()}
             for ckpt_filepath in checkpoint_filepaths:
                 possible_marker_path = NeMoModelCheckpoint.format_checkpoint_unfinished_marker_path(ckpt_filepath)
                 if possible_marker_path in existing_marker_filepaths:

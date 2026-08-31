@@ -24,7 +24,7 @@ from typing import Any, Dict
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from omegaconf import OmegaConf
@@ -36,12 +36,13 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.frameworks.rtvi import RTVIAction, RTVIConfig, RTVIObserverParams, RTVIProcessor
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
+from websocket_url import build_websocket_url
 
 from nemo.agents.voice_agent.pipecat.processors.frameworks.rtvi import RTVIObserver
 from nemo.agents.voice_agent.pipecat.services.nemo.audio_logger import AudioLogger, RTVIAudioLoggerObserver
 from nemo.agents.voice_agent.pipecat.services.nemo.diar import NemoDiarService
 from nemo.agents.voice_agent.pipecat.services.nemo.llm import get_llm_service_from_config
-from nemo.agents.voice_agent.pipecat.services.nemo.stt import ASR_EOU_MODELS, NemoSTTService
+from nemo.agents.voice_agent.pipecat.services.nemo.stt import NemoSTTService
 from nemo.agents.voice_agent.pipecat.services.nemo.tts import get_tts_service_from_config
 from nemo.agents.voice_agent.pipecat.services.nemo.turn_taking import NeMoTurnTakingService
 from nemo.agents.voice_agent.pipecat.transports.network.websocket_server import (
@@ -92,6 +93,8 @@ TRANSPORT_AUDIO_OUT_10MS_CHUNKS = config_manager.TRANSPORT_AUDIO_OUT_10MS_CHUNKS
 RECORD_AUDIO_DATA = server_config.transport.get("record_audio_data", False)
 AUDIO_LOG_DIR = server_config.transport.get("audio_log_dir", "./audio_logs")
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
+SERVER_PUBLIC_HOST = os.getenv("SERVER_PUBLIC_HOST", "127.0.0.1")
+WEBSOCKET_SCHEME = os.getenv("WEBSOCKET_SCHEME", "ws")
 WEBSOCKET_PORT = int(os.getenv("WEBSOCKET_PORT", 8765))
 FASTAPI_PORT = int(os.getenv("FASTAPI_PORT", 7860))
 
@@ -159,9 +162,6 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = None):
     )
     logger.info("VAD analyzer initialized")
 
-    has_turn_taking = True if STT_MODEL in ASR_EOU_MODELS else False
-    logger.info(f"Setting STT service has_turn_taking to `{has_turn_taking}` based on model name: `{STT_MODEL}`")
-
     ws_transport = WebsocketServerTransport(
         params=WebsocketServerParams(
             serializer=ProtobufFrameSerializer(),
@@ -171,8 +171,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = None):
             vad_analyzer=vad_analyzer,
             session_timeout=None,  # Disable session timeout
             audio_in_sample_rate=SAMPLE_RATE,
-            can_create_user_frames=TURN_TAKING_BACKCHANNEL_PHRASES_PATH is None
-            or not has_turn_taking,  # if backchannel phrases are disabled, we can use VAD to interrupt the bot immediately
+            can_create_user_frames=False,
             audio_out_10ms_chunks=TRANSPORT_AUDIO_OUT_10MS_CHUNKS,
         ),
         host=host,
@@ -187,7 +186,6 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = None):
         params=stt_params,
         sample_rate=SAMPLE_RATE,
         audio_passthrough=True,
-        has_turn_taking=has_turn_taking,
         backend="legacy",
         decoder_type="rnnt",
         audio_logger=audio_logger,
@@ -208,7 +206,6 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = None):
         diar = None
 
     turn_taking = NeMoTurnTakingService(
-        use_vad=True,
         use_diar=USE_DIAR,
         max_buffer_size=TURN_TAKING_MAX_BUFFER_SIZE,
         bot_stop_delay=TURN_TAKING_BOT_STOP_DELAY,
@@ -277,6 +274,7 @@ async def run_bot_websocket_server(host: str = "0.0.0.0", port: int = None):
             tts.reset()
             if diar is not None:
                 diar.reset()
+            turn_taking.reset()
             logger.info("Conversation context reset successfully")
             return True
         except Exception as e:
@@ -429,11 +427,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 @app.post("/connect")
-async def bot_connect(request: Request) -> Dict[Any, Any]:
+async def bot_connect() -> Dict[Any, Any]:
     print("Received /connect request")
-    # Use the host that the client connected to (from the request)
-    server_host = request.url.hostname or request.headers.get("host", "").split(":")[0]
-    ws_url = f"ws://{server_host}:{WEBSOCKET_PORT}"
+    ws_url = build_websocket_url(SERVER_PUBLIC_HOST, WEBSOCKET_PORT, WEBSOCKET_SCHEME)
     print(f"Returning WebSocket URL: {ws_url}")
     return {"ws_url": ws_url}
 

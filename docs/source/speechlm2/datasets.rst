@@ -4,6 +4,16 @@ Datasets
 The speechlm2 collection supports datasets that contain both audio and text data for training models that can understand speech and generate appropriate responses.
 This section describes the dataset format, preparation, and usage with the speechlm2 models.
 
+.. seealso::
+
+   :doc:`/dataloaders` is the canonical reference for the underlying Lhotse
+   dataloader: ``input_cfg`` shape, supported formats, sampling/bucketing
+   options, indexed manifests + resumable dataloading, and
+   ``LhotseDataLoadingConfig`` field schema. The page below covers what's
+   speech-LM-specific on top of that — datamodule resume contract,
+   AIStore GetBatch, conversation type semantics in the SALM/duplex
+   recipes.
+
 Dataset Format
 --------------
 
@@ -11,7 +21,8 @@ Duplex S2S models use the Lhotse framework for audio data management. The primar
 
 1. **DuplexS2SDataset**: For general duplex speech-to-speech models
 2. **SALMDataset**: Specifically for the Speech-Augmented Language Model (SALM), which processes speech+text and outputs text.
-3. **DuplexEARTTSDataset**: Dataset for Duplex EARTTS model, extending DuplexS2SDataset with additional output fields for TTS, including audio prompting. It optionally prepends an audio prompt (speaker reference) to target_audio, which is used to initialize speaker conditioning in the EARTTS model. The dataset provides audio_prompt, audio_prompt_lens, non_prompt_mask, aligned_attention_mask, and aligned_position_ids, and supports custom speaker reference audio through the context_audio field, while preserving full compatibility with the original data format.
+3. **DuplexSTTDataset**: For the DuplexSTTModel, which processes conversational audio and generates text responses.
+4. **DuplexEARTTSDataset**: Dataset for Duplex EARTTS model, extending DuplexS2SDataset with additional output fields for TTS, including audio prompting. It optionally prepends an audio prompt (speaker reference) to target_audio, which is used to initialize speaker conditioning in the EARTTS model. The dataset provides audio_prompt, audio_prompt_lens, non_prompt_mask, aligned_attention_mask, and aligned_position_ids, and supports custom speaker reference audio through the context_audio field, while preserving full compatibility with the original data format.
 
 DuplexS2S Dataset Structure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -192,9 +203,77 @@ This dataset class is specialized for the SALM model, which focuses on understan
 .. code-block:: python
 
     from nemo.collections.speechlm2.data import SALMDataset
-    
+
     dataset = SALMDataset(
         tokenizer=model.tokenizer,                   # Text tokenizer
+    )
+
+AIStore GetBatch (multimodal conversations) (experimental)
+**********************************************************
+
+`AIStore GetBatch <https://docs.nvidia.com/aistore/get_batch>`_ is a server-side
+batched object-fetch API; see the `paper <https://arxiv.org/html/2602.22434v1>`_
+for the design and motivation.
+
+For tarred multimodal conversation manifests (``NeMoMultimodalConversationJsonlAdapter``
+and ``NeMoMultimodalConversationShareGPTJsonlAdapter``), set the environment variable
+``USE_AIS_GET_BATCH=true`` to enable AIStore GetBatch loading:
+
+.. code-block:: bash
+
+    USE_AIS_GET_BATCH=true python examples/speechlm2/salm_train.py \
+      --config-name=salm_automodel ...
+
+When enabled:
+
+* The adapters skip opening tar files and instead build URL-backed cuts whose
+  ``AudioSource`` points at the per-shard audio location (the JSONL ``value``
+  field is trusted to match the tar layout).
+* ``SALMDataset`` constructs its loader as
+  ``AudioSamples(use_batch_loader=True, fault_tolerant=True, mono_downmix=True)``,
+  which issues a single batched fetch per minibatch instead of per-cut reads.
+* ``collate_conversation_audio_fault_tolerant`` delegates loading and collation
+  to ``AudioSamples`` and drops every conversation whose cuts didn't survive
+  the fetch — preserving the legacy fault-tolerant semantics.
+
+Leave the env var unset to keep the original tar-iterating loader.
+
+Combining with ``indexed: true``
+""""""""""""""""""""""""""""""""
+
+``USE_AIS_GET_BATCH=true`` coexists with ``indexed: true`` on
+``LazyNeMoTarredIterator`` (and on the multimodal-conversation adapters).
+Indexed mode keeps the JSONL-driven O(1) global indexing and graph-token
+checkpointing, while AIStore GetBatch handles the actual audio fetch:
+
+* The audio-tar ``.idx`` sidecar is **not** required when GetBatch is enabled
+  — the iterator skips opening tar files entirely and emits URL-backed cuts
+  whose ``AudioSource`` points at ``{tar_path}/{audio_filename}``
+  (``type="url"`` for ``ais://...`` paths, ``type="file"`` otherwise).
+* Manifest JSONLs still need their ``.idx`` sidecars; they drive the indexed
+  iterator graph and the ``state_dict`` / ``load_state_dict`` round-trip.
+* Audio bytes are fetched lazily by ``AudioSamples(use_batch_loader=True)`` at
+  collation time, which issues one batched GetBatch request per minibatch.
+
+Use this combination when shards live on AIStore and you want both the
+network efficiency of GetBatch and the exact-resume guarantees of the
+indexed/stateful pipeline.
+
+DuplexSTTDataset
+****************
+
+This dataset class is specialized for the DuplexSTTModel, which processes duplex conversational audio and generates text responses. Unlike DuplexS2SDataset which outputs speech, this dataset prepares data for speech-to-text conversion in duplex conversations.
+
+.. code-block:: python
+
+    from nemo.collections.speechlm2.data import DuplexSTTDataset
+
+    dataset = DuplexSTTDataset(
+        tokenizer=model.tokenizer,                   # Text tokenizer
+        frame_length=0.08,                           # Frame length for audio processing
+        source_sample_rate=16000,                    # Audio sample rate
+        input_roles=["User"],                        # Roles to use as input
+        output_roles=["Assistant"],                  # Roles to generate text for
     )
 
 DataModule
@@ -209,13 +288,47 @@ The DataModule class in the speechlm2 collection manages dataset loading, prepar
     datamodule = DataModule(
         cfg_data,                  # Configuration dictionary for data
         tokenizer=model.tokenizer, # Text tokenizer
-        dataset=dataset            # Instance of DuplexS2SDataset or SALMDataset
+        dataset=dataset            # Instance of DuplexS2SDataset, DuplexSTTDataset, or SALMDataset
     )
 
 The DataModule takes care of:
+
 1. Setting up proper data parallel ranks for dataloaders
 2. Instantiating the dataloaders with configuration from YAML
 3. Managing multiple datasets for validation/testing
+4. Persisting the train dataloader's iterator state across checkpoints
+   (when ``use_stateful_dataloader: true``)
+
+Checkpointed / resumable training
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The DataModule caches the train dataloader on first ``train_dataloader()``
+call and exposes ``state_dict()`` / ``load_state_dict()`` that delegate to the
+cached dataloader when it supports them. Lightning's trainer wires those into
+every checkpoint automatically, so an experiment configured with::
+
+    data:
+      train_ds:
+        indexed: true
+        use_stateful_dataloader: true
+        ...
+
+resumes O(1) — sampler RNG, bucketer state, multiplexer choice RNG,
+per-source iterator cursors, and per-worker prefetch queues are all restored
+exactly without replay.
+
+With a regular ``DataLoader`` (``use_stateful_dataloader`` unset or
+``False``) ``state_dict``/``load_state_dict`` become no-ops and resume falls
+back to Lhotse's ``_fast_forward()`` replay path.
+
+Two constraints to keep in mind across save/restore:
+
+* ``num_workers`` and ``world_size`` must match between save and restore
+  (a hard requirement of ``StatefulDataLoader``).
+* All data files must be **uncompressed** and accompanied by ``.idx``
+  sidecars. Build them in one shot with ``scripts/dataloading/build_indexes.py``
+  (see :ref:`indexed-resumable-dataloading` in the main Lhotse dataloading
+  guide).
 
 Bucketing for Efficient Training
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -84,7 +84,7 @@ specifying the module to use for each.
 
 The following sections go into more detail about the specific configurations of each model architecture.
 
-The :ref:`MatchboxNet <MarbleNet_model>` and :ref:`MarbleNet <MarbleNet_model>` models are very similar, and they are based on :ref:`QuartzNet <QuartzNet_model>`  and as 
+The :ref:`MatchboxNet <MarbleNet_model>` and :ref:`MarbleNet <MarbleNet_model>` models are very similar, and as 
 such the components in their configs are very similar as well.
 
 Decoder Configurations
@@ -111,5 +111,5 @@ When preparing your own training or fine-tuning scripts, please follow the execu
 
 Depending on the type of model, there may be extra steps that must be performed -
 
-* Speech Classification models - `Examples directory for Classification Models <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/speech_classification/README.md>`_
+* Speech Classification models - `Examples directory for Classification Models <https://github.com/NVIDIA-NeMo/Speech/blob/stable/examples/asr/speech_classification/README.md>`_
 

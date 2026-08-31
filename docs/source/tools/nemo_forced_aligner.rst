@@ -1,12 +1,12 @@
 NeMo Forced Aligner (NFA)
 =========================
 
-NFA is hosted here: https://github.com/NVIDIA/NeMo/tree/main/tools/nemo_forced_aligner.
+NFA is hosted here: https://github.com/NVIDIA-NeMo/Speech/tree/main/tools/nemo_forced_aligner.
 
 
 NFA is a tool for generating token-, word- and segment-level timestamps of speech in audio using NeMo's CTC-based Automatic Speech Recognition models. 
 You can provide your own reference text, or use ASR-generated transcription. 
-You can use NeMo's ASR Model checkpoints out of the box in :ref:`14+ languages <asr-checkpoint-list-by-language>`, or train your own model.
+You can use NeMo's ASR Model checkpoints out of the box in 14+ languages (see :doc:`ASR Model Checkpoints </asr/asr_checkpoints>`), or train your own model.
 NFA can be used on long audio files of 1+ hours duration (subject to your hardware and the ASR model used).
 
 Demos & Tutorials
@@ -14,13 +14,13 @@ Demos & Tutorials
 
 * HuggingFace Space `demo <https://huggingface.co/spaces/erastorgueva-nv/NeMo-Forced-Aligner>`__ to quickly try out NFA in various languages.
 * NFA "how-to" notebook `tutorial <https://nvidia.github.io/NeMo/blogs/2023/2023-08-forced-alignment/>`__.
-* "How forced alignment works" NeMo blog `tutorial <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/tools/NeMo_Forced_Aligner_Tutorial.ipynb>`__.
+* "How forced alignment works" NeMo blog `tutorial <https://colab.research.google.com/github/NVIDIA-NeMo/Speech/blob/main/tutorials/tools/NeMo_Forced_Aligner_Tutorial.ipynb>`__.
 
 Quickstart
 ----------
 
-1. Install `NeMo <https://github.com/NVIDIA/NeMo#installation>`__.
-2. Prepare a NeMo-style manifest containing the paths of audio files you would like to proces, and (optionally) their text.
+1. Install NeMo with the ASR collection. See :ref:`installation`.
+2. Prepare a NeMo-style manifest containing the paths of audio files you would like to process, and (optionally) their text.
 3. Run NFA's ``align.py`` script with the desired config, e.g.:
 
 .. code-block::
@@ -30,7 +30,7 @@ Quickstart
 	    manifest_filepath=<path to manifest of utterances you want to align> \
 	    output_dir=<path to where your output files will be saved>
 
-.. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.20.0/nfa_run.png
+.. image:: https://github.com/NVIDIA-NeMo/Speech/releases/download/v1.20.0/nfa_run.png
 
 How do I use NeMo Forced Aligner?
 ---------------------------------
@@ -39,7 +39,7 @@ To use NFA, all you need to provide is a correct NeMo manifest (with ``"audio_fi
 
 Call the ``align.py`` script, specifying the parameters as follows:
 
-* ``pretrained_name``: string specifying the name of a CTC NeMo ASR model which will be automatically downloaded from NGC and used for generating the log-probs which we will use to do alignment. Any Quartznet, Citrinet, Conformer CTC model should work, in any language (only English has been tested so far). If ``model_path`` is specified, ``pretrained_name`` must not be specified.
+* ``pretrained_name``: string specifying the name of a CTC NeMo ASR model which will be automatically downloaded from NGC and used for generating the log-probs which we will use to do alignment. Any CTC model (e.g., Conformer CTC, FastConformer CTC) should work, in any language (only English has been tested so far). If ``model_path`` is specified, ``pretrained_name`` must not be specified.
 
 	Note: Currently NFA can only use CTC models, or Hybrid CTC-Transducer models (in CTC mode). Pure Transducer models cannot be used.
 
@@ -74,7 +74,7 @@ Optional parameters:
 
 * ``minimum_timestamp_duration``: a float indicating a minimum duration (in seconds) for timestamps in the CTM. If any line in the CTM has a duration lower than the ``minimum_timestamp_duration``, it will be enlarged from the middle outwards until it meets the minimum_timestamp_duration, or reaches the beginning or end of the audio file. Note that this may cause timestamps to overlap. (Default: 0, i.e. no modifications to predicted duration).
 
-* ``use_buffered_chunked_streaming``: a flag to indicate whether to do buffered chunk streaming. Notice only CTC models (e.g., stt_en_citrinet_1024_gamma_0_25)with ``per_feature`` preprocessor are supported. The below two params are needed if this option set to ``True``.
+* ``use_buffered_chunked_streaming``: a flag to indicate whether to do buffered chunk streaming. Notice only CTC models with ``per_feature`` preprocessor are supported. The below two params are needed if this option set to ``True``.
 
 * ``chunk_len_in_secs``: the chunk size for buffered chunked streaming inference. Default is 1.6 seconds.
 
@@ -140,7 +140,7 @@ The ``ASSFileConfig`` (which is passed into the main NFA config) has the followi
 * ``fontsize``: int (default value ``20``) which will be the fontsize of the text
 * ``vertical_alignment``: string (default value ``center``) to specify the vertical alignment of the text. Can be one of ``center``, ``top``, ``bottom``.
 * ``resegment_text_to_fill_space``: bool (default value ``False``). If ``True``, the text will be resegmented such that each segment will not take up more than (approximately) ``max_lines_per_segment`` when the ASS file is applied to a video.
-* ``max_lines_per_segment``: int (defaulst value ``2``) which specifies the number of lines per segment to display. This parameter is only used if ``resegment_text_to_fill_space`` is ``True``.
+* ``max_lines_per_segment``: int (default value ``2``) which specifies the number of lines per segment to display. This parameter is only used if ``resegment_text_to_fill_space`` is ``True``.
 * ``text_already_spoken_rgb``: List of 3 ints (default value is [49, 46, 61], which makes a dark gray). The RGB values of the color that will be used to highlight text that has already been spoken.
 * ``text_being_spoken_rgb``: List of 3 ints (default value is [57, 171, 9] which makes a dark green). The RGB values of the color that will be used to highlight text that is being spoken.
 * ``text_not_yet_spoken_rgb``: List of 3 ints (default value is [194, 193, 199] which makes a dark green). The RGB values of the color that will be used to highlight text that has not yet been spoken.

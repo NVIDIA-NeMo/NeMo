@@ -17,14 +17,16 @@ import math
 import random
 from collections import defaultdict
 from copy import deepcopy
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 
+import numpy as np
 import torch.utils.data
 from cytoolz import groupby
 from lhotse import AudioSource, Recording, SupervisionSegment, SupervisionSet
 from lhotse.cut import Cut, MixedCut, MixTrack, MonoCut
 from lhotse.lazy import LazyJsonlIterator
 from lhotse.utils import compute_num_samples, uuid4
+from scipy.optimize import linear_sum_assignment
 
 
 def find_first_nonzero(mat: torch.Tensor, max_cap_val=-1, thres: float = 0.5) -> torch.Tensor:
@@ -183,6 +185,177 @@ def get_pil_targets(labels: torch.Tensor, preds: torch.Tensor, speaker_permutati
     return max_score_permed_labels  # (batch_size, num_speakers, num_classes)
 
 
+def _validate_hungarian_target_inputs(
+    labels: torch.Tensor, preds: torch.Tensor, assignment_mask: Optional[torch.Tensor] = None
+) -> None:
+    """
+    Validate tensor shapes used by the Hungarian target generators.
+
+    Args:
+        labels (torch.Tensor): Ground-truth labels with shape ``(B, T, S)``.
+        preds (torch.Tensor): Predicted speaker probabilities with shape ``(B, T, N)``.
+        assignment_mask (Optional[torch.Tensor]): Feasible assignments with shape ``(B, S, N)``, or ``None`` to
+            permit every label-to-stream pairing.
+    """
+    if labels.ndim != 3 or preds.ndim != 3:
+        raise ValueError(
+            f"labels and preds must be 3-D tensors with shapes (B, T, S) and (B, T, N), "
+            f"got {labels.shape} and {preds.shape}"
+        )
+    if labels.shape[:2] != preds.shape[:2]:
+        raise ValueError(
+            f"labels and preds must have the same batch and time dimensions, got {labels.shape} and {preds.shape}"
+        )
+    if labels.device != preds.device:
+        raise ValueError(f"labels and preds must be on the same device, got {labels.device} and {preds.device}")
+    if labels.shape[1] == 0 or labels.shape[2] == 0 or preds.shape[2] == 0:
+        raise ValueError(f"labels and preds must have non-empty time and speaker dimensions, got {labels.shape}")
+    if assignment_mask is not None and assignment_mask.shape != (
+        labels.shape[0],
+        labels.shape[2],
+        preds.shape[2],
+    ):
+        raise ValueError(
+            f"assignment_mask must have shape {(labels.shape[0], labels.shape[2], preds.shape[2])}, "
+            f"got {assignment_mask.shape}"
+        )
+
+
+def get_pil_targets_hungarian(
+    labels: torch.Tensor,
+    preds: torch.Tensor,
+    assignment_mask: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Generate permutation-invariant targets with the Hungarian assignment algorithm.
+
+    The pair-wise score is the mean dot product over time. Unlike exhaustive permutation
+    enumeration, this implementation scales polynomially with the speaker count and supports
+    a different number of label speakers and prediction streams.
+
+    Args:
+        labels (torch.Tensor): Ground-truth labels with shape ``(B, T, S)``.
+        preds (torch.Tensor): Predicted speaker probabilities with shape ``(B, T, N)``.
+        assignment_mask (Optional[torch.Tensor]): Optional feasibility mask with shape ``(B, S, N)``. ``False`` entries
+            are excluded from the assignment.
+
+    Returns:
+        aligned_labels (torch.Tensor): Labels aligned to prediction streams with shape ``(B, T, N)``.
+        speaker_indices (torch.Tensor): Source label indices with shape ``(B, N)``. Unmatched streams and streams
+            assigned to inactive speakers contain ``-1``.
+    """
+    _validate_hungarian_target_inputs(labels, preds, assignment_mask)
+    batch_size, num_frames, num_label_speakers = labels.shape
+    num_pred_speakers = preds.shape[2]
+
+    if batch_size == 0:
+        aligned_labels = labels.new_zeros((0, num_frames, num_pred_speakers))
+        speaker_indices = torch.full((0, num_pred_speakers), -1, device=labels.device, dtype=torch.long)
+        return aligned_labels, speaker_indices
+
+    with torch.no_grad():
+        # Calculate in float32 for stable reductions and mixed-precision-safe masking.
+        with torch.autocast(device_type=preds.device.type, enabled=False):
+            match_score = torch.einsum("bts,btn->bsn", labels.float(), preds.float()) / num_frames
+        active_speakers = torch.any(labels > 0.5, dim=1)
+
+        # Prefer active speakers in rectangular assignments. The penalty is below every
+        # possible active-speaker score by more than the full assignment's score range.
+        assignment_size = min(num_label_speakers, num_pred_speakers)
+        score_min = match_score.amin(dim=(1, 2), keepdim=True)
+        score_max = match_score.amax(dim=(1, 2), keepdim=True)
+        inactive_score = score_min - (assignment_size + 1) * (score_max - score_min + 1.0)
+        match_score = torch.where(active_speakers.unsqueeze(2), match_score, inactive_score)
+        cost_matrix = -match_score
+
+        if assignment_mask is not None:
+            assignment_mask = assignment_mask.to(device=labels.device, dtype=torch.bool)
+            cost_matrix = cost_matrix.masked_fill(~assignment_mask, float("inf"))
+
+        cost_matrix_np = cost_matrix.to(device="cpu", dtype=torch.float32).numpy()
+        if assignment_mask is None:
+            finite_costs = cost_matrix_np
+        else:
+            finite_costs = cost_matrix_np[assignment_mask.cpu().numpy()]
+        if not np.isfinite(finite_costs).all():
+            raise ValueError("Hungarian assignment costs contain NaN or infinite values")
+
+        batch_row_indices = []
+        batch_col_indices = []
+        for batch_idx in range(batch_size):
+            try:
+                row_indices, col_indices = linear_sum_assignment(cost_matrix_np[batch_idx])
+            except ValueError as error:
+                raise ValueError(f"No feasible speaker assignment for batch item {batch_idx}") from error
+            batch_row_indices.append(torch.as_tensor(row_indices, device=labels.device))
+            batch_col_indices.append(torch.as_tensor(col_indices, device=labels.device))
+
+        batch_row_indices = torch.stack(batch_row_indices)
+        batch_col_indices = torch.stack(batch_col_indices)
+
+        permutation_matrix = labels.new_zeros((batch_size, num_label_speakers, num_pred_speakers))
+        batch_indices = torch.arange(batch_size, device=labels.device).unsqueeze(1).expand_as(batch_row_indices)
+        permutation_matrix[batch_indices, batch_row_indices, batch_col_indices] = 1
+        aligned_labels = torch.matmul(labels, permutation_matrix).to(labels.dtype)
+
+        speaker_indices = torch.full((batch_size, num_pred_speakers), -1, device=labels.device, dtype=torch.long)
+        matched_speakers_are_active = active_speakers[batch_indices, batch_row_indices]
+        speaker_indices[batch_indices, batch_col_indices] = torch.where(
+            matched_speakers_are_active,
+            batch_row_indices,
+            torch.full_like(batch_row_indices, -1),
+        )
+
+    return aligned_labels, speaker_indices
+
+
+def get_ats_targets_hungarian(
+    labels: torch.Tensor,
+    preds: torch.Tensor,
+    thres: float = 0.5,
+    tolerance: float = 0,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Generate arrival-time-sorted targets with the Hungarian assignment algorithm.
+
+    Speakers with arrival times within ``tolerance`` frames may exchange output positions;
+    prediction overlap resolves those ties. Rectangular inputs use the earliest label speakers
+    when there are fewer prediction streams and leave extra prediction streams unmatched.
+
+    Args:
+        labels (torch.Tensor): Ground-truth labels with shape ``(B, T, S)``.
+        preds (torch.Tensor): Predicted speaker probabilities with shape ``(B, T, N)``.
+        thres (float): Activity threshold used to determine each speaker's first active frame.
+        tolerance (float): Maximum arrival-time difference, in frames, allowed for an assignment.
+
+    Returns:
+        aligned_labels (torch.Tensor): Labels aligned to arrival-time-compatible streams with shape ``(B, T, N)``.
+        speaker_indices (torch.Tensor): Source label indices with shape ``(B, N)``; unmatched streams contain ``-1``.
+    """
+    _validate_hungarian_target_inputs(labels, preds)
+    if tolerance < 0:
+        raise ValueError(f"tolerance must be non-negative, got {tolerance}")
+
+    num_label_speakers = labels.shape[2]
+    num_pred_speakers = preds.shape[2]
+    arrival = find_first_nonzero(labels, max_cap_val=labels.shape[1], thres=thres)
+    sorted_arrival = torch.sort(arrival, dim=1).values
+
+    if num_label_speakers <= num_pred_speakers:
+        target_arrival = torch.full(
+            (labels.shape[0], num_pred_speakers),
+            labels.shape[1],
+            device=labels.device,
+            dtype=sorted_arrival.dtype,
+        )
+        target_arrival[:, :num_label_speakers] = sorted_arrival
+    else:
+        target_arrival = sorted_arrival[:, :num_pred_speakers]
+
+    assignment_mask = torch.abs(arrival.unsqueeze(2) - target_arrival.unsqueeze(1)) <= tolerance
+    return get_pil_targets_hungarian(labels, preds, assignment_mask=assignment_mask)
+
+
 def find_segments_from_rttm(
     recording_id: str,
     rttms: SupervisionSet,
@@ -272,6 +445,9 @@ def get_soft_mask(feat_level_target, num_frames, stride):
             Dimension: (num_frames, num_speakers)
     """
 
+    if stride <= 1:
+        return feat_level_target[:num_frames, :].clone()
+
     num_speakers = feat_level_target.shape[1]
     mask = torch.zeros(num_frames, num_speakers)
 
@@ -314,6 +490,47 @@ def get_hidden_length_from_sample_length(
     return int(hidden_length)
 
 
+def read_rttm_supervisions_lenient(rttm_filepath: Union[str, list]) -> SupervisionSet:
+    """Like ``lhotse.SupervisionSet.from_rttm`` but accepts 9-field RTTM lines.
+
+    Mirrors lhotse's parsing (cols 1,2,3,4,7) while relaxing the strict
+    ``len(parts) == 10`` check to ``>= 8``, since the unused trailing columns are
+    sometimes dropped by the nemoSOT multispeaker data generators.
+
+    Args:
+        rttm_filepath (str | list): Path to an RTTM file or an iterable of paths.
+
+    Returns:
+        SupervisionSet: Supervisions parsed from the RTTM file(s).
+    """
+    from pathlib import Path
+
+    paths = [rttm_filepath] if isinstance(rttm_filepath, (str, Path)) else rttm_filepath
+    segments = []
+    for file in paths:
+        with open(file, "r") as f:
+            for idx, line in enumerate(f):
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                if len(parts) < 8:
+                    raise ValueError(f"Invalid RTTM line in file {file}: {line}")
+                recording_id = parts[1]
+                if float(parts[4]) == 0:  # skip empty segments
+                    continue
+                segments.append(
+                    SupervisionSegment(
+                        id=f"{recording_id}-{idx:06d}",
+                        recording_id=recording_id,
+                        channel=int(parts[2]),
+                        start=float(parts[3]),
+                        duration=float(parts[4]),
+                        speaker=parts[7],
+                    )
+                )
+    return SupervisionSet.from_segments(segments)
+
+
 def speaker_to_target(
     a_cut,
     num_speakers: Optional[int] = None,
@@ -323,6 +540,7 @@ def speaker_to_target(
     soft_label: bool = False,
     soft_thres: float = 0.5,
     return_text: bool = False,
+    no_rttm_to_ones: bool = True,
 ):
     '''
     Get rttm samples corresponding to one cut, generate speaker mask numpy.ndarray with shape (num_speaker, hidden_length)
@@ -337,6 +555,8 @@ def speaker_to_target(
         soft_label (bool): set to True to use soft label that enables values in [0, 1] range, False by default and leads to binary labels.
         soft_thres (float): the threshold for the soft label, 0.5 by default.
         return_text (bool): set to True to return the text of the speakers (if it is available), False by default.
+        no_rttm_to_ones (bool): when a cut has no RTTM/supervisions, synthesize a single full-duration
+            single-speaker supervision (all-ones target) instead of skipping the cut, True by default.
 
     Returns:
         mask (Tensor): speaker mask with shape (num_speaker, hidden_lenght)
@@ -355,12 +575,25 @@ def speaker_to_target(
 
     for i, cut in enumerate(cut_list):
         if cut.custom.get('rttm_filepath', None):
-            rttms = SupervisionSet.from_rttm(cut.rttm_filepath)
+            rttms = read_rttm_supervisions_lenient(cut.rttm_filepath)
         elif cut.supervisions:
             rttms = SupervisionSet(cut.supervisions)
         else:
-            logging.warning(f"No rttm or supervisions found for cut {cut.id}")
-            continue
+            if no_rttm_to_ones:
+                rttms = SupervisionSet(
+                    [
+                        SupervisionSegment(
+                            id=cut.id,
+                            recording_id=cut.recording_id,
+                            start=0,
+                            duration=cut.duration,
+                            speaker=getattr(cut, 'speaker', 'speaker_0'),
+                        )
+                    ]
+                )
+            else:
+                logging.warning(f"No rttm or supervisions found for cut {cut.id}")
+                continue
 
         start = cut.offset if hasattr(cut, 'offset') else cut.start
         end = start + cut.duration

@@ -81,6 +81,16 @@ class Canary2PromptFormatter(PromptFormatter):
                 "decodercontext": Modality.Text,
             },
         },
+        # User prompt.
+        # This role is used for injecting partial transcription for the current audio input.
+        # Use it as the last turn in the prompt to allow for resuming the transcription after a ceratin point.
+        # https://github.com/openai/whisper/discussions/117
+        "user_prefix": {
+            "template": "|prefix|",
+            "slots": {
+                "prefix": Modality.Text,
+            },
+        },
         # System's reponse.
         OUTPUT_ROLE: {
             "template": f"|text|{CANARY_EOS}",
@@ -206,7 +216,7 @@ def canary2(cut: Cut, prompt: Canary2PromptFormatter) -> dict[str, torch.Tensor]
         eos = prompt.tokenizer.eos
     else:  # SPE
         eos = prompt.tokenizer.token_to_id(CANARY_EOS)
-    assert eos > -1, "Invalid tokenizer: tokenizer.token_to_id('{CANARY_EOS}') returned {eos}"
+    assert eos > -1, f"Invalid tokenizer: tokenizer.token_to_id('{CANARY_EOS}') returned {eos}"
     assert (
         ans["answer_ids"][-1].item() == eos
     ), f"Expected the last token in answer_ids to be EOS, but we got {ans['answer_ids']}"

@@ -21,6 +21,7 @@ from easymagpie_vllm_omni.multimodal import (
     EasyMagpieAudioParser,
     EasyMagpieDummyInputsBuilder,
     EasyMagpieMultiModalProcessor,
+    _infer_audio_output_kinds,
 )
 from vllm.multimodal.processing import ProcessorInputs
 
@@ -130,3 +131,51 @@ def test_capable_checkpoint_expands_inferred_reference_and_user_outputs():
 
     assert replacement.resolve(0).content.full == [1] * 27
     assert replacement.resolve(1).content.full == [1] * 6
+
+
+@pytest.mark.parametrize(
+    "prompt,audio_count,expected",
+    [
+        pytest.param([1, 0], 1, [1], id="reference"),
+        pytest.param([1], 1, [0], id="user"),
+        pytest.param([1, 0, 1], 2, [1, 0], id="reference-and-user"),
+    ],
+)
+def test_audio_markers_classify_items_by_prompt_position(prompt, audio_count, expected):
+    assert _infer_audio_output_kinds(prompt, audio_count, marker_id=1) == expected
+
+
+def test_audio_marker_count_must_match_audio_item_count():
+    with pytest.raises(ValueError, match="1 audio markers for 2 audio items"):
+        _infer_audio_output_kinds([1, 0], audio_count=2, marker_id=1)
+
+
+@pytest.mark.parametrize("output_kind", [0, 1], ids=["user", "reference"])
+def test_raw_audio_limit_rejects_reference_and_user_items(output_kind):
+    processor = EasyMagpieMultiModalProcessor.__new__(EasyMagpieMultiModalProcessor)
+    arch = EasyMagpieOmniArch(
+        codec_encoder_bundled=True,
+        max_audio_seconds=0.001,
+        use_multiturn_dataset=True,
+        condition_on_user_speech=True,
+        use_user_speaking_token=True,
+    )
+    max_samples = 16
+    processor.info = SimpleNamespace(
+        arch=arch,
+        get_tokenizer=lambda: SimpleNamespace(encode=lambda *args, **kwargs: []),
+        get_max_audio_samples=lambda: max_samples,
+    )
+    processor_kwargs = {"_easymagpie_audio_outputs": [output_kind]}
+    audio_at_limit = np.zeros(max_samples, dtype=np.float32)
+    output = processor._call_hf_processor("", {"audios": [audio_at_limit]}, processor_kwargs, {})
+
+    assert output["audio_lens"].tolist() == [max_samples]
+
+    with pytest.raises(ValueError, match=rf"raw audio has {max_samples + 1} samples"):
+        processor._call_hf_processor(
+            "",
+            {"audios": [np.zeros(max_samples + 1, dtype=np.float32)]},
+            processor_kwargs,
+            {},
+        )

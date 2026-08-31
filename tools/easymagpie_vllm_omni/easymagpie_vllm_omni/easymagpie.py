@@ -837,8 +837,7 @@ class EasyMagpieTTSForConditionalGeneration(
         info_dict: dict[str, Any],
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
         self._maybe_set_lt_sampling_params(info_dict)
-        # This absolute offset advances through agent output too, unlike the
-        # legacy model-local counter, so resumed turns retain Stage-0 history.
+        # Absolute position within this request's retained Stage-0 state.
         offset = int(info_dict["_omni_num_computed_tokens"])
         text_tokens = list(info_dict.get("text_tokens") or [])
         text_tokens_changed = False
@@ -866,6 +865,8 @@ class EasyMagpieTTSForConditionalGeneration(
         reference_rows = 0
 
         if uses_raw_reference:
+            # Process the initial raw-reference prompt, including any scheduler
+            # chunks that remain after its reference boundary is first found.
             take, conditioning_len, has_user_audio, reference_rows = self._build_reference_audio_prefill_chunk(
                 input_embeds=input_embeds,
                 info_dict=info_dict,
@@ -881,6 +882,8 @@ class EasyMagpieTTSForConditionalGeneration(
                 else (self.speech_delay if has_user_audio else int(info_dict.get("text_prefill_num", 0) or 0))
             )
         elif reference_prefilled:
+            # The reference conditioning is already in this request's retained
+            # state. Keep its prefix length only to align the appended user rows.
             conditioning_len = int(info_dict.get("reference_conditioning_len", 0) or 0)
             if conditioning_len <= 0:
                 raise ValueError("speaker_reference_prefilled requires reference_conditioning_len")
@@ -901,6 +904,7 @@ class EasyMagpieTTSForConditionalGeneration(
             decode_offset = self.speech_delay
             has_user_audio = True
         else:
+            # Load the converted embedding selected by speaker_id.
             conditioning = self._build_prefill_embeds(device, info_dict, include_text_prefill=False)
             conditioning_len = int(conditioning.shape[0])
             legacy_prompt_len = conditioning_len + int(info_dict.get("text_prefill_num", 0) or 0)

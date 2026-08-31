@@ -75,13 +75,20 @@ default and bundled together only with `--bundle-audio-encoders`; the Stage-1
 codec decoder is always bundled. Without this explicit opt-in, requests must
 select a precomputed embedding by `speaker_id`.
 
-Audio placement is derived from the prompt. Each item is encoded once into
-both acoustic-history and reference-speaker representations; the placeholder
-selects which one is inserted.
+`arch.audio_input_token_id` in `prompt_token_ids` is an audio marker. Each
+marker is paired, in order, with one item from `multi_modal_data["audio"]`;
+the processor rejects a marker/item count mismatch. A non-final first marker
+selects reference conditioning, while a final marker selects user history.
+Each item is encoded once into both representations, and its marker selects
+which representation is inserted.
 
 Pass each item as `(waveform, sample_rate)`. It must already be mono and match
 `arch.codec_input_sample_rate`; the serving path deliberately does not downmix
 or resample it.
+
+Each raw audio item is limited to `arch.max_audio_seconds` (30 seconds by
+default). Longer inputs are rejected rather than truncated or chunked; set
+`--max-audio-seconds` during conversion to change the startup profiling limit.
 
 For a first turn with raw reference audio and user speech, place the reference
 marker before context rows and the user marker last:

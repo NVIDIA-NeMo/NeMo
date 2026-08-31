@@ -81,9 +81,12 @@ def test_audio_encoder_bundling_is_explicit_opt_in(monkeypatch):
 
     monkeypatch.setattr(sys, "argv", required)
     assert converter.parse_args().bundle_audio_encoders is False
+    assert converter.parse_args().max_audio_seconds == 30.0
 
-    monkeypatch.setattr(sys, "argv", [*required, "--bundle-audio-encoders"])
-    assert converter.parse_args().bundle_audio_encoders is True
+    monkeypatch.setattr(sys, "argv", [*required, "--bundle-audio-encoders", "--max-audio-seconds", "12.5"])
+    args = converter.parse_args()
+    assert args.bundle_audio_encoders is True
+    assert args.max_audio_seconds == 12.5
 
     monkeypatch.setattr(sys, "argv", [*required, "--bundle_audio_encoders"])
     with pytest.raises(SystemExit):
@@ -196,7 +199,7 @@ def test_build_config_exports_multiturn_text_metadata(monkeypatch):
     assert config["forced_audio_user_speaking_id"] == 37
     assert config["forced_audio_user_speaking_end_id"] == 38
     assert "audio_input_token_id" not in config
-    assert "max_user_audio_seconds" not in config
+    assert "max_audio_seconds" not in config
     assert "codec_input_sample_rate" not in config
     assert "reference_speaker_encoder_n_layers" not in config
 
@@ -216,7 +219,7 @@ def test_build_config_exports_multiturn_text_metadata(monkeypatch):
 
     assert bundled_config["codec_encoder_bundled"] is True
     assert bundled_config["audio_input_token_id"] == 1
-    assert bundled_config["max_user_audio_seconds"] == 30.0
+    assert bundled_config["max_audio_seconds"] == 30.0
     assert bundled_config["codec_input_sample_rate"] == 16000
     assert bundled_config["codec_samples_per_frame"] == 640
     assert bundled_config["reference_speaker_encoder_n_layers"] == 1

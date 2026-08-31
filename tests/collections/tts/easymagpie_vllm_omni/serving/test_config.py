@@ -119,6 +119,7 @@ def test_text_prefill_includes_first_phoneme_bos_position():
             {"streaming_phonemes_delay": 3, "streaming_speech_delay": 3},
             "streaming_speech_delay.*greater",
         ),
+        ({"max_audio_seconds": 0}, "max_audio_seconds.*positive"),
         ({"forced_audio_eos_id": 7}, "forced_audio_eos_id"),
     ],
 )

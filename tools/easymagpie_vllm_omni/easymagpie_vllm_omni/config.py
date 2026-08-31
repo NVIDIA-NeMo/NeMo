@@ -57,7 +57,7 @@ class EasyMagpieOmniArch:
     # A valid dummy-backbone token used as the raw-audio placeholder. vLLM's
     # multimodal processor expands one occurrence to the codec encoder's rows.
     audio_input_token_id: int = 1
-    max_user_audio_seconds: float = 30.0
+    max_audio_seconds: float = 30.0
 
     # Conversion opt-in. When true, the converted artifact includes both the
     # codec encoder and the reference-speaker Transformer needed for raw audio.
@@ -208,8 +208,8 @@ class EasyMagpieOmniArch:
             raise ValueError("num_task_embeddings cannot be negative")
         if self.audio_input_token_id < 0:
             raise ValueError("audio_input_token_id cannot be negative")
-        if self.max_user_audio_seconds <= 0:
-            raise ValueError("max_user_audio_seconds must be positive")
+        if self.max_audio_seconds <= 0:
+            raise ValueError("max_audio_seconds must be positive")
         if self.codec_encoder_bundled:
             if self.reference_speaker_encoder_kernel_size % 2 == 0:
                 raise ValueError("reference_speaker_encoder_kernel_size must be odd")
@@ -408,7 +408,7 @@ class EasyMagpieOmniArch:
             "use_user_speaking_token",
             "use_user_speaking_end_token",
             "audio_input_token_id",
-            "max_user_audio_seconds",
+            "max_audio_seconds",
             "codec_encoder_bundled",
             "codec_input_sample_rate",
             "codec_samples_per_frame",

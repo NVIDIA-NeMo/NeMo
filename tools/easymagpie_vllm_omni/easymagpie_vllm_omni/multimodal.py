@@ -41,7 +41,12 @@ _AUDIO_OUTPUTS_KWARG = "_easymagpie_audio_outputs"
 
 
 def _infer_audio_output_kinds(prompt: str | list[int], audio_count: int, marker_id: int) -> list[int]:
-    """Infer reference-first versus trailing user audio from placeholder positions."""
+    """Classify audio items from their matching markers in the layout-only prompt.
+
+    Each ``marker_id`` occurrence corresponds, in order, to one audio item.
+    Non-audio rows use a different dummy token, so a non-final first marker is
+    the reference and every remaining marker is user history.
+    """
     if audio_count == 0:
         return []
     if not isinstance(prompt, list):
@@ -106,7 +111,7 @@ class EasyMagpieProcessingInfo(BaseProcessingInfo):
         return {"audio": self.get_max_audio_tokens()}
 
     def get_max_audio_samples(self) -> int:
-        return math.ceil(self.arch.max_user_audio_seconds * self.arch.codec_input_sample_rate)
+        return math.ceil(self.arch.max_audio_seconds * self.arch.codec_input_sample_rate)
 
     def get_max_audio_tokens(self) -> int:
         max_samples = self.get_max_audio_samples()
@@ -173,11 +178,13 @@ class EasyMagpieMultiModalProcessor(BaseMultiModalProcessor[EasyMagpieProcessing
         for audio in audios if isinstance(audios, (list, tuple)) else [audios]:
             value = torch.as_tensor(np.asarray(audio), dtype=torch.float32)
             if value.ndim != 1 or value.numel() == 0:
-                raise ValueError(f"EasyMagpie user audio must be a non-empty mono waveform, got {tuple(value.shape)}")
+                raise ValueError(f"EasyMagpie raw audio must be a non-empty mono waveform, got {tuple(value.shape)}")
             if value.numel() > self.info.get_max_audio_samples():
                 raise ValueError(
-                    f"EasyMagpie user audio has {value.numel()} samples; the configured maximum is "
-                    f"{self.info.get_max_audio_samples()} ({self.info.arch.max_user_audio_seconds:g} seconds at {self.info.arch.codec_input_sample_rate} Hz)"
+                    f"EasyMagpie raw audio has {value.numel()} samples; the configured maximum is "
+                    f"{self.info.get_max_audio_samples()} "
+                    f"({self.info.arch.max_audio_seconds:g} seconds at "
+                    f"{self.info.arch.codec_input_sample_rate} Hz)"
                 )
             audio_values.append(value.contiguous())
 

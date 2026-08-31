@@ -63,6 +63,7 @@ from math import prod
 
 import torch
 import tqdm
+from easymagpie_vllm_omni.config import EasyMagpieOmniArch
 from omegaconf import OmegaConf
 from safetensors.torch import load_file, save_file
 
@@ -168,6 +169,13 @@ def parse_args():
         default=False,
         help="Explicitly bundle the codec encoder and reference-speaker encoder. This enables raw/reference-audio "
         "conditioning and can make a capable checkpoint usable for zero-shot TTS; disabled by default.",
+    )
+    parser.add_argument(
+        "--max-audio-seconds",
+        type=float,
+        default=EasyMagpieOmniArch.max_audio_seconds,
+        help="Maximum duration accepted for each raw reference or user audio item. Stored in config.json and used "
+        "for vLLM multimodal profiling; longer items are rejected.",
     )
     parser.add_argument("--context_audio_duration", type=float, default=5.0)
     parser.add_argument(
@@ -325,7 +333,14 @@ def validate_model_config(model) -> None:
         )
 
 
-def build_config(model, vocab_size: int, torch_dtype: str, *, bundle_audio_encoders: bool = False) -> dict:
+def build_config(
+    model,
+    vocab_size: int,
+    torch_dtype: str,
+    *,
+    bundle_audio_encoders: bool = False,
+    max_audio_seconds: float = EasyMagpieOmniArch.max_audio_seconds,
+) -> dict:
     """Build the flat vLLM ``config.json`` dict from the loaded NeMo model."""
     from nemo.collections.tts.modules.nemotron_h_decoder import NemotronHConfig
 
@@ -363,7 +378,7 @@ def build_config(model, vocab_size: int, torch_dtype: str, *, bundle_audio_encod
     config["codec_encoder_bundled"] = bundle_audio_encoders
     if bundle_audio_encoders:
         config["audio_input_token_id"] = 1
-        config["max_user_audio_seconds"] = 30.0
+        config["max_audio_seconds"] = float(max_audio_seconds)
         speaker_encoder = getattr(model, "speaker_encoder", None)
         if speaker_encoder is None or not bool(getattr(model, "use_speaker_encoder", False)):
             raise ValueError(
@@ -661,7 +676,13 @@ def convert(args) -> None:
     vocab_size = int(text_table.shape[0])
 
     # ── 2. config.json ───────────────────────────────────────────────────
-    config = build_config(model, vocab_size, args.dtype, bundle_audio_encoders=args.bundle_audio_encoders)
+    config = build_config(
+        model,
+        vocab_size,
+        args.dtype,
+        bundle_audio_encoders=args.bundle_audio_encoders,
+        max_audio_seconds=args.max_audio_seconds,
+    )
     encoder_path = convert_codec_artifacts(
         args.codec_model_path,
         args.outdir,

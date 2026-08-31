@@ -46,6 +46,7 @@ from nemo.collections.common.data.lhotse.text_adapters import (
     LhotseTextAdapter,
     LhotseTextJsonlAdapter,
     LhotseTextPairAdapter,
+    MaterializedSFTMessagesAdapter,
     NeMoMultimodalConversation,
     NeMoMultimodalConversationJsonlAdapter,
     NeMoMultimodalConversationShareGPTJsonlAdapter,
@@ -428,6 +429,26 @@ def read_nemotron_text_converation(config: DictConfig) -> tuple[CutSet, bool]:
             indexes_root=config.get("indexes_root", None),
             index_pack=_resolve_index_pack(config),
             index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
+        )
+    )
+    if not config.get("force_finite", False):
+        cuts = cuts.repeat(preserve_id=True)
+    return cuts, True
+
+
+@data_type_parser("materialized_sft_messages")
+def read_materialized_sft_messages(config: DictConfig) -> tuple[CutSet, bool]:
+    """Read packed SFT JSONL whose message contents are already prompt-rendered."""
+    cuts = CutSet(
+        MaterializedSFTMessagesAdapter(
+            paths=config.paths,
+            shuffle_shards=config.shuffle,
+            shard_seed=config.shard_seed,
+            indexed=config.get("indexed", False),
+            indexes_root=config.get("indexes_root", None),
+            index_pack=_resolve_index_pack(config),
+            index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
+            validate_chunk_tokenization=config.get("validate_chunk_tokenization", True),
         )
     )
     if not config.get("force_finite", False):

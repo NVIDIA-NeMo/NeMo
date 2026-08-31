@@ -527,6 +527,7 @@ def discover_pack_collections(
         "nemo_tarred",
         "multimodal_conversation",
         "nemotron_text_converation",
+        "materialized_sft_messages",
         "share_gpt",
         "share_gpt_webdataset",
         *_TRANSFORM_TYPES,
@@ -660,7 +661,7 @@ def discover_pack_collections(
                 paths=tars,
             )
 
-    if typ == "nemotron_text_converation":
+    if typ in {"nemotron_text_converation", "materialized_sft_messages"}:
         _discover_paths_collections(entry.get("paths"), collections)
 
     return collections

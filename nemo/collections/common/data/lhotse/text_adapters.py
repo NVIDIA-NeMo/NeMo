@@ -515,6 +515,145 @@ class NeMoSFTJsonlAdapter(IteratorNode):
                 yield NeMoSFTExample(data, language=self.language)
 
 
+_MATERIALIZED_SFT_ROLES = frozenset({"system", "user", "assistant", "tool"})
+
+
+@dataclass
+class MaterializedSFTMessagesExample(Formattable, CustomFieldMixin):
+    """A packed SFT row whose message contents already contain the wire prompt.
+
+    ``messages`` are kept as one example even when the row contains multiple
+    conversations.  Each message's ``content`` is tokenized verbatim; its
+    top-level ``role`` controls the loss mask.  In particular, ChatML-looking
+    text nested inside ``content`` is data, not another role annotation.
+    """
+
+    id: str
+    messages: list[dict]
+    validate_chunk_tokenization: bool = True
+    custom: dict = None
+
+    def tokenize(self, tokenizer: TokenizerWrapper) -> "MaterializedSFTMessagesExample":
+        encoded = _encode_materialized_sft_messages(
+            self,
+            lambda content: list(tokenizer(content)),
+        )
+        _apply_materialized_sft_encoding(self, encoded)
+        return self
+
+
+def _encode_materialized_sft_messages(example: MaterializedSFTMessagesExample, encode) -> dict[str, torch.Tensor]:
+    messages = example.messages
+    if not isinstance(messages, list) or not messages:
+        size = len(messages) if hasattr(messages, "__len__") else None
+        raise ValueError(
+            f"Materialized SFT example id={example.id!r} must contain a non-empty messages list; "
+            f"got type={type(messages).__name__} size={size}"
+        )
+
+    contents = []
+    chunk_token_ids = []
+    chunk_mask_values = []
+    for index, message in enumerate(example.messages):
+        if not isinstance(message, dict):
+            raise ValueError(
+                f"Materialized SFT example id={example.id!r} message {index} must be a mapping, "
+                f"got {type(message).__name__}"
+            )
+        if set(message) != {"role", "content"}:
+            raise ValueError(
+                f"Materialized SFT example id={example.id!r} message {index} must have exactly "
+                f"the keys role/content, got {sorted(message)}"
+            )
+        role = message["role"]
+        content = message["content"]
+        if role not in _MATERIALIZED_SFT_ROLES:
+            raise ValueError(
+                f"Materialized SFT example id={example.id!r} message {index} has unsupported role={role!r}"
+            )
+        if not isinstance(content, str):
+            raise ValueError(
+                f"Materialized SFT example id={example.id!r} message {index} content must be a string, "
+                f"got {type(content).__name__}"
+            )
+        token_ids = list(encode(content))
+        contents.append(content)
+        chunk_token_ids.append(token_ids)
+        chunk_mask_values.append(role == "assistant")
+
+    input_ids = [token for chunk in chunk_token_ids for token in chunk]
+    if example.validate_chunk_tokenization:
+        concatenated_ids = list(encode("".join(contents)))
+        if concatenated_ids != input_ids:
+            mismatch = next(
+                (
+                    index
+                    for index, (actual, expected) in enumerate(zip(concatenated_ids, input_ids))
+                    if actual != expected
+                ),
+                min(len(concatenated_ids), len(input_ids)),
+            )
+            raise ValueError(
+                "Materialized SFT chunk tokenization is not concatenation-stable for "
+                f"example id={example.id!r}: concatenated_tokens={len(concatenated_ids)} "
+                f"chunk_tokens={len(input_ids)} first_mismatch={mismatch}. Refusing to alter "
+                "the production identity-preformatted token stream."
+            )
+
+    mask = [
+        is_assistant
+        for is_assistant, token_ids in zip(chunk_mask_values, chunk_token_ids)
+        for _ in token_ids
+    ]
+    input_tensor = torch.tensor(input_ids, dtype=torch.long)
+    mask_tensor = torch.tensor(mask, dtype=torch.bool)
+    return {
+        "input_ids": input_tensor,
+        # Packed rows can contain many disjoint assistant spans, so there is no
+        # single prefix/answer split.  SALM trains from input_ids + mask; these
+        # fields retain useful length semantics for generic Lhotse filters.
+        "context_ids": input_tensor,
+        "answer_ids": input_tensor[mask_tensor],
+        "mask": mask_tensor,
+    }
+
+
+def _apply_materialized_sft_encoding(example: MaterializedSFTMessagesExample, encoded: dict) -> None:
+    for key, value in encoded.items():
+        setattr(example, key, value)
+
+
+@registered_prompt_format_fn(MaterializedSFTMessagesExample)
+def materialized_sft_messages_prompt_format_fn(example: MaterializedSFTMessagesExample, prompt, **kwargs):
+    """Bypass chat templating while retaining the recipe tokenizer.
+
+    The source has already been rendered with the upstream SFT chat template.
+    Applying ``prompt.encode_dialog`` here would double-materialize it.
+    """
+
+    return _encode_materialized_sft_messages(example, prompt._apply_tokenizer)
+
+
+def _transform_materialized_sft_messages(
+    data: dict,
+    sample_id: str,
+    *,
+    validate_chunk_tokenization: bool,
+) -> MaterializedSFTMessagesExample:
+    if not isinstance(data, dict):
+        raise ValueError(f"Materialized SFT sample id={sample_id} must be a mapping")
+    if set(data) != {"messages"}:
+        raise ValueError(
+            f"Materialized SFT sample id={sample_id} must have exactly the top-level key 'messages', "
+            f"got {sorted(data)}"
+        )
+    return MaterializedSFTMessagesExample(
+        id=sample_id,
+        messages=data["messages"],
+        validate_chunk_tokenization=validate_chunk_tokenization,
+    )
+
+
 def _normalize_nemotron_text_sender(sender: str, sample_id: str) -> str:
     role = str(sender).lower()
     if role in ("user", "human"):
@@ -786,6 +925,66 @@ class NemotronTextConversationAdapter(IteratorNode):
                 data = json.load(tar.extractfile(info))
                 sample_id = Path(info.name).stem
                 yield _transform_nemotron_text_conversation(data, sample_id)
+
+
+@dataclass
+class MaterializedSFTMessagesAdapter(NemotronTextConversationAdapter):
+    """Read identity-preformatted, conversation-packed SFT JSONL rows.
+
+    The indexed implementation intentionally reuses the proven JSONL/idxpack
+    mechanics of :class:`NemotronTextConversationAdapter`.  Tar inputs are
+    rejected because the production contract is line-addressable JSONL.
+    """
+
+    validate_chunk_tokenization: bool = True
+
+    def __post_init__(self):
+        super().__post_init__()
+        unsupported = [kind for kind in self._reader_kinds if kind not in ("jsonl", "packed_jsonl")]
+        if unsupported:
+            raise ValueError(
+                "MaterializedSFTMessagesAdapter supports JSONL paths only; "
+                f"found reader kinds {unsupported}"
+            )
+
+    def _data_to_conversation(
+        self, data: dict, source_path: Union[str, Path], local_idx: int
+    ) -> MaterializedSFTMessagesExample:
+        sample_id = f"{Path(source_path).stem}-{local_idx:012d}"
+        return _transform_materialized_sft_messages(
+            data,
+            sample_id,
+            validate_chunk_tokenization=self.validate_chunk_tokenization,
+        )
+
+    def _reader_item_to_conversation(self, shard_idx: int, local_idx: int) -> MaterializedSFTMessagesExample:
+        reader = self._readers[shard_idx]
+        reader_kind = self._reader_kinds[shard_idx]
+        source_path = self._source_paths[shard_idx]
+        if reader_kind == "packed_jsonl":
+            item = reader[local_idx]
+            location = reader.collection.locate(local_idx)
+            return self._data_to_conversation(item, location.path, location.local_index)
+        if reader_kind != "jsonl":
+            raise RuntimeError(
+                "MaterializedSFTMessagesAdapter supports JSONL paths only; "
+                f"found reader kind {reader_kind!r} for {source_path}"
+            )
+        return self._data_to_conversation(reader[local_idx], source_path, local_idx)
+
+    def _iter_path(self, path: Path) -> Iterator[MaterializedSFTMessagesExample]:
+        if path.is_dir() or path.suffix == ".tar":
+            raise ValueError(f"MaterializedSFTMessagesAdapter supports JSONL paths only, got {path}")
+        yield from self._iter_jsonl(path)
+
+    def _iter_jsonl(self, path: Path) -> Iterator[MaterializedSFTMessagesExample]:
+        for idx, data in enumerate(load_jsonl(path)):
+            sample_id = f"{path.stem}-{idx:012d}"
+            yield _transform_materialized_sft_messages(
+                data,
+                sample_id,
+                validate_chunk_tokenization=self.validate_chunk_tokenization,
+            )
 
 
 """

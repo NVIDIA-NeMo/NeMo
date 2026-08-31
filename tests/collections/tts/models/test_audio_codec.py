@@ -13,10 +13,13 @@
 # limitations under the License.
 
 
+from unittest.mock import Mock
+
 import pytest
 import torch
 from omegaconf import DictConfig
 
+import nemo.collections.tts.models.audio_codec as audio_codec_module
 from nemo.collections.tts.models import AudioCodecModel
 
 
@@ -96,6 +99,26 @@ def acoustic_codec_model():
 
 
 class TestAudioCodecModel:
+    @pytest.mark.unit
+    def test_speaker_encoder_checkpoint_uses_hf_cache(self, monkeypatch):
+        model_cfg = create_codec_config()
+        model_cfg.use_scl_loss = True
+        checkpoint_path = '/cache/Edresson/Speaker_Encoder_H_ASP/pytorch_model.bin'
+        mock_hf_hub_download = Mock(return_value=checkpoint_path)
+        speaker_encoder = torch.nn.Module()
+        speaker_encoder.audio_config = {'sample_rate': model_cfg.sample_rate}
+        speaker_encoder.load_checkpoint = Mock()
+        speaker_encoder.freeze = Mock()
+        monkeypatch.setattr(audio_codec_module, 'hf_hub_download', mock_hf_hub_download, raising=False)
+        monkeypatch.setattr(audio_codec_module, 'ResNetSpeakerEncoder', Mock(return_value=speaker_encoder))
+
+        AudioCodecModel(cfg=model_cfg)
+
+        mock_hf_hub_download.assert_called_once_with(
+            repo_id='Edresson/Speaker_Encoder_H_ASP', filename='pytorch_model.bin'
+        )
+        speaker_encoder.load_checkpoint.assert_called_once_with(checkpoint_path, strict=False)
+
     @pytest.mark.unit
     def test_forward(self, codec_model):
         batch_size = 2

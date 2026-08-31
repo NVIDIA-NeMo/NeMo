@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import math
-import os
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -40,16 +40,6 @@ from nemo.core.neural_types.elements import (
 )
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging
-
-try:
-    import fsspec
-
-    HAVE_FSSPEC = True
-except ModuleNotFoundError:
-    HAVE_FSSPEC = False
-
-
-from contextlib import contextmanager
 
 
 @contextmanager
@@ -340,33 +330,6 @@ def zero_mean_unit_var_norm(input_values):
     return normed_input_values
 
 
-##############
-# Speaker encoder #
-##############
-def load_fsspec(path: str, map_location: str = None, **kwargs):
-    """Like torch.load but can load from other locations (e.g. s3:// , gs://).
-
-    Args:
-        path: Any path or url supported by fsspec.
-        map_location: torch.device or str.
-        cache: If True, cache a remote file locally for subsequent calls. It is cached under `get_user_data_dir()/tts_cache`. Defaults to True.
-        **kwargs: Keyword arguments forwarded to torch.load.
-
-    Returns:
-        Object stored in path.
-    """
-    is_local = os.path.isdir(path) or os.path.isfile(path)
-    if is_local:
-        return torch.load(path, map_location=map_location, **kwargs)
-    else:
-        if HAVE_FSSPEC:
-            with fsspec.open(path, "rb") as f:
-                return torch.load(f, map_location=map_location, **kwargs)
-        else:
-            logging.error('Could not import fsspec. Loading a checkpoint link is not supported!')
-            raise ModuleNotFoundError("fsspec is not installed but is necessary to download remote checkpoints !!")
-
-
 class PreEmphasis(NeuralModule):
     def __init__(self, coefficient=0.97):
         super().__init__()
@@ -609,7 +572,7 @@ class ResNetSpeakerEncoder(NeuralModule):
         )
 
     def load_checkpoint(self, checkpoint_path: str, strict=True):
-        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"))
+        state = torch.load(checkpoint_path, map_location=torch.device("cpu"))
         self.load_state_dict(state["model"], strict=strict)
 
 

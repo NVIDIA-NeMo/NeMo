@@ -411,8 +411,9 @@ refuses a resume when the set or approval changes.  Datasets without
 exclusions retain their legacy state shape.
 
 This mechanism does not enable ``skip_missing_manifest_entries`` and does
-not catch unknown audio/decode failures.  Keep that generic option disabled
-when the contract is to skip only an audited exact set.
+not change ``fault_tolerant_audio_loading``. Keep the former disabled and set
+the latter to ``false`` when the contract is to skip only an audited exact set
+and fail on every unrelated manifest or audio error.
 
 Aligned JSONL and tar shards
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

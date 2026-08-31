@@ -1392,6 +1392,7 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
     index_pack: Optional[Pathlike] = None
     index_pack_max_open_files: int = 32
     skip_missing_manifest_entries: bool = False
+    fault_tolerant_audio_loading: bool = True
 
     def __post_init__(self):
         raw_manifest_filepath = self.manifest_filepath
@@ -1542,14 +1543,14 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                         audio_locator_tag=self.audio_locator_tag,
                     )
                 )
-        except (AudioLoadingError, OSError, RuntimeError, ValueError) as ex:
+        except (AudioLoadingError, OSError) as ex:
             message = (
                 f"Failed to load multimodal conversation {data.get('id')!r} "
                 f"from manifest {manifest_path!r}."
             )
-            if self.skip_missing_manifest_entries:
+            if self.fault_tolerant_audio_loading:
                 logging.warning(
-                    f"Skipping conversation because skip_missing_manifest_entries=true: {message} {ex}"
+                    f"Skipping conversation because fault_tolerant_audio_loading=true: {message} {ex}"
                 )
                 return None
             raise RuntimeError(message) from ex
@@ -1581,10 +1582,14 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                 offset=turn.get("offset", 0.0),
                 sampling_rate=turn.get("sampling_rate", 16000),
             )
-        return (
-            Recording.from_file(audio_path)
-            .to_cut()
-            .truncate(offset=turn.get("offset", 0.0), duration=turn.get("duration"))
+        try:
+            recording = Recording.from_file(audio_path)
+        except (AudioLoadingError, OSError, RuntimeError, ValueError) as ex:
+            raise AudioLoadingError(
+                f"Failed to read multimodal conversation audio {str(audio_path)!r}."
+            ) from ex
+        return recording.to_cut().truncate(
+            offset=turn.get("offset", 0.0), duration=turn.get("duration")
         )
 
     def _build_conversation_tarred(self, data: dict, tar_reader, tar_path: str) -> NeMoMultimodalConversation | None:
@@ -1608,9 +1613,9 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                     f"Failed to load multimodal audio member {turn['value']!r} "
                     f"from tar {tar_path!r}."
                 )
-                if self.skip_missing_manifest_entries:
+                if self.fault_tolerant_audio_loading:
                     logging.warning(
-                        f"Skipping conversation because skip_missing_manifest_entries=true: {message} {ex}"
+                        f"Skipping conversation because fault_tolerant_audio_loading=true: {message} {ex}"
                     )
                     return None
                 raise RuntimeError(message) from ex
@@ -1732,33 +1737,32 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                             )
                             cut = cut.with_id(self._make_cut_id(cut, turn))
                         else:
-                            recording, audio_path = next(tar)
-                            audio_path = str(audio_path)
+                            recording, _ = _next_matching_paired_audio(
+                                tar,
+                                turn['value'],
+                                manifest_path=jsonl_path,
+                                tar_path=tar_path,
+                                skip_missing_manifest_entries=self.skip_missing_manifest_entries,
+                            )
                             cut = recording.to_cut().truncate(
                                 offset=turn.get("offset", 0.0), duration=turn.get("duration")
                             )
                             cut = cut.with_id(self._make_cut_id(cut, turn))
-                            if audio_path != turn['value']:
-                                raise ValueError(
-                                    "Mismatch between JSONL and tar: "
-                                    f"manifest member={turn['value']!r} tar member={audio_path!r}."
-                                )
                         cuts.append(cut)
                 except (
                     AudioLoadingError,
                     OSError,
                     RuntimeError,
                     StopIteration,
-                    ValueError,
                     tarfile.TarError,
                 ) as ex:
                     message = (
                         f"Failed to load multimodal tar shard {tar_path!r} "
                         f"for manifest {jsonl_path!r}."
                     )
-                    if self.skip_missing_manifest_entries:
+                    if self.fault_tolerant_audio_loading:
                         logging.warning(
-                            f"Skipping tar because skip_missing_manifest_entries=true: {message} {ex}"
+                            f"Skipping tar because fault_tolerant_audio_loading=true: {message} {ex}"
                         )
                         break
                     raise RuntimeError(message) from ex
@@ -1796,6 +1800,15 @@ class NeMoMultimodalConversationJsonlAdapter(IteratorNode):
                     custom=data.get("custom"),
                 )
                 cntr += 1
+            else:
+                if tar is not None:
+                    _validate_no_trailing_paired_audio(
+                        tar,
+                        manifest_path=jsonl_path,
+                        tar_path=tar_path,
+                        skip_missing_manifest_entries=self.skip_missing_manifest_entries,
+                        fault_tolerant_audio_loading=self.fault_tolerant_audio_loading,
+                    )
 
         self.epoch += 1
 
@@ -1860,6 +1873,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
     index_pack: Optional[Pathlike] = None
     index_pack_max_open_files: int = 32
     skip_missing_manifest_entries: bool = False
+    fault_tolerant_audio_loading: bool = True
     excluded_manifest_lines: Sequence[int] | None = None
     excluded_manifest_lines_sha256: str | None = None
     approved_exclusion_audit_sha256: str | None = None
@@ -2229,7 +2243,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 token_equivalent_duration=self.token_equivalent_duration,
             )
         except _SHAREGPT_AUDIO_LOADING_ERRORS as e:
-            if not self.skip_missing_manifest_entries:
+            if not self.fault_tolerant_audio_loading:
                 raise
             logging.warning(
                 "Skipping ShareGPT sample due to audio loading failure: "
@@ -2419,30 +2433,30 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                         cut = cut.with_id(self._make_cut_id(cut, turn))
                     else:
                         try:
-                            recording, audio_path = next(tar)
+                            recording, _ = _next_matching_paired_audio(
+                                tar,
+                                turn['value'],
+                                manifest_path=jsonl_path,
+                                tar_path=tar_path,
+                                skip_missing_manifest_entries=self.skip_missing_manifest_entries,
+                            )
                         except (AudioLoadingError, OSError, RuntimeError, StopIteration) as ex:
                             message = (
                                 f"Failed to load paired ShareGPT tar {tar_path!r} "
                                 f"for manifest {jsonl_path!r}."
                             )
-                            if not self.skip_missing_manifest_entries:
+                            if not self.fault_tolerant_audio_loading:
                                 raise RuntimeError(message) from ex
                             logging.warning(
                                 "Skipping the remainder of paired ShareGPT shard because "
-                                f"skip_missing_manifest_entries=true: {message} {ex}"
+                                f"fault_tolerant_audio_loading=true: {message} {ex}"
                             )
                             skip_remaining_shard = True
                             break
-                        audio_path = str(audio_path)
                         cut = recording.to_cut().truncate(
                             offset=turn.get("offset", 0.0), duration=turn.get("duration")
                         )
                         cut = cut.with_id(self._make_cut_id(cut, turn))
-                        if audio_path != turn['value']:
-                            raise ValueError(
-                                "Mismatch between JSONL and paired ShareGPT tar: "
-                                f"manifest member={turn['value']!r} tar member={audio_path!r}."
-                            )
                     turn["duration"] = cut.duration
                     turn["offset"] = cut.start
                     cuts.append(cut)
@@ -2465,21 +2479,13 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                 cntr += 1
             else:
                 if tar is not None:
-                    try:
-                        _, trailing_audio_path = next(tar)
-                    except StopIteration:
-                        pass
-                    except (AudioLoadingError, EOFError, OSError, RuntimeError, ValueError, tarfile.TarError) as ex:
-                        raise ValueError(
-                            "Paired ShareGPT tar has unreadable trailing data after "
-                            f"manifest exhaustion: tar={tar_path!r} manifest={jsonl_path!r}."
-                        ) from ex
-                    else:
-                        raise ValueError(
-                            "Paired ShareGPT tar contains a trailing member after "
-                            f"manifest exhaustion: tar={tar_path!r} manifest={jsonl_path!r} "
-                            f"member={str(trailing_audio_path)!r}."
-                        )
+                    _validate_no_trailing_paired_audio(
+                        tar,
+                        manifest_path=jsonl_path,
+                        tar_path=tar_path,
+                        skip_missing_manifest_entries=self.skip_missing_manifest_entries,
+                        fault_tolerant_audio_loading=self.fault_tolerant_audio_loading,
+                    )
 
         self.epoch += 1
 
@@ -2506,7 +2512,7 @@ class NeMoMultimodalConversationShareGPTJsonlAdapter(IteratorNode):
                         token_equivalent_duration=self.token_equivalent_duration,
                     )
                 except _SHAREGPT_AUDIO_LOADING_ERRORS as e:
-                    if not self.skip_missing_manifest_entries:
+                    if not self.fault_tolerant_audio_loading:
                         raise
                     logging.warning(
                         "Skipping ShareGPT sample due to audio loading failure: "
@@ -2558,6 +2564,7 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
     index_pack: Optional[Pathlike] = None
     index_pack_max_open_files: int = 32
     skip_missing_manifest_entries: bool = False
+    fault_tolerant_audio_loading: bool = True
 
     def __post_init__(self):
         if self.wds_sample_index_version not in (1, 2):
@@ -2691,7 +2698,7 @@ class NeMoMultimodalConversationShareGPTWebdatasetAdapter(IteratorNode):
                 return self._yield_from_sample_bundle(sample)
             return self._yield_from_sample(*sample)
         except _SHAREGPT_AUDIO_LOADING_ERRORS as ex:
-            if not self.skip_missing_manifest_entries:
+            if not self.fault_tolerant_audio_loading:
                 raise
             logging.warning(
                 "Skipping ShareGPT WebDataset sample due to audio loading failure: "
@@ -2928,6 +2935,73 @@ class NeMoMultimodalConversationTarWriter:
 
 class _ShareGPTAudioDecodeError(AudioLoadingError):
     """An audio payload was present but could not be decoded."""
+
+
+def _next_matching_paired_audio(
+    tar,
+    expected_member: str,
+    *,
+    manifest_path: Pathlike,
+    tar_path: Pathlike,
+    skip_missing_manifest_entries: bool,
+):
+    """Read the expected tar member, optionally discarding members absent from JSONL."""
+    while True:
+        recording, audio_path = next(tar)
+        actual_member = str(audio_path)
+        if actual_member == expected_member:
+            return recording, audio_path
+        message = (
+            "Paired tar member has no corresponding JSONL entry: "
+            f"manifest={str(manifest_path)!r} tar={str(tar_path)!r} "
+            f"expected={expected_member!r} actual={actual_member!r}."
+        )
+        if not skip_missing_manifest_entries:
+            raise ValueError(message)
+        logging.warning(
+            "Skipping tar member because skip_missing_manifest_entries=true: "
+            f"{message}"
+        )
+
+
+def _validate_no_trailing_paired_audio(
+    tar,
+    *,
+    manifest_path: Pathlike,
+    tar_path: Pathlike,
+    skip_missing_manifest_entries: bool,
+    fault_tolerant_audio_loading: bool,
+) -> None:
+    """Reject or explicitly tolerate a tar member left after JSONL exhaustion."""
+    try:
+        _, trailing_audio_path = next(tar)
+    except StopIteration:
+        return
+    except (AudioLoadingError, EOFError, OSError, RuntimeError, ValueError, tarfile.TarError) as ex:
+        message = (
+            "Paired tar has unreadable trailing data after manifest exhaustion: "
+            f"tar={str(tar_path)!r} manifest={str(manifest_path)!r}."
+        )
+        if fault_tolerant_audio_loading:
+            logging.warning(
+                "Skipping unreadable trailing audio because fault_tolerant_audio_loading=true: "
+                f"{message} {ex}"
+            )
+            return
+        raise AudioLoadingError(message) from ex
+
+    message = (
+        "Paired tar contains a member with no corresponding JSONL entry after "
+        f"manifest exhaustion: tar={str(tar_path)!r} manifest={str(manifest_path)!r} "
+        f"member={str(trailing_audio_path)!r}."
+    )
+    if skip_missing_manifest_entries:
+        logging.warning(
+            "Skipping trailing tar member because skip_missing_manifest_entries=true: "
+            f"{message}"
+        )
+        return
+    raise ValueError(message)
 
 
 class _ShareGPTMissingTarMemberError(KeyError):

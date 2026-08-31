@@ -93,16 +93,16 @@ class Identity(torch.utils.data.Dataset):
 
 
 class PolicyAwareDataset(torch.utils.data.Dataset):
-    def __init__(self, calls, skip_missing=None):
+    def __init__(self, calls, fault_tolerant_audio_loading=None):
         self.calls = calls
-        self.skip_missing = skip_missing
+        self.fault_tolerant_audio_loading = fault_tolerant_audio_loading
 
     def __getitem__(self, item):
         return item
 
-    def with_skip_missing_manifest_entries(self, skip_missing):
-        self.calls.append(skip_missing)
-        return PolicyAwareDataset(self.calls, skip_missing=skip_missing)
+    def with_fault_tolerant_audio_loading(self, enabled):
+        self.calls.append(enabled)
+        return PolicyAwareDataset(self.calls, fault_tolerant_audio_loading=enabled)
 
 
 def test_datamodule_train_dataloader(data_config, tokenizer):
@@ -117,32 +117,39 @@ def test_datamodule_train_dataloader(data_config, tokenizer):
     assert all(c.tag == "train" for c in batch)
 
 
-def test_datamodule_fallback_requires_explicit_skip_missing_manifest_entries():
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_datamodule_audio_loading_policy_is_independent_of_missing_manifest_policy(
+    skip_missing_manifest_entries, fault_tolerant_audio_loading
+):
     calls = []
     dataset = PolicyAwareDataset(calls)
-    strict_cfg = DictConfig({"train_ds": {}})
-    strict = DataModule(strict_cfg, tokenizer=None, dataset=dataset)._dataset_for_config(
-        strict_cfg.train_ds, training=True
+    cfg = DictConfig(
+        {
+            "train_ds": {
+                "skip_missing_manifest_entries": skip_missing_manifest_entries,
+                "fault_tolerant_audio_loading": fault_tolerant_audio_loading,
+            }
+        }
     )
+    datamodule = DataModule(cfg, tokenizer=None, dataset=dataset)
+    training = datamodule._dataset_for_config(cfg.train_ds, training=True)
+    configured = training.dataset if isinstance(training, FallbackDataset) else training
+    assert isinstance(training, FallbackDataset) is fault_tolerant_audio_loading
+    assert configured.fault_tolerant_audio_loading is fault_tolerant_audio_loading
 
-    assert isinstance(strict, PolicyAwareDataset)
-    assert not isinstance(strict, FallbackDataset)
-    assert strict.skip_missing is False
-
-    permissive_cfg = DictConfig({"train_ds": {"skip_missing_manifest_entries": True}})
-    permissive = DataModule(permissive_cfg, tokenizer=None, dataset=dataset)._dataset_for_config(
-        permissive_cfg.train_ds, training=True
-    )
-
-    assert isinstance(permissive, FallbackDataset)
-    assert permissive.dataset.skip_missing is True
-
-    validation = DataModule(permissive_cfg, tokenizer=None, dataset=dataset)._dataset_for_config(
-        permissive_cfg.train_ds, training=False
-    )
+    validation = datamodule._dataset_for_config(cfg.train_ds, training=False)
     assert isinstance(validation, PolicyAwareDataset)
-    assert validation.skip_missing is True
-    assert calls == [False, True, True]
+    assert validation.fault_tolerant_audio_loading is fault_tolerant_audio_loading
+    assert calls == [fault_tolerant_audio_loading, fault_tolerant_audio_loading]
+
+
+def test_datamodule_fault_tolerant_audio_loading_defaults_true():
+    dataset = PolicyAwareDataset([])
+    cfg = DictConfig({"train_ds": {}})
+    configured = DataModule(cfg, tokenizer=None, dataset=dataset)._dataset_for_config(cfg.train_ds, training=True)
+    assert isinstance(configured, FallbackDataset)
+    assert configured.dataset.fault_tolerant_audio_loading is True
 
 
 def test_datamodule_train_dataloader_caches_broadcast_wrapper_and_passes_dp_group(data_config, tokenizer, monkeypatch):

@@ -29,6 +29,7 @@ from lhotse import Recording
 from lhotse.dataset import AudioSamples
 from lhotse.testing.dummies import dummy_recording
 
+from nemo.collections.common.data.lhotse import text_adapters as text_adapters_module
 from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
     NeMoMultimodalConversation,
@@ -259,8 +260,10 @@ def test_jsonl_batch_vs_tar_parity(tarred_jsonl_manifest, monkeypatch):
 
 
 @pytest.mark.unit
-def test_jsonl_indexed_missing_tar_member_obeys_skip_policy(
-    tarred_jsonl_manifest, monkeypatch
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_jsonl_indexed_missing_tar_member_obeys_only_audio_policy(
+    tarred_jsonl_manifest, monkeypatch, skip_missing_manifest_entries, fault_tolerant_audio_loading
 ):
     manifest, tar = tarred_jsonl_manifest
 
@@ -271,29 +274,26 @@ def test_jsonl_indexed_missing_tar_member_obeys_skip_policy(
         "nemo.collections.common.data.lhotse.indexed_adapters.IndexedTarMemberReader.get",
         fail_get,
     )
-    strict = NeMoMultimodalConversationJsonlAdapter(
+    adapter = NeMoMultimodalConversationJsonlAdapter(
         manifest_filepath=manifest,
         tarred_audio_filepaths=tar,
         audio_locator_tag="[audio]",
         indexed=True,
-        skip_missing_manifest_entries=False,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
     )
-    with pytest.raises(RuntimeError, match="Failed to load multimodal audio member"):
-        next(iter(strict))
-
-    permissive = NeMoMultimodalConversationJsonlAdapter(
-        manifest_filepath=manifest,
-        tarred_audio_filepaths=tar,
-        audio_locator_tag="[audio]",
-        indexed=True,
-        skip_missing_manifest_entries=True,
-    )
-    assert list(permissive) == []
+    if fault_tolerant_audio_loading:
+        assert list(adapter) == []
+    else:
+        with pytest.raises(RuntimeError, match="Failed to load multimodal audio member"):
+            next(iter(adapter))
 
 
 @pytest.mark.unit
-def test_jsonl_streaming_missing_tar_member_obeys_skip_policy(
-    tarred_jsonl_manifest, monkeypatch
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_jsonl_streaming_missing_tar_member_obeys_only_audio_policy(
+    tarred_jsonl_manifest, monkeypatch, skip_missing_manifest_entries, fault_tolerant_audio_loading
 ):
     manifest, tar = tarred_jsonl_manifest
     monkeypatch.delenv("USE_AIS_GET_BATCH", raising=False)
@@ -301,29 +301,74 @@ def test_jsonl_streaming_missing_tar_member_obeys_skip_policy(
         "nemo.collections.common.data.lhotse.text_adapters.TarIterator",
         lambda path: iter(()),
     )
-    strict = NeMoMultimodalConversationJsonlAdapter(
+    adapter = NeMoMultimodalConversationJsonlAdapter(
         manifest_filepath=manifest,
         tarred_audio_filepaths=tar,
         audio_locator_tag="[audio]",
         indexed=False,
-        skip_missing_manifest_entries=False,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
     )
-    with pytest.raises(RuntimeError, match="Failed to load multimodal tar shard"):
-        next(iter(strict))
-
-    permissive = NeMoMultimodalConversationJsonlAdapter(
-        manifest_filepath=manifest,
-        tarred_audio_filepaths=tar,
-        audio_locator_tag="[audio]",
-        indexed=False,
-        skip_missing_manifest_entries=True,
-    )
-    assert list(permissive) == []
+    if fault_tolerant_audio_loading:
+        assert list(adapter) == []
+    else:
+        with pytest.raises(RuntimeError, match="Failed to load multimodal tar shard"):
+            next(iter(adapter))
 
 
 # ---------------------------------------------------------------------------
 # NeMoMultimodalConversationShareGPTJsonlAdapter — GetBatch mode
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_sequential_pairing_skips_only_tar_members_absent_from_jsonl(
+    skip_missing_manifest_entries, fault_tolerant_audio_loading
+):
+    expected_recording = object()
+    tar = iter([(object(), Path("extra.wav")), (expected_recording, Path("expected.wav"))])
+
+    if skip_missing_manifest_entries:
+        recording, path = text_adapters_module._next_matching_paired_audio(
+            tar,
+            "expected.wav",
+            manifest_path="manifest.jsonl",
+            tar_path="audio.tar",
+            skip_missing_manifest_entries=True,
+        )
+        assert recording is expected_recording
+        assert path == Path("expected.wav")
+    else:
+        with pytest.raises(ValueError, match="no corresponding JSONL entry"):
+            text_adapters_module._next_matching_paired_audio(
+                tar,
+                "expected.wav",
+                manifest_path="manifest.jsonl",
+                tar_path="audio.tar",
+                skip_missing_manifest_entries=False,
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_trailing_tar_member_policy_is_independent_of_audio_policy(
+    skip_missing_manifest_entries, fault_tolerant_audio_loading
+):
+    kwargs = {
+        "manifest_path": "manifest.jsonl",
+        "tar_path": "audio.tar",
+        "skip_missing_manifest_entries": skip_missing_manifest_entries,
+        "fault_tolerant_audio_loading": fault_tolerant_audio_loading,
+    }
+    tar = iter([(object(), Path("trailing.wav"))])
+    if skip_missing_manifest_entries:
+        assert text_adapters_module._validate_no_trailing_paired_audio(tar, **kwargs) is None
+    else:
+        with pytest.raises(ValueError, match="no corresponding JSONL entry"):
+            text_adapters_module._validate_no_trailing_paired_audio(tar, **kwargs)
 
 
 @pytest.mark.unit

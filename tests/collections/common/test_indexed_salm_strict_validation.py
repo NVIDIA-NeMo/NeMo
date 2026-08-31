@@ -50,7 +50,7 @@ def test_strict_audio_loading_rejects_partial_conversation_drop(monkeypatch):
         strict[requested]
 
 
-def test_default_rejects_partial_drop_and_explicit_skip_preserves_compatibility(monkeypatch):
+def test_default_tolerates_partial_drop_and_explicit_disable_is_strict(monkeypatch):
     first = _conversation("first")
     second = _conversation("second")
     requested = CutSet([first, second])
@@ -58,20 +58,18 @@ def test_default_rejects_partial_drop_and_explicit_skip_preserves_compatibility(
     def partial(conversations, load_audio):
         return torch.empty(0), torch.empty(0, dtype=torch.long), CutSet([first])
 
-    monkeypatch.setattr(
-        salm_dataset, "collate_conversation_audio_fault_tolerant", partial
-    )
-    strict_by_default = SALMDataset(_Tokenizer())
-    with pytest.raises(RuntimeError, match="dropped or reordered conversations"):
-        strict_by_default[requested]
-
-    permissive = SALMDataset(_Tokenizer()).with_skip_missing_manifest_entries(True)
-    batch = permissive[requested]
+    monkeypatch.setattr(salm_dataset, "collate_conversation_audio_fault_tolerant", partial)
+    batch = SALMDataset(_Tokenizer())[requested]
 
     assert [conversation.id for conversation in batch["conversations"]] == ["first"]
+    with pytest.raises(RuntimeError, match="dropped or reordered conversations"):
+        SALMDataset(_Tokenizer()).with_fault_tolerant_audio_loading(False)[requested]
 
 
-def test_strict_audio_loading_reraises_collation_errors(monkeypatch):
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+def test_audio_loading_error_policy_is_independent_of_missing_manifest_policy(
+    monkeypatch, skip_missing_manifest_entries
+):
     requested = CutSet([_conversation("first")])
 
     def fail(conversations, load_audio):
@@ -79,13 +77,14 @@ def test_strict_audio_loading_reraises_collation_errors(monkeypatch):
 
     monkeypatch.setattr(salm_dataset, "collate_conversation_audio_fault_tolerant", fail)
 
-    with pytest.raises(OSError, match="decode failed"):
-        SALMDataset(_Tokenizer())[requested]
-    permissive = SALMDataset(_Tokenizer()).with_skip_missing_manifest_entries(True)
+    permissive = SALMDataset(_Tokenizer()).with_fault_tolerant_audio_loading(True)
+    permissive.skip_missing_manifest_entries = skip_missing_manifest_entries
     assert permissive[requested] is None
+    with pytest.raises(OSError, match="decode failed"):
+        SALMDataset(_Tokenizer()).with_fault_tolerant_audio_loading(False)[requested]
 
 
-def test_default_rejects_empty_survivor_batch_and_explicit_skip_returns_none(monkeypatch):
+def test_default_returns_none_for_empty_survivor_batch_and_explicit_disable_raises(monkeypatch):
     requested = CutSet([_conversation("first")])
 
     def empty(conversations, load_audio):
@@ -97,7 +96,6 @@ def test_default_rejects_empty_survivor_batch_and_explicit_skip_returns_none(mon
 
     monkeypatch.setattr(salm_dataset, "collate_conversation_audio_fault_tolerant", empty)
 
+    assert SALMDataset(_Tokenizer())[requested] is None
     with pytest.raises(RuntimeError, match="dropped or reordered conversations"):
-        SALMDataset(_Tokenizer())[requested]
-    permissive = SALMDataset(_Tokenizer()).with_skip_missing_manifest_entries(True)
-    assert permissive[requested] is None
+        SALMDataset(_Tokenizer()).with_fault_tolerant_audio_loading(False)[requested]

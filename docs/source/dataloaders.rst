@@ -1684,7 +1684,26 @@ options by what they control.
 
 **Inputs.** ``input_cfg``, ``manifest_filepath``,
 ``tarred_audio_filepaths``, ``cuts_path``, ``shar_path``,
-``skip_missing_manifest_entries``.
+``skip_missing_manifest_entries``, ``fault_tolerant_audio_loading``.
+
+The two failure policies are independent and loader-wide:
+
+* ``skip_missing_manifest_entries`` defaults to ``false``. Set it to ``true``
+  only for sequential paired-tar inputs where the tar may contain audio members
+  that have no corresponding JSONL row. It does not suppress malformed JSON,
+  missing required manifest fields, or audio I/O and decoder errors.
+* ``fault_tolerant_audio_loading`` defaults to ``true`` and drops examples whose
+  audio cannot be read, fetched, or decoded so training can continue past a
+  small number of corrupt files. Set it to ``false`` for fail-fast diagnostics.
+
+For example, strict manifest/tar alignment with fault-tolerant audio loading is
+the default. To tolerate filtered JSONL manifests while still failing on a bad
+audio payload, configure:
+
+.. code-block:: yaml
+
+   skip_missing_manifest_entries: true
+   fault_tolerant_audio_loading: false
 
 **Sampling — basic.** ``batch_size``, ``batch_duration``,
 ``quadratic_duration``, ``min_duration``, ``max_duration``, ``min_tps``,

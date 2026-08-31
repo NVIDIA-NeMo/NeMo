@@ -14,7 +14,6 @@
 
 """Lhotse adapters for NeMo datasets including Parquet support."""
 import bisect
-import json
 import os
 import random
 import re
@@ -191,7 +190,7 @@ class LazyNeMoIterator(IteratorNode):
                     shuffle_shards=shuffle_shards,
                     seed=seed,
                     decode=GraphOriginDict,
-                    skip_decode_errors=skip_missing_manifest_entries,
+                    skip_decode_errors=False,
                     decode_error_callback=_warn_malformed_indexed_manifest_record,
                     max_open_files=index_pack_max_open_files,
                 )
@@ -205,7 +204,7 @@ class LazyNeMoIterator(IteratorNode):
                     p,
                     index_path=index_file_path(p, indexes_root),
                     decode=GraphOriginDict,
-                    skip_decode_errors=skip_missing_manifest_entries,
+                    skip_decode_errors=False,
                     decode_error_callback=_warn_malformed_indexed_manifest_record,
                 )
                 for p in paths
@@ -401,7 +400,11 @@ class LazyNeMoTarredIterator(IteratorNode):
     The same mechanism applies to ``manifest_path``.
 
     If your data has been filtered so that the JSON manifests refer to just a subset of recordings,
-    set ``skip_missing_manifest_entries` to ``True``.
+    set ``skip_missing_manifest_entries`` to ``True``.
+
+    Audio I/O and decoder failures are independent of manifest/tar alignment.
+    They are skipped by default; set ``fault_tolerant_audio_loading=False`` to
+    fail fast instead.
     This will still read the tar files sequentially (very fast) and discard the audio files that
     are not present in the corresponding manifest.
 
@@ -452,6 +455,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         text_field: str = "text",
         lang_field: str = "lang",
         skip_missing_manifest_entries: bool = False,
+        fault_tolerant_audio_loading: bool = True,
         extra_fields: list[dict[str, str]] | None = None,
         slice_length: int = None,
         indexed: bool = False,
@@ -460,6 +464,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         index_pack_max_open_files: int = 32,
     ) -> None:
         self.skip_missing_manifest_entries = skip_missing_manifest_entries
+        self.fault_tolerant_audio_loading = fault_tolerant_audio_loading
         self._malformed_manifest_warning_keys: set[tuple[str, ShardKey]] = set()
         self.indexed = indexed
         self.indexes_root = indexes_root
@@ -560,7 +565,7 @@ class LazyNeMoTarredIterator(IteratorNode):
             self._index_pack,
             manifest_key,
             decode=GraphOriginDict,
-            skip_decode_errors=self.skip_missing_manifest_entries,
+            skip_decode_errors=False,
             decode_error_callback=_warn_malformed_indexed_manifest_record,
             max_open_files=max_open_files,
         )
@@ -642,7 +647,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         """Convert this iterator to a list of separate iterators for each shard.
 
         Forwards every constructor knob (notably ``indexed``/``indexes_root``,
-        ``extra_fields``, ``slice_length``, ``skip_missing_manifest_entries``)
+        ``extra_fields``, ``slice_length``, and both independent fault policies)
         so per-shard sub-iterators behave identically to the parent. Dropping
         these silently re-enters streaming mode, which a downstream caller
         like ``mux(..., max_open_streams=N)`` won't notice until the bucketer
@@ -664,6 +669,7 @@ class LazyNeMoTarredIterator(IteratorNode):
                     text_field=self.text_field,
                     lang_field=self.lang_field,
                     skip_missing_manifest_entries=self.skip_missing_manifest_entries,
+                    fault_tolerant_audio_loading=self.fault_tolerant_audio_loading,
                     extra_fields=self.extra_fields,
                     slice_length=self.slice_length,
                     indexed=self.indexed,
@@ -739,12 +745,6 @@ class LazyNeMoTarredIterator(IteratorNode):
                         "NeMo tarred manifest row is missing duration: "
                         f"audio_filepath={audio_filename!r} manifest={manifest_path!r} tar={tar_path!r}."
                     )
-                    if self.skip_missing_manifest_entries:
-                        logging.warning(
-                            f"Skipping row because skip_missing_manifest_entries=true: {message}"
-                        )
-                        entries_processed += 1
-                        continue
                     raise ValueError(message)
 
                 offset = data.get("offset", 0.0)
@@ -868,8 +868,8 @@ class LazyNeMoTarredIterator(IteratorNode):
                 "Failed to decode indexed NeMo tarred audio member "
                 f"{data.get('audio_filepath')!r} from tar={tar_path!r} manifest={manifest_path!r}."
             )
-            if self.skip_missing_manifest_entries:
-                logging.warning(f"Skipping corrupted audio because skip_missing_manifest_entries=true: {message}")
+            if self.fault_tolerant_audio_loading:
+                logging.warning(f"Skipping corrupted audio because fault_tolerant_audio_loading=true: {message}")
                 return None
             raise RuntimeError(message) from ex
         recording = Recording(
@@ -900,9 +900,6 @@ class LazyNeMoTarredIterator(IteratorNode):
                 "Indexed NeMo tarred manifest row is missing duration: "
                 f"audio_filepath={data.get('audio_filepath')!r} manifest={manifest_path!r} tar={tar_path!r}."
             )
-            if self.skip_missing_manifest_entries:
-                logging.warning(f"Skipping row because skip_missing_manifest_entries=true: {message}")
-                return None
             raise ValueError(message)
         audio_filename = self._audio_member_name_from_entry(data)
         audio_url = f"{tar_path.rstrip('/')}/{audio_filename.lstrip('/')}"
@@ -926,22 +923,7 @@ class LazyNeMoTarredIterator(IteratorNode):
         return self._attach_supervision_and_metadata(cut, data, manifest_path, tar_path)
 
     def _decode_packed_cut_at(self, idx: int) -> Cut | None:
-        try:
-            data, location = self._packed_manifest_source.read_with_location(idx)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            location = self._packed_manifest_collection.locate(idx)
-            if self.skip_missing_manifest_entries:
-                manifest_path = location.path
-                warning_key = (str(manifest_path), location.shard_index)
-                if warning_key not in self._malformed_manifest_warning_keys:
-                    self._malformed_manifest_warning_keys.add(warning_key)
-                    logging.warning(
-                        "Skipping malformed manifest entries in packed indexed Lhotse dataloader: "
-                        f"{manifest_path=} shard={location.shard_index} "
-                        f"first_local_idx={location.local_index} first_global_idx={idx}."
-                    )
-                return None
-            raise
+        data, location = self._packed_manifest_source.read_with_location(idx)
         manifest_path = location.path
         tar_path = self._packed_tar_path(location.shard_index)
         if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
@@ -952,29 +934,16 @@ class LazyNeMoTarredIterator(IteratorNode):
         """Build the Cut for a global index in indexed mode (AIS or local).
 
         Truthy top-level or ``custom._skipme`` rows always return ``None``.
-        Other malformed, missing, or undecodable data returns ``None`` only when
-        ``skip_missing_manifest_entries`` is explicitly set; strict mode raises.
+        Missing JSONL mappings are a streaming-only concern. Malformed manifest
+        rows always raise. Audio I/O/decode failures return ``None`` only when
+        ``fault_tolerant_audio_loading`` is enabled.
         """
         if getattr(self, "_packed_indexed", False):
             return self._decode_packed_cut_at(idx)
         sid, local_idx = self._resolve_global_idx(idx)
         cuts_reader = self._cuts_readers[sid]
         manifest_path = cuts_reader.path
-        try:
-            data = cuts_reader[local_idx]
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            if self.skip_missing_manifest_entries:
-                warning_key = (str(manifest_path), sid)
-                if warning_key not in self._malformed_manifest_warning_keys:
-                    self._malformed_manifest_warning_keys.add(warning_key)
-                    logging.warning(
-                        "Skipping malformed manifest entries in indexed Lhotse dataloader: "
-                        f"{manifest_path=} {sid=} first_local_idx={local_idx} first_global_idx={idx}. "
-                        "Further malformed entries for this manifest/shard will be skipped without additional "
-                        "warnings."
-                    )
-                return None
-            raise
+        data = cuts_reader[local_idx]
         tar_path = self.shard_id_to_tar_path[sid]
         if self._indexed_entry_is_explicitly_skipped(data, manifest_path, tar_path):
             return None
@@ -1067,9 +1036,9 @@ class LazyNeMoTarredIterator(IteratorNode):
                             "Failed to decode streaming NeMo tarred audio member "
                             f"{tar_info.path!r} from tar={tar_path!r} manifest={manifest_path!r}."
                         )
-                        if self.skip_missing_manifest_entries:
+                        if self.fault_tolerant_audio_loading:
                             logging.warning(
-                                f"Skipping corrupted audio because skip_missing_manifest_entries=true: {message}"
+                                f"Skipping corrupted audio because fault_tolerant_audio_loading=true: {message}"
                             )
                             continue
                         raise RuntimeError(message) from ex
@@ -1109,10 +1078,8 @@ class LazyNeMoTarredIterator(IteratorNode):
                     yield from cuts_for_recording
             except tarfile.ReadError as ex:
                 message = f"Failed to read NeMo tar archive {tar_path!r} for manifest {manifest_path!r}."
-                if self.skip_missing_manifest_entries:
-                    logging.warning(
-                        f"Skipping tar because skip_missing_manifest_entries=true: {message}"
-                    )
+                if self.fault_tolerant_audio_loading:
+                    logging.warning(f"Skipping tar because fault_tolerant_audio_loading=true: {message}")
                     continue
                 raise RuntimeError(message) from ex
 

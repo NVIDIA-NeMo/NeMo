@@ -81,6 +81,7 @@ def _paired_adapter(
     *,
     indexed: bool,
     skip_missing_manifest_entries: bool,
+    fault_tolerant_audio_loading: bool,
 ):
     return NeMoMultimodalConversationShareGPTJsonlAdapter(
         manifest_filepath=str(manifest_path),
@@ -89,12 +90,17 @@ def _paired_adapter(
         audio_placeholders=["<sound>"],
         indexed=indexed,
         skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
     )
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("failure", ["missing", "decode"])
-def test_paired_sharegpt_indexed_expected_audio_failure_is_resumable(tmp_path, failure):
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_paired_sharegpt_indexed_expected_audio_failure_is_resumable(
+    tmp_path, failure, skip_missing_manifest_entries, fault_tolerant_audio_loading
+):
     manifest_path = _write_paired_manifest(tmp_path / "manifest.jsonl")
     payloads = [_wav(), b"not-an-audio-file", _wav()]
     members = [
@@ -105,31 +111,34 @@ def test_paired_sharegpt_indexed_expected_audio_failure_is_resumable(tmp_path, f
     tar_path = _write_tar(tmp_path / "audio.tar", members)
     create_tar_index(tar_path, f"{tar_path}.idx")
 
-    def build(skip: bool):
+    def build():
         return _paired_adapter(
             manifest_path,
             tar_path,
             indexed=True,
-            skip_missing_manifest_entries=skip,
+            skip_missing_manifest_entries=skip_missing_manifest_entries,
+            fault_tolerant_audio_loading=fault_tolerant_audio_loading,
         )
 
     expected_error = KeyError if failure == "missing" else AudioLoadingError
-    with pytest.raises(expected_error):
-        list(build(False))
+    if not fault_tolerant_audio_loading:
+        with pytest.raises(expected_error):
+            list(build())
+        return
 
-    permissive = build(True)
+    permissive = build()
     assert len(permissive) == 3
     assert [item.id for item in permissive] == ["sample-0", "sample-2"]
     with pytest.raises(IndexError, match="not decodable"):
         permissive[1]
 
-    uninterrupted = build(True)
+    uninterrupted = build()
     source = iter(uninterrupted)
     assert next(source).id == "sample-0"
     state = uninterrupted.state_dict()
     expected_remainder = [item.id for item in source]
 
-    resumed = build(True)
+    resumed = build()
     resumed.load_state_dict(state)
     assert [item.id for item in resumed] == expected_remainder == ["sample-2"]
 
@@ -139,8 +148,10 @@ def test_paired_sharegpt_indexed_expected_audio_failure_is_resumable(tmp_path, f
     "failure,expected_ids",
     [("missing", ["sample-0", "sample-1"]), ("decode", ["sample-0"])],
 )
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
 def test_paired_sharegpt_streaming_expected_audio_failure_obeys_policy(
-    tmp_path, failure, expected_ids
+    tmp_path, failure, expected_ids, skip_missing_manifest_entries, fault_tolerant_audio_loading
 ):
     manifest_path = _write_paired_manifest(tmp_path / "manifest.jsonl")
     if failure == "missing":
@@ -149,49 +160,51 @@ def test_paired_sharegpt_streaming_expected_audio_failure_obeys_policy(
         members = [("0.wav", _wav()), ("1.wav", b"not-audio"), ("2.wav", _wav())]
     tar_path = _write_tar(tmp_path / "audio.tar", members)
 
-    with pytest.raises(RuntimeError, match="Failed to load paired ShareGPT tar"):
-        list(
-            _paired_adapter(
-                manifest_path,
-                tar_path,
-                indexed=False,
-                skip_missing_manifest_entries=False,
-            )
-        )
-
-    permissive = _paired_adapter(
+    adapter = _paired_adapter(
         manifest_path,
         tar_path,
         indexed=False,
-        skip_missing_manifest_entries=True,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
     )
-    assert [item.id for item in permissive] == expected_ids
-
-
-@pytest.mark.unit
-def test_paired_sharegpt_streaming_mismatch_remains_strict_in_permissive_mode(
-    tmp_path,
-):
-    manifest_path = _write_paired_manifest(tmp_path / "manifest.jsonl", num_rows=1)
-    tar_path = _write_tar(tmp_path / "audio.tar", [("other.wav", _wav())])
-
-    permissive = _paired_adapter(
-        manifest_path,
-        tar_path,
-        indexed=False,
-        skip_missing_manifest_entries=True,
-    )
-    with pytest.raises(
-        ValueError, match="Mismatch between JSONL and paired ShareGPT tar"
-    ):
-        list(permissive)
+    if not fault_tolerant_audio_loading:
+        with pytest.raises(RuntimeError, match="Failed to load paired ShareGPT tar"):
+            list(adapter)
+    else:
+        assert [item.id for item in adapter] == expected_ids
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
-def test_paired_sharegpt_streaming_rejects_surplus_tar_members(
-    tmp_path,
-    skip_missing_manifest_entries,
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_paired_sharegpt_streaming_extra_member_obeys_only_missing_manifest_policy(
+    tmp_path, skip_missing_manifest_entries, fault_tolerant_audio_loading
+):
+    manifest_path = _write_paired_manifest(tmp_path / "manifest.jsonl", num_rows=1)
+    tar_path = _write_tar(
+        tmp_path / "audio.tar",
+        [("extra.wav", _wav()), ("0.wav", _wav())],
+    )
+
+    adapter = _paired_adapter(
+        manifest_path,
+        tar_path,
+        indexed=False,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
+    )
+    if skip_missing_manifest_entries:
+        assert [item.id for item in adapter] == ["sample-0"]
+    else:
+        with pytest.raises(ValueError, match="no corresponding JSONL entry"):
+            list(adapter)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_paired_sharegpt_streaming_surplus_tar_member_obeys_only_missing_manifest_policy(
+    tmp_path, skip_missing_manifest_entries, fault_tolerant_audio_loading
 ):
     manifest_path = _write_paired_manifest(tmp_path / "manifest.jsonl", num_rows=1)
     tar_path = _write_tar(
@@ -203,13 +216,14 @@ def test_paired_sharegpt_streaming_rejects_surplus_tar_members(
         tar_path,
         indexed=False,
         skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
     )
 
-    with pytest.raises(
-        ValueError,
-        match="trailing member after manifest exhaustion",
-    ):
-        list(adapter)
+    if skip_missing_manifest_entries:
+        assert [item.id for item in adapter] == ["sample-0"]
+    else:
+        with pytest.raises(ValueError, match="no corresponding JSONL entry"):
+            list(adapter)
 
 
 def _write_wds(root: Path, *, version: int) -> Path:
@@ -240,6 +254,7 @@ def _wds_adapter(
     version: int,
     indexed: bool,
     skip_missing_manifest_entries: bool,
+    fault_tolerant_audio_loading: bool,
 ):
     return NeMoMultimodalConversationShareGPTWebdatasetAdapter(
         data_dir=str(data_dir),
@@ -248,6 +263,7 @@ def _wds_adapter(
         indexed=indexed,
         wds_sample_index_version=version,
         skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
     )
 
 
@@ -256,29 +272,33 @@ def _wds_adapter(
     "version,indexed",
     [(1, False), (1, True), (2, True)],
 )
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
 def test_sharegpt_wds_audio_decode_failure_obeys_policy_and_indexed_resume(
-    tmp_path, version, indexed
+    tmp_path, version, indexed, skip_missing_manifest_entries, fault_tolerant_audio_loading
 ):
     data_dir = _write_wds(tmp_path / "wds", version=version)
 
-    with pytest.raises(
-        AudioLoadingError, match="Failed to decode ShareGPT audio payload"
-    ):
-        list(
-            _wds_adapter(
-                data_dir,
-                version=version,
-                indexed=indexed,
-                skip_missing_manifest_entries=False,
+    if not fault_tolerant_audio_loading:
+        with pytest.raises(AudioLoadingError, match="Failed to decode ShareGPT audio payload"):
+            list(
+                _wds_adapter(
+                    data_dir,
+                    version=version,
+                    indexed=indexed,
+                    skip_missing_manifest_entries=skip_missing_manifest_entries,
+                    fault_tolerant_audio_loading=False,
+                )
             )
-        )
+        return
 
     def build():
         return _wds_adapter(
             data_dir,
             version=version,
             indexed=indexed,
-            skip_missing_manifest_entries=True,
+            skip_missing_manifest_entries=skip_missing_manifest_entries,
+            fault_tolerant_audio_loading=fault_tolerant_audio_loading,
         )
 
     assert [item.id for item in build()] == ["sample-0", "sample-2"]
@@ -304,10 +324,12 @@ def test_sharegpt_wds_audio_decode_failure_obeys_policy_and_indexed_resume(
 @pytest.mark.unit
 @pytest.mark.parametrize("indexed", [False, True])
 @pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
 def test_sharegpt_wds_v1_rejects_cross_sample_member_pairing(
     tmp_path,
     indexed,
     skip_missing_manifest_entries,
+    fault_tolerant_audio_loading,
 ):
     data_dir = tmp_path / "wds"
     data_dir.mkdir()
@@ -330,6 +352,7 @@ def test_sharegpt_wds_v1_rejects_cross_sample_member_pairing(
         version=1,
         indexed=indexed,
         skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
     )
 
     with pytest.raises(ValueError, match="different sample keys"):

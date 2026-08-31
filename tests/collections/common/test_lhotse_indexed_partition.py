@@ -152,8 +152,10 @@ def test_lazy_nemo_tarred_iterator_indexed_partition(nemo_tarred_manifest, world
     assert sum(len(r) for r in per_rank) == N_CUTS
 
 
-def test_lazy_nemo_tarred_streaming_soundfile_failure_obeys_skip_policy(
-    nemo_tarred_manifest, monkeypatch
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_lazy_nemo_tarred_audio_decode_policy_is_independent_of_missing_manifest_policy(
+    nemo_tarred_manifest, monkeypatch, skip_missing_manifest_entries, fault_tolerant_audio_loading
 ):
     manifest_path, tar_path = nemo_tarred_manifest
     monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
@@ -163,22 +165,54 @@ def test_lazy_nemo_tarred_streaming_soundfile_failure_obeys_skip_policy(
 
     monkeypatch.setattr(nemo_adapters.soundfile, "info", fail_info)
 
-    strict = nemo_adapters.LazyNeMoTarredIterator(
+    adapter = nemo_adapters.LazyNeMoTarredIterator(
         manifest_path=str(manifest_path),
         tar_paths=str(tar_path),
         indexed=False,
-        skip_missing_manifest_entries=False,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
     )
-    with pytest.raises(RuntimeError, match=r"Failed to decode .*NeMo tarred audio member"):
-        next(iter(strict))
+    if fault_tolerant_audio_loading:
+        assert list(adapter) == []
+    else:
+        with pytest.raises(RuntimeError, match=r"Failed to decode .*NeMo tarred audio member"):
+            next(iter(adapter))
 
-    permissive = nemo_adapters.LazyNeMoTarredIterator(
+
+def test_lazy_nemo_tarred_audio_decode_is_fault_tolerant_by_default(nemo_tarred_manifest, monkeypatch):
+    manifest_path, tar_path = nemo_tarred_manifest
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
+    monkeypatch.setattr(
+        nemo_adapters.soundfile, "info", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("corrupt"))
+    )
+    adapter = nemo_adapters.LazyNeMoTarredIterator(
         manifest_path=str(manifest_path),
         tar_paths=str(tar_path),
         indexed=False,
-        skip_missing_manifest_entries=True,
     )
-    assert list(permissive) == []
+    assert list(adapter) == []
+
+
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_lazy_nemo_tarred_missing_manifest_entry_obeys_only_skip_policy(
+    nemo_tarred_manifest, monkeypatch, skip_missing_manifest_entries, fault_tolerant_audio_loading
+):
+    manifest_path, tar_path = nemo_tarred_manifest
+    monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
+    save_to_jsonl(list(load_jsonl(manifest_path))[1:], manifest_path)
+    adapter = nemo_adapters.LazyNeMoTarredIterator(
+        manifest_path=str(manifest_path),
+        tar_paths=str(tar_path),
+        indexed=False,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
+    )
+    if skip_missing_manifest_entries:
+        assert len(list(adapter)) == N_CUTS - 1
+    else:
+        with pytest.raises(RuntimeError, match="Cannot locate JSON entry"):
+            next(iter(adapter))
 
 
 def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(
@@ -218,8 +252,10 @@ def test_lazy_nemo_tarred_indexed_defers_audio_until_selected(
     np.testing.assert_array_equal(audio, eager_audio)
 
 
-def test_lazy_nemo_tarred_streaming_missing_duration_obeys_skip_policy(
-    nemo_tarred_manifest, monkeypatch
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_lazy_nemo_tarred_missing_duration_is_always_a_manifest_error(
+    nemo_tarred_manifest, monkeypatch, skip_missing_manifest_entries, fault_tolerant_audio_loading
 ):
     manifest_path, tar_path = nemo_tarred_manifest
     monkeypatch.setenv("USE_AIS_GET_BATCH", "true")
@@ -227,26 +263,21 @@ def test_lazy_nemo_tarred_streaming_missing_duration_obeys_skip_policy(
     rows[0].pop("duration", None)
     save_to_jsonl(rows, manifest_path)
 
-    strict = nemo_adapters.LazyNeMoTarredIterator(
+    adapter = nemo_adapters.LazyNeMoTarredIterator(
         manifest_path=str(manifest_path),
         tar_paths=str(tar_path),
         indexed=False,
-        skip_missing_manifest_entries=False,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
     )
     with pytest.raises(ValueError, match="missing duration"):
-        next(iter(strict))
-
-    permissive = nemo_adapters.LazyNeMoTarredIterator(
-        manifest_path=str(manifest_path),
-        tar_paths=str(tar_path),
-        indexed=False,
-        skip_missing_manifest_entries=True,
-    )
-    assert len(list(permissive)) == N_CUTS - 1
+        next(iter(adapter))
 
 
-def test_lazy_nemo_tarred_streaming_tar_read_error_obeys_skip_policy(
-    nemo_tarred_manifest, monkeypatch
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_lazy_nemo_tarred_tar_read_error_obeys_only_audio_policy(
+    nemo_tarred_manifest, monkeypatch, skip_missing_manifest_entries, fault_tolerant_audio_loading
 ):
     manifest_path, tar_path = nemo_tarred_manifest
     monkeypatch.setenv("USE_AIS_GET_BATCH", "false")
@@ -254,26 +285,20 @@ def test_lazy_nemo_tarred_streaming_tar_read_error_obeys_skip_policy(
     def fail_sequential(*args, **kwargs):
         raise tarfile.ReadError("synthetic tar failure")
 
-    monkeypatch.setattr(
-        nemo_adapters.LazyNeMoTarredIterator, "_iter_sequential", fail_sequential
-    )
+    monkeypatch.setattr(nemo_adapters.LazyNeMoTarredIterator, "_iter_sequential", fail_sequential)
 
-    strict = nemo_adapters.LazyNeMoTarredIterator(
+    adapter = nemo_adapters.LazyNeMoTarredIterator(
         manifest_path=str(manifest_path),
         tar_paths=str(tar_path),
         indexed=False,
-        skip_missing_manifest_entries=False,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
     )
-    with pytest.raises(RuntimeError, match="Failed to read NeMo tar archive"):
-        next(iter(strict))
-
-    permissive = nemo_adapters.LazyNeMoTarredIterator(
-        manifest_path=str(manifest_path),
-        tar_paths=str(tar_path),
-        indexed=False,
-        skip_missing_manifest_entries=True,
-    )
-    assert list(permissive) == []
+    if fault_tolerant_audio_loading:
+        assert list(adapter) == []
+    else:
+        with pytest.raises(RuntimeError, match="Failed to read NeMo tar archive"):
+            next(iter(adapter))
 
 
 @pytest.mark.parametrize("use_ais_get_batch", [False, True])
@@ -599,32 +624,27 @@ def test_nemo_multimodal_conversation_jsonl_adapter_indexed_partition(mm_convers
     assert len(union) == N_CUTS
 
 
-@pytest.mark.parametrize("indexed", [False, True])
-def test_nemo_multimodal_missing_local_audio_obeys_skip_policy(
-    mm_conversation_jsonl, indexed
+@pytest.mark.parametrize("skip_missing_manifest_entries", [False, True])
+@pytest.mark.parametrize("fault_tolerant_audio_loading", [False, True])
+def test_nemo_multimodal_missing_local_audio_obeys_only_audio_policy(
+    mm_conversation_jsonl, skip_missing_manifest_entries, fault_tolerant_audio_loading
 ):
     rows = list(load_jsonl(mm_conversation_jsonl))
-    rows[0]["conversations"][0]["value"] = str(
-        mm_conversation_jsonl.parent / "missing.wav"
-    )
+    rows[0]["conversations"][0]["value"] = str(mm_conversation_jsonl.parent / "missing.wav")
     save_to_jsonl(rows, mm_conversation_jsonl)
 
-    strict = text_adapters.NeMoMultimodalConversationJsonlAdapter(
+    adapter = text_adapters.NeMoMultimodalConversationJsonlAdapter(
         manifest_filepath=[str(mm_conversation_jsonl)],
         audio_locator_tag="<audio>",
-        indexed=indexed,
-        skip_missing_manifest_entries=False,
+        indexed=False,
+        skip_missing_manifest_entries=skip_missing_manifest_entries,
+        fault_tolerant_audio_loading=fault_tolerant_audio_loading,
     )
-    with pytest.raises(RuntimeError, match="Failed to load multimodal conversation"):
-        next(iter(strict))
-
-    permissive = text_adapters.NeMoMultimodalConversationJsonlAdapter(
-        manifest_filepath=[str(mm_conversation_jsonl)],
-        audio_locator_tag="<audio>",
-        indexed=indexed,
-        skip_missing_manifest_entries=True,
-    )
-    assert len(list(permissive)) == N_CUTS - 1
+    if fault_tolerant_audio_loading:
+        assert len(list(adapter)) == N_CUTS - 1
+    else:
+        with pytest.raises(RuntimeError, match="Failed to load multimodal conversation"):
+            next(iter(adapter))
 
 
 def test_nemo_multimodal_indexed_skipme_is_canonical_filter(mm_conversation_jsonl):

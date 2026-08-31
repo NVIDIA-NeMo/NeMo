@@ -284,6 +284,7 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "audio_locator_tag": config.get("audio_locator_tag", None),
         "token_equivalent_duration": config.get("token_equivalent_duration", None),
         "skip_missing_manifest_entries": config.get("skip_missing_manifest_entries", False),
+        "fault_tolerant_audio_loading": config.get("fault_tolerant_audio_loading", True),
         "force_map_dataset": config.get("force_map_dataset", False),
         "force_iterable_dataset": config.get("force_iterable_dataset", False),
         "slice_length": config.get("slice_length", None),
@@ -475,6 +476,7 @@ def read_multimodal_conversation_jsonl(config: DictConfig) -> tuple[CutSet, bool
             index_pack=_resolve_index_pack(config),
             index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
             skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+            fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
         )
     )
     if not config.get("force_finite", False):
@@ -504,6 +506,7 @@ def read_share_gpt_as_conversation(config) -> tuple[CutSet, bool]:
             index_pack=_resolve_index_pack(config),
             index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
             skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+            fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
             excluded_manifest_lines=config.get("excluded_manifest_lines"),
             excluded_manifest_lines_sha256=config.get("excluded_manifest_lines_sha256"),
             approved_exclusion_audit_sha256=config.get("approved_exclusion_audit_sha256"),
@@ -531,6 +534,7 @@ def read_share_gpt_webdataset_as_conversation(config) -> tuple[CutSet, bool]:
             index_pack=_resolve_index_pack(config),
             index_pack_max_open_files=config.get("index_pack_max_open_files", 32),
             skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+            fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
         )
     )
     # When force_finite is False (default), repeat the dataset infinitely so that
@@ -673,17 +677,18 @@ def parse_and_combine_datasets(
                 item["input_cfg"] = str(containing_dir / nested_path)
 
         # Propagate loader attributes into each leaf. Most leaf values may
-        # override their parent, but missing-entry handling is loader-wide:
+        # override their parent, but both failure policies remain loader-wide.
         # SALMDataset and FallbackDataset are shared across the blended graph,
-        # so a per-leaf policy cannot be honored safely for late audio errors.
-        # Keep the top-level value authoritative, including through external
-        # input_cfg YAML references.
+        # and preserving one authoritative policy also avoids changing existing
+        # external-input_cfg override semantics. Keep top-level values authoritative
+        # through external YAMLs.
         next_propagate_attrs = propagate_attrs.copy()
         for k, v in propagate_attrs.items():
-            if k == "skip_missing_manifest_entries":
+            if k in ("skip_missing_manifest_entries", "fault_tolerant_audio_loading"):
                 if k in item and item[k] != v:
                     logging.info(
-                        "Overriding nested skip_missing_manifest_entries=%s with loader-wide value %s.",
+                        "Overriding nested %s=%s with loader-wide value %s.",
+                        k,
                         item[k],
                         v,
                     )
@@ -1768,6 +1773,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     manifest_filepath,
                     tar_paths=tarred_audio_filepaths,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
                     slice_length=config.get("slice_length", None),
                     **tar_kwargs_extra,
                     **common_kwargs,
@@ -1809,6 +1815,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                     manifest_path=manifest_path,
                     tar_paths=tar_path,
                     skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
+                    fault_tolerant_audio_loading=config.get("fault_tolerant_audio_loading", True),
                     slice_length=config.get("slice_length", None),
                     **tar_kwargs_extra,
                     **common_kwargs,

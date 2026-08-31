@@ -555,6 +555,7 @@ def test_multimodal_conversation_input_sharegpt_missing_audio_path_raises(tmp_pa
         manifest_filepath=manifest_path,
         audio_locator_tag="[audio]",
         audio_placeholders=["<sound>"],
+        fault_tolerant_audio_loading=False,
     )
 
     with pytest.raises(AudioLoadingError):
@@ -602,7 +603,8 @@ def test_multimodal_conversation_input_sharegpt_missing_audio_path_skips_when_en
         audio_locator_tag="[audio]",
         audio_placeholders=["<sound>"],
         indexed=indexed,
-        skip_missing_manifest_entries=True,
+        skip_missing_manifest_entries=False,
+        fault_tolerant_audio_loading=True,
     )
 
     with caplog.at_level(logging.WARNING):

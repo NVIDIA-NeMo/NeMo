@@ -285,6 +285,43 @@ def test_missing_manifest_policy_overrides_external_input_cfg_yaml(
     assert propagated["skip_missing_manifest_entries"] is False
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("loader_policy", [False, True])
+@pytest.mark.parametrize("leaf_policy", [False, True])
+def test_audio_loading_policy_overrides_external_input_cfg_yaml(tmp_path, monkeypatch, loader_policy, leaf_policy):
+    external = tmp_path / "external.yaml"
+    external.write_text(
+        OmegaConf.to_yaml(
+            [
+                {
+                    "type": "nemo",
+                    "manifest_filepath": "unused.jsonl",
+                    "fault_tolerant_audio_loading": leaf_policy,
+                }
+            ]
+        )
+    )
+    cfg = OmegaConf.create(
+        {
+            "input_cfg": str(external),
+            "fault_tolerant_audio_loading": loader_policy,
+        }
+    )
+    observed = []
+
+    def capture_group(item, propagate_attrs):
+        observed.append((item, propagate_attrs.copy()))
+        return object(), False
+
+    monkeypatch.setattr(cutset_module, "parse_group", capture_group)
+    cutset_module.read_cutset_from_config(cfg)
+
+    assert len(observed) == 1
+    item, propagated = observed[0]
+    assert item.fault_tolerant_audio_loading is loader_policy
+    assert propagated["fault_tolerant_audio_loading"] is loader_policy
+
+
 # --------------------------------------------------------------------------- #
 # pre_validation
 # --------------------------------------------------------------------------- #

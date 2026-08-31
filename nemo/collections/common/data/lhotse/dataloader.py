@@ -92,6 +92,9 @@ class LhotseDataLoadingConfig:
     shar_path: Any = None  # str | list[str | tuple[str, float | int]] | None = None
     #  Enable this to support dataloading from JSON manifests that reference subsets of audio tar files.
     skip_missing_manifest_entries: bool = False
+    # Continue past unreadable, missing, or corrupted audio payloads. Disable for fail-fast diagnostics.
+    # This is independent of skip_missing_manifest_entries, which only handles tar members absent from JSONL.
+    fault_tolerant_audio_loading: bool = True
     tarred_random_access: bool = False  # deprecated, replaced by: skip_missing_manifest_entries
     # 2. Batch size.
     #   a. Existing NeMo options.
@@ -1274,9 +1277,13 @@ def make_structured_with_schema_warnings(config: Union[DictConfig, dict]) -> Dic
     if config.skip_missing_manifest_entries:
         logging.warning(
             "Note: skip_missing_manifest_entries is set to True. "
-            "If any of your manifests and tar files are mismatched, the entire "
-            "tar file will be skipped without warning. It's your responsibility "
-            "to ensure data integrity with this setting."
+            "Sequential tar members without corresponding JSONL entries will be skipped. "
+            "Malformed manifest rows and audio loading failures are governed separately."
+        )
+    if not config.fault_tolerant_audio_loading:
+        logging.warning(
+            "Note: fault_tolerant_audio_loading is set to False. "
+            "Audio I/O and decoder failures will stop dataloading instead of dropping bad examples."
         )
 
     return config

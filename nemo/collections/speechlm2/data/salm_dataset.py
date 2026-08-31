@@ -87,9 +87,9 @@ class SALMDataset(torch.utils.data.Dataset):
         strict_audio_loading (bool):
             Re-raises audio collation errors and
             rejects conversations or audio items dropped or reordered by the
-            fault-tolerant collator. Defaults to ``True``. The datamodule sets
-            this to ``False`` only when ``skip_missing_manifest_entries=true``
-            is explicitly configured for that loader.
+            fault-tolerant collator. Defaults to ``False`` so audio I/O and
+            decoder failures remain fault tolerant. The datamodule controls
+            this through ``fault_tolerant_audio_loading``.
 
             [ SOT Example for overlapping speakers ]
             Speaker-parallel transcription as a timeline:
@@ -133,7 +133,7 @@ class SALMDataset(torch.utils.data.Dataset):
         pack_audio: bool = False,
         pack_sequences: bool = False,
         batch_tokens: int | None = None,
-        strict_audio_loading: bool = True,
+        strict_audio_loading: bool = False,
     ) -> None:
         self.tokenizer = tokenizer
         self.pad_id = get_pad_id(tokenizer)
@@ -163,29 +163,29 @@ class SALMDataset(torch.utils.data.Dataset):
             else None
         )
 
-    def with_skip_missing_manifest_entries(self, skip_missing_manifest_entries: bool) -> "SALMDataset":
-        """Return a per-loader view with the requested audio failure policy.
+    def with_fault_tolerant_audio_loading(self, enabled: bool) -> "SALMDataset":
+        """Return a per-loader view with the requested audio I/O failure policy.
 
         ``DataModule`` shares one dataset factory between train/validation/test,
-        while each loader may have a different missing-entry policy. A shallow
+        while each loader may have a different audio-loading policy. A shallow
         copy keeps the tokenizer and model-independent processors shared, and a
         copied ``AudioSamples`` instance avoids mutating another loader's
         strictness state.
         """
+        enabled = bool(enabled)
         dataset = copy(self)
-        dataset.strict_audio_loading = not bool(skip_missing_manifest_entries)
+        dataset.strict_audio_loading = not enabled
         dataset.load_audio = copy(self.load_audio)
-        dataset.load_audio.fault_tolerant = True
+        dataset.load_audio.fault_tolerant = enabled
         if self.load_audio.ais_batch_loader is not None:
             dataset.load_audio.ais_batch_loader = copy(self.load_audio.ais_batch_loader)
-            dataset.load_audio.ais_batch_loader.skip_failed_fetches = bool(skip_missing_manifest_entries)
+            dataset.load_audio.ais_batch_loader.skip_failed_fetches = enabled
         return dataset
 
     def __getitem__(self, conversations: CutSet) -> dict | None:
         # The collator retains its fault-tolerant 3-tuple API, but strict mode
         # verifies exact conversation/audio identity and raises on any drop.
-        # Returning None is possible only for an explicitly permissive loader;
-        # DataModule gates FallbackDataset behind that same explicit policy.
+        # DataModule gates FallbackDataset behind the same audio-loading policy.
         if self.strict_audio_loading:
             requested_conversation_ids = tuple(id(conversation) for conversation in conversations)
             requested_audio_cut_ids = _audio_cut_ids(conversations)

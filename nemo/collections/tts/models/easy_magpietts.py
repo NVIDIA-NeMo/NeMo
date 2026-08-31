@@ -1955,7 +1955,7 @@ class EasyMagpieTTSModel(EasyMagpieTTSInferenceModel):
     def get_lhotse_dataloader(self, dataset_cfg, mode='train') -> torch.utils.data.DataLoader:
         # TODO @xueyang: better to distinguish cfg. self.cfg is the model cfg, while cfg here is train_ds cfg. Also
         #   cfg is a classifier-free guidance.
-        use_raw_text_input = dataset_cfg.dataset.get("use_raw_text_input", False)
+        use_raw_text_input = dataset_cfg.get("use_raw_text_input", False)
         if self.cfg.get("use_multiturn_dataset", False):
             dataset = MagpieTTSLhotseMultiturnDataset(
                 sample_rate=self.sample_rate,

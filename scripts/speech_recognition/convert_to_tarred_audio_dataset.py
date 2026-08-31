@@ -574,7 +574,7 @@ class ASRTarredDatasetBuilder:
         filtered_duration = 0.0
         print(f"Reading manifest: {manifest_path}")
         with open(manifest_path, 'r', encoding='utf-8') as m:
-            for line in tqdm(m):
+            for line in m:
                 line = line.strip()
                 if not line:
                     continue

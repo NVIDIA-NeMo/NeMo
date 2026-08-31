@@ -32,7 +32,11 @@ from _validate_dataloader import config_inject
 from _validate_dataloader import consolidate as cons
 from _validate_dataloader import pre_validation as pv
 from _validate_dataloader.cut_id_dataset import CutIdDataset
-from validate_dataloader import _extract_cuts, _extract_semantic_cut_ids
+from validate_dataloader import (
+    _extract_cuts,
+    _extract_numeric_list,
+    _extract_semantic_cut_ids,
+)
 
 from nemo.collections.common.data.lhotse import cutset as cutset_module
 
@@ -44,14 +48,20 @@ from nemo.collections.common.data.lhotse import cutset as cutset_module
 @pytest.mark.unit
 def test_cut_id_dataset_uses_graph_origin_when_semantic_ids_repeat():
     class Example:
-        def __init__(self, semantic_id, graph_origin):
+        def __init__(self, semantic_id, graph_origin, duration, num_tokens):
             self.id = semantic_id
             self._graph_origin = graph_origin
+            self.duration = duration
+            self.num_tokens = num_tokens
 
-    row = CutIdDataset()[[Example("0", 17), Example("0", (3, 9))]]
+    row = CutIdDataset()[
+        [Example("0", 17, 1.25, 10), Example("0", (3, 9), 2.5, 20)]
+    ]
 
     assert row["cut_ids"] == ["graph:17", "graph:[3,9]"]
     assert row["semantic_cut_ids"] == ["0", "0"]
+    assert row["declared_duration_seconds"] == [1.25, 2.5]
+    assert row["sampled_num_tokens"] == [10, 20]
     assert len(set(row["cut_ids"])) == 2
 
 
@@ -64,6 +74,44 @@ def test_cut_id_dataset_legacy_fallback_has_separate_namespace():
 
     assert row["cut_ids"] == ['semantic:"17"']
     assert row["semantic_cut_ids"] == ["17"]
+    assert row["declared_duration_seconds"] == [0.0]
+    assert row["sampled_num_tokens"] == [-1]
+
+
+@pytest.mark.unit
+def test_cut_id_dataset_sums_declared_conversation_audio_without_loading_it():
+    class Cut:
+        def __init__(self, duration):
+            self.duration = duration
+
+    class Conversation:
+        id = "conversation"
+        _graph_origin = (4, 2)
+        num_tokens = 17
+
+        def list_cuts(self):
+            return [Cut(1.25), Cut(2.5)]
+
+    row = CutIdDataset()[[Conversation()]]
+
+    assert row["declared_duration_seconds"] == [3.75]
+    assert row["sampled_num_tokens"] == [17]
+
+
+@pytest.mark.unit
+def test_extract_numeric_list_handles_collated_vectors_and_checks_cardinality():
+    batch = {
+        "declared_duration_seconds": [[1.25, 2.5]],
+        "sampled_num_tokens": [[10, 20]],
+    }
+
+    assert _extract_numeric_list(batch, "declared_duration_seconds", 2, float) == [
+        1.25,
+        2.5,
+    ]
+    assert _extract_numeric_list(batch, "sampled_num_tokens", 2, int) == [10, 20]
+    with pytest.raises(Exception, match="cardinality mismatch"):
+        _extract_numeric_list(batch, "sampled_num_tokens", 3, int)
 
 
 @pytest.mark.unit

@@ -46,6 +46,41 @@ def _validation_identity(cut) -> str:
     return f"graph:{encoded}"
 
 
+def _nonnegative_float(value, *, default: float) -> float:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0.0 else default
+
+
+def _nonnegative_int(value, *, default: int) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+def _declared_audio_duration(example) -> float:
+    """Return declared audio seconds without loading any payload.
+
+    Raw cuts expose ``duration`` directly. Prompt-formatted conversation
+    examples instead expose their component cuts through ``list_cuts()``;
+    text-only conversations legitimately return an empty list.
+    """
+    direct = getattr(example, "duration", None)
+    if direct is not None:
+        return _nonnegative_float(direct, default=0.0)
+    list_cuts = getattr(example, "list_cuts", None)
+    if not callable(list_cuts):
+        return 0.0
+    return sum(
+        _nonnegative_float(getattr(cut, "duration", None), default=0.0)
+        for cut in list_cuts()
+    )
+
+
 class CutIdDataset(torch.utils.data.Dataset):
     """Return graph identities and worker metadata without realizing audio.
 
@@ -59,6 +94,14 @@ class CutIdDataset(torch.utils.data.Dataset):
         return {
             "cut_ids": [_validation_identity(cut) for cut in cuts],
             "semantic_cut_ids": [str(cut.id) for cut in cuts],
+            "declared_duration_seconds": [
+                _declared_audio_duration(cut)
+                for cut in cuts
+            ],
+            "sampled_num_tokens": [
+                _nonnegative_int(getattr(cut, "num_tokens", None), default=-1)
+                for cut in cuts
+            ],
             "source_groups": [
                 str(getattr(cut, "validation_source_group", "")) for cut in cuts
             ],

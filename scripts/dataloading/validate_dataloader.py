@@ -339,6 +339,12 @@ def cli(
             cut_ids, worker_id = _extract_cuts(batch)
             semantic_cut_ids = _extract_semantic_cut_ids(batch, len(cut_ids))
             source_groups, source_ids = _extract_source_labels(batch, len(cut_ids))
+            declared_durations = _extract_numeric_list(
+                batch, "declared_duration_seconds", len(cut_ids), float
+            )
+            sampled_num_tokens = _extract_numeric_list(
+                batch, "sampled_num_tokens", len(cut_ids), int
+            )
             row = {
                 "step": step,
                 "rank": rank,
@@ -355,6 +361,10 @@ def cli(
                 row["source_groups"] = source_groups
             if any(source_ids):
                 row["source_ids"] = source_ids
+            if declared_durations is not None:
+                row["declared_duration_seconds"] = declared_durations
+            if sampled_num_tokens is not None:
+                row["sampled_num_tokens"] = sampled_num_tokens
             fout.write(json.dumps(row) + "\n")
 
             if step % 50 == 0:
@@ -487,6 +497,28 @@ def _extract_source_labels(batch, expected_count: int) -> tuple[list[str], list[
         return normalized
 
     return normalize(batch.get("source_groups")), normalize(batch.get("source_ids"))
+
+
+def _extract_numeric_list(batch, key: str, expected_count: int, cast):
+    """Extract a content-free per-example numeric vector from fast-mode batches."""
+    if not isinstance(batch, dict) or key not in batch:
+        return None
+    values = batch[key]
+    if torch.is_tensor(values):
+        values = values.detach().cpu().flatten().tolist()
+    elif isinstance(values, tuple):
+        values = list(values)
+    if isinstance(values, list) and values and isinstance(values[0], (list, tuple)):
+        values = [value for nested in values for value in nested]
+    if not isinstance(values, list):
+        values = [values]
+    normalized = [cast(value) for value in values]
+    if len(normalized) != expected_count:
+        raise click.ClickException(
+            f"validator {key} cardinality mismatch: "
+            f"expected={expected_count} actual={len(normalized)}"
+        )
+    return normalized
 
 
 def _load_state(dataloader, *, state_dir: Optional[str], rank: int) -> None:

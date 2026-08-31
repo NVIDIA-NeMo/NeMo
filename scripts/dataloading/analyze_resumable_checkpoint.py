@@ -94,6 +94,7 @@ INDEX_DIR_CACHE: dict[str, dict[str, int] | None] = {}
 class DatasetSpec:
     source_index: int
     name: str
+    tags: dict[str, Any] = field(default_factory=dict)
     desired_weight: float | None = None
     raw_weight: float | None = None
     hours: float | None = None
@@ -248,10 +249,13 @@ def collect_dataset_specs(
             or (str(leaf_index_pack_root) if leaf_index_pack_root is not None else None)
             or index_pack_root
         )
+        tags = leaf.get("tags")
+        tags = dict(tags) if isinstance(tags, dict) else {}
         specs.append(
             DatasetSpec(
                 source_index=idx,
                 name=_dataset_name(leaf, source_path, idx),
+                tags=tags,
                 desired_weight=_safe_float(leaf.get("_desired_weight")),
                 raw_weight=_safe_float(leaf.get("_raw_weight")),
                 hours=_safe_float(leaf.get("hours")),
@@ -501,7 +505,7 @@ def write_outputs(summary: dict[str, Any], rows: list[SummaryRow], args: argpars
     if md_path is not None:
         md_path.parent.mkdir(parents=True, exist_ok=True)
         body = [
-            f"# Resumable Dataloader Checkpoint Analysis",
+            "# Resumable Dataloader Checkpoint Analysis",
             "",
             f"- checkpoint: `{summary['checkpoint_input']}`",
             f"- metadata_loaded: `{summary.get('checkpoint_metadata_loaded')}`",
@@ -708,16 +712,16 @@ def _index_pack_collection_keys(item: dict[str, Any]) -> list[str]:
     identities: list[tuple[str, str, Any]] = []
     if item.get("manifest_filepath") is not None:
         identities.append(("manifest", "jsonl", item["manifest_filepath"]))
-    if item.get("paths") is not None and str(item.get("type", "")) == "nemotron_text_converation":
-        # Structured text sources are homogeneous, but may be JSONL or tar.
-        # The runtime adapter probes these same two exact identities.
+    if item.get("paths") is not None:
+        # A path collection may contain JSONL or tar inputs. Exact pack-key
+        # matching below selects the one identity actually present.
         identities.extend(
             [
                 ("paths", "jsonl", item["paths"]),
                 ("paths", "nemo_tar", item["paths"]),
             ]
         )
-    if item.get("data_dir") is not None and str(item.get("type", "")) == "share_gpt_webdataset":
+    if item.get("data_dir") is not None:
         identities.append(("wds_tar", "wds_tar_v2", item["data_dir"]))
     return [index_pack_collection_key(role, kind, source_spec).hex() for role, kind, source_spec in identities]
 

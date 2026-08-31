@@ -162,6 +162,39 @@ def test_recipe_index_pack_root_precedes_default_but_not_explicit_override(tmp_p
     assert explicit_specs[0].index_pack_path == "/explicit/packs/dataset.idxpack"
 
 
+def test_collect_dataset_specs_preserves_generic_leaf_tags(tmp_path):
+    analyzer = _load_analyzer_module()
+    config = {
+        "data": {
+            "train_ds": {
+                "input_cfg": [
+                    {
+                        "type": "group",
+                        "tags": {"group": "alpha", "priority": 2},
+                        "weight": 1.0,
+                        "input_cfg": [
+                            {
+                                "type": "lhotse_as_conversation",
+                                "manifest_filepath": "/data/train.jsonl",
+                                "weight": 1.0,
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+
+    specs = analyzer.collect_dataset_specs(
+        config,
+        config_path=tmp_path / "recipe.yaml",
+        indexes_root=None,
+    )
+
+    assert len(specs) == 1
+    assert specs[0].tags == {"group": "alpha", "priority": 2}
+
+
 def test_group_index_pack_root_overrides_recipe_but_not_explicit_cli_root(tmp_path):
     analyzer = _load_analyzer_module()
     config = {
@@ -208,6 +241,20 @@ def test_group_index_pack_root_overrides_recipe_but_not_explicit_cli_root(tmp_pa
 
     assert inherited_specs[0].index_pack_path == "/inner-group/packs/dataset.idxpack"
     assert explicit_specs[0].index_pack_path == "/explicit/packs/dataset.idxpack"
+
+
+def test_index_pack_collection_keys_use_structural_source_fields():
+    analyzer = _load_analyzer_module()
+    path_keys = analyzer._index_pack_collection_keys(
+        {"type": "custom", "paths": ["/data/a.jsonl", "/data/b.jsonl"]}
+    )
+    directory_keys = analyzer._index_pack_collection_keys(
+        {"type": "custom", "data_dir": "/data/shards"}
+    )
+
+    assert len(path_keys) == 2
+    assert len(set(path_keys)) == 2
+    assert len(directory_keys) == 1
 
 
 def test_sequential_packed_state_uses_partitioned_prior_shard_lengths():

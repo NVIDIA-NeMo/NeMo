@@ -172,6 +172,12 @@ class TranscriptionConfig:
     )
     matmul_precision: str = "high"  # Literal["highest", "high", "medium"]
 
+    # Capture the steady-state encoder streaming step into a CUDA graph and replay it with a
+    # single kernel launch per chunk (removes the per-step host launch overhead). For the covered
+    # non-autocast configs the graph path preserves eager semantics; requires CUDA and non-uniform
+    # steps fall back to eager.
+    use_cuda_graphs: bool = False
+
     # Decoding strategy for CTC models
     ctc_decoding: CTCDecodingConfig = field(default_factory=CTCDecodingConfig)
     # Decoding strategy for RNNT models
@@ -185,6 +191,16 @@ class TranscriptionConfig:
     # langid: str = "en"  # specify this for convert_num_to_words step in groundtruth cleaning
     # use_cer: bool = False
     debug_mode: bool = False  # Whether to print more detail in the output.
+
+    # Language-ID prompt for prompt-conditioned models (e.g. EncDecRNNTBPEModelWithPrompt).
+    # Set to a language key from the model's prompt_dictionary (e.g. "en-US", "auto").
+    # Ignored for models without prompt support.
+    target_lang: Optional[str] = None
+    # whether to strip the language tags from the transcriptions
+    # Ignored for model without prompt support
+    strip_lang_tags: bool = False
+    # Optional regex describing the language tag to strip. Defaults to "<xx-XX>". (r'\s*<[a-z]{2}-[A-Z]{2}>')
+    lang_tag_pattern: Optional[str] = None
 
 
 def extract_transcriptions(hyps):
@@ -363,6 +379,12 @@ def main(cfg: TranscriptionConfig):
         else:
             asr_model.change_decoding_strategy(cfg.ctc_decoding)
 
+    # Set language-ID prompt for prompt-conditioned models
+    if hasattr(asr_model, 'set_inference_prompt'):
+        lang = cfg.target_lang if cfg.target_lang is not None else "auto"
+        asr_model.set_inference_prompt(lang)
+        asr_model.decoding.set_strip_lang_tags(cfg.strip_lang_tags, lang_tag_pattern=cfg.lang_tag_pattern)
+
     asr_model = asr_model.to(device=device, dtype=compute_dtype)
     asr_model.eval()
 
@@ -375,6 +397,14 @@ def main(cfg: TranscriptionConfig):
         asr_model.encoder.setup_streaming_params(
             chunk_size=cfg.chunk_size, left_chunks=cfg.left_chunks, shift_size=shift_size
         )
+
+    # Enable CUDA-graph replay for the encoder streaming step (single launch per steady-state chunk)
+    if cfg.use_cuda_graphs:
+        if device.type != "cuda":
+            raise ValueError("use_cuda_graphs=true requires a CUDA device")
+        if not hasattr(asr_model.encoder, "set_streaming_cuda_graphs"):
+            raise ValueError("Model encoder does not support CUDA graphs for the streaming step.")
+        asr_model.encoder.set_streaming_cuda_graphs(enabled=True)
 
     # In streaming, offline normalization is not feasible as we don't have access to the whole audio at the beginning
     # When online_normalization is enabled, the normalization of the input features (mel-spectrograms) are done per step

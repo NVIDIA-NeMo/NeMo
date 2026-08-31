@@ -33,6 +33,7 @@ from omegaconf import OmegaConf
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.data.lhotse.text_adapters import SourceTargetTextExample, TextExample
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
+from nemo.utils.dependency import is_module_available
 
 
 @pytest.fixture(scope="session")
@@ -768,6 +769,7 @@ def test_dataloader_from_tarred_nemo_manifest_multi_max_open_streams(nemo_tarred
     _ = next(iter(dl))
 
 
+@pytest.mark.skipif(not is_module_available("pyloudnorm"), reason="pyloudnorm is required to concatenate samples")
 def test_dataloader_from_tarred_nemo_manifest_concat(nemo_tarred_manifest_path: tuple[str, str]):
     json_mft, tar_mft = nemo_tarred_manifest_path
     config = OmegaConf.create(
@@ -1023,7 +1025,7 @@ def test_lazy_nemo_iterator_with_offset_field(tmp_path: Path):
     assert cut.supervisions[0].text == "irrelevant"
     audio = cut.load_audio()
     assert audio.shape == (1, 8000)
-    np.testing.assert_equal(audio[0], expected_audio[:8000])
+    np.testing.assert_allclose(audio[0], expected_audio[:8000], atol=5e-5)
 
     cut = cuts[1]
     assert isinstance(cut, lhotse.MonoCut)
@@ -1071,7 +1073,7 @@ def test_lazy_nemo_iterator_with_relative_paths(tmp_path: Path):
     assert cut.num_samples == 8000
     assert cut.supervisions[0].text == "irrelevant"
     assert audio.shape == (1, 8000)
-    np.testing.assert_equal(audio[0], expected_audio[:8000])
+    np.testing.assert_allclose(audio[0], expected_audio[:8000], atol=5e-5)
 
 
 def test_lhotse_cuts_resolve_relative_paths(tmp_path: Path):

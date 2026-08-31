@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import inspect
 import os
 
 import pytest
@@ -33,8 +34,25 @@ from tests.collections.speechlm2._chunking_helpers import (
 
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="SALMAutomodel requires CUDA")
 
-if torch.cuda.is_available():
+
+@pytest.fixture(autouse=True, scope="module")
+def _default_device_cuda():
+    """Run this module's tests on CUDA by default, but scope the change so it does
+    not leak. ``torch.set_default_device`` is a global, process-wide mutation; setting
+    it at import time bleeds into other modules collected in the same pytest session
+    (e.g. the CPU tests in tests/collections/asr/test_parallel_expert_encoder.py),
+    causing spurious cuda/cpu device-mismatch failures. The previous default device
+    is always restored on teardown.
+    """
+    if not torch.cuda.is_available():
+        yield
+        return
+    prev = torch.get_default_device()
     torch.set_default_device('cuda')
+    try:
+        yield
+    finally:
+        torch.set_default_device(prev)
 
 
 def resolve_pretrained_models():
@@ -63,6 +81,8 @@ def model():
     cfg = {
         **resolve_pretrained_models(),
         "pretrained_weights": False,
+        # Exercise backend preservation for native fixtures and removal for HF fixtures.
+        "automodel_backend": {"dispatcher": "torch"},
         "prompt_format": PROMPT,
         "audio_locator_tag": AUDIO_LOCATOR_TAG,
         "perception": {
@@ -175,10 +195,30 @@ def test_salm_automodel_training_step(model, dataset, prompt_formatter, training
     training_cutset_batch = training_cutset_batch.map(lambda c: c.apply_prompt_format(prompt_formatter), apply_fn=None)
     batch = dataset[training_cutset_batch]
     batch = move_data_to_device(batch, device=model.device)
-    results = model.training_step(batch, batch_idx=0)
+    results = model._training_step_batch(batch, batch_idx=0)
     assert torch.is_tensor(results["loss"])
     assert not torch.isnan(results["loss"])
     assert results["loss"] > 0
+
+
+def test_salm_automodel_training_step_uses_dataloader_iter_signature():
+    assert list(inspect.signature(SALMAutomodel.training_step).parameters) == ["self", "dataloader_iter"]
+
+
+def test_salm_automodel_record_training_stats_uses_thd_metadata():
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    batch = {"input_ids": torch.zeros(3, 7, dtype=torch.long)}
+    inputs = {
+        "input_embeds": torch.zeros(5, 4),
+        "attention_mask": None,
+        "num_tokens": torch.tensor(11),
+        "num_examples": torch.tensor(3),
+    }
+
+    model._record_training_stats(batch, inputs)
+
+    assert model._last_batch_num_tokens == 11
+    assert model._last_batch_num_examples == 3
 
 
 @requires_cuda
@@ -189,6 +229,33 @@ def test_salm_automodel_validation_step(model, dataset, prompt_formatter, traini
     batch = move_data_to_device(batch, device=model.device)
     results = model.validation_step({"dummy_val_set": batch}, batch_idx=0)
     assert results is None
+
+
+def test_salm_automodel_validation_epoch_end_uses_token_weighted_metrics():
+    model = SALMAutomodel.__new__(SALMAutomodel)
+    torch.nn.Module.__init__(model)
+    model.on_validation_epoch_start()
+    model._get_moe_dp_group = lambda: None
+
+    model._partial_val_loss_sums["dummy"].extend([torch.tensor(2.0), torch.tensor(18.0)])
+    model._partial_val_corrects["dummy"].extend([torch.tensor(1.0), torch.tensor(3.0)])
+    model._partial_val_num_frames["dummy"].extend([torch.tensor(1.0), torch.tensor(9.0)])
+
+    logged = {}
+
+    def fake_log(name, value, **kwargs):
+        logged[name] = value.detach().cpu()
+
+    model.log = fake_log
+    model.on_validation_epoch_end()
+
+    assert logged["val_loss_dummy"].item() == pytest.approx(2.0)
+    assert logged["val_acc_dummy"].item() == pytest.approx(0.4)
+    assert logged["val_loss"].item() == pytest.approx(2.0)
+    assert logged["val_acc"].item() == pytest.approx(0.4)
+    assert not model._partial_val_loss_sums
+    assert not model._partial_val_corrects
+    assert not model._partial_val_num_frames
 
 
 @requires_cuda
@@ -294,11 +361,13 @@ def test_salm_automodel_generation_prompts_as_tensor(model):
 @pytest.mark.parametrize("device", chunking_test_devices())
 def test_salm_automodel_prepare_inputs_chunks_long_audio(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
+    spk_targets = torch.arange(10, dtype=torch.float32, device=device).reshape(1, 5, 2)
     batch = {
         "audios": torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]], device=device),
         "audio_lens": torch.tensor([5], dtype=torch.long, device=device),
         "input_ids": torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long, device=device),
         "loss_mask": torch.tensor([[False, True]], dtype=torch.bool, device=device),
+        "spk_targets": spk_targets,
     }
 
     inputs = model.prepare_inputs(batch)
@@ -306,6 +375,10 @@ def test_salm_automodel_prepare_inputs_chunks_long_audio(device):
     chunked_signal, chunked_lens = model.perception.calls[0]
     assert chunked_signal.shape == (2, 3)
     assert torch.equal(chunked_lens, torch.tensor([2, 3], dtype=torch.long, device=device))
+    assert torch.equal(
+        model.perception.spk_targets_calls[0],
+        torch.stack([torch.cat([spk_targets[0, :2], spk_targets[0, 1:2]]), spk_targets[0, 2:5]]),
+    )
     assert torch.equal(inputs["input_embeds"][0, :, 0], torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device=device))
     assert torch.equal(inputs["attention_mask"], torch.ones((1, 5), dtype=torch.bool, device=device))
 
@@ -325,6 +398,7 @@ def test_salm_automodel_prepare_inputs_merges_short_tail_chunk(device):
     chunked_signal, chunked_lens = model.perception.calls[0]
     assert chunked_signal.shape == (2, 5)
     assert torch.equal(chunked_lens, torch.tensor([4, 5], dtype=torch.long, device=device))
+    assert model.perception.spk_targets_calls[0] is None
     assert torch.equal(
         inputs["input_embeds"][0, :, 0],
         torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], device=device),
@@ -377,17 +451,23 @@ def test_salm_automodel_prepare_inputs_preserves_chunked_audio_order(device):
 @pytest.mark.parametrize("device", chunking_test_devices())
 def test_salm_automodel_generate_chunks_audio_before_llm(device):
     model = _make_chunking_test_model(encoder_chunk_size_seconds=1.0, sampling_rate=2, device=device)
+    spk_targets = torch.arange(10, dtype=torch.float32, device=device).reshape(1, 5, 2)
 
     answer = model.generate(
         prompts=torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long, device=device),
         audios=torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]], device=device),
         audio_lens=torch.tensor([5], dtype=torch.long, device=device),
+        spk_targets=spk_targets,
         max_new_tokens=3,
     )
 
     chunked_signal, chunked_lens = model.perception.calls[0]
     assert chunked_signal.shape == (2, 3)
     assert torch.equal(chunked_lens, torch.tensor([2, 3], dtype=torch.long, device=device))
+    assert torch.equal(
+        model.perception.spk_targets_calls[0],
+        torch.stack([torch.cat([spk_targets[0, :2], spk_targets[0, 1:2]]), spk_targets[0, 2:5]]),
+    )
     assert torch.equal(
         model.llm.generate_kwargs["inputs_embeds"][0, :5, 0],
         torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device=device),

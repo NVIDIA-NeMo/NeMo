@@ -5,7 +5,9 @@ SpeechLM2
    The SpeechLM2 collection is still in active development and the code is likely to keep changing.
 
 .. note::
-   Install with ``pip install nemo-toolkit[speechlm2]`` to get all required dependencies including NeMo Automodel.
+   Install your chosen compatible PyTorch stack first, then install SpeechLM2 with
+   ``uv pip install 'nemo-toolkit[speechlm2]'`` (or, from a source checkout, ``uv pip install -e '.[speechlm2]'``)
+   to get all required dependencies including NeMo Automodel. See :ref:`installation` for details.
 
 SpeechLM2 refers to a collection that augments pre-trained Large Language Models (LLMs) with speech understanding and generation capabilities.
 
@@ -102,18 +104,14 @@ using MoE-specific optimizations (Grouped GEMM, DeepEP). It uses deferred initia
     import nemo.collections.speechlm2 as slm
     from nemo.collections.speechlm2.parts.parallel import setup_distributed
 
-    # Initialize distributed and create an Automodel-compatible device mesh with EP=2.
-    # setup_distributed delegates mesh creation to nemo_automodel, which builds
-    # the full (pp, dp_replicate, dp_shard, cp, tp) mesh with MoE submeshes.
+    # Initialize distributed and resolve the Automodel topology with EP=2.
+    # The strategy packages the mesh and execution policies in distributed_setup.
     strategy = setup_distributed(ep_size=2)
 
-    # Load a pretrained SALMAutomodel with the Automodel device mesh
+    # Load a pretrained SALMAutomodel with the resolved distributed setup.
     model = slm.models.SALMAutomodel.from_pretrained(
         "path/to/checkpoint",
-        device_mesh=strategy.device_mesh,
-        distributed_config=strategy.distributed_config,
-        moe_config=strategy.moe_config,
-        moe_mesh=strategy.moe_mesh,
+        distributed_setup=strategy.distributed_setup,
     ).eval()
 
     # Inference is identical to SALM

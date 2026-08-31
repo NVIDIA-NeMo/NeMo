@@ -1,7 +1,7 @@
 NVIDIA NeMo Speech Developer Docs
 =================================
 
-`NVIDIA NeMo Speech <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for speech, audio, and multimodal language model research, with a clear path from experimentation to production deployment.
+`NVIDIA NeMo Speech <https://github.com/NVIDIA-NeMo/Speech>`_ is an open-source toolkit for speech, audio, and multimodal language model research, with a clear path from experimentation to production deployment.
 
 .. raw:: html
 
@@ -47,27 +47,33 @@ NVIDIA NeMo Speech Developer Docs
    </div>
 
 
-What is NeMo?
---------------
+What is NeMo Speech?
+--------------------
 
-`NVIDIA NeMo <https://github.com/NVIDIA/NeMo>`_ is an open-source toolkit for building, customizing, and deploying speech, audio, and multimodal language models. It provides:
+`NVIDIA NeMo Speech <https://github.com/NVIDIA-NeMo/Speech>`_ is an open-source toolkit for building, customizing, and deploying speech, audio, and multimodal language models. It provides:
 
 - **Pretrained models** — production-ready checkpoints on `NGC <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`__ and `HuggingFace Hub <https://huggingface.co/nvidia>`__
 - **Modular architecture** — neural modules you can mix, match, and extend
 - **Scalable training** — multi-GPU/multi-node via PyTorch Lightning with mixed-precision support
 - **Simple configuration** — YAML-based experiment configs with `Hydra <https://hydra.cc/>`__
 
-Get started in 30 seconds:
+Get started (install the PyTorch build for your platform first):
 
 .. code-block:: bash
 
-   pip install nemo_toolkit[asr,tts]
+   uv pip install 'nemo-toolkit[asr,tts]'
 
 .. code-block:: python
 
    import nemo.collections.asr as nemo_asr
    model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v2")
    print(model.transcribe(["audio.wav"])[0].text)
+
+
+Trying to finetune a model?
+---------------------------
+
+Check out our latest ``/nemo-speech-finetune-asr`` `agent skill <https://github.com/NVIDIA-NeMo/Speech/tree/main/.claude/skills/nemo-speech-asr-finetune>`_.
 
 
 .. toctree::
@@ -89,21 +95,8 @@ Get started in 30 seconds:
 
    features/parallelisms
    features/mixed_precision
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Model Checkpoints
-   :name: Checkpoints
-
    checkpoints/intro
-
-.. toctree::
-   :maxdepth: 1
-   :caption: APIs
-   :name: APIs
-   :titlesonly:
-
-   apis
+   dataloaders
 
 .. toctree::
    :maxdepth: 1
@@ -111,7 +104,14 @@ Get started in 30 seconds:
    :name: Collections
    :titlesonly:
 
-   collections
+   asr/intro
+   tts/intro
+   speechlm2/intro
+   asr/speaker_diarization/intro
+   asr/speaker_recognition/intro
+   audio/intro
+   asr/ssl/intro
+   asr/speech_classification/intro
 
 .. toctree::
    :maxdepth: 1
@@ -119,4 +119,26 @@ Get started in 30 seconds:
    :name: Speech AI Tools
    :titlesonly:
 
-   tools/intro
+   tools/nemo_forced_aligner
+   tools/ctc_segmentation
+   tools/speech_data_explorer
+   tools/comparison_tool
+   tools/asr_evaluator
+   tools/speech_data_processor
+
+.. toctree::
+   :maxdepth: 1
+   :caption: APIs
+   :name: APIs
+   :titlesonly:
+
+   core/core
+   core/neural_modules
+   core/exp_manager
+   core/neural_types
+   core/adapters/intro
+   core/api
+   common/intro
+   asr/api
+   tts/api
+   audio/api

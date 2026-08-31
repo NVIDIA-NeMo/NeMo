@@ -216,7 +216,7 @@ net aux-loss gradient scale stays at 1.
         attn: te                  # "te" | "sdpa" | "flex"
         linear: te                # "torch" | "te"
         rms_norm: torch_fp32      # "torch" | "torch_fp32" | "te"
-        rope_fusion: true
+        rope_fusion: false          # Current Automodel main force-disables fused RoPE
         experts: torch_mm         # "torch" | "te" | "gmm" | "torch_mm"
         dispatcher: deepep        # "torch" | "deepep" | "hybridep" | "uccl_ep"
         dispatcher_num_sms: 20
@@ -225,9 +225,36 @@ net aux-loss gradient scale stays at 1.
       # E.g. ["flash_attention"] forces FA2 and errors if unavailable.
       sdpa_method: null
 
-Defaults come from Automodel's ``BackendConfig`` and auto-select TransformerEngine /
-DeepEP when available; override here to pin a specific backend (for example,
-``attn: sdpa`` to bypass TE).
+Defaults come from Automodel's ``BackendConfig`` and select available kernels and
+dispatchers; override here to pin a specific backend (for example, ``attn: sdpa``
+to bypass TE). ``enable_deepep`` is no longer supported; set ``dispatcher`` and
+``experts`` explicitly.
+
+**Packed sequences (THD):**
+
+.. code-block:: yaml
+
+    model:
+      packed_sequences: true   # default false (right-padded BSHD path)
+      automodel_backend:
+        attn: te               # THD path dispatches TE varlen FlashAttention
+
+When ``packed_sequences`` is true, ``SALMAutomodel.prepare_inputs`` packs
+each minibatch into a single flat ``[T_total, H]`` sequence with a
+``cu_seqlens`` index instead of right-padding to ``[B, T_max, H]``.
+``SALMAutomodel`` then forwards the THD metadata (``qkv_format``,
+``cu_seqlens``, ``position_ids``, ``max_seqlen``) through ``forward()`` to
+the LLM. The TE attention preprocessor splits the singular ``max_seqlen``
+into the ``max_seqlen_q`` / ``max_seqlen_kv`` pair that
+``DotProductAttention`` requires for ``qkv_format="thd"``. The packing also
+rounds each utterance's flat length up to a multiple of ``2 * cp_size`` so
+the same THD batch satisfies TE's CP DualChunkSwap contract — see the
+"Context Parallelism (CP)" subsection in
+:doc:`training_and_scaling` for the recommended pairing with ``cp_size > 1``.
+
+Padding overhead drops from ``O(B * (T_max - T_avg))`` to
+``O(per-utt rounding to 2*cp_size)``. Throughput improvement scales with
+the variance of utterance lengths in your bucketing.
 
 DuplexS2SModel Configuration
 -----------------------------

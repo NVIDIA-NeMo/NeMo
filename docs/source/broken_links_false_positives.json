@@ -11,7 +11,7 @@
   "lineno": 113,
   "status": "broken",
   "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/asr/modules/hybrid_autoregressive_transducer.py#L39",
+  "uri": "https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/asr/modules/hybrid_autoregressive_transducer.py#L39",
   "info": "Anchor 'L39' not found"
 }
 {
@@ -27,7 +27,7 @@
   "lineno": 52,
   "status": "broken",
   "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/recipes/tp_overlap_configs/userbuffers.py#L64",
+  "uri": "https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/collections/llm/recipes/tp_overlap_configs/userbuffers.py#L64",
   "info": "Anchor 'L64' not found"
 }
 {
@@ -35,7 +35,7 @@
   "lineno": 52,
   "status": "broken",
   "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/nemo/lightning/pytorch/callbacks/megatron_comm_overlap.py#L61",
+  "uri": "https://github.com/NVIDIA-NeMo/Speech/blob/main/nemo/lightning/pytorch/callbacks/megatron_comm_overlap.py#L61",
   "info": "Anchor 'L61' not found"
 }
 {
@@ -59,8 +59,8 @@
   "lineno": 16,
   "status": "broken",
   "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/GLUE_Benchmark.ipynb",
-  "info": "404 Client Error: Not Found for url: https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/GLUE_Benchmark.ipynb"
+  "uri": "https://github.com/NVIDIA-NeMo/Speech/blob/stable/tutorials/nlp/GLUE_Benchmark.ipynb",
+  "info": "404 Client Error: Not Found for url: https://github.com/NVIDIA-NeMo/Speech/blob/stable/tutorials/nlp/GLUE_Benchmark.ipynb"
 }
 {
   "filename": "tools/nemo_forced_aligner.rst",
@@ -75,3 +75,19 @@
 { "filename": "tts/configs.rst", "lineno": 19, "status": "broken", "code": 0, "uri": "./api.html#datasets", "info": "" }
 { "filename": "tts/datasets.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://zenodo.org/record/7265581/files/ThorstenVoice-Dataset_2022.10.zip?download=1", "info": "403 Client Error: Forbidden for url: https://zenodo.org/record/7265581/files/ThorstenVoice-Dataset_2022.10.zip?download=1" }
 { "filename": "tts/datasets.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://zenodo.org/record/5525342/files/thorsten-neutral_v03.tgz?download=1", "info": "403 Client Error: Forbidden for url: https://zenodo.org/record/5525342/files/thorsten-neutral_v03.tgz?download=1" }
+{ "filename": "asr/api.rst", "lineno": 6, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader", "info": "Anchor 'torch.utils.data.DataLoader' not found" }
+{ "filename": "asr/api.rst", "lineno": 4, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.Dataset", "info": "Anchor 'torch.utils.data.Dataset' not found" }
+{ "filename": "common/data.rst", "lineno": 4, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.IterableDataset", "info": "Anchor 'torch.utils.data.IterableDataset' not found" }
+{ "filename": "asr/api.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module", "info": "Anchor 'torch.nn.Module' not found" }
+{ "filename": "tts/api.rst", "lineno": 8, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/future_mod.html#torch.__future__.get_swap_module_params_on_conversion", "info": "Anchor 'torch.__future__.get_swap_module_params_on_conversion' not found" }
+{ "filename": "asr/api.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.forward", "info": "Anchor 'torch.nn.Module.forward' not found" }
+{ "filename": "tts/api.rst", "lineno": 3, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.state_dict", "info": "Anchor 'torch.nn.Module.state_dict' not found" }
+{ "filename": "common/losses.rst", "lineno": 5, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.loss.CrossEntropyLoss.html#torch.nn.modules.loss.CrossEntropyLoss", "info": "Anchor 'torch.nn.modules.loss.CrossEntropyLoss' not found" }
+{ "filename": "core/core.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/optim.html#torch.optim.Optimizer", "info": "Anchor 'torch.optim.Optimizer' not found" }
+{ "filename": "audio/api.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/size.html#torch.Size", "info": "Anchor 'torch.Size' not found" }
+{ "filename": "common/losses.rst", "lineno": 5, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.loss.MSELoss.html#torch.nn.modules.loss.MSELoss", "info": "Anchor 'torch.nn.modules.loss.MSELoss' not found" }
+{ "filename": "asr/api.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/tensor_attributes.html#torch.device", "info": "Anchor 'torch.device' not found" }
+{ "filename": "asr/api.rst", "lineno": 11, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/tensors.html#torch.Tensor", "info": "Anchor 'torch.Tensor' not found" }
+{ "filename": "audio/api.rst", "lineno": 1, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/tensor_attributes.html#torch.dtype", "info": "Anchor 'torch.dtype' not found" }
+{ "filename": "starthere/install.rst", "lineno": 27, "status": "broken", "code": 0, "uri": "https://docs.pytorch.org/docs/stable/notes/serialization.html#torch-load-with-weights-only-true", "info": "Anchor 'torch-load-with-weights-only-true' not found" }
+{ "filename": "audio/api.rst", "lineno": 9, "status": "broken", "code": 0, "uri": "https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=8462081", "info": "418 Client Error: Unknown Code for url: https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=8462081" }

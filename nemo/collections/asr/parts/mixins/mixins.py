@@ -16,6 +16,7 @@ import json
 import os
 import tarfile
 from abc import ABC, abstractmethod
+from pathlib import PurePosixPath
 from typing import List
 
 import torch
@@ -32,6 +33,7 @@ from nemo.collections.asr.parts.utils.tokenizer_utils import (
     extract_punctuation_from_vocab,
 )
 from nemo.collections.common import tokenizers
+from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import app_state, logging
 from nemo.utils.file_utils import robust_copy
 
@@ -58,6 +60,14 @@ class ASRBPEMixin(ABC):
 
     # this will be used in configs and nemo artifacts
     AGGREGATE_TOKENIZERS_DICT_PREFIX = 'langs'
+
+    @staticmethod
+    def _get_extracted_tokenizer_name(member_name: str) -> str:
+        member_file_name = PurePosixPath(member_name).name
+        new_name = member_file_name.split("_")[1:]
+        if len(new_name) > 1:
+            return "_".join(new_name)
+        return new_name[0]
 
     def _setup_tokenizer(self, tokenizer_cfg: DictConfig):
         tokenizer_type = tokenizer_cfg.get('type')
@@ -466,21 +476,15 @@ class ASRBPEMixin(ABC):
             except tarfile.ReadError:
                 # can be older checkpoint => try compressed tar
                 tar_header = "r:gz"
-            tar = tarfile.open(restore_path, tar_header)
+            with tarfile.open(restore_path, tar_header) as tar:
+                for nemo_object_name in nemo_file_objects:
+                    members = [x for x in tar.getmembers() if nemo_object_name in x.name]
+                    extracted_members = SaveRestoreConnector._safe_extract(tar, dir, members=members)
+                    for member in extracted_members:
+                        new_name = self._get_extracted_tokenizer_name(member.name)
+                        os.rename(os.path.join(dir, member.name), os.path.join(dir, new_name))
 
-            for nemo_object_name in nemo_file_objects:
-                members = [x for x in tar.getmembers() if nemo_object_name in x.name]
-                for member in members:
-                    tar.extract(member, dir)
-
-                    new_name = member.name.split("_")[1:]
-                    if len(new_name) > 1:
-                        new_name = "_".join(new_name)
-                    else:
-                        new_name = new_name[0]
-                    os.rename(os.path.join(dir, member.name), os.path.join(dir, new_name))
-
-                    logging.info(f"Saved {nemo_object_name} at {os.path.join(dir, new_name)}")
+                        logging.info(f"Saved {nemo_object_name} at {os.path.join(dir, new_name)}")
 
     def _derive_tokenizer_properties(self):
         vocab = self.tokenizer.tokenizer.get_vocab()
@@ -517,7 +521,12 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         )
 
     def change_attention_model(
-        self, self_attention_model: str = None, att_context_size: List[int] = None, update_config: bool = True
+        self,
+        self_attention_model: str = None,
+        att_context_size: List[int] = None,
+        update_config: bool = True,
+        rope_base: float = None,
+        rotary_fraction: float = None,
     ):
         """
         Update the self_attention_model if function is available in encoder.
@@ -535,13 +544,20 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 'abs_pos':
                     absolute positional embedding and Transformer
 
+                'rope':
+                    rotary position embedding
+
                 If None is provided, the self_attention_model isn't changed. Defauts to None.
             att_context_size (List[int]): List of 2 ints corresponding to left and right attention context sizes,
                 or None to keep as it is. Defauts to None.
             update_config (bool): Whether to update the config or not with the new attention model.
                 Defaults to True.
+            rope_base (float): Theta base for rotary position embedding. Only used when
+                ``self_attention_model='rope'``. If None, the existing value is kept.
+            rotary_fraction (float): Fraction of the per-head dim to rotate. Only used when
+                ``self_attention_model='rope'``. If None, the existing value is kept.
         """
-        if self_attention_model is None and att_context_size is None:
+        if self_attention_model is None and att_context_size is None and rope_base is None and rotary_fraction is None:
             return
 
         if not hasattr(self, 'encoder'):
@@ -555,11 +571,21 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             logging.info("Model encoder doesn't have a change_attention_model method ")
             return
 
-        self.encoder.change_attention_model(self_attention_model, att_context_size, update_config, self.device)
+        self.encoder.change_attention_model(
+            self_attention_model=self_attention_model,
+            att_context_size=att_context_size,
+            update_config=update_config,
+            device=self.device,
+            rope_base=rope_base,
+            rotary_fraction=rotary_fraction,
+        )
         if update_config:
             with open_dict(self.cfg):
-                self.cfg.encoder.self_attention_model = self_attention_model
-                self.cfg.encoder.att_context_size = att_context_size
+                self.cfg.encoder.self_attention_model = self.encoder.self_attention_model
+                self.cfg.encoder.att_context_size = self.encoder.att_context_size
+                if self.encoder.self_attention_model == 'rope':
+                    self.cfg.encoder.rope_base = self.encoder._cfg.rope_base
+                    self.cfg.encoder.rotary_fraction = self.encoder._cfg.rotary_fraction
 
     def change_subsampling_conv_chunking_factor(
         self, subsampling_conv_chunking_factor: int, update_config: bool = True
@@ -588,6 +614,12 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         if update_config:
             with open_dict(self.cfg):
                 self.cfg.encoder.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
+
+    def _apply_prompt_to_encoded(self, encoded: Tensor) -> Tensor:
+        """Hook for prompt-conditioned subclasses to inject a language prompt
+        into the encoder output. Default: no-op. See ``PromptStreamingMixin``
+        for the prompt-aware override."""
+        return encoded
 
     def conformer_stream_step(
         self,
@@ -660,6 +692,8 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             drop_extra_pre_encoded=drop_extra_pre_encoded,
             bypass_pre_encode=bypass_pre_encode,
         )
+
+        encoded = self._apply_prompt_to_encoded(encoded)
 
         if isinstance(self, asr_models.EncDecCTCModel) or (
             isinstance(self, asr_models.EncDecHybridRNNTCTCModel) and self.cur_decoder == "ctc"
@@ -897,3 +931,93 @@ class DiarizationMixin(VerificationMixin):
             Speaker labels
         """
         pass
+
+
+class PromptStreamingMixin:
+    """Adds language-ID prompt conditioning to a cache-aware streaming ASR model.
+
+    Overrides ``ASRModuleMixin._apply_prompt_to_encoded`` so that
+    ``conformer_stream_step`` injects a one-hot language prompt into the
+    encoder output. Subclasses must call ``super().initialize_prompt_feature()``
+    to populate ``self.concat``, ``self.num_prompts``, and ``self.prompt_kernel``;
+    they may then attach their own decoding / WER objects.
+    """
+
+    # Plain class-level defaults document the mixin contract. ``prompt_kernel``
+    # is intentionally NOT declared here — it's an ``nn.Module`` and a class-level
+    # default would shadow ``nn.Module.__getattr__``'s lookup into ``_modules``
+    # after the real Sequential is registered in ``initialize_prompt_feature``.
+    concat: bool = False
+    num_prompts: int = None
+
+    def initialize_prompt_feature(self):
+        """Populate the attributes ``_apply_prompt_to_encoded`` depends on.
+
+        Subclasses should call ``super().initialize_prompt_feature()`` first,
+        then attach their decoding / WER / joint objects. The mixin sets
+        ``self.concat``, ``self.num_prompts``, and ``self.prompt_kernel``.
+        """
+        self.concat = True
+        self.num_prompts = self.cfg.get('num_prompts', 128)
+
+        proj_in_size = self.num_prompts + self._cfg.model_defaults.enc_hidden
+        proj_out_size = self._cfg.model_defaults.enc_hidden
+        self.prompt_kernel = torch.nn.Sequential(
+            torch.nn.Linear(proj_in_size, proj_out_size * 2),
+            torch.nn.ReLU(),
+            torch.nn.Linear(proj_out_size * 2, proj_out_size),
+        )
+
+    def set_inference_prompt(self, target_lang: str):
+        """
+        Set the language prompt for streaming inference.
+
+        Call this before ``conformer_stream_step`` to condition decoding on
+        a specific language, following the same pattern as
+        ``change_decoding_strategy``.
+
+        Args:
+            target_lang: A key from the model's ``prompt_dictionary``
+                         (e.g. ``"en-US"``, ``"auto"``).
+        """
+        prompt_dict = self.cfg.model_defaults.get('prompt_dictionary', {})
+        if target_lang not in prompt_dict:
+            available = list(prompt_dict.keys())
+            raise ValueError(
+                f"Unknown target language '{target_lang}'. "
+                f"Available: {available[:20]}{'...' if len(available) > 20 else ''}"
+            )
+        self._inference_prompt_index = prompt_dict[target_lang]
+        logging.info(f"Inference prompt set to '{target_lang}' (index {self._inference_prompt_index})")
+
+    def _apply_prompt_to_encoded(self, encoded: Tensor) -> Tensor:
+        """
+        Inject the language-ID prompt into encoder output during streaming.
+
+        ``encoded`` arrives as (B, D, T) from the encoder cache-aware step.
+        Returns the same shape after prompt concatenation + projection.
+        """
+        if not self.concat or not hasattr(self, '_inference_prompt_index'):
+            return encoded
+
+        encoded = encoded.transpose(1, 2)  # (B, D, T) -> (B, T, D)
+
+        batch_size, time_steps, _ = encoded.shape
+        prompt = torch.zeros(
+            batch_size,
+            time_steps,
+            self.num_prompts,
+            dtype=encoded.dtype,
+            device=encoded.device,
+        )
+        idx = torch.full(
+            (batch_size,),
+            self._inference_prompt_index,
+            dtype=torch.long,
+            device=encoded.device,
+        )
+        prompt.scatter_(2, idx.view(batch_size, 1, 1).expand(-1, time_steps, -1), 1.0)
+
+        out_dtype = encoded.dtype
+        encoded = self.prompt_kernel(torch.cat([encoded, prompt], dim=-1)).to(out_dtype)
+        return encoded.transpose(1, 2)  # (B, T, D) -> (B, D, T)

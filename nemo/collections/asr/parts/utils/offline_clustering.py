@@ -150,7 +150,13 @@ def kmeans_plusplus_torch(
 
     centers = torch.zeros(n_clusters, n_features, dtype=X.dtype)
     center_id = torch.randint(0, n_samples, (1,)).long()
-    indices = torch.full([n_clusters,], -1, dtype=torch.int)
+    indices = torch.full(
+        [
+            n_clusters,
+        ],
+        -1,
+        dtype=torch.int,
+    )
 
     centers[0] = X[center_id].squeeze(0)
     indices[0] = center_id.squeeze(0)
@@ -511,7 +517,7 @@ def getMultiScaleCosAffinityMatrix(
 
     Returns:
         fused_sim_d (Tensor):
-            An affinity matrix that is obtained by calculating the weighted sum of 
+            An affinity matrix that is obtained by calculating the weighted sum of
             the multiple affinity matrices from the different scales.
     """
     multiscale_weights = torch.squeeze(multiscale_weights, dim=0).to(device)
@@ -621,6 +627,7 @@ def getEnhancedSpeakerCount(
     anchor_sample_n: int = 10,
     sigma: float = 50,
     cuda: bool = False,
+    max_num_speakers: int = 8,
 ) -> torch.Tensor:
     """
     Calculate the number of speakers using NME analysis with anchor embeddings. Add dummy speaker
@@ -632,6 +639,8 @@ def getEnhancedSpeakerCount(
             The input embedding from the embedding extractor.
         cuda (bool):
             Use cuda for the operations if cuda==True.
+        max_num_speakers (int):
+            Maximum number of speakers to estimate, excluding anchor speakers.
         random_test_count (int):
             Number of trials of the enhanced counting with randomness.
             The higher the count, the more accurate the enhanced counting is.
@@ -653,13 +662,14 @@ def getEnhancedSpeakerCount(
             number of speakers to factor out the dummy speaker embedding vectors.
     """
     est_num_of_spk_list: List[int] = []
+    max_num_speakers_aug = min(max_num_speakers, emb.shape[0]) + anchor_spk_n
     for seed in range(random_test_count):
         torch.manual_seed(seed)
         emb_aug = addAnchorEmb(emb, anchor_sample_n, anchor_spk_n, sigma)
         mat = getCosAffinityMatrix(emb_aug)
         nmesc = NMESC(
             mat,
-            max_num_speakers=emb.shape[0],
+            max_num_speakers=max_num_speakers_aug,
             max_rp_threshold=0.15,
             sparse_search=True,
             sparse_search_volume=10,
@@ -986,8 +996,12 @@ class NMESC:
         est_spk_n_dict: Dict[int, torch.Tensor] = {}
         self.p_value_list = self.getPvalueList()
         p_volume = self.p_value_list.shape[0]
-        eig_ratio_list = torch.zeros(p_volume,)
-        est_num_of_spk_list = torch.zeros(p_volume,)
+        eig_ratio_list = torch.zeros(
+            p_volume,
+        )
+        est_num_of_spk_list = torch.zeros(
+            p_volume,
+        )
 
         if self.parallelism:
             futures: List[torch.jit.Future[torch.Tensor]] = []
@@ -1176,10 +1190,10 @@ class SpeakerClustering(torch.nn.Module):
         kmeans_random_trials: int = 1,
     ) -> torch.LongTensor:
         """
-        This function takes a cosine similarity matrix `mat` and returns the speaker labels for the segments 
-        in the given input embeddings. 
-       
-        Args: 
+        This function takes a cosine similarity matrix `mat` and returns the speaker labels for the segments
+        in the given input embeddings.
+
+        Args:
             mat (Tensor):
                 Cosine similarity matrix (affinity matrix) calculated from the provided speaker embeddings.
             oracle_num_speakers (int):
@@ -1202,8 +1216,8 @@ class SpeakerClustering(torch.nn.Module):
                 This value should be optimized on a development set for best results.
                 By default, it is set to -1.0, and the function performs NME-analysis to estimate the threshold.
             kmeans_random_trials (int):
-                The number of random trials for initializing k-means clustering. More trials can result in more stable clustering. The default is 1. 
-                
+                The number of random trials for initializing k-means clustering. More trials can result in more stable clustering. The default is 1.
+
         Returns:
             Y (LongTensor):
                 Speaker labels (clustering output) in integer format for the segments in the given input embeddings.
@@ -1361,7 +1375,9 @@ class SpeakerClustering(torch.nn.Module):
         if emb.shape[0] == 1:
             return torch.zeros((1,), dtype=torch.int64)
         elif emb.shape[0] <= max(enhanced_count_thres, self.min_samples_for_nmesc) and oracle_num_speakers < 0:
-            est_num_of_spk_enhanced = getEnhancedSpeakerCount(emb=emb, cuda=self.cuda)
+            est_num_of_spk_enhanced = getEnhancedSpeakerCount(
+                emb=emb, cuda=self.cuda, max_num_speakers=max_num_speakers
+            )
         else:
             est_num_of_spk_enhanced = torch.tensor(-1)
 

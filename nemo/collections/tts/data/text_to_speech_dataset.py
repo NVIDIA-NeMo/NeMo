@@ -36,6 +36,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     get_weighted_sampler,
     load_audio,
     stack_tensors,
+    tokenize_text_with_phoneme_spans,
 )
 from nemo.core.classes import Dataset
 from nemo.utils import logging
@@ -45,8 +46,9 @@ from nemo.utils import logging
 class DatasetMeta:
     manifest_path: Path
     audio_dir: Path
-    feature_dir: Path = None
+    feature_dir: Optional[Path] = None
     sample_weight: float = 1.0
+    language: Optional[str] = None
     tokenizer_names: List[str] = None
 
 
@@ -57,7 +59,8 @@ class DatasetSample:
     audio_dir: Optional[Path]
     feature_dir: Optional[Path]
     text: str
-    speaker: str
+    language: Optional[str] = None
+    speaker: Optional[str] = None
     speaker_index: int = None
     tokenizer_names: List[str] = None
 
@@ -192,6 +195,13 @@ class TextToSpeechDataset(Dataset):
                 speaker = None
                 speaker_index = 0
 
+            if "language" in entry:
+                language = entry.get("language")
+            elif dataset.language:
+                language = dataset.language
+            else:
+                language = None
+
             sample = DatasetSample(
                 dataset_name=dataset_name,
                 manifest_entry=entry,
@@ -200,6 +210,7 @@ class TextToSpeechDataset(Dataset):
                 text=text,
                 speaker=speaker,
                 speaker_index=speaker_index,
+                language=language,
                 tokenizer_names=dataset.tokenizer_names,
             )
             samples.append(sample)
@@ -380,7 +391,12 @@ class MagpieTTSDataset(TextToSpeechDataset):
         text_context_remapping: Dict[str, str] = None,
         text_context_remapping_prob: float = 0.0,
         ignore_phoneme_languages: List[str] = None,
+        enable_phoneme_text_input: bool = False,
+        text_phoneme_token_offset: int = None,
+        phoneme_text_bop_marker: str = "<bop>",
+        phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
+        default_tokenizer_name: str = "english_phoneme",
     ):
         super().__init__(
             dataset_meta=dataset_meta,
@@ -415,7 +431,12 @@ class MagpieTTSDataset(TextToSpeechDataset):
         self.text_context_remapping = text_context_remapping
         self.text_context_remapping_prob = text_context_remapping_prob
         self.ignore_phoneme_languages = ignore_phoneme_languages or []
+        self.enable_phoneme_text_input = enable_phoneme_text_input
+        self.text_phoneme_token_offset = text_phoneme_token_offset
+        self.phoneme_text_bop_marker = phoneme_text_bop_marker
+        self.phoneme_text_eop_marker = phoneme_text_eop_marker
         self.add_language_to_context_text = add_language_to_context_text
+        self.default_tokenizer_name = default_tokenizer_name
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
@@ -430,12 +451,28 @@ class MagpieTTSDataset(TextToSpeechDataset):
             effective_duration_max = max(self.context_duration_min, effective_duration_max)
             return random.uniform(self.context_duration_min, effective_duration_max)
 
-        tokenizer_name = "english_phoneme"  # Default to english phoneme tokenizer
         if data.tokenizer_names is not None:
             # Pick a random tokenizer from the list of tokenizers
             tokenizer_name = random.choice(data.tokenizer_names)
-        language = data.manifest_entry.get('language', 'en')
-        tokens = self.text_tokenizer.encode(text=data.text, tokenizer_name=tokenizer_name)
+        else:
+            tokenizer_name = self.default_tokenizer_name
+
+        if data.language:
+            language = data.language
+        else:
+            language = 'en'
+
+        # partial phoneme tokenization
+        tokens = tokenize_text_with_phoneme_spans(
+            text_tokenizer=self.text_tokenizer,
+            text_str=data.text,
+            tokenizer_name=tokenizer_name,
+            enable_phoneme_text_input=self.enable_phoneme_text_input,
+            phoneme_tokenizer=self.phoneme_tokenizer,
+            text_phoneme_token_offset=self.text_phoneme_token_offset,
+            bop_marker=self.phoneme_text_bop_marker,
+            eop_marker=self.phoneme_text_eop_marker,
+        )
         tokens = tokens + [self.eos_id]  # Not adding BOS id
         tokens = torch.tensor(tokens, dtype=torch.int32)
         text_len = tokens.shape[0]
@@ -973,6 +1010,11 @@ class ChunkedTTSInferenceDataset(MagpieTTSDataset):
             tokenizer_name=tokenizer_name,
             text_tokenizer=self.text_tokenizer,
             eos_token_id=self.eos_id,
+            enable_phoneme_text_input=self.enable_phoneme_text_input,
+            phoneme_tokenizer=self.phoneme_tokenizer,
+            text_phoneme_token_offset=self.text_phoneme_token_offset,
+            bop_marker=self.phoneme_text_bop_marker,
+            eop_marker=self.phoneme_text_eop_marker,
         )
 
         # Handle empty text edge case

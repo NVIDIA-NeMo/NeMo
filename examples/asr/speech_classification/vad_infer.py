@@ -21,7 +21,7 @@ During inference, we perform frame-level prediction by two approaches:
        One can also find posterior about converting frame level prediction 
        to speech/no-speech segment in start and end times format in that script.]
        
-       Image https://raw.githubusercontent.com/NVIDIA/NeMo/main/tutorials/asr/images/vad_post_overlap_diagram.png 
+       Image https://raw.githubusercontent.com/NVIDIA-NeMo/Speech/main/tutorials/asr/images/vad_post_overlap_diagram.png 
        will help you understand this method.
 
 This script will also help you perform postprocessing and generate speech segments if needed
@@ -91,7 +91,9 @@ def main(cfg):
             'vad_stream': True,
             'sample_rate': 16000,
             'manifest_filepath': manifest_vad_input,
-            'labels': ['infer',],
+            'labels': [
+                'infer',
+            ],
             'num_workers': cfg.num_workers,
             'shuffle': False,
             'window_length_in_sec': cfg.vad.parameters.window_length_in_sec,

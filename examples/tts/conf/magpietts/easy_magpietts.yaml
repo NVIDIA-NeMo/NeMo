@@ -14,6 +14,9 @@ model:
   # Decoder backend selection
   # Options: "huggingface" (default), "nemotron_h"
   decoder_type: "huggingface"
+  disable_lm_text_head: false
+  disable_subword_embedding: false
+  use_bpe_char_tokenizer: true
   
   # HuggingFace backend config (used when decoder_type: "huggingface")
   transformer_hf_backend: "Qwen/Qwen2.5-1.5B"
@@ -99,6 +102,11 @@ model:
   phoneme_corruption_timestep_ratio: 0.15
   phoneme_corruption_unk_mode_prob: 0.5
   phoneme_corruption_type: "repeat_skip_unk" # "repeat_skip_unk" or "complete_channel"
+  enable_phoneme_text_input: false # Enable inline IPA spans in text as <bop>...<eop>; requires phoneme_tokenizer.
+  phoneme_text_bop_marker: "<bop>"
+  phoneme_text_eop_marker: "<eop>"
+  ignore_phoneme_languages: [] # Languages for which missing IPA phoneme fields are allowed during training.
+  add_language_to_context_text: false # Prefix context text with language metadata for multilingual conditioning.
 
   phoneme_tokenizer:
     _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPABPETokenizer

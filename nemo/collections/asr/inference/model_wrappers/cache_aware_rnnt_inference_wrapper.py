@@ -12,15 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+
 import torch
 from torch import Tensor
 
 from nemo.collections.asr.inference.model_wrappers.cache_aware_asr_inference_wrapper import (
     CacheAwareASRInferenceWrapper,
 )
+from nemo.collections.asr.inference.streaming.state.cache_aware_rnnt_state import CacheAwareRNNTBeamStreamingState
 from nemo.collections.asr.inference.utils.context_manager import CacheAwareContext
+from nemo.collections.asr.inference.utils.per_stream_biasing import multi_biasing_ids_tensor_from_states
 from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTModel
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
+from nemo.collections.asr.parts.submodules.rnnt_malsd_batched_computer import ModifiedALSDBatchedRNNTComputer
+from nemo.collections.asr.parts.utils.batched_beam_decoding_utils import export_batched_beam_hyps_to_cpu_lists
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 
 
@@ -56,6 +62,14 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
 
         self.drop_extra_pre_encoded = self.get_drop_extra_pre_encoded()
 
+        self._validate_prompt_support()
+
+        # Must run before the model-wide cast so the copy keeps full-precision weights.
+        self._setup_prompt_projection()
+
+        self.cast_dtype = torch.float32 if self.use_amp else self.compute_dtype
+        self.asr_model.to(self.cast_dtype)
+
     def get_blank_id(self) -> int:
         """
         Returns id of the blank token.
@@ -73,32 +87,30 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         """
         return self.asr_model.joint.vocabulary
 
-    def execute_step(
+    def encoder_step(
         self,
         processed_signal: Tensor,
         processed_signal_length: Tensor,
         context: CacheAwareContext,
-        previous_hypotheses: list[Hypothesis] | None,
         drop_extra_pre_encoded: int | None,
         keep_all_outputs: bool,
         drop_left_context: int | None = None,
         valid_out_len: int | None = None,
         prompt_vectors: Tensor | None = None,
-    ) -> tuple[list[Hypothesis], CacheAwareContext]:
+    ) -> tuple[Tensor, Tensor, CacheAwareContext]:
         """
-        Executes a single streaming step.
+        Run the cache-aware encoder for one streaming chunk. Decoder is NOT invoked.
         Args:
             processed_signal: (Tensor) input signal tensor.
             processed_signal_length: (Tensor) input signal length tensor.
             context: (CacheAwareContext) context object.
-            previous_hypotheses: (list[Hypothesis] | None) list of previous hypotheses for RNNT decoding.
             drop_extra_pre_encoded: (int | None) number of extra pre-encoded frames to drop.
             keep_all_outputs: (bool) whether to keep all outputs or not.
             drop_left_context: (int | None) number of left context frames to drop.
             valid_out_len: (int | None) number of valid output frames.
-            prompt_vectors: (Tensor | None) Optional prompt vectors of shape [B, num_prompts].
+            prompt_vectors: (Tensor | None) per-stream one-hot language prompts of shape [B, num_prompts].
         Returns:
-            (tuple[list[Hypothesis], CacheAwareContext]) best hypothesis and new context.
+            (tuple[Tensor, Tensor, CacheAwareContext]) encoder output, encoder output lengths, and new context.
         """
         (
             encoded,
@@ -131,10 +143,132 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             encoded = encoded[:, :, :valid_out_len]
             encoded_len = torch.ones_like(encoded_len) * valid_out_len
 
+        if prompt_vectors is not None:
+            # Prompt injection is pointwise per time frame, so applying it after left/right-context
+            # trimming is equivalent to applying it right after the encoder step, and cheaper.
+            encoded = self._apply_prompt_vectors(encoded, prompt_vectors)
+
+        return encoded, encoded_len, new_context
+
+    def execute_step(
+        self,
+        processed_signal: Tensor,
+        processed_signal_length: Tensor,
+        context: CacheAwareContext,
+        previous_hypotheses: list[Hypothesis] | None,
+        drop_extra_pre_encoded: int | None,
+        keep_all_outputs: bool,
+        drop_left_context: int | None = None,
+        valid_out_len: int | None = None,
+        prompt_vectors: Tensor | None = None,
+    ) -> tuple[list[Hypothesis], CacheAwareContext]:
+        """
+        Executes a single streaming step.
+        Args:
+            processed_signal: (Tensor) input signal tensor.
+            processed_signal_length: (Tensor) input signal length tensor.
+            context: (CacheAwareContext) context object.
+            previous_hypotheses: (list[Hypothesis] | None) list of previous hypotheses for RNNT decoding.
+            drop_extra_pre_encoded: (int | None) number of extra pre-encoded frames to drop.
+            keep_all_outputs: (bool) whether to keep all outputs or not.
+            drop_left_context: (int | None) number of left context frames to drop.
+            valid_out_len: (int | None) number of valid output frames.
+            prompt_vectors: (Tensor | None) Optional prompt vectors of shape [B, num_prompts].
+        Returns:
+            (tuple[list[Hypothesis], CacheAwareContext]) best hypothesis and new context.
+        """
+        encoded, encoded_len, new_context = self.encoder_step(
+            processed_signal=processed_signal,
+            processed_signal_length=processed_signal_length,
+            context=context,
+            drop_extra_pre_encoded=drop_extra_pre_encoded,
+            keep_all_outputs=keep_all_outputs,
+            drop_left_context=drop_left_context,
+            valid_out_len=valid_out_len,
+            prompt_vectors=prompt_vectors,
+        )
+
         best_hyp = self.asr_model.decoding.rnnt_decoder_predictions_tensor(
             encoded, encoded_len, return_hypotheses=True, partial_hypotheses=previous_hypotheses
         )
         return best_hyp, new_context
+
+    def malsd_stream_step(
+        self,
+        malsd_computer: ModifiedALSDBatchedRNNTComputer,
+        states: list[CacheAwareRNNTBeamStreamingState],
+        processed_signal: Tensor,
+        processed_signal_length: Tensor,
+        context: CacheAwareContext,
+        drop_extra_pre_encoded: int | None,
+        keep_all_outputs: bool,
+        drop_left_context: int | None = None,
+        valid_out_len: int | None = None,
+        prompt_vectors: Tensor | None = None,
+    ) -> tuple[list[Hypothesis], CacheAwareContext]:
+        """Cache-aware MALSD encode/decode step for one chunk."""
+        if processed_signal.device != self.device:
+            processed_signal = processed_signal.to(self.device)
+
+        if processed_signal_length.device != self.device:
+            processed_signal_length = processed_signal_length.to(self.device)
+
+        carries = [state.hyp_decoding_state for state in states]
+        if all(c is None for c in carries):
+            batched_state = None
+        else:
+            batched_state = malsd_computer.merge_to_batched_state(carries)
+
+        multi_biasing_ids = multi_biasing_ids_tensor_from_states(
+            states,
+            self.device,
+            per_stream_biasing_enabled=malsd_computer.per_stream_biasing_enabled,
+        )
+
+        with (
+            torch.amp.autocast(device_type=self.device_str, dtype=self.compute_dtype, enabled=self.use_amp),
+            torch.inference_mode(),
+            torch.no_grad(),
+        ):
+            processed_signal = processed_signal.to(self.cast_dtype)
+            encoded, encoded_len, new_context = self.encoder_step(
+                processed_signal=processed_signal,
+                processed_signal_length=processed_signal_length,
+                context=context,
+                drop_extra_pre_encoded=drop_extra_pre_encoded,
+                keep_all_outputs=keep_all_outputs,
+                drop_left_context=drop_left_context,
+                valid_out_len=valid_out_len,
+                prompt_vectors=prompt_vectors,
+            )
+            encs_dim_last = encoded.transpose(1, 2).contiguous()
+
+            best_batched_hyps, batched_state = malsd_computer(
+                encs_dim_last, encoded_len, batched_state, multi_biasing_ids=multi_biasing_ids
+            )
+
+            chunk_tokens, chunk_timestamps, chunk_confidences, root_ptrs = export_batched_beam_hyps_to_cpu_lists(
+                best_batched_hyps
+            )
+            beam_indices = best_batched_hyps.scores.argmax(dim=-1).detach().cpu().tolist()
+            scores_cpu = best_batched_hyps.scores.detach().cpu()
+
+            carry_items = malsd_computer.split_batched_state(batched_state)
+            for b, (state, ct, cts, rp, best_hyp_idx, carry) in enumerate(
+                zip(states, chunk_tokens, chunk_timestamps, root_ptrs, beam_indices, carry_items)
+            ):
+                state.append_chunk_beam_(
+                    ct,
+                    cts,
+                    rp,
+                    best_batched_hyps.beam_size,
+                    best_hyp_idx,
+                    chunk_confidences=(chunk_confidences[b] if chunk_confidences is not None else None),
+                )
+                state.hyp_decoding_state = carry
+
+        hyps = [state.get_hypothesis(float(scores_cpu[b, beam_indices[b]].item())) for b, state in enumerate(states)]
+        return hyps, new_context
 
     def stream_step(
         self,
@@ -170,6 +304,8 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
         if processed_signal_length.device != self.device:
             processed_signal_length = processed_signal_length.to(self.device)
 
+        processed_signal = processed_signal.to(self.cast_dtype)
+
         if context is None:
             # create a dummy context
             context = CacheAwareContext()
@@ -193,3 +329,91 @@ class CacheAwareRNNTInferenceWrapper(CacheAwareASRInferenceWrapper):
             )
 
         return best_hyp, new_context
+
+    def _validate_prompt_support(self) -> None:
+        """
+        Sanity-check the prompt projection of a prompt-conditioned (multilingual) model at load time.
+
+        ``_apply_prompt_vectors`` reimplements the model-side prompt injection so that per-stream
+        prompts can be applied during batched cache-aware streaming. This check fails loudly if the
+        upstream prompt scheme ever changes shape, instead of silently mis-conditioning the encoder.
+        """
+        model = self.asr_model
+        if not getattr(model, "concat", False):
+            return
+
+        num_prompts = getattr(model, "num_prompts", None)
+        prompt_kernel = getattr(model, "prompt_kernel", None)
+        if not num_prompts or prompt_kernel is None:
+            raise ValueError(
+                "Model reports prompt conditioning (`concat=True`) but is missing "
+                "`num_prompts` and/or `prompt_kernel`."
+            )
+
+        enc_hidden = model.cfg.get("model_defaults", {}).get("enc_hidden", None)
+        first_linear = next((m for m in prompt_kernel.modules() if isinstance(m, torch.nn.Linear)), None)
+        if enc_hidden is None or first_linear is None:
+            return
+
+        expected_in_features = int(num_prompts) + int(enc_hidden)
+        if first_linear.in_features != expected_in_features:
+            raise ValueError(
+                f"Unexpected `prompt_kernel` input size: got {first_linear.in_features}, "
+                f"expected num_prompts + enc_hidden = {expected_in_features}. The model's prompt "
+                "scheme has changed and `_apply_prompt_vectors` needs to be updated to match."
+            )
+
+    def _setup_prompt_projection(self) -> None:
+        """
+        Hold a private float32 copy of the language-prompt projection.
+
+        The one-hot language vector contributes a single unit-magnitude feature alongside
+        ``enc_hidden`` encoder activations of much larger magnitude. In bfloat16 that contribution
+        falls below the mantissa, the projection output becomes effectively language-independent,
+        and decoding silently ignores the requested language. Running just this small MLP in
+        float32 restores conditioning at negligible cost.
+
+        A copy is used rather than casting ``asr_model.prompt_kernel`` in place: the model is
+        shared, and a float32 submodule inside an otherwise bfloat16 model would break the
+        model's own ``conformer_stream_step`` path with a dtype mismatch.
+        """
+        self._prompt_kernel = None
+        if not getattr(self.asr_model, "concat", False):
+            return
+        self._prompt_kernel = copy.deepcopy(self.asr_model.prompt_kernel).float().to(self.device).eval()
+
+    def _apply_prompt_vectors(self, encoded: Tensor, prompt_vectors: Tensor) -> Tensor:
+        """
+        Inject per-stream language prompts into the encoder output.
+
+        Batched counterpart of the model-side ``PromptStreamingMixin._apply_prompt_to_encoded``
+        (see ``nemo/collections/asr/parts/mixins/mixins.py``), which is the source of truth for this
+        math. The mixin conditions a whole batch on one global language; cache-aware streaming
+        batches independent streams, so each row needs its own prompt.
+        Args:
+            encoded: (Tensor) encoder output of shape [B, D, T].
+            prompt_vectors: (Tensor) per-stream one-hot language prompts of shape [B, num_prompts].
+        Returns:
+            (Tensor) prompt-conditioned encoder output of shape [B, D, T].
+        """
+        model = self.asr_model
+        if not getattr(model, "concat", False):
+            raise ValueError("prompt_vectors were provided, but the ASR model does not support prompt conditioning.")
+
+        batch_size = encoded.shape[0]
+        if prompt_vectors.shape != (batch_size, model.num_prompts):
+            raise ValueError(
+                f"Expected prompt_vectors of shape {(batch_size, model.num_prompts)}, "
+                f"got {tuple(prompt_vectors.shape)}."
+            )
+
+        encoded = encoded.transpose(1, 2)  # (B, D, T) -> (B, T, D)
+        out_dtype = encoded.dtype
+
+        # Project in float32 with autocast disabled, so the language signal is not
+        # rounded away in low precision (see `_setup_prompt_projection`).
+        prompt = prompt_vectors.to(dtype=torch.float32, device=encoded.device)
+        prompt = prompt.unsqueeze(1).expand(-1, encoded.shape[1], -1)
+        with torch.amp.autocast(device_type=self.device_str, enabled=False):
+            encoded = self._prompt_kernel(torch.cat([encoded.float(), prompt], dim=-1))
+        return encoded.to(out_dtype).transpose(1, 2)  # (B, T, D) -> (B, D, T)

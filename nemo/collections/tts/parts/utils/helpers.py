@@ -48,9 +48,14 @@ plotting, audio logging, and segment manipulation used across NeMo TTS models.
 """
 
 import string
+import typing
 from collections import defaultdict
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
+if typing.TYPE_CHECKING:
+    import lightning.pytorch as pl
+    from torch.utils.data import DataLoader
 
 import librosa
 import numpy as np
@@ -75,6 +80,8 @@ except ModuleNotFoundError:
                 f"Function {fn} requires lighting to be installed, but it was not found. Please install lightning first"
             )
             exit(1)
+
+        return wrapped_fn
 
 
 class OperationMode(Enum):
@@ -671,7 +678,7 @@ def rand_slice_segments(
 
 
 def clip_grad_value_(
-    parameters: Union[torch.Tensor, Iterable[torch.nn.Parameter]],
+    parameters: Union[torch.Tensor, typing.Iterable[torch.nn.Parameter]],
     clip_value: Optional[float] = None,
     norm_type: float = 2,
 ) -> float:

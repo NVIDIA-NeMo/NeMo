@@ -268,6 +268,67 @@ class TestSortformerEncLabelModelStreaming:
         assert isinstance(instance2, SortformerEncLabelModel)
 
     @pytest.mark.unit
+    def test_raw_audio_streaming_session_is_independent_of_input_chunking(self):
+        model = _create_sortformer_model().eval()
+        model.streaming_mode = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 1
+        model.sortformer_modules.chunk_right_context = 1
+        model._check_streaming_parameters()
+        audio = torch.randn(8193)
+
+        one_shot_session = model.create_streaming_session()
+        one_shot_outputs = [
+            one_shot_session.diarize_step(audio),
+            one_shot_session.diarize_step(torch.empty(0), is_final=True),
+        ]
+        one_shot_preds = torch.cat(one_shot_outputs, dim=1)
+
+        chunked_session = model.create_streaming_session()
+        chunked_outputs = []
+        start = 0
+        for chunk_size in (17, 503, 1600, 81, 2999, 123, 2870):
+            end = min(start + chunk_size, audio.numel())
+            chunked_outputs.append(chunked_session.diarize_step(audio[start:end]))
+            start = end
+            if start == audio.numel():
+                break
+        if start < audio.numel():
+            chunked_outputs.append(chunked_session.diarize_step(audio[start:]))
+        chunked_outputs.append(chunked_session.diarize_step(torch.empty(0), is_final=True))
+        chunked_preds = torch.cat(chunked_outputs, dim=1)
+
+        assert one_shot_preds.shape[1] > 0
+        assert chunked_session._audio_buffer.untyped_storage().nbytes() < audio.untyped_storage().nbytes()
+        torch.testing.assert_close(chunked_preds, one_shot_preds)
+
+    @pytest.mark.unit
+    def test_raw_audio_streaming_session_reset_and_validation(self):
+        offline_model = _create_sortformer_model().eval()
+        with pytest.raises(ValueError, match="streaming_mode=True"):
+            offline_model.create_streaming_session()
+
+        model = _create_sortformer_model().eval()
+        model.streaming_mode = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 1
+        model.sortformer_modules.chunk_right_context = 1
+        model._check_streaming_parameters()
+        audio = torch.randn(4097)
+        session = model.create_streaming_session()
+
+        first_preds = session.diarize_step(audio, is_final=True)
+        with pytest.raises(RuntimeError, match="finalized"):
+            session.diarize_step(torch.empty(0))
+        session.reset()
+        second_preds = session.diarize_step(audio.unsqueeze(0), is_final=True)
+
+        torch.testing.assert_close(second_preds, first_preds)
+        with pytest.raises(ValueError, match="one mono stream"):
+            session.reset()
+            session.diarize_step(torch.randn(2, 100))
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         "stacking_factor, feature_shape, input_lengths, expected_encoded_lengths",
         [(8, (2, 120, 80), (120, 91), (15, 12))],

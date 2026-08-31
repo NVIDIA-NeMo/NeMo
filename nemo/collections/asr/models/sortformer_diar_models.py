@@ -614,6 +614,19 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             torch.cuda.empty_cache()
         return processed_signal, processed_signal_length
 
+    def create_streaming_session(self):
+        """Create an independent high-level raw-audio streaming session.
+
+        The returned session accepts arbitrarily sized mono waveform chunks through ``diarize_step()`` and owns all
+        preprocessing buffers and Sortformer cache state. Create one session per concurrent audio stream.
+
+        Returns:
+            SortformerStreamingSession: A new session bound to this model.
+        """
+        from nemo.collections.asr.parts.utils.streaming_sortformer import SortformerStreamingSession
+
+        return SortformerStreamingSession(self)
+
     def forward(
         self,
         audio_signal,

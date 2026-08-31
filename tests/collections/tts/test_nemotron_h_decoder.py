@@ -40,6 +40,7 @@ except ImportError:
 import torch
 
 from nemo.collections.tts.modules.nemotron_h_decoder import (
+    RMSNORM_FN_AVAILABLE,
     HybridMambaAttentionDynamicCache,
     MambaRMSNormGated,
     NemotronHConfig,
@@ -48,7 +49,6 @@ from nemo.collections.tts.modules.nemotron_h_decoder import (
     NemotronHModel,
     NemotronHMOE,
     NemotronHTopkRouter,
-    RMSNORM_FN_AVAILABLE,
 )
 
 

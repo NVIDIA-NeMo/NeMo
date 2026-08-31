@@ -32,6 +32,13 @@ For an immediate check, stage the intended files and run `pre-commit run`. After
 
 ## Testing
 
+GPU is the default test device; add `--cpu` for CPU-only testing:
+
+```bash
+pytest -m "not pleasefixme" path/to/relevant_tests         # GPU (default)
+pytest -m "not pleasefixme" --cpu path/to/relevant_tests   # CPU-only
+```
+
 ```bash
 pytest tests/collections/asr -m "not pleasefixme" -v     # ASR tests, skip broken
 pytest tests/collections/tts -m unit -v                  # TTS unit tests
@@ -66,6 +73,7 @@ Before committing or requesting review:
 2. Run pre-commit and the smallest relevant test set. Bug fixes require a regression test that fails before the fix; behavior changes require unit tests covering the new behavior and important edge cases.
 3. Check whether public APIs, configuration, CLI behavior, examples, or user workflows changed. Update the relevant documentation in the same PR, or state why no documentation change is needed.
 4. Record the exact checks run and any intentionally skipped checks in the PR description.
+5. Compose the PR description according to `.github/PULL_REQUEST_TEMPLATE.md`.
 
 When reviewing a PR, explicitly assess whether unit test coverage is appropriate for the changed behavior and whether affected documentation is accurate and complete. Treat unjustified gaps in either area as actionable review findings.
 
@@ -119,9 +127,9 @@ Utility scripts live under `scripts/`. Key subdirectories: `speech_recognition/`
 Four frequently used data/training helpers:
 
 - **`scripts/speech_recognition/estimate_duration_bins.py`** — estimate Lhotse dynamic-bucketing duration bins from a manifest or YAML input config. Usage: `python scripts/speech_recognition/estimate_duration_bins.py <input> -b 30 -n 100000`
-- **`scripts/speech_recognition/oomptimizer.py`** — find the largest batch size per bucket that fits in GPU memory. Usage: `python scripts/speech_recognition/oomptimizer.py --pretrained-name nvidia/canary-1b` or point to a config with `--config-path`.
+- **`scripts/speech_recognition/oomptimizer.py`** — find the largest batch size per bucket that fits in GPU memory. Usage: `python scripts/speech_recognition/oomptimizer.py --pretrained-name nvidia/parakeet-tdt-0.6b-v3` or point to a config with `--config-path`.
 - **`scripts/speech_recognition/estimate_data_weights.py`** — compute per-dataset sampling weights from YAML input configs, with optional temperature re-weighting. Usage: `python scripts/speech_recognition/estimate_data_weights.py input.yaml output.yaml -t 0.5`
-- **`scripts/speech_recognition/convert_to_tarred_audio_dataset.py`** — shard audio+manifest into tar files. Usage: `python scripts/speech_recognition/convert_to_tarred_audio_dataset.py --manifest_path=m.json --target_dir=./tar --num_shards=512 --max_duration=60.0`
+- **`scripts/speech_recognition/convert_to_tarred_audio_dataset.py`** — shard audio+manifest into tar files. Usage: `python scripts/speech_recognition/convert_to_tarred_audio_dataset.py --manifest_path=m.json --target_dir=./tar --num_shards=512 --max_duration=40.0`
 
 ## Issue Reproduction
 

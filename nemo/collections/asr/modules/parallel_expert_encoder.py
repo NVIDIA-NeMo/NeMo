@@ -285,21 +285,11 @@ class ParallelExpertEncoderPT(ModelPT):
         # consolidated checkpoint can reconstruct phPEE without carrying a
         # second, multi-GB copy of its initialization bundle.
         self.encoder._bundle_config = _clone_config(self._cfg)
-        self.encoder._bundle_config.diar_normalize_type = (
-            self.encoder.diar_normalize_type
-        )
-        self.encoder._bundle_config.speaker_feature_config_version = (
-            _SPEAKER_FEATURE_CONFIG_VERSION
-        )
-        self.encoder._bundle_config.speaker_feature_mode = (
-            self.encoder.speaker_feature_mode
-        )
-        self.encoder._bundle_config.speaker_activity_threshold = (
-            self.encoder.speaker_activity_threshold
-        )
-        self.encoder._bundle_config.sync_max_audio_length = (
-            self.encoder.sync_max_audio_length
-        )
+        self.encoder._bundle_config.diar_normalize_type = self.encoder.diar_normalize_type
+        self.encoder._bundle_config.speaker_feature_config_version = _SPEAKER_FEATURE_CONFIG_VERSION
+        self.encoder._bundle_config.speaker_feature_mode = self.encoder.speaker_feature_mode
+        self.encoder._bundle_config.speaker_activity_threshold = self.encoder.speaker_activity_threshold
+        self.encoder._bundle_config.sync_max_audio_length = self.encoder.sync_max_audio_length
 
     @staticmethod
     def _validate_bundle_schema(cfg: DictConfig) -> None:

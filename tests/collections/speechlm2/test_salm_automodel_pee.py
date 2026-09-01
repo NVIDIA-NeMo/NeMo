@@ -39,10 +39,7 @@ from nemo.collections.common.data.lhotse.text_adapters import AudioTurn, TextTur
 from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.common.prompts import PromptFormatter
 from nemo.collections.speechlm2.data import SALMDataset
-from nemo.collections.speechlm2.data.salm_dataset import (
-    MultiSpeakerConfig,
-    SALMMultiSpeakerProcessor,
-)
+from nemo.collections.speechlm2.data.salm_dataset import MultiSpeakerConfig, SALMMultiSpeakerProcessor
 from nemo.collections.speechlm2.models import SALMAutomodel
 
 # Reuse the toy PE encoder (and its dimensions) defined for the standalone

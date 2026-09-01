@@ -306,21 +306,11 @@ class ParallelExpertEncoderPT(ModelPT):
         # consolidated checkpoint can reconstruct phPEE without carrying a
         # second, multi-GB copy of its initialization bundle.
         self.encoder._bundle_config = _clone_config(self._cfg)
-        self.encoder._bundle_config.diar_normalize_type = (
-            self.encoder.diar_normalize_type
-        )
-        self.encoder._bundle_config.speaker_feature_config_version = (
-            _SPEAKER_FEATURE_CONFIG_VERSION
-        )
-        self.encoder._bundle_config.speaker_feature_mode = (
-            self.encoder.speaker_feature_mode
-        )
-        self.encoder._bundle_config.speaker_activity_threshold = (
-            self.encoder.speaker_activity_threshold
-        )
-        self.encoder._bundle_config.sync_max_audio_length = (
-            self.encoder.sync_max_audio_length
-        )
+        self.encoder._bundle_config.diar_normalize_type = self.encoder.diar_normalize_type
+        self.encoder._bundle_config.speaker_feature_config_version = _SPEAKER_FEATURE_CONFIG_VERSION
+        self.encoder._bundle_config.speaker_feature_mode = self.encoder.speaker_feature_mode
+        self.encoder._bundle_config.speaker_activity_threshold = self.encoder.speaker_activity_threshold
+        self.encoder._bundle_config.sync_max_audio_length = self.encoder.sync_max_audio_length
 
     @staticmethod
     def _validate_bundle_schema(cfg: DictConfig) -> None:
@@ -827,7 +817,6 @@ class ParallelExpertEncoder(nn.Module):
         runner = self._forward_online if use_online else self._forward
         return runner(audio_signal=audio_signal, length=length, spk_targets=spk_targets)
 
-
     def _align_diarization_output_resolution(
         self, predictions: torch.Tensor, embedding_lengths: torch.Tensor
     ) -> torch.Tensor:
@@ -858,7 +847,6 @@ class ParallelExpertEncoder(nn.Module):
                 f"asr={target_len}."
             )
         return predictions
-
 
     def _run_diarization(self, audio_signal: torch.Tensor, length: torch.Tensor) -> torch.Tensor:
         if self.diar_normalize_type:

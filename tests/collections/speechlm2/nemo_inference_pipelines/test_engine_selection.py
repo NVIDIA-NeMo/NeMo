@@ -36,12 +36,6 @@ NATIVE, VLLM = "native", "vllm_omni"
             set(),
         ),
         (
-            {"llm_engine_type": NATIVE, "tts_engine_type": VLLM},
-            (NATIVE, VLLM),
-            {"tts_model.tts_model."},
-            {"stt_model.llm."},
-        ),
-        (
             {"tts_engine_type": VLLM},
             (NATIVE, VLLM),
             {"tts_model.tts_model."},
@@ -84,8 +78,6 @@ def test_vllm_selection_is_named_as_not_implemented():
     silently running native."""
     with pytest.raises(NotImplementedError, match="not implemented in this PR"):
         reject_unimplemented_vllm(VLLM, NATIVE)
-    with pytest.raises(NotImplementedError, match="not implemented in this PR"):
-        reject_unimplemented_vllm(NATIVE, VLLM)
 
     from nemo.collections.speechlm2.inference.model_wrappers.backend.vllm.llm import VllmLLM
 

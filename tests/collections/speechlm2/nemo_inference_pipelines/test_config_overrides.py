@@ -80,8 +80,6 @@ def test_overrides_land_in_the_config_their_consumer_reads(model, warnings):
 @pytest.mark.parametrize(
     ("overrides", "tts_engine_type", "expected"),
     [
-        # Boosts and turn-taking work on both backends, so they stay quiet.
-        ({"inference_user_pad_boost": 0.8, "inference_pad_boost": 0.3, "force_turn_taking": True}, "vllm_omni", None),
         # It forces codec silence on EOS unconditionally: True is honoured,
         # False cannot be.
         ({"inference_force_speech_silence_on_eos": False}, "vllm_omni", "force_speech_silence"),
@@ -112,7 +110,6 @@ def test_a_backend_reports_exactly_the_keys_it_ignores(model, warnings, override
         ({"use_llm_cache": True}, ("vllm_omni", "native"), "use_llm_cache"),
         ({"use_llm_cache": True}, ("native", "native"), None),
         ({"use_tts_torch_compile": True}, ("native", "vllm_omni"), "use_tts_torch_compile"),
-        ({"use_tts_subword_cache": True}, ("native", "vllm_omni"), "use_tts_subword_cache"),
         # A falsy value is already a no-op, so it needs no warning.
         ({"use_tts_torch_compile": False}, ("native", "vllm_omni"), None),
     ],

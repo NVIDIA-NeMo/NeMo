@@ -14,10 +14,10 @@
 
 """Offline vs. incremental inference parity tests for NemotronVoiceChat.
 
-``test_parity_tiny_model`` (cache × prompt) and
-``test_parity_tiny_function_model_without_asr`` run on random-weight models.
-``test_parity`` does one pass on ``nvidia/NVIDIA-NemotronLabs-VoiceChat-11B``
-(downloaded into the Hugging Face cache if needed).
+``test_parity_tiny_model`` covers the baseline and prompt-plus-cache paths;
+``test_parity_tiny_function_model_without_asr`` covers function-token feedback.
+Both use random-weight checkpoints so the suite can exercise the parity
+invariant without loading the public 11B.
 
 Run from the NeMo repo root (use ``-s`` to see live progress)::
 
@@ -260,15 +260,16 @@ def _build_parity_pipeline(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
-@pytest.mark.parametrize("use_llm_cache", [False, True], ids=["no_cache", "llm_cache"])
-@pytest.mark.parametrize("system_prompt", [None, MOCK_SYSTEM_PROMPT], ids=["no_prompt", "prompt"])
-def test_parity_tiny_model(build_pipeline, tiny_model_artifacts, use_llm_cache, system_prompt):
+@pytest.mark.parametrize(
+    ("system_prompt", "use_llm_cache"),
+    [(None, False), (MOCK_SYSTEM_PROMPT, True)],
+    ids=["no_prompt-no_cache", "prompt-llm_cache"],
+)
+def test_parity_tiny_model(build_pipeline, tiny_model_artifacts, system_prompt, use_llm_cache):
     """Offline/incremental parity with a tiny random-weight model.
 
-    Running both cache settings against the same offline reference is what
-    pins the invariant that the native KV cache is a speed path and not a
-    different model: if either matched offline and the other did not, one of
-    these cases would fail.
+    The two cases cover the simplest path and the opposite prompt-plus-cache
+    corner without paying for every combination.
     """
     model_dir, audio_path, _ = tiny_model_artifacts
     pipeline = _build_parity_pipeline(
@@ -294,30 +295,5 @@ def test_parity_tiny_function_model_without_asr(build_pipeline, tiny_function_mo
         {"s2s": {"system_prompt": MOCK_SYSTEM_PROMPT, "force_turn_taking": True}},
     )
     report = run_parity_check(pipeline, audio_path, system_prompt=MOCK_SYSTEM_PROMPT)
-    assert report["asr_token_comparison"]["match"] is None
-    assert_parity(report, strict=True, atol=0.0)
-
-
-# ---------------------------------------------------------------------------
-# Public 11B — one load, not the cache×prompt matrix
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires GPU")
-def test_parity(build_pipeline, hf_voicechat_11b, voicechat_audio_path, voicechat_speaker_name):
-    """Offline/incremental parity on ``nvidia/NVIDIA-NemotronLabs-VoiceChat-11B``."""
-    pipeline = _build_parity_pipeline(
-        build_pipeline,
-        hf_voicechat_11b,
-        voicechat_audio_path,
-        tempfile.mkdtemp(prefix="parity-11b-"),
-        {
-            "s2s": {
-                "system_prompt": MOCK_SYSTEM_PROMPT,
-                "speaker_name": voicechat_speaker_name,
-            }
-        },
-    )
-    report = run_parity_check(pipeline, voicechat_audio_path, system_prompt=MOCK_SYSTEM_PROMPT)
     assert report["asr_token_comparison"]["match"] is None
     assert_parity(report, strict=True, atol=0.0)

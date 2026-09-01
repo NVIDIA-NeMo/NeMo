@@ -333,6 +333,11 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
         setup_parallel_expert_encoder(model)
 
 
+def _resolve_parallel_expert_encoder_class(model_path_or_name: str, *, architecture: str | None = None):
+    """Resolve a PEE loader by bundle schema while preserving remote defaults."""
+    return resolve_parallel_expert_encoder_pt(model_path_or_name, architecture=architecture)
+
+
 def setup_parallel_expert_encoder(model: torch.nn.Module):
     """Mount the external perception encoder from ``model.pe_encoder_path``.
 
@@ -366,13 +371,14 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
             "feature extractors) need a separate implementation."
         )
 
-    encoder_class = resolve_parallel_expert_encoder_pt(
+    encoder_class = _resolve_parallel_expert_encoder_class(
         pe_encoder_path, architecture=model.cfg.get("pe_encoder_type", None)
     )
     pe_encoder = encoder_class.load_from_nemo(
         pe_encoder_path,
         map_location="cpu",
         strict=True,
+        config_overrides=model.cfg.get("pe_encoder_overrides", None),
     )
     if (spk_kernel_scale := model.cfg.get("spk_kernel_scale", None)) is not None:
         pe_encoder.spk_kernel_scale = float(spk_kernel_scale)

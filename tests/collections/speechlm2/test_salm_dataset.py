@@ -79,6 +79,14 @@ def test_salm_dataset_routes_speaker_targets_by_rttm_presence(monkeypatch, rttm_
 
     monkeypatch.setattr(salm_dataset_module, "collate_conversation_audio_fault_tolerant", fake_audio_collate)
     monkeypatch.setattr(salm_dataset_module, "speaker_activity_from_cut", fake_speaker_activity_from_cut)
+    alignment_calls = []
+    original_fix_speaker_activity = salm_dataset_module.fix_speaker_activity
+
+    def counted_fix_speaker_activity(*args, **kwargs):
+        alignment_calls.append(True)
+        return original_fix_speaker_activity(*args, **kwargs)
+
+    monkeypatch.setattr(salm_dataset_module, "fix_speaker_activity", counted_fix_speaker_activity)
 
     dataset = salm_dataset_module.SALMDataset(
         tokenizer=_Tokenizer(),
@@ -103,6 +111,7 @@ def test_salm_dataset_routes_speaker_targets_by_rttm_presence(monkeypatch, rttm_
         torch.tensor([expected_targets]),
     )
     assert torch.equal(batch["spk_target_length"], torch.tensor([4]))
+    assert len(alignment_calls) == (1 if rttm_filepath is not None else 0)
 
 
 @pytest.mark.unit

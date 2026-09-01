@@ -1312,7 +1312,7 @@ class TestMTPPlugin:
     @pytest.fixture(autouse=True)
     def restore_original_override(self):
         """Keep the process-local fallback hook isolated between tests."""
-        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm import salm as salm_module
 
         original_override = salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE
         yield
@@ -1420,7 +1420,7 @@ class TestMTPPlugin:
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
 
-        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm import salm as salm_module
         from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(
@@ -1456,7 +1456,7 @@ class TestMTPPlugin:
         """A fresh spawn import should delegate unrelated configs to vLLM's native hook."""
         from vllm.config.speculative import SpeculativeConfig
 
-        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm import salm as salm_module
 
         original_calls = []
 
@@ -1482,7 +1482,7 @@ class TestMTPPlugin:
         """A corrupted install must fail clearly instead of recursing into our override."""
         from vllm.config.speculative import SpeculativeConfig
 
-        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm import salm as salm_module
 
         monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
         monkeypatch.setattr(
@@ -1560,7 +1560,7 @@ class TestMTPPlugin:
             original_calls.append(cfg)
             return cfg
 
-        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm import salm as salm_module
 
         monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", None)
         monkeypatch.setattr(SpeculativeConfig, "hf_config_override", staticmethod(_recording_orig))
@@ -1579,7 +1579,7 @@ class TestMTPPlugin:
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
 
-        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm import salm as salm_module
         from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(
@@ -1611,7 +1611,7 @@ class TestMTPPlugin:
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
 
-        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm import salm as salm_module
         from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(
@@ -1690,7 +1690,7 @@ class TestMTPPlugin:
         from transformers import AutoConfig
         from vllm.config.speculative import SpeculativeConfig
 
-        import nemo.collections.speechlm2.vllm.salm as salm_module
+        from nemo.collections.speechlm2.vllm import salm as salm_module
         from nemo.collections.speechlm2.vllm.salm import register
 
         monkeypatch.setattr(

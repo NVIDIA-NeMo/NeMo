@@ -75,6 +75,8 @@ from nemo.collections.speechlm2.parts.automodel_lora import (
 from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_automodel_llm,
     maybe_load_pretrained_models,
+    setup_parallel_expert_encoder,
+    setup_parallel_expert_encoder_from_checkpoints,
     setup_perception,
 )
 from nemo.collections.speechlm2.parts.utils import freeze_module, to_dataclass, unfreeze_module
@@ -502,6 +504,22 @@ class StreamingSTTModelAutomodel(StreamingSTTModel):
             audio_pad_to=self.core_cfg.audio_pad_to,
             att_context_size=self.core_cfg.att_context_size,
         )
+
+        # --- Optional: replace the encoder with a ParallelExpertEncoder ---
+        # This subclass builds its own perception in `configure_model` rather than reusing the base
+        # class's `__init__` path, so the mount has to be repeated here -- it is NOT inherited.
+        # Must run before `_apply_freeze_config` below so the PE's `apply_internal_freeze` hook is
+        # applied to the mounted encoder rather than the throwaway one.
+        if self.core_cfg.pe_encoder_path and self.core_cfg.parallel_expert_encoder:
+            raise ValueError(
+                "Set only one of `model.pe_encoder_path` (a pre-fused bundle) and "
+                "`model.parallel_expert_encoder` (assemble from separate ASR + diarizer "
+                "checkpoints); they build the same encoder from different sources."
+            )
+        if self.core_cfg.pe_encoder_path:
+            setup_parallel_expert_encoder(self)
+        elif self.core_cfg.parallel_expert_encoder:
+            setup_parallel_expert_encoder_from_checkpoints(self)
 
         # --- Aux chunk-boundary classifier (only built when enabled) ---
         if self.core_cfg.use_chunk_classifier:

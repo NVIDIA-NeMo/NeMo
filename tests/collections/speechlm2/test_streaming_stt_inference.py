@@ -49,7 +49,7 @@ def hf_tok():
 
 def _make_mock_self(hf_tok, chunk_size=CHUNK_SIZE, blank_token=BLANK_TOKEN):
     """Build a minimal namespace that satisfies ``_ensure_inference_cache``."""
-    return SimpleNamespace(
+    mock = SimpleNamespace(
         tokenizer=SimpleNamespace(tokenizer=hf_tok),
         core_cfg=SimpleNamespace(
             chunk_size=chunk_size,
@@ -62,6 +62,11 @@ def _make_mock_self(hf_tok, chunk_size=CHUNK_SIZE, blank_token=BLANK_TOKEN):
         # cache's logging line reads.
         blank_token_id=hf_tok.convert_tokens_to_ids(blank_token),
     )
+    # ``_ensure_inference_cache`` builds the turn template through this method so
+    # that it and ``_generate_chunked_streaming`` cannot drift apart. Delegate to
+    # the real implementation rather than reimplementing it here.
+    mock._build_turn_template_ids = lambda cs: StreamingSTTModel._build_turn_template_ids(mock, cs)
+    return mock
 
 
 def _run_ensure_cache(hf_tok, chunk_size=CHUNK_SIZE):

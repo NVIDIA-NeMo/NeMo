@@ -595,95 +595,126 @@ def apply_chat_template_ids(hf_tok, messages: List[dict], **kwargs) -> list[int]
     return list(out)
 
 
-def parse_chat_template_ids(hf_tok, last_turn: bool = False) -> tuple[list[int], list[int], list[int]]:
+def parse_chat_template_ids(
+    hf_tok,
+    last_turn: bool = False,
+    probe_content: str = "<audio>",
+) -> tuple[list[int], list[int], list[int], list[int]]:
     """Discover turn-structure token IDs from a HuggingFace chat template.
 
-    Extracts the structural token IDs that surround user and assistant content
-    in the chat template.  Uses a 2-message sentinel conversation (1 user +
-    1 assistant) to get the ``user_header``, ``asst_footer``, and the full
-    ``user_footer_and_asst_header`` (which may include Qwen3-style
-    ``<think>...</think>`` suppression tags).
+    Returns the four structural spans that surround user and assistant content in
+    a *mid-conversation* turn, so that streaming inference can reproduce, token
+    for token, what ``apply_chat_template`` emits for that turn during training.
 
-    When ``last_turn=False``, a second 4-message sentinel is used to obtain
-    the assistant header *without* thinking tags — Qwen3 only injects them on
-    the last assistant turn, and in streaming each chunk is a non-final turn.
+    The spans are located by **index in the token-id sequence**, by diffing
+    renders that differ only in message content — never by splitting the rendered
+    template string and re-encoding fragments. Re-encoding a fragment can tokenize
+    differently than the same text does in context (BPE merges at the artificial
+    boundary, SentencePiece word-start markers), and the failure is silent.
 
-    When ``last_turn=True``, the 2-message result is returned as-is, since the
-    assistant turn IS the last turn and must include thinking suppression tags
-    to match training.
+    Both probe renders are anchored to a **system message**. This matters:
+    templates that emit a system block unconditionally (several Nemotron
+    variants) would otherwise fold an empty system block into ``user_header``,
+    which streaming inference then re-feeds once per chunk while training emits
+    it only once, at the front of the conversation.
+
+    ``last_turn`` selects which assistant header is returned. Qwen3 injects
+    ``<think>``/``</think>`` suppression tags only on the *final* assistant turn,
+    so a mid-stream chunk needs the non-final variant; a single-turn offline
+    prompt needs the final one. (Nemotron emits thinking tags on every assistant
+    turn, so the distinction is a no-op there.)
 
     Args:
         hf_tok: A HuggingFace tokenizer (``tokenizer.tokenizer``).
-        last_turn: When True, the extracted assistant header corresponds to the
-            last turn in the conversation, which may include thinking
-            suppression tags (e.g. for single-turn offline inference).
+        last_turn: When True, return the assistant header as it renders on the
+            last turn of a conversation (may include thinking-suppression tags).
+        probe_content: User-turn content used to locate the audio span. Any
+            non-empty string works; the audio tag is the natural choice because
+            it is what really occupies that position.
 
     Returns:
-        ``(user_header_ids, user_footer_and_asst_header_ids, asst_footer_ids)``
+        ``(user_header_ids, user_footer_ids, asst_header_ids, asst_footer_ids)``
 
-        - *user_header_ids*: tokens before user content, BOS stripped
-          (e.g. ``[<|im_start|>, user, \\n]``).
-        - *user_footer_and_asst_header_ids*: tokens between user content and
-          assistant content.
+        - *user_header_ids*: tokens between the system block and user content
+          (e.g. ``[<|im_start|>, user, \n]``).
+        - *user_footer_ids*: tokens after user content, up to the assistant
+          header (e.g. ``[<|im_end|>, \n]``).
+        - *asst_header_ids*: tokens before assistant content
+          (e.g. ``[<|im_start|>, assistant, \n]``).
         - *asst_footer_ids*: tokens after assistant content
-          (e.g. ``[<|im_end|>, \\n]``).
+          (e.g. ``[<|im_end|>, \n]``). Empty when the template's footer is
+          whitespace-only — see the guard at the end of this function.
     """
+    # The derived spans must be invariant to this string's content: it is excluded
+    # by the ``A[:len(S)] == S`` prefix. Deliberately distinctive so that the
+    # post-condition below can detect a template folding it into the user turn.
+    _SYS = "ZZPROBESYSZZ"
     _SENTINEL = "XSENTINELX"
 
-    # --- 2-message template: correct footer, full assistant header ---
-    convo_2msg = hf_tok.apply_chat_template(
-        [
-            {"role": "user", "content": _SENTINEL},
-            {"role": "assistant", "content": _SENTINEL},
-        ],
-        tokenize=False,
-        add_generation_prompt=False,
-        enable_thinking=False,
-    )
-    parts = convo_2msg.split(_SENTINEL)
-    assert len(parts) >= 3, f"Expected >=3 parts after splitting on sentinel, got {len(parts)}: {parts}"
-
-    user_header_ids = hf_tok.encode(parts[0], add_special_tokens=False)
-    asst_footer_ids = hf_tok.encode(parts[2], add_special_tokens=False) if parts[2].strip() else []
-
-    # Strip leading BOS from user header — it is already in the KV cache
-    # from the system prompt during inference.
-    bos_id = getattr(hf_tok, "bos_token_id", None)
-    if user_header_ids and bos_id is not None and user_header_ids[0] == bos_id:
-        user_header_ids = user_header_ids[1:]
-
-    if last_turn:
-        # Last turn: use the 2-msg assistant header (includes thinking tags).
-        user_footer_and_asst_header_ids = hf_tok.encode(parts[1], add_special_tokens=False)
-    else:
-        # Non-last turn: use the 4-msg assistant header (no thinking tags).
-        # The 4-msg trick places the sentinel on the first assistant turn,
-        # which is NOT the last turn → Qwen3 omits thinking tags.
-        convo_4msg = hf_tok.apply_chat_template(
-            [
-                {"role": "user", "content": _SENTINEL},
-                {"role": "assistant", "content": _SENTINEL},
-                {"role": "user", "content": "x"},
-                {"role": "assistant", "content": "x"},
-            ],
-            tokenize=False,
+    def render(messages: List[dict]) -> list[int]:
+        return apply_chat_template_ids(
+            hf_tok,
+            messages,
             add_generation_prompt=False,
             enable_thinking=False,
         )
-        parts_4msg = convo_4msg.split(_SENTINEL)
-        assert len(parts_4msg) >= 3
-        user_footer_and_asst_header_ids = hf_tok.encode(parts_4msg[1], add_special_tokens=False)
 
-    return user_header_ids, user_footer_and_asst_header_ids, asst_footer_ids
+    sys_msg = {"role": "system", "content": _SYS}
+    user_msg = {"role": "user", "content": probe_content}
+
+    # --- user spans: diff a rendered user turn against the same turn emptied ---
+    s_ids = render([sys_msg])
+    a_ids = render([sys_msg, user_msg])
+    a_empty = render([sys_msg, {"role": "user", "content": ""}])
+
+    _assert_prefix(a_ids, s_ids, hf_tok, "system-only render is not a prefix of the user render")
+
+    head = len(s_ids) + _common_prefix_len(a_ids[len(s_ids) :], a_empty[len(s_ids) :])
+    tail = _common_suffix_len(a_ids, a_empty)
+    user_header_ids = a_ids[len(s_ids) : head]
+    user_footer_ids = a_ids[len(a_ids) - tail :]
+    _assert_partitions(a_ids, len(s_ids), head, tail, hf_tok, _SYS, user_header_ids)
+
+    # --- assistant spans: append an assistant turn and diff again ---
+    b2 = render([sys_msg, user_msg, {"role": "assistant", "content": _SENTINEL}])
+    b2_empty = render([sys_msg, user_msg, {"role": "assistant", "content": ""}])
+    _assert_prefix(b2, a_ids, hf_tok, "user render is not a prefix of the user+assistant render")
+
+    asst_footer_ids = b2[len(b2) - _common_suffix_len(b2, b2_empty) :]
+
+    if last_turn:
+        asst_header_ids = b2[len(a_ids) : len(a_ids) + _common_prefix_len(b2[len(a_ids) :], b2_empty[len(a_ids) :])]
+    else:
+        # Place the probed assistant turn in the middle of the conversation so
+        # last-turn-only template behaviour (Qwen3 thinking tags) is excluded.
+        trailing = [{"role": "user", "content": "x"}, {"role": "assistant", "content": "x"}]
+        b4 = render([sys_msg, user_msg, {"role": "assistant", "content": _SENTINEL}] + trailing)
+        b4_empty = render([sys_msg, user_msg, {"role": "assistant", "content": ""}] + trailing)
+        _assert_prefix(b4, a_ids, hf_tok, "user render is not a prefix of the 4-message render")
+        asst_header_ids = b4[len(a_ids) : len(a_ids) + _common_prefix_len(b4[len(a_ids) :], b4_empty[len(a_ids) :])]
+
+    # A whitespace-only assistant footer is treated as absent, matching the
+    # historical behaviour. This is not cosmetic: ``_autoregressive_decode``
+    # stops a stream whenever its tail matches ``asst_footer_ids``, so a footer
+    # of a bare newline byte (Nemotron-Mini) would truncate any hypothesis at
+    # its first newline.
+    if asst_footer_ids and not hf_tok.decode(asst_footer_ids).strip():
+        asst_footer_ids = []
+
+    return user_header_ids, user_footer_ids, asst_header_ids, asst_footer_ids
 
 
-def build_compact_turn_markers(hf_tok, end_of_audio_token: str) -> tuple[list[int], list[int], list[int]]:
+def build_compact_turn_markers(hf_tok, end_of_audio_token: str) -> tuple[list[int], list[int], list[int], list[int]]:
     """Return the compact-format analogue of ``parse_chat_template_ids``.
 
     Compact format drops the user/assistant role delimiters: turns look like
     ``<audio>*N <end_of_audio_token> TEXT <eos>`` with no header before audio and
     only the ``end_of_audio_token`` marking the audio→text transition.  The
     turn-end is the tokenizer's native EOS.
+
+    The end-of-audio anchor is returned as the **user footer** (with an empty
+    assistant header), not the other way round: it plays the role of the
+    audio→text boundary, which is what ``_user_footer_first_id`` must point at.
 
     ``end_of_audio_token`` should be an existing vocab token the LLM saw
     pretraining as a turn-boundary marker (e.g. ``"<|im_start|>"`` for Qwen3,
@@ -698,7 +729,7 @@ def build_compact_turn_markers(hf_tok, end_of_audio_token: str) -> tuple[list[in
     eos_id = getattr(hf_tok, "eos_token_id", None)
     if eos_id is None:
         raise ValueError("tokenizer.eos_token_id is required for compact_template=True")
-    return [], [eoa_ids[0]], [eos_id]
+    return [], [eoa_ids[0]], [], [eos_id]
 
 
 def _tokenize_compact_with_assistant_mask(
@@ -999,8 +1030,8 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
         # parse_chat_template_ids call since we derive the markers directly from config.
         if self.cfg.compact_template:
             hf_tok = self.tokenizer.tokenizer
-            _, ufah_ids, af_ids = build_compact_turn_markers(hf_tok, self.cfg.end_of_audio_token)
-            self._eoa_id = ufah_ids[0]
+            _, uf_ids, _, af_ids = build_compact_turn_markers(hf_tok, self.cfg.end_of_audio_token)
+            self._eoa_id = uf_ids[0]
             self._compact_eos_id = af_ids[0]
             logging.info(
                 f"compact_template enabled: end_of_audio_token={self.cfg.end_of_audio_token!r} "
@@ -1021,8 +1052,18 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                 self._user_footer_first_id = self._eoa_id
             else:
                 hf_tok = self.tokenizer.tokenizer
-                _, user_footer_and_asst_header_ids, _ = parse_chat_template_ids(hf_tok)
-                self._user_footer_first_id = user_footer_and_asst_header_ids[0]
+                _, user_footer_ids, asst_header_ids, _ = parse_chat_template_ids(
+                    hf_tok, probe_content=self.cfg.audio_tag
+                )
+                # Must stay character-for-character identical to the model-side
+                # derivation in ``_ensure_inference_cache``: this id is the
+                # supervised target at the last audio frame of every dynamic
+                # chunk, and the model tests generated tokens against its own
+                # copy. A divergence raises nothing — the emit gate simply
+                # never fires.
+                self._user_footer_first_id = (
+                    user_footer_ids[0] if user_footer_ids else (asst_header_ids[0] if asst_header_ids else None)
+                )
         else:
             self._user_footer_first_id = None
 
@@ -1196,4 +1237,88 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             text=text,
             chunk_size=chunk_size,
             chunk_step=K,
+        )
+
+
+def _common_prefix_len(a: list[int], b: list[int]) -> int:
+    """Length of the longest common prefix of two token-ID sequences."""
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _common_suffix_len(a: list[int], b: list[int]) -> int:
+    """Length of the longest common suffix of two token-ID sequences."""
+    n = 0
+    for x, y in zip(reversed(a), reversed(b)):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _assert_partitions(
+    a_ids: list[int],
+    sys_len: int,
+    head: int,
+    tail: int,
+    hf_tok,
+    sys_probe: str,
+    user_header_ids: list[int],
+) -> None:
+    """Fail loudly when the prefix/suffix diff did not isolate the user content.
+
+    The longest common prefix/suffix against the emptied-content render is only
+    the right answer if the two renders differ *exactly* in the content. Three
+    ways that can break, all of which would otherwise yield silently truncated or
+    overlapping spans rather than an error:
+
+    - the two renders are identical (empty or stripped-away content), so the
+      prefix runs to the end and the suffix to the start;
+    - the header and footer spans overlap;
+    - the template folds the system message into the first user turn, so the
+      system-only render carries no tokens to exclude and the probe system prompt
+      itself lands inside ``user_header``. (No backbone in use does this, but the
+      ``A[:len(S)] == S`` guard passes vacuously when it happens, so it needs its
+      own check.)
+    """
+    name = getattr(hf_tok, "name_or_path", type(hf_tok).__name__)
+    content_start, content_end = head, len(a_ids) - tail
+    if content_start >= content_end:
+        raise ValueError(
+            f"Chat template for {name!r}: probe content did not survive rendering "
+            f"(user span is empty or the header and footer overlap). Pick a probe_content that the "
+            f"template preserves verbatim."
+        )
+    if content_start < sys_len:
+        raise ValueError(
+            f"Chat template for {name!r}: the user turn overlaps the system block; cannot derive " f"per-turn spans."
+        )
+    if sys_probe in hf_tok.decode(user_header_ids):
+        raise ValueError(
+            f"Chat template for {name!r} folds the system message into the first user turn, so the "
+            f"derived user_header would carry the probe system prompt. parse_chat_template_ids "
+            f"cannot derive per-turn spans for this template."
+        )
+
+
+def _assert_prefix(longer: list[int], shorter: list[int], hf_tok, what: str) -> None:
+    """Fail loudly when a chat template breaks the append-only prefix relation.
+
+    ``parse_chat_template_ids`` derives turn spans by appending messages and
+    diffing renders, which is only valid if appending a message never rewrites
+    the tokens already emitted for earlier ones.  Every template in use satisfies
+    this (their cross-turn state keys off the last *user* index, which appending
+    an assistant turn does not move), but a template that emitted a trailing
+    element only when the conversation ends on a user turn would not — and would
+    otherwise yield silently wrong spans rather than an error.
+    """
+    if longer[: len(shorter)] != shorter:
+        name = getattr(hf_tok, "name_or_path", type(hf_tok).__name__)
+        raise ValueError(
+            f"Chat template for {name!r} is not append-only: {what}. "
+            f"parse_chat_template_ids cannot derive turn spans for this template."
         )

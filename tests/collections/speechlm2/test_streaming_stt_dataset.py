@@ -46,6 +46,7 @@ from nemo.collections.speechlm2.data.streaming_stt_dataset import (
     decode_with_blank,
     get_llm_messages_for_batch,
     get_llm_messages_for_sample,
+    parse_chat_template_ids,
     resolve_pad_id,
     right_collate_vectors,
 )
@@ -138,6 +139,18 @@ class _MockHFTokenizer:
             return list(self._content_cache[content])
         # system
         return [self.SYSTEM_CONTENT_ID]
+
+    def decode(self, ids, **kwargs):
+        """Minimal inverse of encode(), enough for the whitespace-footer guard."""
+        pieces = {
+            self.HEADER_START: "<|im_start|>",
+            self.HEADER_END: "\n",
+            self.FOOTER: "<|im_end|>",
+            self.NEWLINE: "\n",
+            self.AUDIO_TAG_ID: self.audio_tag,
+            self.BLANK_ID: self.blank_token,
+        }
+        return "".join(pieces.get(int(i), "x") for i in ids)
 
     def encode(self, text, add_special_tokens=False):
         if text == self.audio_tag:
@@ -1699,8 +1712,15 @@ _REAL_TOKENIZER_MODELS = {
     "qwen3": "Qwen/Qwen3-1.7B",
     "nemotron_mini": "nvidia/Nemotron-Mini-4B-Instruct",
     "nemotron_nano_v3": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+    "lightning35": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
     "gemma4": "google/gemma-4-E4B-it",
 }
+
+# Backbones whose chat template emits a system block unconditionally. Their
+# per-turn user header therefore does NOT contain one, while the legacy
+# string-splitting parser folded an empty system block into it — see
+# TestParseChatTemplateSpans.test_matches_legacy_parser_where_legacy_was_correct.
+_SYSTEM_BLOCK_BACKBONES = {"nemotron_mini", "nemotron_nano_v3", "lightning35"}
 
 
 def _run_mask_test(hf_tok, messages):
@@ -1900,6 +1920,202 @@ class TestTokenizeWithAssistantMaskRealTokenizers:
 # ===========================================================================
 # Tests: compact chat template
 # ===========================================================================
+class TestParseChatTemplateSpans:
+    """M1 acceptance: the index-derived turn spans are the ones training emits.
+
+    ``parse_chat_template_ids`` locates the four structural spans of a
+    mid-conversation turn by diffing renders, replacing a parser that split the
+    rendered template string and re-encoded the fragments.  The property that
+    matters is not "matches the old parser" but "matches what
+    ``apply_chat_template`` actually emits for a turn during training" — the two
+    differ on every backbone whose template emits a system block unconditionally.
+    """
+
+    @pytest.fixture(scope="class")
+    def qwen3_hf(self):
+        tok = _try_load_tokenizer("Qwen/Qwen3-1.7B")
+        if tok is None:
+            pytest.skip("Qwen3 tokenizer not available")
+        return tok
+
+    @staticmethod
+    def _count(haystack, needle):
+        if not needle:
+            return -1
+        return sum(1 for i in range(len(haystack) - len(needle) + 1) if haystack[i : i + len(needle)] == needle)
+
+    @staticmethod
+    def _training_render(hf_tok, n_turns=3, content="<audio><audio>"):
+        """A realistic training conversation: one system turn, then N user/assistant pairs."""
+        messages = [{"role": "system", "content": "Transcribe the audio into text."}]
+        for i in range(n_turns):
+            messages.append({"role": "user", "content": content})
+            messages.append({"role": "assistant", "content": f"word{i}"})
+        return apply_chat_template_ids(hf_tok, messages, add_generation_prompt=False, enable_thinking=False)
+
+    def test_tokenizer_matrix_is_actually_populated(self):
+        """Guard against the whole class reporting green because every load failed.
+
+        ``real_tokenizer`` skips silently when a tokenizer cannot be loaded, so a
+        cold HF cache would otherwise turn these acceptance tests into no-ops.
+        """
+        loaded = [m for m in _REAL_TOKENIZER_MODELS.values() if _try_load_tokenizer(m) is not None]
+        assert len(loaded) >= 2, f"Need >=2 real tokenizers to make this suite meaningful, got {loaded}"
+
+    @pytest.mark.parametrize("last_turn", [False, True])
+    def test_spans_occur_in_a_real_training_render(self, real_tokenizer, last_turn):
+        """The invariant that matters: inference feeds exactly what training emitted.
+
+        This is what catches a header carrying a spurious empty system block —
+        such a header appears zero times in a real conversation, so inference
+        would inject it once per chunk while training never did.
+        """
+        label, hf_tok = real_tokenizer
+        uh, uf, ah, _ = parse_chat_template_ids(hf_tok, last_turn=last_turn, probe_content="<audio>")
+        render = self._training_render(hf_tok, n_turns=3)
+
+        assert self._count(render, uh) == 3, f"{label}: user_header occurs {self._count(render, uh)}x, want 3"
+        if not last_turn:
+            # The assistant header is only guaranteed to match mid-conversation
+            # turns; the last-turn variant may carry thinking-suppression tags.
+            assert self._count(render, uf + ah) == 3, f"{label}: user_footer+asst_header should occur 3x"
+
+    def test_content_slice_decodes_back_to_the_probe(self, real_tokenizer):
+        """Boundaries are exact: what sits between the spans is the content, nothing more."""
+        label, hf_tok = real_tokenizer
+        uh, uf, _, _ = parse_chat_template_ids(hf_tok, probe_content="<audio>")
+        sys_msg = {"role": "system", "content": "probe"}
+        s_ids = apply_chat_template_ids(hf_tok, [sys_msg], add_generation_prompt=False, enable_thinking=False)
+        a_ids = apply_chat_template_ids(
+            hf_tok,
+            [sys_msg, {"role": "user", "content": "<audio>"}],
+            add_generation_prompt=False,
+            enable_thinking=False,
+        )
+        content = a_ids[len(s_ids) + len(uh) : len(a_ids) - len(uf)]
+        assert hf_tok.decode(content).strip() == "<audio>", f"{label}: content slice is {hf_tok.decode(content)!r}"
+
+    @pytest.mark.parametrize("last_turn", [False, True])
+    def test_matches_legacy_parser_where_legacy_was_correct(self, real_tokenizer, last_turn):
+        """Byte-equality with the pre-M1 parser, and the exact expected divergence where not.
+
+        Qwen3 and Gemma-4 only render a system block when a system message is
+        present, so the legacy system-less probe was already correct for them and
+        M1 must be a pure refactor.  The Nemotron templates always render one, so
+        the legacy ``user_header`` carried an empty system block that training
+        never emits — there M1 is a deliberate fix and the spans MUST differ.
+        """
+        label, hf_tok = real_tokenizer
+        uh, uf, ah, af = parse_chat_template_ids(hf_tok, last_turn=last_turn, probe_content="<audio>")
+        legacy_uh, legacy_mid, legacy_af = _legacy_parse_chat_template_ids(hf_tok, last_turn=last_turn)
+
+        assert af == legacy_af, f"{label}: assistant footer changed"
+
+        if label == "nemotron_mini":
+            # Third behaviour change, pinned rather than waved through. The legacy
+            # parser re-encoded a split string fragment, which prepended a spurious
+            # SentencePiece empty-string token to the boundary span. Dropping it
+            # moves `_user_footer_first_id` — the dynamic-chunking supervised target
+            # and the inference emit-gate id — from 252303 to 1014 ('\n'), so a
+            # model trained before this change would not fire its gate after it.
+            assert legacy_mid[0] == 252303, "expected the legacy spurious empty-string token"
+            assert hf_tok.decode([252303]) == "", "252303 should decode to the empty string"
+            assert uf + ah == legacy_mid[1:], f"{label}: boundary span should be the legacy one minus 252303"
+            assert (uf or ah)[0] == 1014, f"{label}: emit-gate id should now be the newline byte"
+        else:
+            assert uf + ah == legacy_mid, f"{label}: boundary span changed unexpectedly"
+
+        if label in _SYSTEM_BLOCK_BACKBONES:
+            assert uh != legacy_uh, f"{label}: expected the empty-system-block header to be fixed"
+            assert self._count(legacy_uh, uh) == 1, f"{label}: fixed header should be a suffix of the legacy one"
+            assert len(legacy_uh) > len(uh), f"{label}: legacy header should be the longer, buggy one"
+        else:
+            assert uh == legacy_uh, f"{label}: M1 must be a pure refactor for {label}"
+
+    def test_probe_content_does_not_affect_the_spans(self, real_tokenizer):
+        """The derivation must not depend on how much content the probe carries."""
+        label, hf_tok = real_tokenizer
+        one = parse_chat_template_ids(hf_tok, probe_content="<audio>")
+        many = parse_chat_template_ids(hf_tok, probe_content="<audio>" * 13)
+        assert one == many, f"{label}: spans changed with probe length"
+
+    def test_system_folding_template_raises(self, qwen3_hf):
+        """A template that folds the system message into the first user turn must fail loudly.
+
+        This is the case the append-only guard cannot see: the system-only render
+        carries nothing to exclude, so ``A[:len(S)] == S`` passes trivially and the
+        probe system prompt would land inside ``user_header`` — which streaming
+        inference then re-feeds once per chunk. Only the post-condition catches it.
+        """
+
+        class _SystemFoldingTokenizer:
+            """Renders system content inline in the first user turn, ChatML-style."""
+
+            name_or_path = "fake/system-folding-template"
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def apply_chat_template(self, messages, **kwargs):
+                sys_txt = "".join(m["content"] for m in messages if m["role"] == "system")
+                text = ""
+                for m in messages:
+                    if m["role"] == "system":
+                        continue
+                    body = m["content"]
+                    if m["role"] == "user" and sys_txt:
+                        body = f"{sys_txt}\n{body}"
+                        sys_txt = ""
+                    text += f"<|im_start|>{m['role']}\n{body}<|im_end|>\n"
+                ids = self._inner.encode(text, add_special_tokens=False)
+                return {"input_ids": ids} if kwargs.get("return_dict") else ids
+
+        with pytest.raises(ValueError, match="folds the system message"):
+            parse_chat_template_ids(_SystemFoldingTokenizer(qwen3_hf), probe_content="<audio>")
+
+    def test_degenerate_probe_content_raises(self, qwen3_hf):
+        """Content the template strips away leaves nothing to diff against."""
+        with pytest.raises(ValueError, match="did not survive rendering"):
+            parse_chat_template_ids(qwen3_hf, probe_content="")
+
+    def test_qwen3_golden_ids(self, qwen3_hf):
+        """Drift canary: the exact Qwen3 spans this refactor must preserve."""
+        im_start, im_end, newline = 151644, 151645, 198
+        uh, uf, ah, af = parse_chat_template_ids(qwen3_hf, last_turn=False, probe_content="<audio>")
+        assert uh == [im_start, 872, newline]  # <|im_start|>user\n
+        assert uf == [im_end, newline]  # <|im_end|>\n
+        assert ah == [im_start, 77091, newline]  # <|im_start|>assistant\n
+        assert af == [im_end, newline]  # <|im_end|>\n
+
+    def test_non_append_only_template_raises(self, qwen3_hf):
+        """A template that rewrites earlier turns must fail loudly, not silently mis-slice."""
+
+        class _RewritingTokenizer:
+            name_or_path = "fake/rewriting-template"
+
+            def __init__(self, inner):
+                self._inner = inner
+                self._calls = 0
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def apply_chat_template(self, messages, **kwargs):
+                out = self._inner.apply_chat_template(messages, **kwargs)
+                self._calls += 1
+                # Corrupt the head of a later render to break the prefix relation.
+                if self._calls > 2 and kwargs.get("tokenize", True):
+                    ids = list(out["input_ids"] if hasattr(out, "keys") else out)
+                    return [ids[0] + 1] + ids[1:]
+                return out
+
+        with pytest.raises(ValueError, match="not append-only"):
+            parse_chat_template_ids(_RewritingTokenizer(qwen3_hf), probe_content="<audio>")
+
+
 class TestCompactTemplate:
     """Tests for the compact chat template feature (Qwen3 tokenizer).
 
@@ -1936,11 +2152,16 @@ class TestCompactTemplate:
 
     def test_build_compact_turn_markers_qwen3(self, qwen3_hf):
         """Default <|im_start|> → 1-token header; <|im_end|> → 1-token footer."""
-        uh, ufah, af = build_compact_turn_markers(qwen3_hf, "<|im_start|>")
+        uh, uf, ah, af = build_compact_turn_markers(qwen3_hf, "<|im_start|>")
         assert uh == []
         im_start_id = qwen3_hf.convert_tokens_to_ids("<|im_start|>")
         im_end_id = qwen3_hf.eos_token_id
-        assert ufah == [im_start_id]
+        # The end-of-audio anchor is the USER FOOTER (the audio->text boundary),
+        # with an empty assistant header — not the other way round. This is what
+        # `_user_footer_first_id` must point at on both the training and the
+        # inference side.
+        assert uf == [im_start_id]
+        assert ah == []
         assert af == [im_end_id]
 
     def test_build_compact_turn_markers_multi_token_raises(self, qwen3_hf):
@@ -2401,3 +2622,51 @@ class TestMultiChunkSizeDataset:
         assert batch.chunk_size == 2
         n_audio = int((batch.input_tokens == AUDIO_TOKEN_IDX).sum().item())
         assert n_audio == 14  # ceil(13/2)=7 chunks * 2
+
+
+def _legacy_parse_chat_template_ids(hf_tok, last_turn: bool = False):
+    """Byte-for-byte copy of ``parse_chat_template_ids`` as of commit f1e14f5e2a.
+
+    Kept ONLY as the reference for
+    ``TestParseChatTemplateSpans.test_matches_legacy_parser_where_legacy_was_correct``,
+    which pins M1 as a pure refactor on the backbones where this implementation
+    was already correct, and pins the exact divergence where it was not.
+
+    Do not "fix" this function — its bugs are the point. It renders a
+    system-less probe conversation, so on templates that emit a system block
+    unconditionally the empty block ends up inside ``user_header_ids``.
+
+    Returns the old 3-tuple ``(user_header, user_footer_and_asst_header, asst_footer)``.
+    """
+    _SENTINEL = "XSENTINELX"
+    convo_2msg = hf_tok.apply_chat_template(
+        [{"role": "user", "content": _SENTINEL}, {"role": "assistant", "content": _SENTINEL}],
+        tokenize=False,
+        add_generation_prompt=False,
+        enable_thinking=False,
+    )
+    parts = convo_2msg.split(_SENTINEL)
+    user_header_ids = hf_tok.encode(parts[0], add_special_tokens=False)
+    asst_footer_ids = hf_tok.encode(parts[2], add_special_tokens=False) if parts[2].strip() else []
+
+    bos_id = getattr(hf_tok, "bos_token_id", None)
+    if user_header_ids and bos_id is not None and user_header_ids[0] == bos_id:
+        user_header_ids = user_header_ids[1:]
+
+    if last_turn:
+        mid_ids = hf_tok.encode(parts[1], add_special_tokens=False)
+    else:
+        convo_4msg = hf_tok.apply_chat_template(
+            [
+                {"role": "user", "content": _SENTINEL},
+                {"role": "assistant", "content": _SENTINEL},
+                {"role": "user", "content": "x"},
+                {"role": "assistant", "content": "x"},
+            ],
+            tokenize=False,
+            add_generation_prompt=False,
+            enable_thinking=False,
+        )
+        mid_ids = hf_tok.encode(convo_4msg.split(_SENTINEL)[1], add_special_tokens=False)
+
+    return user_header_ids, mid_ids, asst_footer_ids

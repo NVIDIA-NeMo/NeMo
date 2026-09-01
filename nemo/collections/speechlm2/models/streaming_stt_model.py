@@ -1442,14 +1442,16 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
     def _ensure_inference_cache(self) -> None:
         """Lazily cache token templates and IDs needed for inference.
 
-        Uses ``apply_chat_template(tokenize=False)`` on a 4-message dummy
-        conversation and splits the text around a sentinel to isolate
-        user-header, user-footer + assistant-header, and assistant-footer tokens.
+        Delegates to :func:`parse_chat_template_ids`, which renders probe
+        conversations and locates the four turn spans by index in the token-id
+        sequence. The spans are cached here as ``_user_header_ids`` /
+        ``_user_footer_ids`` / ``_asst_header_ids`` / ``_asst_footer_ids``, plus
+        ``_user_footer_and_asst_header_ids`` derived from the middle two for the
+        consumers that still feed the boundary as one atomic run.
 
-        The 4-message pattern (two user+assistant pairs) ensures the *first*
-        assistant turn is not the last — this prevents Qwen3-style chat
-        templates from injecting ``<think>``/``</think>`` tags, which only
-        appear on the final assistant turn.
+        A 4-message probe is used for non-final turns, so Qwen3-style templates do
+        not inject ``<think>``/``</think>`` tags that only appear on the last
+        assistant turn.
         """
         if hasattr(self, '_inference_cache_ready'):
             return
@@ -1464,27 +1466,47 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
 
         # --- Build turn template ---
         if self.core_cfg.compact_template:
-            user_header_ids, user_footer_and_asst_header_ids, asst_footer_ids = build_compact_turn_markers(
+            user_header_ids, user_footer_ids, asst_header_ids, asst_footer_ids = build_compact_turn_markers(
                 hf_tok, self.core_cfg.end_of_audio_token
             )
             logging.info(
                 f"compact_template: user_header={user_header_ids}, "
-                f"end_of_audio={user_footer_and_asst_header_ids}, footer={asst_footer_ids}"
+                f"end_of_audio={user_footer_ids}, footer={asst_footer_ids}"
             )
         else:
-            user_header_ids, user_footer_and_asst_header_ids, asst_footer_ids = parse_chat_template_ids(
-                hf_tok, last_turn=(chunk_size < 0)
+            user_header_ids, user_footer_ids, asst_header_ids, asst_footer_ids = parse_chat_template_ids(
+                hf_tok, last_turn=(chunk_size < 0), probe_content=self.core_cfg.audio_tag
             )
         self._user_header_ids = user_header_ids
-        self._user_footer_and_asst_header_ids = user_footer_and_asst_header_ids
+        self._user_footer_ids = user_footer_ids
+        self._asst_header_ids = asst_header_ids
         self._asst_footer_ids = asst_footer_ids
+        # Derived, kept for the consumers that still feed the boundary as one
+        # atomic run (``_build_turn_template_ids``, ``_generate_offline``, and the
+        # FSM's single FOOTER state). Splitting those into two steps is a
+        # separate change; keeping this alive makes the span split a
+        # zero-behaviour-change refactor.
+        self._user_footer_and_asst_header_ids = list(user_footer_ids) + list(asst_header_ids)
 
         # Always cache user_footer_first_id — needed by state machine inference
         # for both dynamic (chunk_size=0) and fixed chunking (use_state_machine_inference).
-        self._user_footer_first_id = user_footer_and_asst_header_ids[0] if user_footer_and_asst_header_ids else None
+        # Prefer the user footer's first token; fall back to the assistant
+        # header only when the template has no user footer at all. This
+        # reproduces the historical ``(user_footer + asst_header)[0]`` exactly,
+        # and must stay identical to the dataset-side derivation in
+        # ``StreamingSTTDataset.__init__`` — the dataset supervises this id and
+        # the model tests generated tokens against it, so a divergence silently
+        # prevents the emit gate from ever firing.
+        self._user_footer_first_id = (
+            user_footer_ids[0] if user_footer_ids else (asst_header_ids[0] if asst_header_ids else None)
+        )
 
         if chunk_size > 0:
-            turn_ids = user_header_ids + [AUDIO_TOKEN_IDX] * chunk_size + user_footer_and_asst_header_ids
+            # Built through the same helper the generation path uses, so the two
+            # cannot drift: _generate_chunked_streaming calls
+            # _build_turn_template_ids directly, while _chunked_streaming_step
+            # falls back to this cached value.
+            turn_ids = self._build_turn_template_ids(chunk_size)
             self._turn_template_ids = turn_ids
             n_audio = turn_ids.count(AUDIO_TOKEN_IDX)
             logging.info(
@@ -3190,7 +3212,6 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 )
             elif chunk_size == 0 or use_state_machine_inference:
                 # Dynamic chunking (chunk_size=0) or state machine inference opted in for chunk_size > 0.
-                # Note that for chunk_size > 0, use_state_machine_inference is not recommended.
                 result = self._generate_dynamic_streaming(
                     audios,
                     n_samples_list,

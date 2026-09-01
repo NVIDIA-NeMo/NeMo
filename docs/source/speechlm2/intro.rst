@@ -245,7 +245,7 @@ You can evaluate and run full-duplex inference using the `NemotronVoiceChat` pip
     from nemo.collections.audio.parts.utils.transforms import resample
     import nemo.collections.speechlm2 as slm
 
-    model = slm.models.NemotronVoiceChat.from_pretrained("path/to/pretrained_checkpoint").eval()
+    model = slm.models.NemotronVoiceChat.from_pretrained("nvidia/NVIDIA-NemotronLabs-VoiceChat-11B").eval()
 
     # Load user audio prompt
     audio_path = "path/to/user_audio.wav"
@@ -268,7 +268,7 @@ You can evaluate and run full-duplex inference using the `NemotronVoiceChat` pip
 
     # Note: If an explicit audio reference is not passed into `offline_inference`, 
     # the model relies on the internal config parameters:
-    # 1. model.cfg.inference_speaker_name (Highest priority preset, e.g., 'Megan')
+    # 1. model.cfg.inference_speaker_name (Highest priority preset, e.g., 'Aria')
     # 2. model.cfg.inference_speaker_reference (Fallback audio file path)
         
     # Run full offline inference
@@ -285,7 +285,43 @@ You can evaluate and run full-duplex inference using the `NemotronVoiceChat` pip
     
     print(f"Agent response: {generated_text}")
     # generated_speech can now be saved or played (sampled at model.target_sample_rate)
-    
+
+NemotronVoiceChat Streaming Inference
+*************************************
+
+For real-time, chunk-by-chunk inference (as opposed to the offline mode shown
+above), use the Streaming S2S Pipeline:
+
+.. code-block:: python
+
+    from nemo.collections.speechlm2.inference import S2SPipelineBuilder
+    from nemo.collections.speechlm2.inference.model_wrappers.engine_selection import (
+        inference_precision_from_cfg,
+    )
+
+    with inference_precision_from_cfg(cfg.s2s):
+        pipeline = S2SPipelineBuilder.build_pipeline(cfg)
+        try:
+            outputs = pipeline.run(audio_filepaths, options=options)
+        finally:
+            pipeline.shutdown()
+
+Or from the command line:
+
+.. code-block:: bash
+
+    python examples/speechlm2/nemo_inference_pipelines/s2s_streaming_infer.py \
+        audio_file=/path/to/audio \
+        s2s.model_path=nvidia/NVIDIA-NemotronLabs-VoiceChat-11B \
+        s2s.speaker_name=Aria \
+        s2s.llm_engine_type=native \
+        s2s.tts_engine_type=native \
+        s2s.system_prompt="You are a helpful assistant." \
+        streaming.chunk_size_in_secs=0.24 \
+        streaming.buffer_size_in_secs=1.68
+
+See :doc:`streaming_inference` for full details on configuration, architecture,
+and server integration.
 
 Training a Model
 ----------------
@@ -393,3 +429,4 @@ For more information, see additional sections in the SpeechLM2 docs:
    datasets
    configs
    training_and_scaling
+   streaming_inference

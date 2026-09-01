@@ -1,0 +1,62 @@
+# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Deploy config for the single-stage ``nemotron_voicechat`` NemotronDuplexH
+# streaming pipeline. EarTTS is served by ``eartts.yaml`` in a second
+# AsyncOmni engine and is coordinated by NeMo.
+#
+# The model directory passed to ``AsyncOmni(model=...)`` is a small
+# user-managed wrapper directory with this layout::
+#
+#     <wrapper>/
+#         config.json               # {"model_type": "nemotron_voicechat"}
+#         nemotron/                 # directory or symlink → Nemotron ckpt
+#         eartts/                   # loaded separately by the EarTTS runtime
+#
+# ``model_type = nemotron_voicechat`` dispatches to the one-stage pipeline.
+# ``model_subdir`` / ``tokenizer_subdir`` tell the engine to load the nested
+# Nemotron checkpoint; see
+# ``vllm_omni/engine/stage_init_utils.py:_resolve_model_tokenizer_paths``.
+async_chunk: false
+trust_remote_code: true
+enable_prefix_caching: false
+enable_chunked_prefill: false
+distributed_executor_backend: uni
+
+stages:
+  # Nemotron-Duplex-H (autoregressive text + optional ASR/function channel).
+  # PIECEWISE compilation only; see the model docstring for why FULL
+  # cudagraph mode is unsafe with this streaming setup.
+  - stage_id: 0
+    max_num_seqs: 1
+    # Prompt tokens plus one token per 80 ms frame.
+    max_num_batched_tokens: 2048
+    max_model_len: 2048
+    gpu_memory_utilization: 0.45
+    enforce_eager: false
+    async_scheduling: true
+    devices: "0"
+    model_subdir: nemotron
+    tokenizer_subdir: nemotron
+    engine_extras:
+      logits_processors:
+        - nemo.collections.speechlm2.inference.vllm_omni.nemotron_duplex_h.sampling:SharedTextSamplingLogitsProcessor
+    compilation_config:
+      cudagraph_mode: PIECEWISE
+    default_sampling_params:
+      temperature: 0.0
+      top_p: 1.0
+      top_k: -1
+      max_tokens: 2048
+      detokenize: false

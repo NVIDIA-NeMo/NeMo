@@ -1,0 +1,45 @@
+# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Single-stage EarTTS runtime. The model path passed to AsyncOmni is the
+# converted ``eartts/`` directory itself.
+async_chunk: false
+trust_remote_code: true
+enable_prefix_caching: false
+enable_chunked_prefill: false
+distributed_executor_backend: uni
+
+stages:
+  - stage_id: 0
+    # One conditional + one unconditional request per VoiceChat stream.
+    # The no-CFG path uses only one slot.
+    max_num_seqs: 2
+    max_num_batched_tokens: 2048
+    max_model_len: 2048
+    gpu_memory_utilization: 0.30
+    enforce_eager: false
+    # Keep the synchronous scheduler: paired streaming requests must observe
+    # the same completed step before their next updates are admitted.
+    async_scheduling: false
+    skip_tokenizer_init: true
+    dtype: float32
+    devices: "0"
+    compilation_config:
+      cudagraph_mode: PIECEWISE
+    default_sampling_params:
+      temperature: 0.0
+      top_p: 1.0
+      top_k: -1
+      max_tokens: 2048
+      detokenize: false

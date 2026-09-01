@@ -350,8 +350,25 @@ speechlm2 = [
 [tool.setuptools]
 py-modules = ["nemo"]
 
+# vllm-omni spawns its stage children with ``multiprocessing`` start method
+# ``spawn``, and spawned children inherit no Python state, so registering the
+# NemotronDuplexH + EarTTS models and the pipeline in the parent is not enough.
+# ``nemo_voicechat`` is declared in vLLM's group, not vllm-omni's, because vLLM
+# loads its plugins earlier: vllm-omni resolves the pipeline for ``model_type``
+# while constructing AsyncOmniEngine, before it loads its own group.
+# Registration is idempotent and no-ops when vllm-omni is absent, so an ordinary
+# vLLM process pays only the import.
+# Entry points are only discoverable from an installed distribution, so NeMo has
+# to be pip-installed (``pip install -e .`` is enough); PYTHONPATH will not do.
 [project.entry-points."vllm.general_plugins"]
 nemo_speechlm = "nemo.collections.speechlm2.vllm.salm:register"
+nemo_voicechat = "nemo.collections.speechlm2.inference.vllm_omni.register:register_nemo_voicechat"
+
+# Also declared in vllm-omni's own group, which is loaded in the stage children
+# and worker processes. Harmless duplication: whichever loader runs first wins
+# and the second call returns immediately.
+[project.entry-points."vllm_omni.general_plugins"]
+nemo_voicechat = "nemo.collections.speechlm2.inference.vllm_omni.register:register_nemo_voicechat"
 
 [project.urls]
 Download = "https://github.com/NVIDIA-NeMo/Speech/releases"

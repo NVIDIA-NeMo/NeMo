@@ -1,0 +1,122 @@
+# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+S2S file/manifest streaming inference driver.
+
+This script loads complete audio files, directories of ``.wav`` files, or
+line-delimited JSON/JSONL manifests and streams each input through the
+SpeechLM2 ``StreamingS2SPipeline`` chunk by chunk.  Live audio integrations
+should call ``pipeline.generate_step()`` directly with ``Frame`` objects.
+
+Usage:
+    python s2s_streaming_infer.py \
+        audio_file=/path/to/audio_or_directory \
+        s2s.model_path=nvidia/NVIDIA-NemotronLabs-VoiceChat-11B \
+        s2s.speaker_name=Aria \
+        streaming.chunk_size_in_secs=0.08 \
+        streaming.buffer_size_in_secs=5.6
+"""
+
+import hydra
+from omegaconf import DictConfig
+
+from nemo.collections.asr.metrics.wer import word_error_rate
+from nemo.collections.speechlm2.inference.factory.s2s_pipeline_builder import S2SPipelineBuilder
+from nemo.collections.speechlm2.inference.model_wrappers.engine_selection import inference_precision_from_cfg
+from nemo.collections.speechlm2.inference.utils.audio_data import (
+    calculate_durations_incl_padding,
+    dump_output_json,
+    prepare_audio_data,
+)
+from nemo.collections.speechlm2.inference.utils.stepprogressbar import StepProgressBar
+from nemo.collections.speechlm2.parts.text_utils import clean_pred_text
+from nemo.utils import logging
+from nemo.utils.timers import SimpleTimer
+
+
+@hydra.main(config_path="./conf", config_name="s2s_streaming", version_base=None)
+def main(cfg: DictConfig):
+    default_system_prompt = cfg.get("s2s", {}).get("system_prompt", None)
+    audio_filepaths, options, ground_truths = prepare_audio_data(
+        cfg.audio_file,
+        default_system_prompt=default_system_prompt,
+        sort_by_duration=False,
+    )
+    logging.info(f"Found {len(audio_filepaths)} audio files to generate")
+
+    # Precision and determinism are torch globals: in effect before any weights
+    # load, and for the whole run. shutdown() releases any vLLM runtime.
+    with inference_precision_from_cfg(cfg.s2s):
+        pipeline = S2SPipelineBuilder.build_pipeline(cfg)
+        try:
+            progress_bar = StepProgressBar.from_audio_filepaths(
+                audio_filepaths,
+                chunk_size_in_secs=pipeline.chunk_size_in_secs,
+                pad_audio_to_sec=cfg.get("pad_audio_to_sec"),
+                pad_silence_ratio=cfg.get("pad_silence_ratio"),
+                pad_audio_by_sec=cfg.get("pad_audio_by_sec"),
+            )
+
+            # Outside the timer: one-time first-pass costs would otherwise dominate
+            # RTFX on short inputs.
+            pipeline.warmup()
+
+            timer = SimpleTimer()
+            timer.start()
+            outputs = pipeline.run(audio_filepaths, options=options, progress_bar=progress_bar)
+            timer.stop()
+
+            # Read off the pipeline before it goes out of scope; the reporting below
+            # only needs these plain values.
+            special_tokens = pipeline.special_token_strings
+        finally:
+            pipeline.shutdown()
+
+    exec_dur = timer.total_sec()
+    logging.info(f"Generated {len(audio_filepaths)} files in {exec_dur:.2f}s")
+
+    data_dur = sum(
+        calculate_durations_incl_padding(
+            audio_filepaths,
+            cfg.get("pad_audio_to_sec"),
+            cfg.get("pad_silence_ratio"),
+            cfg.get("pad_audio_by_sec"),
+        )
+    )
+    rtfx = data_dur / exec_dur if exec_dur > 0 else float('inf')
+    logging.info(f"RTFX: {rtfx:.2f} ({data_dur:.2f}s / {exec_dur:.2f}s)")
+
+    # Compute WER when ground-truth texts are available (micro-average,
+    # matching the offline eval in speechlm2.parts.metrics.asr_cer_wer)
+    all_refs, all_hyps = [], []
+    for gt, out in zip(ground_truths, outputs):
+        asr_text = out.asr_text_with_timestamps
+        if gt and asr_text:
+            cleaned_gt = clean_pred_text(gt, special_token_strings=special_tokens)
+            cleaned_pred = clean_pred_text(asr_text, special_token_strings=special_tokens)
+            if cleaned_gt.strip() and cleaned_pred.strip():
+                all_refs.append(cleaned_gt)
+                all_hyps.append(cleaned_pred)
+    if all_refs:
+        wer = word_error_rate(hypotheses=all_hyps, references=all_refs)
+        logging.info(f"WER: {wer:.4f} ({wer * 100:.2f}%), n={len(all_refs)}")
+
+    output_dir = cfg.get("output_dir", "./generated")
+    dump_output_json(audio_filepaths, outputs, output_dir, options, ground_truths)
+    logging.info(f"Transcriptions written to {output_dir}/output_processed.json and {output_dir}/output_raw.json")
+
+
+if __name__ == "__main__":
+    main()

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import random
-import re
 
 import torch
 import torch.utils.data
@@ -24,9 +23,9 @@ from lhotse.utils import ifnone
 from nemo.collections.common.data.lhotse.text_adapters import Formattable
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.force_align import ForceAligner
-from nemo.collections.speechlm2.data.s2s_dataset import _strip_timestamps
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.parts.augmentation import AudioAugmenter
+from nemo.collections.speechlm2.parts.text_utils import SECONDS_PER_FRAME, TRAINING_TIMESTAMP_RE, strip_timestamps
 from nemo.utils import logging
 
 MCQ_VAL_PROMPT = "Answer the following multiple choice question with an explanation for the answer."
@@ -327,7 +326,7 @@ class DuplexSTTDataset(torch.utils.data.Dataset):
                 "source_tokens": source_tokens,
                 "source_token_lens": source_token_lens,
                 "source_texts": [
-                    " ".join(_strip_timestamps(s.text) for s in cut.supervisions if s.speaker in self.input_roles)
+                    " ".join(strip_timestamps(s.text) for s in cut.supervisions if s.speaker in self.input_roles)
                     for cut in all_cuts_combined
                 ],
                 "target_texts": [
@@ -623,24 +622,23 @@ def _build_token_channel(
 def _text_to_ids(
     text: str,
     tokenizer: TokenizerSpec,
-    _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>",
+    _TIMESTAMP_PATTERN_RE=TRAINING_TIMESTAMP_RE,
     available_frames_for_text=None,
     word_align_position='left',
     remove_timestamps=False,
     prepend_word_space=True,
 ):
-    if not remove_timestamps and re.compile(_TIMESTAMP_PATTERN_STR).search(text):
+    if not remove_timestamps and _TIMESTAMP_PATTERN_RE.search(text):
         text_ids = _text_with_timestamps_to_ids(
             text,
             tokenizer,
-            _TIMESTAMP_PATTERN_STR,
+            _TIMESTAMP_PATTERN_RE,
             available_frames_for_text,
             word_align_position,
             prepend_word_space=prepend_word_space,
         )
     else:
-        _TIMESTAMP_PATTERN = re.compile(_TIMESTAMP_PATTERN_STR)
-        text = _TIMESTAMP_PATTERN.sub("", text)
+        text = _TIMESTAMP_PATTERN_RE.sub("", text)
         text = " ".join(text.strip().split())
         text_ids = tokenizer.text_to_ids(text)
     return text_ids
@@ -649,7 +647,7 @@ def _text_to_ids(
 def _text_with_timestamps_to_ids(
     text: str,
     tokenizer: TokenizerSpec,
-    _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>",
+    _TIMESTAMP_PATTERN_RE=TRAINING_TIMESTAMP_RE,
     available_frames_for_text=None,
     word_align_position='left',
     prepend_word_space=True,
@@ -657,7 +655,7 @@ def _text_with_timestamps_to_ids(
     text_ids, start_times, end_times, word_lens = _extract_text_and_time_tokens(
         text,
         tokenizer,
-        _TIMESTAMP_PATTERN_STR,
+        _TIMESTAMP_PATTERN_RE,
         prepend_word_space=prepend_word_space,
     )
     text_ids_with_timestamps = _expand_text_with_timestamps_and_word_lengths(
@@ -666,7 +664,7 @@ def _text_with_timestamps_to_ids(
         start_times,
         end_times,
         available_frames_for_text,
-        frame_rate=0.08,
+        frame_rate=SECONDS_PER_FRAME,
         pad_id=get_pad_id(tokenizer),
         word_align_position=word_align_position,
     )
@@ -674,12 +672,12 @@ def _text_with_timestamps_to_ids(
 
 
 def _extract_text_and_time_tokens(
-    text, tokenizer: TokenizerSpec, _TIMESTAMP_PATTERN_STR=r"<\|(\d+)\|>", prepend_word_space=True
+    text, tokenizer: TokenizerSpec, _TIMESTAMP_PATTERN_RE=TRAINING_TIMESTAMP_RE, prepend_word_space=True
 ):
-    time_tokens = re.findall(_TIMESTAMP_PATTERN_STR, text)
+    time_tokens = _TIMESTAMP_PATTERN_RE.findall(text)
     start_time = [int(time_tokens[i]) for i in range(0, len(time_tokens), 2)]
     end_time = [int(time_tokens[i]) for i in range(1, len(time_tokens), 2)]
-    words = re.sub(_TIMESTAMP_PATTERN_STR, '', text).split()
+    words = _TIMESTAMP_PATTERN_RE.sub('', text).split()
     text_ids = []
     word_lens = []
     for i, word in enumerate(words):

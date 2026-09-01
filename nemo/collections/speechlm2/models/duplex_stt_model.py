@@ -13,7 +13,6 @@
 # limitations under the License.
 import copy
 import os
-import re
 
 import torch
 from lightning import LightningModule
@@ -35,6 +34,7 @@ from nemo.collections.common.tokenizers import AutoTokenizer
 from nemo.collections.speechlm2.data.utils import get_pad_id
 from nemo.collections.speechlm2.parts.hf_hub import HFHubMixin
 from nemo.collections.speechlm2.parts.label_prep import maybe_prepend_prompt_tokens, prepare_text_and_asr_labels
+from nemo.collections.speechlm2.parts.logit_boosts import LogitBoosts, apply_logit_boosts
 from nemo.collections.speechlm2.parts.lora import maybe_install_lora
 from nemo.collections.speechlm2.parts.metrics.bleu import BLEU
 from nemo.collections.speechlm2.parts.metrics.empty_text import EmptyTextMetric
@@ -45,22 +45,24 @@ from nemo.collections.speechlm2.parts.optim_setup import configure_optimizers, i
 from nemo.collections.speechlm2.parts.pretrained import (
     load_pretrained_hf,
     maybe_load_pretrained_models,
+    resolve_pretrained_config,
     set_model_dict_for_partial_init,
     setup_speech_encoder,
 )
+from nemo.collections.speechlm2.parts.text_utils import strip_timestamps
 from nemo.collections.speechlm2.streaming.duplex_stt_inference import DuplexSTTStreamingInference
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 from nemo.utils import logging
 
 
-def maybe_rename_llm_kwargs_for_nemotron(kwargs: dict, model_cfg) -> dict:
+def maybe_rename_llm_kwargs_for_nemotron(kwargs: dict, model_cfg, cache_key: str | None = None) -> dict:
     """This is required because Nemotron models have a different signature than other HF models."""
     if 'Nemotron' not in model_cfg.pretrained_llm:
         return kwargs
     cache = kwargs.pop("past_key_values")
     if cache is not None:
-        cache_key = model_cfg.get("cache_key", "past_key_values")
-        kwargs[cache_key] = cache
+        resolved_cache_key = cache_key or model_cfg.get("cache_key", "cache_params")
+        kwargs[resolved_cache_key] = cache
     return kwargs
 
 
@@ -79,15 +81,18 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
 
         self.predict_user_text = self.cfg.get("predict_user_text", False)
 
+        pretrained_weights, tokenizer_path = resolve_pretrained_config(self.cfg)
+
         # Load LLM first
         llm = load_pretrained_hf(
             self.cfg.pretrained_llm,
-            pretrained_weights=self.cfg.pretrained_weights,
+            pretrained_weights=pretrained_weights,
             trust_remote_code=self.cfg.get("trust_remote_code", False),
+            use_meta_device=self.cfg.get("use_meta_device", False),
         ).train()
 
         # Initialize tokenizer with optional special tokens from config
-        tokenizer_src = self.cfg.get("tokenizer_path", None) or self.cfg.pretrained_llm
+        tokenizer_src = self.cfg.get("tokenizer_path", None) or tokenizer_path
         self.tokenizer = AutoTokenizer(
             tokenizer_src,
             use_fast=True,
@@ -110,10 +115,18 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             self.asr_head = copy.deepcopy(self.lm_head)
             self.embed_asr_tokens = copy.deepcopy(self.embed_tokens)
 
+        # Some VoiceChat checkpoints have a separate function-token output
+        # channel.  Even when the caller does not execute tools, its predicted
+        # token is part of the next frame's input and must therefore remain in
+        # the autoregressive state to preserve text/audio behavior.
+        self.use_function_head = self.cfg.get("use_function_head", False)
+        if self.use_function_head:
+            self.function_head = copy.deepcopy(self.lm_head)
+
         maybe_install_lora(self)
 
         # Load the pretrained streaming ASR model
-        setup_speech_encoder(self, pretrained_weights=self.cfg.pretrained_weights)
+        setup_speech_encoder(self, pretrained_weights=pretrained_weights)
 
         maybe_load_pretrained_models(self)
 
@@ -168,12 +181,16 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         self,
         input_embeds: Tensor,
         cache=None,
+        cache_position=None,
+        cache_key: str | None = None,
     ) -> dict[str, Tensor]:
         """
         Text prediction only (audio_loss_weight=0).
         """
         kwargs = dict(inputs_embeds=input_embeds, past_key_values=cache, use_cache=cache is not None, return_dict=True)
-        kwargs = maybe_rename_llm_kwargs_for_nemotron(kwargs, self.cfg)
+        kwargs = maybe_rename_llm_kwargs_for_nemotron(kwargs, self.cfg, cache_key=cache_key)
+        if cache_position is not None:
+            kwargs["cache_position"] = cache_position
         out = self.llm(**kwargs)
 
         B, T = input_embeds.shape[:2]
@@ -184,22 +201,26 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             asr_in = out['last_hidden_state']
             asr_logits = self.asr_head(asr_in)  # (B, T, asr_vocab_size)
 
+        function_logits = None
+        if self.use_function_head:
+            function_logits = self.function_head(out['last_hidden_state'])
+
         if not self.training:
-            if self.cfg.get("inference_pad_boost", None):
-                text_logits[:, :, self.text_pad_id] += self.cfg.inference_pad_boost
-            if self.cfg.get("inference_bos_boost", None):
-                text_logits[:, :, self.text_bos_id] += self.cfg.inference_bos_boost
-            if self.cfg.get("inference_eos_boost", None):
-                text_logits[:, :, self.text_eos_id] += self.cfg.inference_eos_boost
+            token_ids = dict(pad_id=self.text_pad_id, bos_id=self.text_bos_id, eos_id=self.text_eos_id)
+            apply_logit_boosts(text_logits, LogitBoosts.agent_from_cfg(self.cfg), **token_ids)
+            if self.predict_user_text:
+                apply_logit_boosts(asr_logits, LogitBoosts.user_from_cfg(self.cfg), **token_ids)
 
         ans = {"text_logits": text_logits}
         if self.predict_user_text:
             ans["asr_logits"] = asr_logits
+        if self.use_function_head:
+            ans["function_logits"] = function_logits
 
         if cache is not None:
             if 'Nemotron' in self.cfg.pretrained_llm:
-                cache_key = self.cfg.get("cache_key", "cache_params")
-                ans["cache"] = getattr(out, cache_key, out.get(cache_key))
+                resolved_cache_key = cache_key or self.cfg.get("cache_key", "cache_params")
+                ans["cache"] = getattr(out, resolved_cache_key, out.get(resolved_cache_key))
             else:
                 ans["cache"] = out["past_key_values"]
 
@@ -507,8 +528,7 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                 prompt_token_lens=prompt_token_lens,
             )
 
-            # Strip timestamps for metrics
-            text_clean = [re.sub(r"<[\|$].*?[\|$]>", "", s).strip() for s in results["text"]]
+            text_clean = [strip_timestamps(s) for s in results["text"]]
 
             # Agent text metrics
             self.bleu.update(name=name, refs=dataset_batch["target_texts"], hyps=text_clean)
@@ -570,6 +590,68 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
         text_bos = torch.full((1,), fill_value=self.text_pad_id, device=self.device)
         input_embeds = self.embed_asr_tokens(text_bos)
         return input_embeds
+
+    def build_input_embedding(
+        self,
+        frame_embedding: torch.Tensor,
+        current_frame_idx: int,
+        gen_text: torch.Tensor,
+        gen_asr_text: torch.Tensor | None,
+        gen_function: torch.Tensor | None = None,
+        has_prompt: bool = False,
+    ) -> torch.Tensor:
+        """Compose the LLM input embedding for a single streaming frame.
+
+        Combines the perception embedding (user channel) with the text /
+        ASR channel embeddings from the previous step.  At frame 0 this
+        is either BOS (no prompt) or pad (after prompt).
+
+        The arithmetic order must match offline inference exactly
+        (floating-point addition is not associative).  For t > 0 the text
+        and ASR embeddings are summed first, then added to the perception
+        embedding.  For t == 0 the sequential ``+=`` pattern matches the
+        offline path.
+        """
+        emb = frame_embedding.clone()
+        emb *= self.cfg.get("duplex_user_channel_weight", 1.0)
+
+        if current_frame_idx == 0 and not has_prompt:
+            emb += self._get_bos_embedding() * self.cfg.get("duplex_text_channel_weight", 1.0)
+            if self.predict_user_text:
+                emb += self._get_asr_bos_embedding() * self.cfg.get("duplex_asr_text_weight", 1.0)
+
+        elif current_frame_idx == 0 and has_prompt:
+            pad_token = torch.full((1,), fill_value=self.text_pad_id, device=self.device, dtype=torch.long)
+            emb += self.embed_tokens(pad_token).to(dtype=emb.dtype)
+            if self.predict_user_text:
+                emb += self.embed_asr_tokens(pad_token).to(dtype=emb.dtype)
+
+        else:
+            prev = current_frame_idx - 1
+            last_token_emb = self.embed_tokens(gen_text[:, prev]) * self.cfg.get("duplex_text_channel_weight", 1.0)
+            if self.predict_user_text:
+                last_asr_token_emb = self.embed_asr_tokens(gen_asr_text[:, prev]) * self.cfg.get(
+                    "duplex_asr_text_weight", 1.0
+                )
+                emb += last_token_emb + last_asr_token_emb
+            else:
+                emb += last_token_emb
+
+        if self.use_function_head:
+            if gen_function is None:
+                raise ValueError("gen_function is required when use_function_head=True")
+            function_idx = 0 if current_frame_idx == 0 else current_frame_idx - 1
+            function_emb = self.embed_tokens(gen_function[:, function_idx])
+            emb += function_emb * self.cfg.get("duplex_function_channel_weight", 1.0)
+
+            # The reference branch below sums the agent, audio, ASR and function
+            # channels in a different floating-point order. NeMo keeps the
+            # ordering above for every checkpoint, so results can differ in the
+            # last bits from that implementation.
+            # Reference:
+            # https://github.com/NVIDIA-NeMo/Speech/blob/14c77efb8110ee46eebdc50a3b15ee6d2c1a3878/nemo/collections/speechlm2/parts/fusion.py#L72-L106
+
+        return emb
 
     def backward(self, *args, **kwargs):
         with loss_parallel():
@@ -695,7 +777,10 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
                         logging.warning(f"Both config and fallback methods failed: {fallback_e}")
                         logging.warning("Skipping tensor parallel configuration for this attention layer")
 
-            for m in (self.lm_head,):
+            output_heads = [self.lm_head]
+            if self.use_function_head:
+                output_heads.append(self.function_head)
+            for m in output_heads:
                 parallelize_module(
                     m,
                     tp_mesh,
@@ -717,6 +802,8 @@ class DuplexSTTModel(LightningModule, HFHubMixin):
             self.embed_tokens = fully_shard(self.embed_tokens, **fsdp_config)
             self.llm = fully_shard(self.llm, **fsdp_config)
             self.lm_head = fully_shard(self.lm_head, **fsdp_config)
+            if self.use_function_head:
+                self.function_head = fully_shard(self.function_head, **fsdp_config)
             self.perception = fully_shard(self.perception, **fsdp_config)
             if self.predict_user_text:
                 self.asr_head = fully_shard(self.asr_head, **fsdp_config)

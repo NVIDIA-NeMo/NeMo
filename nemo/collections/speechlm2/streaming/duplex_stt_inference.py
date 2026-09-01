@@ -103,9 +103,6 @@ class DuplexSTTStreamingInference:
         else:
             T = T_local
 
-        input_embeds = source_encoded.clone()
-        input_embeds *= self.model.cfg.get("duplex_user_channel_weight", 1.0)
-
         use_cache = True
         if 'Nemotron' in self.model.cfg.pretrained_llm:
             cache = None
@@ -120,6 +117,9 @@ class DuplexSTTStreamingInference:
             gen_asr = torch.empty(B, T, device=self.model.device, dtype=torch.long)
         else:
             gen_asr = None
+        gen_function = None
+        if self.model.use_function_head:
+            gen_function = torch.full((B, T), self.model.text_pad_id, device=self.model.device, dtype=torch.long)
 
         if prompt_tokens is not None and prompt_token_lens is not None:
             for i, prompt_len in enumerate(prompt_token_lens):
@@ -129,11 +129,16 @@ class DuplexSTTStreamingInference:
                     if self.model.predict_user_text:
                         gen_asr[i, :prompt_len] = self.model.text_pad_id
 
-        input_embeds[:, 0] += self.model._get_bos_embedding() * self.model.cfg.get("duplex_text_channel_weight", 1.0)
-        if self.model.predict_user_text:
-            input_embeds[:, 0] += self.model._get_asr_bos_embedding() * self.model.cfg.get(
-                "duplex_asr_text_weight", 1.0
-            )
+        has_prompt = prompt_token_lens is not None and prompt_token_lens.max().item() > 0
+        input_embeds = source_encoded.clone()
+        input_embeds[:, 0:1] = self.model.build_input_embedding(
+            source_encoded[:, 0:1],
+            0,
+            gen_text,
+            gen_asr,
+            gen_function,
+            has_prompt=has_prompt,
+        )
 
         start_gen_pos = 0
         if prompt_token_lens is not None:
@@ -154,12 +159,15 @@ class DuplexSTTStreamingInference:
             "B": B,
             "T": T,
             "T_local": T_local,
+            "source_encoded": source_encoded,
             "input_embeds": input_embeds,
             "cache": cache,
             "use_cache": use_cache,
             "gen_text": gen_text,
             "gen_asr": gen_asr,
+            "gen_function": gen_function,
             "start_gen_pos": start_gen_pos,
+            "has_prompt": has_prompt,
             "is_prompt_position_mask": is_prompt_position_mask,
         }
 
@@ -174,13 +182,70 @@ class DuplexSTTStreamingInference:
             inference_state["gen_text"][:, 0] = ans["text_logits"][:, -1].argmax(dim=-1)
             if self.model.predict_user_text:
                 inference_state["gen_asr"][:, 0] = ans["asr_logits"][:, -1].argmax(dim=-1)
+            if self.model.use_function_head:
+                inference_state["gen_function"][:, 0] = ans["function_logits"][:, -1].argmax(dim=-1)
 
         return ans, inference_state
 
-    def _maybe_apply_forced_turn_taking(self, t, inference_state, is_prompt_position):
-        """Apply forced turn-taking rules based on ASR channel tokens."""
+    def _maybe_apply_forced_turn_taking(
+        self,
+        t,
+        gen_text,
+        gen_asr,
+        is_prompt_position=None,
+    ):
+        """Apply forced turn-taking rules based on ASR channel tokens.
+
+        This mutates gen_text in place when a rule fires.
+
+        This supports two types of turn-taking corrections:
+
+        1. User stopped talking -> model should start talking.
+            (a) If the ASR stream shows enough user silence after user text tokens, or
+            (b) user EOS,
+            then force agent BOS in the text stream.
+
+        2. User started talking -> model should stop talking.
+            (a) If the ASR stream shows user BOS,
+            then force agent EOS in the text stream.
+
+        There are two parameters that control the behavior, which will be read from
+        self.model.cfg:
+        - force_turn_taking_threshold: how far back to look in the agent text stream
+            before allowing to force another BOS/EOS.
+        - force_turn_taking_pad_window: how many recent ASR tokens must all be PAD
+            before treating the user as silent (i.e. only relevant to type 1a described above).
+            The token before the pad window must be user text, not PAD or BOS; this
+            prevents startup silence after user BOS from making the agent start.
+
+        Note: Runtime wrappers should sync their force_turn_taking* overrides into
+        self.model.cfg before calling this shared helper.
+
+        Examples below of each forcing case. They assume the same time of forced turn-taking
+        did not happen in force_turn_taking_threshold, so forcing is allowed.
+
+            1a. User silence after text -> force agent BOS, with pad_window=3:
+                time step:  t-4                t-3  t-2  t-1  t
+                ASR:        non-special token  PAD  PAD  PAD  PAD
+                text:       PAD                PAD  PAD  PAD  BOS
+
+            1b. User EOS -> force agent BOS:
+                time step:  ...  t
+                ASR:        ...  EOS
+                text:       ...  BOS
+
+            2a. User BOS -> force agent EOS:
+                time step:  ...  t
+                ASR:        ...  BOS
+                text:       ...  EOS
+
+        """
         if not self.model.cfg.get("force_turn_taking", False):
             return
+
+        B = gen_text.size(0)
+        if is_prompt_position is None:
+            is_prompt_position = torch.zeros(B, dtype=torch.bool, device=gen_text.device)
 
         threshold = self.model.cfg.get("force_turn_taking_threshold", 40)
         pad_window_steps = self.model.cfg.get("force_turn_taking_pad_window", 25)
@@ -200,64 +265,71 @@ class DuplexSTTStreamingInference:
         else:
             legacy_user_eos_id = None
 
-        for batch_idx in range(inference_state["B"]):
+        for batch_idx in range(B):
             if is_prompt_position[batch_idx]:
                 continue
 
             lookback_start = max(0, t - threshold)
-            agent_text_window = inference_state["gen_text"][batch_idx, lookback_start:t]
-            current_asr_token = inference_state["gen_asr"][batch_idx, t]
+            agent_text_window = gen_text[batch_idx, lookback_start:t]
+            current_asr_token = gen_asr[batch_idx, t]
 
-            # ASR EOS or ~1 sec of pad tokens → insert agent BOS if not present in window
-            # Skip if we don't have enough tokens at the beginning
+            # If we have not accumulated a full pad window yet, silence is not meaningful.
             if t < pad_window_steps:
                 continue
 
             pad_lookback_start = t - pad_window_steps
-            asr_recent_tokens = inference_state["gen_asr"][batch_idx, pad_lookback_start:t]
+            asr_recent_tokens = gen_asr[batch_idx, pad_lookback_start:t]
             has_pad_window = (
                 (asr_recent_tokens == self.model.text_pad_id).all() if len(asr_recent_tokens) > 0 else False
             )
 
-            # Require that the pad window starts after a non-pad token
+            # 1a. Silence-based user stopped trigger: the pad window must follow user text.
             if has_pad_window and pad_lookback_start > 0:
-                token_before_window = inference_state["gen_asr"][batch_idx, pad_lookback_start - 1]
-                has_pad_window = token_before_window != self.model.text_pad_id
+                token_before_window = gen_asr[batch_idx, pad_lookback_start - 1]
+                has_pad_window = (token_before_window != self.model.text_pad_id) and (
+                    token_before_window != self.model.text_bos_id
+                )
             elif has_pad_window and pad_lookback_start == 0:
                 # If the pad window starts at position 0, it doesn't meet the requirement
                 has_pad_window = False
 
-            # Check for user EOS: either tokenizer.eos (new) or legacy user_eos (old models)
+            # 1b. Explicit user stopped trigger: ASR emits user EOS.
             is_user_eos = current_asr_token == self.model.tokenizer.eos
             if legacy_user_eos_id is not None:
                 is_user_eos = is_user_eos or (current_asr_token == legacy_user_eos_id)
 
-            # Check for user BOS: either text_bos_id (new) or legacy user_bos (old models)
+            # 2. Explicit user started trigger: ASR emits user BOS.
             is_user_bos = current_asr_token == self.model.text_bos_id
             if legacy_user_bos_id is not None:
                 is_user_bos = is_user_bos or (current_asr_token == legacy_user_bos_id)
 
             if is_user_eos or has_pad_window:
-                # User has finished talking or remains silent for a while
+                # 1a/1b. User stopped speaking: force agent BOS unless already started recently.
                 if not (agent_text_window == self.model.text_bos_id).any():
-                    inference_state["gen_text"][batch_idx, t] = self.model.text_bos_id
+                    gen_text[batch_idx, t] = self.model.text_bos_id
+                    reason = "user EOS" if is_user_eos else "ASR pad window"
+                    logging.debug(
+                        f"Forced turn-taking at frame {t}, batch {batch_idx}: "
+                        f"inserted agent BOS (reason: {reason})"
+                    )
             elif is_user_bos:
-                # User has started talking but agent has not stopped yet
+                # 2. User started speaking: force agent EOS unless already stopped recently.
                 if not (agent_text_window == self.model.text_eos_id).any():
-                    inference_state["gen_text"][batch_idx, t] = self.model.text_eos_id
+                    gen_text[batch_idx, t] = self.model.text_eos_id
+                    logging.debug(
+                        f"Forced turn-taking at frame {t}, batch {batch_idx}: " "inserted agent EOS (reason: user BOS)"
+                    )
 
     def _step_inference(self, t, inference_state, ans):
         """Perform inference for one step t in the autoregressive loop."""
-        last_emb = self.model.embed_tokens(inference_state["gen_text"][:, t - 1]) * self.model.cfg.get(
-            "duplex_text_channel_weight", 1.0
+        inference_state["input_embeds"][:, t : t + 1] = self.model.build_input_embedding(
+            inference_state["source_encoded"][:, t : t + 1],
+            t,
+            inference_state["gen_text"],
+            inference_state["gen_asr"],
+            inference_state["gen_function"],
+            has_prompt=inference_state["has_prompt"],
         )
-        if self.model.predict_user_text:
-            last_asr_emb = self.model.embed_asr_tokens(inference_state["gen_asr"][:, t - 1]) * self.model.cfg.get(
-                "duplex_asr_text_weight", 1.0
-            )
-            last_emb += last_asr_emb
-
-        inference_state["input_embeds"][:, t] += last_emb
 
         is_prompt_position = inference_state["is_prompt_position_mask"][:, t]
 
@@ -288,7 +360,15 @@ class DuplexSTTStreamingInference:
                 inference_state["gen_asr"][:, t] = torch.where(
                     is_prompt_position, inference_state["gen_asr"][:, t], generated_asr
                 )
-                self._maybe_apply_forced_turn_taking(t, inference_state, is_prompt_position)
+                self._maybe_apply_forced_turn_taking(
+                    t, inference_state["gen_text"], inference_state["gen_asr"], is_prompt_position
+                )
+
+        if self.model.use_function_head and not is_prompt_position.all():
+            generated_function = ans["function_logits"][:, -1].argmax(dim=-1)
+            inference_state["gen_function"][:, t] = torch.where(
+                is_prompt_position, inference_state["gen_function"][:, t], generated_function
+            )
 
         return ans
 

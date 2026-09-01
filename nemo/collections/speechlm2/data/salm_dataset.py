@@ -197,17 +197,22 @@ class MultiSpeakerConfig:
     no_rttm_to_ones: bool = True
     num_sample_per_mel_frame: int = 160
     num_mel_frame_per_target_frame: int = 8
+    max_alignment_permutations: int | None = 720
 
     @staticmethod
     def from_dict(cfg: dict | None) -> "MultiSpeakerConfig | None":
         """Build a config from a raw settings dict, or return ``None`` when no SOT settings are given."""
         if cfg is None:
             return None
+        max_alignment_permutations = cfg.get('max_alignment_permutations', 720)
         return MultiSpeakerConfig(
             num_speakers=int(cfg.get('num_speakers', 4)),
             no_rttm_to_ones=cfg.get('no_rttm_to_ones', True),
             num_sample_per_mel_frame=int(cfg.get('window_stride', 0.01) * cfg.get('sample_rate', 16000)),
             num_mel_frame_per_target_frame=int(cfg.get('subsampling_factor', 8)),
+            max_alignment_permutations=(
+                None if max_alignment_permutations is None else int(max_alignment_permutations)
+            ),
         )
 
 
@@ -223,6 +228,15 @@ class SALMMultiSpeakerProcessor:
         speaker_activities = self._build_speaker_activities(batch["conversations"])
         if not speaker_activities:
             return
+        # The shared collator pads variable-length rows with zeros. Preserve
+        # the all--1 sentinel across that padding: PEE detects missing-RTTM
+        # rows over the whole padded tensor, so a single padded zero would
+        # otherwise make a short no-RTTM row look like an explicit
+        # (all-silent) RTTM target and bypass its embedded Sortformer.
+        missing_rttm_rows = torch.tensor(
+            [bool(torch.all(activity == -1.0)) for activity in speaker_activities],
+            dtype=torch.bool,
+        )
         targets, target_length = collate_speaker_activity_targets(
             speaker_activities,
             batch["audio_lens"],
@@ -231,6 +245,7 @@ class SALMMultiSpeakerProcessor:
             num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
             dtype=batch["audios"].dtype,
         )
+        targets[missing_rttm_rows] = -1.0
         batch["spk_targets"] = targets
         batch["spk_target_length"] = target_length
 
@@ -252,14 +267,21 @@ class SALMMultiSpeakerProcessor:
                     no_rttm_to_ones=cfg.no_rttm_to_ones,
                 )
 
-                text = self._audio_turn_text(turn, cut)
-                new_text, _, _ = ensure_single_speaker_sot(text)
-
-                speaker_activity = fix_speaker_activity(new_text, speaker_activity, cfg.num_speakers)
                 if not has_rttm:
                     # Request inferred activity instead of the synthetic
-                    # single-speaker fallback.
+                    # single-speaker fallback.  Skip SOT/RTTM column alignment:
+                    # the sentinel replaces the whole target, and factorial
+                    # alignment work here would be both wasted and misleading.
                     speaker_activity = torch.full_like(speaker_activity, -1.0)
+                else:
+                    text = self._audio_turn_text(turn, cut)
+                    new_text, _, _ = ensure_single_speaker_sot(text)
+                    speaker_activity = fix_speaker_activity(
+                        new_text,
+                        speaker_activity,
+                        cfg.num_speakers,
+                        max_alignment_permutations=cfg.max_alignment_permutations,
+                    )
                 speaker_activities.append(speaker_activity)
         return speaker_activities
 

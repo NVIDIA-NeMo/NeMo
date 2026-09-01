@@ -475,8 +475,34 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             self._chunk_size_repr = int(cs)
 
     def _resize_llm_embeddings(self) -> None:
-        """Grow the LLM's embedding table to cover newly added special tokens."""
-        self.llm.resize_token_embeddings(len(self.tokenizer.tokenizer))
+        """Grow the LLM's embedding table to cover newly added special tokens.
+
+        Never *shrinks* the table. Most checkpoints ship with spare rows
+        (``config.vocab_size > len(tokenizer)``, e.g. 151936 vs 151669 for Qwen3),
+        which newly added special tokens can occupy without touching the parameter
+        shapes. Shrinking to ``len(tokenizer)`` would instead make the embedding
+        shape a function of how many special tokens the config happens to register
+        (``blank_token`` / ``write_token`` / ``end_of_audio_token`` / ``audio_tag``),
+        so adding one more would break loading every checkpoint trained without it.
+
+        This mirrors
+        :meth:`~nemo.collections.speechlm2.models.streaming_stt_model_automodel.StreamingSTTModelAutomodel._sync_llm_vocab_size`.
+        """
+        target = len(self.tokenizer.tokenizer)
+        # ``embed_tokens`` is hoisted out of the LLM *after* the special tokens are
+        # registered, so read the table off the LLM rather than off ``self``.
+        embed = self.llm.get_input_embeddings()
+        current = int(embed.weight.shape[0])
+        if current >= target:
+            if current > target:
+                logging.info(
+                    f"LLM embedding table has {current} rows for a tokenizer of {target} tokens "
+                    f"({current - target} spare rows) — added special tokens reuse the spare rows, "
+                    "no resize needed."
+                )
+            return
+        self.llm.resize_token_embeddings(target)
+        logging.info(f"Resized the LLM embedding table from {current} to {target} rows.")
 
     def _register_special_tokens(self) -> None:
         """Register ``blank`` / ``end_of_audio`` / ``write`` tokens on the tokenizer.

@@ -245,7 +245,7 @@ You can evaluate and run full-duplex inference using the `NemotronVoiceChat` pip
     from nemo.collections.audio.parts.utils.transforms import resample
     import nemo.collections.speechlm2 as slm
 
-    model = slm.models.NemotronVoiceChat.from_pretrained("nvidia/NVIDIA-NemotronLabs-VoiceChat-11B").eval()
+    model = slm.models.NemotronVoiceChat.from_pretrained("path/to/pretrained_checkpoint").eval()
 
     # Load user audio prompt
     audio_path = "path/to/user_audio.wav"

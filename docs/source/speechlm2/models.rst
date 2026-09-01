@@ -312,7 +312,7 @@ All models in the speechlm2 collection can be instantiated from pretrained check
     ear_tts_model = slm.models.DuplexEARTTS.from_pretrained("path/to/checkpoint")
 
     # Load NemotronVoiceChat (Inference Only)
-    voicechat_model = slm.models.NemotronVoiceChat.from_pretrained("nvidia/NVIDIA-NemotronLabs-VoiceChat-11B")
+    voicechat_model = slm.models.NemotronVoiceChat.from_pretrained("path/to/checkpoint")
 
 Remote HuggingFace code is disabled by default. If a trusted checkpoint requires
 custom code, opt in at runtime and pin the repository to a reviewed revision:

@@ -27,7 +27,8 @@ There are two ways to use the pipeline:
               generate_step(frames)
                     │
                     ├─ incremental agent audio + text
-                    └─ incremental user ASR text (when the checkpoint has an ASR head)
+                    ├─ incremental user ASR text (when the checkpoint has an ASR head)
+                    └─ [EXPERIMENTAL] incremental function head output (when the checkpoint has a function call head, as in NVIDIA-NemotronLabs-VoiceChat-11B)
 
 Each audio file passed to ``run()`` is treated as one continuous audio stream. ``run()``
 accumulates the per-step outputs for each stream and writes final audio/text

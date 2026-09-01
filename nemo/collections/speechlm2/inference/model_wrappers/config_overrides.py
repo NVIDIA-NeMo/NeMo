@@ -69,9 +69,6 @@ TTS_KEYS = (
     # DuplexEARTTS.infer_codes_one_step (flag-gated, defaults to True) and the
     # vLLM EarTTS preprocess (unconditional). See VLLM_FORCES_TRUE.
     "inference_force_speech_silence_on_eos",
-    "inference_top_p_or_k",
-    "inference_noise_scale",
-    "inference_guidance_scale",
 )
 
 COMPONENT_OF = {**{key: LLM for key in LLM_KEYS}, **{key: TTS for key in TTS_KEYS}}
@@ -83,9 +80,6 @@ COMPONENT_OF = {**{key: LLM for key in LLM_KEYS}, **{key: TTS for key in TTS_KEY
 
 # The run is correct, but the setting does nothing: warn.
 VLLM_IGNORES = {
-    "inference_top_p_or_k": (TTS, "read by DuplexEARTTS._get_generation_config"),
-    "inference_noise_scale": (TTS, "read by DuplexEARTTS._get_generation_config"),
-    "inference_guidance_scale": (TTS, "read by DuplexEARTTS._get_generation_config"),
     "use_llm_cache": (LLM, "vLLM always keeps a paged KV cache"),
     "use_tts_torch_compile": (TTS, "vLLM compiles inside the engine"),
     "use_tts_subword_cache": (
@@ -95,7 +89,7 @@ VLLM_IGNORES = {
 }
 
 # These boolean flags request an optimization only when enabled. Their false
-# values are no-ops, unlike numeric sampling values such as a zero noise scale.
+# values are no-ops.
 _IGNORED_ENABLE_FLAGS = frozenset({"use_llm_cache", "use_tts_torch_compile", "use_tts_subword_cache"})
 
 # vLLM does this unconditionally: it can honour True but not False. Warn only

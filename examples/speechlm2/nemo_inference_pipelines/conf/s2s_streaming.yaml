@@ -59,7 +59,6 @@ s2s:
     nemotron_dtype: float32                     # dtype for the converted Nemotron LLM checkpoint
     eartts_precompute_batch_size: 256           # batch size for baking out the subword lookup table
     guidance_enabled: null                      # null -> converted eartts/config.json enable_guidance
-    guidance_scale: null                        # null -> converted eartts/config.json guidance_scale
     log_stats: false
     stage_init_timeout: 600                     # seconds to wait for both stage children to come up
     step_timeout: 60.0                          # per-step timeout on the synchronous side (seconds)
@@ -120,17 +119,10 @@ s2s:
   inference_bos_boost: null              # Boost agent text BOS logit
   inference_eos_boost: null              # Boost agent text EOS logit
 
-  # EarTTS behaviour. Applied by EarTTS internally, so these affect the TTS
-  # component selected by tts_engine_type.
   inference_force_speech_silence_on_eos: null   # null -> checkpoint value (model default: true).
                                                 # Substitutes codec silence as the acoustic input of
                                                 # the step whose text token is EOS. vllm_omni always
                                                 # does this and cannot honour false.
-  inference_top_p_or_k: null             # null -> checkpoint value (model default: 0.8). native TTS only
-  inference_noise_scale: null            # null -> checkpoint value (model default: 0.8). native TTS only
-  inference_guidance_scale: null         # null -> checkpoint value (model default: 0.5). native TTS only;
-                                         # the vllm_omni TTS reads vllm_omni_config.guidance_scale, which
-                                         # itself falls back to the converted eartts/config.json value.
 
   system_prompt: ???
 

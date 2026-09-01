@@ -191,7 +191,6 @@ class NemotronVoicechatInferenceWrapper:
         self.omni_wrapper_dir: str | None = None
         self.omni_speaker_latent: torch.Tensor | None = None
         self.omni_guidance_enabled = True
-        self.omni_guidance_scale = 0.5
 
         # Sampling parameters (defaults match s2s_streaming.yaml)
         self.top_p = float(model_cfg.get("top_p", 0.5))

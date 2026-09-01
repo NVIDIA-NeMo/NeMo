@@ -63,16 +63,14 @@ def test_overrides_land_in_the_config_their_consumer_reads(model, warnings):
         {
             "inference_user_pad_boost": 0.8,
             "force_turn_taking": True,
-            "inference_top_p_or_k": 0.7,
         },
         llm_engine_type="native",
         tts_engine_type="native",
     )
 
-    # DuplexSTTModel reads its own cfg; DuplexEARTTS reads its own.
+    # DuplexSTTModel reads its own cfg.
     assert model.stt_model.cfg["inference_user_pad_boost"] == 0.8
     assert model.stt_model.cfg["force_turn_taking"] is True
-    assert model.tts_model.cfg["inference_top_p_or_k"] == 0.7
     # Untouched by this call, and still reported as the effective value.
     assert model.stt_model.cfg["inference_pad_boost"] == 1.5
     assert effective["inference_pad_boost"] == 1.5
@@ -84,12 +82,6 @@ def test_overrides_land_in_the_config_their_consumer_reads(model, warnings):
     [
         # Boosts and turn-taking work on both backends, so they stay quiet.
         ({"inference_user_pad_boost": 0.8, "inference_pad_boost": 0.3, "force_turn_taking": True}, "vllm_omni", None),
-        # vLLM EarTTS takes sampling from the converted checkpoint instead.
-        ({"inference_noise_scale": 0.9}, "vllm_omni", "inference_noise_scale"),
-        ({"inference_noise_scale": 0.0}, "vllm_omni", "inference_noise_scale"),
-        ({"inference_top_p_or_k": 0.0}, "vllm_omni", "inference_top_p_or_k"),
-        ({"inference_guidance_scale": 0.0}, "vllm_omni", "inference_guidance_scale"),
-        ({"inference_noise_scale": 0.9}, "native", None),
         # It forces codec silence on EOS unconditionally: True is honoured,
         # False cannot be.
         ({"inference_force_speech_silence_on_eos": False}, "vllm_omni", "force_speech_silence"),

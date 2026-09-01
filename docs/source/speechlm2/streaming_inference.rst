@@ -648,11 +648,6 @@ reported at load time rather than silently doing nothing.
      - Applied inside EarTTS on both paths. The converted EarTTS always
        substitutes codec silence on EOS and has no flag, so it cannot honour
        ``false``.
-   * - ``inference_top_p_or_k``, ``inference_noise_scale``, ``inference_guidance_scale``
-     - yes
-     - no
-     - The vLLM EarTTS takes sampling from the converted checkpoint and
-       ``vllm_omni_config`` instead.
    * - ``deterministic``
      - yes
      - no
@@ -699,8 +694,9 @@ EarTTS classifier-free guidance uses two explicit requests in the same engine.
 They have independent KV caches, but a custom scheduler advances them in
 lockstep. The unconditional request replaces text conditioning with the
 checkpoint's ``null_emb``; the MaskGIT sampler applies the native guidance
-formula and returns only the conditional stream's codes. Configure it with
-``vllm_omni_config.guidance_enabled`` and ``guidance_scale``.
+formula and returns only the conditional stream's codes. Whether guidance is
+enabled can be overridden with ``vllm_omni_config.guidance_enabled``; its scale
+comes from the converted TTS checkpoint.
 
 Perception, the audio codec and tokenization stay on PyTorch in every engine pairing.
 

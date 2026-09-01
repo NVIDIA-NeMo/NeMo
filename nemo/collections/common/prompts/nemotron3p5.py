@@ -14,10 +14,7 @@
 from lhotse.cut import Cut
 
 from nemo.collections.common.data.prompt_fn import registered_prompt_format_fn
-from nemo.collections.common.prompts.nemotron_nano_v3 import (
-    NemotronNanoV3PromptFormatter,
-    nemotron_nano_v3,
-)
+from nemo.collections.common.prompts.nemotron_nano_v3 import NemotronNanoV3PromptFormatter, nemotron_nano_v3
 
 
 class Nemotron3p5PromptFormatter(NemotronNanoV3PromptFormatter):

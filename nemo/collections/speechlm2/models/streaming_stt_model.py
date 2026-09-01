@@ -229,6 +229,21 @@ class StreamingSTTModelConfig:
     blank_loss_weight: float = 1.0
     log_every_n_steps: int = 10
     dtype: str = "bfloat16"
+    # Embedding table sizing. ``True`` (default) keeps the historical behaviour of
+    # calling ``resize_token_embeddings(len(tokenizer))`` unconditionally, which
+    # SHRINKS the table to exactly the tokenizer size. Every checkpoint trained so
+    # far was written that way, so the default is what lets them load unchanged.
+    #
+    # ``False`` never shrinks: added special tokens instead occupy the spare rows
+    # most backbones ship with (Qwen3: 151936 rows for a 151669-token tokenizer),
+    # so the parameter shape stops depending on how many special tokens the config
+    # happens to register. Prefer it for NEW runs — under ``True``, registering one
+    # more special token later moves the shape again and breaks that run's own
+    # checkpoints. It is not safe to flip on an existing checkpoint: the table
+    # would gain the spare rows back and mismatch ``embed_tokens.weight``.
+    #
+    # No-op in the Automodel subclass, which has always been never-shrink.
+    allow_shrink_embedding: bool = True
     # --- Compact template ---
     # Compact template drops per-turn role wrapping; the ``end_of_audio_token``
     # marks the audio->text boundary and the EOS token ends each turn.
@@ -477,7 +492,9 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
     def _resize_llm_embeddings(self) -> None:
         """Grow the LLM's embedding table to cover newly added special tokens.
 
-        Never *shrinks* the table. Most checkpoints ship with spare rows
+        Shrinks the table to ``len(tokenizer)`` when ``allow_shrink_embedding`` is
+        set (the default, so that existing checkpoints load unchanged). With it
+        cleared the table is never shrunk. Most checkpoints ship with spare rows
         (``config.vocab_size > len(tokenizer)``, e.g. 151936 vs 151669 for Qwen3),
         which newly added special tokens can occupy without touching the parameter
         shapes. Shrinking to ``len(tokenizer)`` would instead make the embedding
@@ -485,10 +502,25 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         (``blank_token`` / ``write_token`` / ``end_of_audio_token`` / ``audio_tag``),
         so adding one more would break loading every checkpoint trained without it.
 
+        Clear ``allow_shrink_embedding`` on a new run to get the shape-stable
+        behaviour; leave it set to load a checkpoint whose table was shrunk to
+        ``len(tokenizer)``, which is every checkpoint written before this knob
+        existed.
+
         This mirrors
         :meth:`~nemo.collections.speechlm2.models.streaming_stt_model_automodel.StreamingSTTModelAutomodel._sync_llm_vocab_size`.
         """
         target = len(self.tokenizer.tokenizer)
+        # Default matches ``StreamingSTTModelConfig.allow_shrink_embedding`` so that a
+        # lightweight config object without the field behaves like a real one.
+        if getattr(self.core_cfg, "allow_shrink_embedding", True):
+            self.llm.resize_token_embeddings(target)
+            logging.info(
+                f"allow_shrink_embedding=True (default): LLM embedding table sized to {target} rows, "
+                "tracking len(tokenizer) exactly. Set it to False on new runs to keep the "
+                "backbone's spare rows and make the shape independent of the special-token count."
+            )
+            return
         # ``embed_tokens`` is hoisted out of the LLM *after* the special tokens are
         # registered, so read the table off the LLM rather than off ``self``.
         embed = self.llm.get_input_embeddings()
@@ -498,7 +530,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 logging.info(
                     f"LLM embedding table has {current} rows for a tokenizer of {target} tokens "
                     f"({current - target} spare rows) — added special tokens reuse the spare rows, "
-                    "no resize needed."
+                    "no resize needed (allow_shrink_embedding=False)."
                 )
             return
         self.llm.resize_token_embeddings(target)

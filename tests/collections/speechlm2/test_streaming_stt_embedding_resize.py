@@ -28,7 +28,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nemo.collections.speechlm2.models.streaming_stt_model import StreamingSTTModel
+from nemo.collections.speechlm2.models.streaming_stt_model import StreamingSTTModel, StreamingSTTModelConfig
 
 # Qwen3-1.7B: 267 spare embedding rows before any special token is added.
 QWEN3_VOCAB_ROWS = 151936
@@ -58,10 +58,11 @@ class _StubLLM:
         self._embed = SimpleNamespace(weight=SimpleNamespace(shape=(target, 2048)))
 
 
-def _make_mock_self(n_rows: int, n_tokens: int) -> SimpleNamespace:
+def _make_mock_self(n_rows: int, n_tokens: int, allow_shrink: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
         llm=_StubLLM(n_rows),
         tokenizer=SimpleNamespace(tokenizer=_StubTokenizer(n_tokens)),
+        core_cfg=SimpleNamespace(allow_shrink_embedding=allow_shrink),
     )
 
 
@@ -75,7 +76,7 @@ def test_spare_rows_are_reused_without_resizing(n_added_special_tokens):
     151936 -> 151669 + n and making the shape depend on how many tokens the
     config registered.
     """
-    mock_self = _make_mock_self(QWEN3_VOCAB_ROWS, QWEN3_TOKENIZER_LEN + n_added_special_tokens)
+    mock_self = _make_mock_self(QWEN3_VOCAB_ROWS, QWEN3_TOKENIZER_LEN + n_added_special_tokens, allow_shrink=False)
 
     StreamingSTTModel._resize_llm_embeddings(mock_self)
 
@@ -88,7 +89,7 @@ def test_shape_is_independent_of_how_many_tokens_are_registered():
     """The whole point: two configs registering different token counts agree on shape."""
     shapes = []
     for n_added in (2, 3):  # e.g. blank+write, then blank+write+audio_placeholder
-        mock_self = _make_mock_self(QWEN3_VOCAB_ROWS, QWEN3_TOKENIZER_LEN + n_added)
+        mock_self = _make_mock_self(QWEN3_VOCAB_ROWS, QWEN3_TOKENIZER_LEN + n_added, allow_shrink=False)
         StreamingSTTModel._resize_llm_embeddings(mock_self)
         shapes.append(mock_self.llm.get_input_embeddings().weight.shape[0])
 
@@ -98,7 +99,7 @@ def test_shape_is_independent_of_how_many_tokens_are_registered():
 @pytest.mark.unit
 def test_table_grows_when_tokenizer_exceeds_rows():
     """No spare rows left — the table must still grow to cover every token ID."""
-    mock_self = _make_mock_self(n_rows=100, n_tokens=105)
+    mock_self = _make_mock_self(n_rows=100, n_tokens=105, allow_shrink=False)
 
     StreamingSTTModel._resize_llm_embeddings(mock_self)
 
@@ -108,8 +109,72 @@ def test_table_grows_when_tokenizer_exceeds_rows():
 
 @pytest.mark.unit
 def test_exact_fit_is_a_noop():
-    mock_self = _make_mock_self(n_rows=105, n_tokens=105)
+    mock_self = _make_mock_self(n_rows=105, n_tokens=105, allow_shrink=False)
 
     StreamingSTTModel._resize_llm_embeddings(mock_self)
 
     assert mock_self.llm.resize_calls == []
+
+
+@pytest.mark.unit
+def test_allow_shrink_embedding_restores_legacy_resize():
+    """The escape hatch for loading checkpoints trained under the old behaviour.
+
+    Those checkpoints have a table shrunk to ``len(tokenizer)``, so a
+    freshly-built model that keeps the backbone's spare rows would fail to load
+    them with an ``embed_tokens.weight`` shape mismatch.
+    """
+    mock_self = _make_mock_self(QWEN3_VOCAB_ROWS, QWEN3_TOKENIZER_LEN + 2, allow_shrink=True)
+
+    StreamingSTTModel._resize_llm_embeddings(mock_self)
+
+    assert mock_self.llm.resize_calls == [QWEN3_TOKENIZER_LEN + 2]
+    assert mock_self.llm.get_input_embeddings().weight.shape[0] == QWEN3_TOKENIZER_LEN + 2
+
+
+@pytest.mark.unit
+def test_allow_shrink_embedding_still_grows_when_needed():
+    """Legacy mode must also cover every token ID, not only shrink."""
+    mock_self = _make_mock_self(n_rows=100, n_tokens=105, allow_shrink=True)
+
+    StreamingSTTModel._resize_llm_embeddings(mock_self)
+
+    assert mock_self.llm.resize_calls == [105]
+
+
+@pytest.mark.unit
+def test_missing_field_matches_the_dataclass_default():
+    """A config object without the field must behave like a real one.
+
+    ``_resize_llm_embeddings`` reads the flag with ``getattr(..., True)``; if that
+    fallback disagreed with ``StreamingSTTModelConfig.allow_shrink_embedding``,
+    lightweight config objects would silently take the opposite branch from a
+    real config.
+    """
+    assert StreamingSTTModelConfig.allow_shrink_embedding is True, "fallback below must track this"
+
+    mock_self = SimpleNamespace(
+        llm=_StubLLM(QWEN3_VOCAB_ROWS),
+        tokenizer=SimpleNamespace(tokenizer=_StubTokenizer(QWEN3_TOKENIZER_LEN + 2)),
+        core_cfg=SimpleNamespace(),  # no allow_shrink_embedding attribute at all
+    )
+
+    StreamingSTTModel._resize_llm_embeddings(mock_self)
+
+    assert mock_self.llm.resize_calls == [QWEN3_TOKENIZER_LEN + 2]
+
+
+@pytest.mark.unit
+def test_default_preserves_legacy_checkpoint_shape():
+    """The default must reproduce the shape every existing checkpoint was written with.
+
+    Those were trained under an unconditional ``resize_token_embeddings``, so a
+    freshly-built model has to land on ``len(tokenizer)`` — not on the backbone's
+    larger spare-row count — for ``embed_tokens.weight`` to load.
+    """
+    n_tokens = QWEN3_TOKENIZER_LEN + 2  # blank + write
+    mock_self = _make_mock_self(QWEN3_VOCAB_ROWS, n_tokens)  # no explicit flag → default
+
+    StreamingSTTModel._resize_llm_embeddings(mock_self)
+
+    assert mock_self.llm.get_input_embeddings().weight.shape[0] == n_tokens

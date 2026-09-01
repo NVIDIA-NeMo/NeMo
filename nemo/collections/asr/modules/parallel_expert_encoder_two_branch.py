@@ -23,9 +23,6 @@ from nemo.collections.asr.modules.parallel_expert_encoder import *  # noqa: F401
 from nemo.collections.asr.modules.parallel_expert_encoder import (  # noqa: F401
     ParallelExpertEncoder,
     ParallelExpertEncoderPT,
-    _clone_config,
-    _default_dtype,
-    _disable_dist_feature_sync,
 )
 
 __all__ = ["ParallelExpertEncoder", "ParallelExpertEncoderPT"]

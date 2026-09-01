@@ -75,9 +75,11 @@ def encode_audio_with_cp_distribution(
     audio_lens: Tensor,
     *,
     chunk_size_seconds: Optional[float],
+    chunk_batch_size: Optional[int] = None,
     sampling_rate: int,
     cp_mesh=None,
     spk_targets: Tensor | None = None,
+    spk_target_lengths: Tensor | None = None,
     fsdp_sync_group=None,
     return_dummy_loss: bool = False,
 ) -> list[Tensor] | tuple[list[Tensor], Tensor | None]:
@@ -117,7 +119,9 @@ def encode_audio_with_cp_distribution(
                 audios,
                 audio_lens,
                 chunk_size_seconds=chunk_size_seconds,
+                chunk_batch_size=chunk_batch_size,
                 sampling_rate=sampling_rate,
+                fsdp_sync_group=fsdp_sync_group,
             )
             if fsdp_group_has_audio
             else None
@@ -131,10 +135,14 @@ def encode_audio_with_cp_distribution(
             audios,
             audio_lens,
             chunk_size_seconds=chunk_size_seconds,
+            chunk_batch_size=chunk_batch_size,
             sampling_rate=sampling_rate,
             spk_targets=spk_targets,
+            spk_target_lengths=spk_target_lengths,
+            sync_group=fsdp_sync_group,
+            return_dummy_loss=return_dummy_loss,
         )
-        return (ans, None) if return_dummy_loss else ans
+        return ans
 
     cp_size = cp_mesh.size()
     cp_group = cp_mesh.get_group()
@@ -161,21 +169,34 @@ def encode_audio_with_cp_distribution(
                 device=spk_targets.device,
             )
             spk_targets = torch.cat([spk_targets, dummy_targets], dim=0)
+            if spk_target_lengths is not None:
+                shortest_idx = int(audio_lens[:B_aud].argmin().item())
+                dummy_target_lengths = spk_target_lengths[shortest_idx].expand(pad_n)
+                spk_target_lengths = torch.cat([spk_target_lengths, dummy_target_lengths], dim=0)
 
     start = cp_rank * per_rank
     end = start + per_rank
     local_audios = audios[start:end]
     local_audio_lens = audio_lens[start:end]
     local_spk_targets = spk_targets[start:end] if spk_targets is not None else None
+    local_spk_target_lengths = spk_target_lengths[start:end] if spk_target_lengths is not None else None
 
     local_embs = encode_audio_with_optional_chunking(
         perception,
         local_audios,
         local_audio_lens,
         chunk_size_seconds=chunk_size_seconds,
+        chunk_batch_size=chunk_batch_size,
         sampling_rate=sampling_rate,
         spk_targets=local_spk_targets,
+        spk_target_lengths=local_spk_target_lengths,
+        sync_group=fsdp_sync_group,
+        return_dummy_loss=return_dummy_loss,
     )
+    if return_dummy_loss:
+        local_embs, dummy_loss = local_embs
+    else:
+        dummy_loss = None
 
     # All-gather across CP. Variable-length: pad to a common max-L first.
     H = local_embs[0].shape[-1]
@@ -203,7 +224,7 @@ def encode_audio_with_cp_distribution(
             L = int(gathered_lens[r][i].item())
             full_embs.append(gathered_stack[r][i, :L])
 
-    return (full_embs, None) if return_dummy_loss else full_embs
+    return (full_embs, dummy_loss) if return_dummy_loss else full_embs
 
 
 def _fsdp_group_has_audio(B_aud: int, device: torch.device, fsdp_sync_group=None) -> bool:
@@ -220,8 +241,23 @@ def _dummy_audio_loss_for_fsdp_sync(
     audio_lens: Tensor,
     *,
     chunk_size_seconds: Optional[float],
+    chunk_batch_size: Optional[int],
     sampling_rate: int,
+    fsdp_sync_group=None,
 ) -> Tensor | None:
+    if chunk_batch_size is not None:
+        _, dummy_loss = encode_audio_with_optional_chunking(
+            perception,
+            audios,
+            audio_lens,
+            chunk_size_seconds=chunk_size_seconds,
+            chunk_batch_size=chunk_batch_size,
+            sampling_rate=sampling_rate,
+            sync_group=fsdp_sync_group,
+            return_dummy_loss=True,
+        )
+        return dummy_loss
+
     # The preprocessor minimum alone can be too short after Conformer
     # subsampling, leaving BatchNorm with a single value per channel.
     dummy_len = max(_get_min_chunk_size_samples(perception), int(sampling_rate))

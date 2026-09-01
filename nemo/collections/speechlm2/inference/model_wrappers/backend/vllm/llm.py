@@ -14,9 +14,12 @@
 
 """vLLM-Omni backend for the LLM component of NemotronVoiceChat.
 
-Implements :class:`~nemo.collections.speechlm2.inference.model_wrappers.backend.llm.DuplexLLM`
-against the per-stream ``OmniStreamingSession``; the PyTorch sibling lives in
-``backend/pytorch/llm.py``.
+Implements :class:`~nemo.collections.speechlm2.inference.model_wrappers.backend.llm.DuplexLLM`.
+The PyTorch sibling lives in ``backend/pytorch/llm.py``.
+
+This PR stubs the class: construction raises so a ``vllm_omni`` engine
+selection cannot silently fall through to native. The implementation is the
+parent commit on ``duplex-vllm-omni-on-main``.
 """
 
 from typing import Any
@@ -24,16 +27,19 @@ from typing import Any
 import torch
 
 from nemo.collections.speechlm2.inference.model_wrappers.backend.llm import DuplexLLM, LlmStepResult
-from nemo.collections.speechlm2.inference.model_wrappers.backend.vllm import require_session
+from nemo.collections.speechlm2.inference.model_wrappers.engine_selection import VLLM_OMNI, reject_unimplemented_vllm
 
 
 class VllmLLM(DuplexLLM):
     """Runs Nemotron in a vLLM-Omni engine, one acoustic frame per step.
 
-    Stateless itself: the engine is process-scoped and owned by
-    ``OmniRuntime``, and everything request-scoped lives in the session that
-    the pipeline attached to the decode state at prefill.
+    Not implemented in this PR. The native frame loop already calls
+    :meth:`DuplexLLM.step` without inspecting the engine type, so landing the
+    runtime later does not reshape the per-frame path.
     """
+
+    def __init__(self) -> None:
+        reject_unimplemented_vllm(VLLM_OMNI, "native")
 
     def step(
         self,
@@ -47,32 +53,7 @@ class VllmLLM(DuplexLLM):
         sampling_params: dict[str, float] | None = None,
         debug_logger: Any = None,
     ) -> LlmStepResult:
-        """One Nemotron step -- see ``DuplexLLM.step``.
-
-        Nemotron builds its own duplex input embedding from the acoustic frame,
-        so there is no ``build_input_embedding`` and no history replay here;
-        ``frame_offset`` and ``has_prompt`` do not apply. Per-stream sampling
-        was fixed when the session was created, and logits stay inside the
-        engine, so ``return_debug`` cannot be honoured either -- the result's
-        logit fields stay None.
-
-        The previous frame's committed text token is fed back explicitly. That
-        is what carries a forced-turn-taking rewrite into Nemotron's own
-        history, the role ``gen_text`` plays for the PyTorch backend.
-        """
-        del frame_offset, has_prompt, sampling_params, return_debug
-
-        session = require_session(state)
-        if debug_logger is not None:
-            debug_logger.log_input_embeds(frame_embedding)
-
-        prev_text_token = None
-        if current_frame_idx > 0:
-            prev_text_token = int(state.gen_text[0, current_frame_idx - 1].item())
-
-        tokens = session.step_llm(frame_embedding.reshape(-1), prev_text_token=prev_text_token)
-        return LlmStepResult(
-            predicted_token=tokens.text,
-            asr_predicted_token=tokens.asr,
-            function_predicted_token=tokens.function,
-        )
+        """One Nemotron step -- see ``DuplexLLM.step``."""
+        del frame_embedding, state, frame_offset, current_frame_idx, has_prompt
+        del return_debug, sampling_params, debug_logger
+        reject_unimplemented_vllm(VLLM_OMNI, "native")

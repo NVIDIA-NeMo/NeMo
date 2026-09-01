@@ -29,6 +29,20 @@ VLLM_OMNI = "vllm_omni"
 
 SUPPORTED_S2S_ENGINE_TYPES = frozenset({NATIVE, VLLM_OMNI})
 
+# vllm_omni remains a legal config value so the native loop already matches the
+# combined-form loop. This PR does not ship the runtime; selecting it raises.
+VLLM_NOT_IMPLEMENTED = (
+    "vLLM-Omni VoiceChat backends are not implemented in this PR. "
+    "Set llm_engine_type='native' and tts_engine_type='native'. "
+    "The implementation is the parent commit on duplex-vllm-omni-on-main."
+)
+
+
+def reject_unimplemented_vllm(llm_engine_type: str, tts_engine_type: str) -> None:
+    """Raise if a vLLM component was selected. This PR only ships native engines."""
+    if llm_engine_type == VLLM_OMNI or tts_engine_type == VLLM_OMNI:
+        raise NotImplementedError(VLLM_NOT_IMPLEMENTED)
+
 
 def _component_engine(model_cfg: Mapping, key: str) -> str:
     value = model_cfg.get(key, NATIVE)

@@ -577,8 +577,15 @@ a vLLM-Omni implementation:
             llm.py              # PyTorchLLM     (wraps the DuplexSTT forward pass)
             eartts.py           # PyTorchEarTTS  (wraps DuplexEARTTS.infer_codes_one_step)
         vllm/
-            llm.py              # VllmLLM        (drives OmniStreamingSession.step_llm)
-            eartts.py           # VllmEarTTS     (drives OmniStreamingSession.step_tts)
+            llm.py              # VllmLLM        (NotImplementedError in this PR)
+            eartts.py           # VllmEarTTS     (NotImplementedError in this PR)
+
+This PR ships the native engines. ``VllmLLM`` and ``VllmEarTTS`` exist so the
+wrapper's frame loop already matches the combined form; selecting
+``llm_engine_type`` / ``tts_engine_type`` of ``vllm_omni`` raises
+``NotImplementedError`` at construction. The runtime (``inference/vllm_omni/``,
+``OmniRuntime``, wrapper-checkpoint conversion) is the parent commit on
+``duplex-vllm-omni-on-main``.
 
 ``NemotronVoicechatInferenceWrapper`` selects one implementation per component
 at construction and stores them as ``llm_backend`` and ``tts_backend``. Its
@@ -654,9 +661,12 @@ reported at load time rather than silently doing nothing.
 vLLM-Omni Integration
 """""""""""""""""""""
 
-Each component selected as ``vllm_omni`` gets the ``Vllm*`` implementation of
-its contract, and the corresponding native class is not created. The wrapper
-starts only the selected one-stage ``AsyncOmni`` engine or engines:
+Selecting ``vllm_omni`` is rejected at wrapper construction in this PR. The
+intended shape is: each component selected as ``vllm_omni`` gets the ``Vllm*``
+implementation of its contract, and the corresponding native class is not
+created. The wrapper starts only the selected one-stage ``AsyncOmni`` engine
+or engines. That runtime lives on the parent commit
+(``duplex-vllm-omni-on-main``):
 
 - **Nemotron** -- ``NemotronDuplexHForCausalLM``, which consumes the per-step
   acoustic embedding and samples a text token plus the checkpoint's optional
@@ -667,8 +677,8 @@ starts only the selected one-stage ``AsyncOmni`` engine or engines:
 The split keeps the component boundary in NeMo, so either component can be
 replaced without changing the other engine. Nemotron settings come from
 ``inference/vllm_omni/deploy/nemotron_voicechat.yaml`` and EarTTS settings from
-``inference/vllm_omni/deploy/eartts.yaml``. Override them independently with
-``vllm_omni_config.stage_overrides`` and
+``inference/vllm_omni/deploy/eartts.yaml`` on that parent commit. Override them
+independently with ``vllm_omni_config.stage_overrides`` and
 ``vllm_omni_config.eartts_stage_overrides``.
 
 Nemotron text sampling uses vLLM's custom logits-processor hook to call the

@@ -97,11 +97,10 @@ _EMPTY_CACHE_AFTER_GIB = 16
 def _reclaim_gpu_after_large_load() -> None:
     """Return GPU memory to the driver after a large native load.
 
-    ``pipeline.shutdown`` only tears down the vLLM runtime. Native weights stay
-    on the wrapper until the pipeline is unreachable; PyTorch then keeps the
-    blocks in this process. vLLM engine cores are child processes and treat
-    that as used memory, so a native 11B test (~24 GiB) followed by vLLM/vLLM
-    OOMs on an 80 GiB card.
+    Native weights stay on the wrapper until the pipeline is unreachable;
+    PyTorch then keeps the blocks in this process. A native 11B test (~24 GiB)
+    followed by another large load OOMs on an 80 GiB card if the allocator is
+    not reclaimed.
 
     Tiny-model tests are a few GiB and rebuild from the same size, so the
     caching allocator is left warm. Both ``gc.collect`` and ``empty_cache``
@@ -440,22 +439,3 @@ def voicechat_audio_path():
 @pytest.fixture(scope="session")
 def voicechat_speaker_name():
     return DEFAULT_SPEAKER_NAME
-
-
-@pytest.fixture(scope="session")
-def real_vllm_omni_wrapper(tmp_path_factory, hf_voicechat_11b):
-    """Convert the public 11B snapshot for vLLM-Omni.
-
-    ``NEMO_VLLM_WRAPPER_DIR`` is an optional prebuilt wrapper directory.
-    ``build_wrapper_checkpoint`` reuses it when complete. Otherwise one is
-    built under tmp.
-    """
-    pytest.importorskip("vllm_omni")
-    if not torch.cuda.is_available():
-        pytest.skip("converting the vLLM-Omni wrapper requires a GPU")
-
-    from nemo.collections.speechlm2.inference.vllm_omni.checkpoint import build_wrapper_checkpoint
-
-    wrapper_dir = os.environ.get("NEMO_VLLM_WRAPPER_DIR") or str(tmp_path_factory.mktemp("vllm_omni_wrapper"))
-    build_wrapper_checkpoint(hf_voicechat_11b, wrapper_dir)
-    return hf_voicechat_11b, wrapper_dir

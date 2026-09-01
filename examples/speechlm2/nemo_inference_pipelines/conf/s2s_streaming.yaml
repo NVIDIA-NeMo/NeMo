@@ -33,10 +33,12 @@ s2s:
   model_path: ???
   decode_audio: true                          # Whether to conduct the TTS portion of inference, or just the STT portion
   speaker_name: null                          # Required when decode_audio is true. Must match a speaker registered in the checkpoint.
-  llm_engine_type: native # 'native' or 'vllm_omni'
-  tts_engine_type: native # 'native' or 'vllm_omni'
+  llm_engine_type: native # 'native' or 'vllm_omni' (vllm_omni raises NotImplementedError in this PR)
+  tts_engine_type: native # 'native' or 'vllm_omni' (vllm_omni raises NotImplementedError in this PR)
 
-  # vllm_omni engine configuration (ignored unless a component is vllm_omni).
+  # vllm_omni engine configuration. Selecting vllm_omni is rejected at wrapper
+  # construction in this PR; the keys document the combined-form API. The
+  # implementation is the parent commit on duplex-vllm-omni-on-main.
   #
   # On the first run a wrapper directory is built lazily under
   # ``$TMPDIR/<model_basename>_vllm_omni_wrapper`` containing

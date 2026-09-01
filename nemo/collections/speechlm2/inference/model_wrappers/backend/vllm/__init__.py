@@ -14,26 +14,12 @@
 
 """vLLM-Omni implementations of the two component contracts.
 
-Both are thin: the engines are process-scoped and owned by ``OmniRuntime``,
-while the request state lives in the per-stream ``OmniStreamingSession`` these
-classes read off the decode state. Importing this package does not import
-vLLM.
+Construction raises ``NotImplementedError`` in this PR. The classes exist so
+the native frame loop already matches the combined-form loop; the parent
+commit on ``duplex-vllm-omni-on-main`` has the runtime.
 """
 
-from typing import Any
+from nemo.collections.speechlm2.inference.model_wrappers.backend.vllm.eartts import VllmEarTTS
+from nemo.collections.speechlm2.inference.model_wrappers.backend.vllm.llm import VllmLLM
 
-
-def require_session(state: Any):
-    """Return the stream's ``OmniStreamingSession``, or say why there isn't one.
-
-    ``omni_session`` is a declared field on ``StreamingDecodeState``, so this
-    reads it directly: a missing attribute is a programming error worth an
-    AttributeError, while ``None`` is the real case worth explaining.
-    """
-    session = state.omni_session
-    if session is None:
-        raise RuntimeError(
-            "A vllm_omni component requires a per-stream OmniStreamingSession; "
-            "make sure begin_stream(...) ran for this stream before the first frame."
-        )
-    return session
+__all__ = ["VllmLLM", "VllmEarTTS"]

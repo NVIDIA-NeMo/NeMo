@@ -18,6 +18,7 @@ import pytest
 
 from nemo.collections.speechlm2.inference.model_wrappers.engine_selection import (
     native_weight_skip_prefixes,
+    reject_unimplemented_vllm,
     resolve_engine_types,
 )
 
@@ -75,3 +76,18 @@ def test_unusable_engine_selection_is_named():
         resolve_engine_types({"llm_engine_type": "other"})
     with pytest.raises(ValueError, match="not a config key"):
         resolve_engine_types({"engine_type": VLLM})
+
+
+def test_vllm_selection_is_named_as_not_implemented():
+    """vllm_omni stays a legal config value so the native loop is already the
+    combined-form loop; constructing that backend is rejected rather than
+    silently running native."""
+    with pytest.raises(NotImplementedError, match="not implemented in this PR"):
+        reject_unimplemented_vllm(VLLM, NATIVE)
+    with pytest.raises(NotImplementedError, match="not implemented in this PR"):
+        reject_unimplemented_vllm(NATIVE, VLLM)
+
+    from nemo.collections.speechlm2.inference.model_wrappers.backend.vllm.llm import VllmLLM
+
+    with pytest.raises(NotImplementedError, match="not implemented in this PR"):
+        VllmLLM()

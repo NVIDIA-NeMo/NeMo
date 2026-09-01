@@ -13,8 +13,6 @@
 # limitations under the License.
 
 import copy
-import json
-import os
 import time
 
 import torch
@@ -42,6 +40,7 @@ from nemo.collections.speechlm2.inference.model_wrappers.engine_selection import
     VLLM_OMNI,
     native_weight_skip_prefixes,
     precision_matches_cfg,
+    reject_unimplemented_vllm,
     reject_unsupported_determinism,
     resolve_engine_types,
 )
@@ -51,7 +50,6 @@ from nemo.collections.speechlm2.inference.model_wrappers.perception_cache import
     PerceptionCacheState,
 )
 from nemo.collections.speechlm2.models.nemotron_voicechat import NemotronVoiceChat
-from nemo.collections.speechlm2.parts.logit_boosts import LogitBoosts
 from nemo.collections.speechlm2.parts.text_utils import (
     _decode_tokens_with_specials,
     get_special_token_ids,
@@ -94,6 +92,7 @@ class NemotronVoicechatInferenceWrapper:
         self.llm_engine_type, self.tts_engine_type = resolve_engine_types(model_cfg)
         self._deterministic = bool(model_cfg.get("deterministic", False))
         reject_unsupported_determinism(self.llm_engine_type, self.tts_engine_type, self._deterministic)
+        reject_unimplemented_vllm(self.llm_engine_type, self.tts_engine_type)
         if not precision_matches_cfg(model_cfg):
             # Direct construction warns: only S2SPipelineBuilder requires the
             # precision scope. These torch globals are not applied here.
@@ -357,86 +356,14 @@ class NemotronVoicechatInferenceWrapper:
     # ------------------------------------------------------------------
 
     def _initialize_vllm_omni_backend(self):
-        """Build the wrapper checkpoint, start the AsyncOmni runtime, and
-        pre-load the speaker latent.
+        """Start the AsyncOmni runtime for selected vLLM components.
 
-        The wrapper checkpoint (``config.json`` + ``nemotron/`` + ``eartts/``)
-        is converted lazily on first use under
-        ``$TMPDIR/<basename>_vllm_omni_wrapper`` and reused afterwards; set
-        ``vllm_omni_config.wrapper_dir`` to keep it somewhere persistent.
+        Not implemented in this PR. The parent commit on
+        ``duplex-vllm-omni-on-main`` has the wrapper-checkpoint conversion,
+        ``OmniRuntime``, and session wiring. Kept as the construction hook so
+        the native ``_initialize_model`` path already matches the combined form.
         """
-        # Deferred because these reach vLLM-Omni, an optional dependency.
-        from nemo.collections.speechlm2.inference.vllm_omni.checkpoint import (
-            EARTTS_SUBDIR,
-            build_wrapper_checkpoint,
-            load_speaker_latent,
-            write_nemotron_inference_overrides,
-        )
-        from nemo.collections.speechlm2.inference.vllm_omni.runtime import OmniRuntime
-
-        cfg = self.vllm_omni_config or {}
-
-        wrapper_dir = build_wrapper_checkpoint(
-            self.model_path,
-            wrapper_dir=cfg.get("wrapper_dir", None),
-            nemotron_dtype=cfg.get("nemotron_dtype", "float32"),
-            eartts_precompute_batch_size=int(cfg.get("eartts_precompute_batch_size", 256)),
-            include_nemotron=self.use_vllm_llm,
-            include_eartts=self.use_vllm_tts,
-        )
-        self.omni_wrapper_dir = wrapper_dir
-
-        if self.use_vllm_llm:
-            # Must happen before the stage child loads the checkpoint.
-            user_boosts = LogitBoosts.user_from_cfg(self.model.stt_model.cfg)
-            write_nemotron_inference_overrides(
-                wrapper_dir,
-                {
-                    "inference_user_pad_boost": user_boosts.pad,
-                    "inference_user_bos_boost": user_boosts.bos,
-                    "inference_user_eos_boost": user_boosts.eos,
-                },
-            )
-
-        self.omni_runtime = OmniRuntime(
-            wrapper_dir,
-            stage_configs_path=cfg.get("stage_configs_path", None),
-            eartts_stage_configs_path=cfg.get("eartts_stage_configs_path", None),
-            stage_overrides=cfg.get("stage_overrides", None),
-            eartts_stage_overrides=cfg.get("eartts_stage_overrides", None),
-            log_stats=bool(cfg.get("log_stats", False)),
-            stage_init_timeout=int(cfg.get("stage_init_timeout", 600)),
-            enable_llm=self.use_vllm_llm,
-            enable_tts=self.use_vllm_tts,
-        )
-
-        if self.use_vllm_tts:
-            eartts_dir = os.path.join(wrapper_dir, EARTTS_SUBDIR)
-            with open(os.path.join(eartts_dir, "config.json"), encoding="utf-8") as fh:
-                eartts_config = json.load(fh)
-            guidance_enabled = cfg.get("guidance_enabled")
-            if guidance_enabled is None:
-                guidance_enabled = eartts_config.get("enable_guidance", True)
-            guidance_scale = cfg.get("guidance_scale")
-            if guidance_scale is None:
-                guidance_scale = eartts_config.get("guidance_scale", 0.5)
-            self.omni_guidance_enabled = bool(guidance_enabled)
-            self.omni_guidance_scale = float(guidance_scale)
-            speaker_name = self.speaker_name or cfg.get("speaker_name")
-            if speaker_name is None:
-                raise ValueError(
-                    "tts_engine_type='vllm_omni' requires a speaker_name (set "
-                    "s2s.speaker_name or s2s.vllm_omni_config.speaker_name); the "
-                    "speaker latent is read from the converted EarTTS checkpoint."
-                )
-            self.omni_speaker_latent = load_speaker_latent(eartts_dir, speaker_name)
-            logging.info(
-                "vllm_omni speaker_latent: name='%s', shape=%s; CFG=%s scale=%s",
-                speaker_name,
-                tuple(self.omni_speaker_latent.shape),
-                self.omni_guidance_enabled,
-                self.omni_guidance_scale,
-            )
+        reject_unimplemented_vllm(self.llm_engine_type, self.tts_engine_type)
 
     def start_vllm_omni_session(
         self,
@@ -446,66 +373,9 @@ class NemotronVoicechatInferenceWrapper:
         request_id: str,
         sampling_params: dict[str, float] | None = None,
     ) -> None:
-        """Create and attach a per-stream :class:`OmniStreamingSession`.
-
-        Called by the streaming pipeline once it has the system prompt for
-        the new stream; this replaces native-engine prefill. The session only
-        enqueues the prefill chunk, so Nemotron does not actually run until
-        the first :meth:`infer_one_step` call. Per-stream sampling parameters
-        are fixed when this long-lived vLLM request is created.
-
-        One session class covers all three vLLM combinations: it reads which
-        components exist off the runtime, which is the same decision that built
-        the runtime in the first place.
-        """
-        if not self.use_vllm_omni:
-            return
-        if self.omni_runtime is None:
-            raise RuntimeError("vllm_omni backend was not initialized; call _initialize_model first.")
-        from nemo.collections.speechlm2.inference.vllm_omni.checkpoint import (
-            NEMOTRON_SUBDIR,
-            compute_prefill_len,
-        )
-        from nemo.collections.speechlm2.inference.vllm_omni.session import OmniStreamingSession
-
-        t_prefill = 0
-        if self.use_vllm_llm:
-            nemotron_dir = os.path.join(self.omni_wrapper_dir, NEMOTRON_SUBDIR)
-            t_prefill = compute_prefill_len(nemotron_dir, system_prompt or "")
-
-        effective_sampling_params = {
-            "temperature": float(self.temperature),
-            "top_p": float(self.top_p),
-            "repetition_penalty": float(self.repetition_penalty),
-        }
-        if sampling_params:
-            effective_sampling_params.update(
-                {key: float(value) for key, value in sampling_params.items() if key in effective_sampling_params}
-            )
-
-        stt = self.model.stt_model
-        state.omni_session = OmniStreamingSession(
-            self.omni_runtime,
-            request_id=request_id,
-            system_prompt=system_prompt or "",
-            speaker_latent=self.omni_speaker_latent,
-            t_prefill=t_prefill,
-            sampling_params=effective_sampling_params,
-            special_token_ids=self.special_token_ids,
-            guidance_enabled=self.omni_guidance_enabled,
-            guidance_scale=self.omni_guidance_scale,
-            step_timeout=float((self.vllm_omni_config or {}).get("step_timeout", 60.0)),
-            profile=self._profile_timing,
-            # The agent-channel boosts ride along with sampling; the ASR-channel
-            # ones are applied by the converted model, which reads them from its
-            # own config at load time.
-            agent_logit_boosts=LogitBoosts.agent_from_cfg(stt.cfg),
-            text_token_ids={
-                "pad_id": int(stt.text_pad_id),
-                "bos_id": int(stt.text_bos_id),
-                "eos_id": int(stt.text_eos_id),
-            },
-        )
+        """Attach a per-stream vLLM session (not implemented in this PR)."""
+        del state, system_prompt, request_id, sampling_params
+        reject_unimplemented_vllm(self.llm_engine_type, self.tts_engine_type)
 
     # ------------------------------------------------------------------
     # Per-stream lifecycle

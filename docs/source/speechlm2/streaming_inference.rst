@@ -218,6 +218,11 @@ S2S Model Settings (``s2s``)
    * - ``use_perception_cache``
      - ``true``
      - Cache-aware streaming for the perception encoder.
+   * - ``use_perception_cudagraph``
+     - ``true``
+     - CUDA-graph replay of the perception encoder step via
+       ``encoder.set_streaming_cuda_graphs``. Requires ``use_perception_cache``.
+       First chunk stays eager; subsequent chunks capture after a short warmup.
    * - ``use_llm_cache``
      - ``false``
      - Reuse the native LLM KV cache instead of replaying history. NemotronH

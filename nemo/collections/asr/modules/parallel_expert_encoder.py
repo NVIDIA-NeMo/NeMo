@@ -1060,6 +1060,18 @@ class StreamingParallelExpertEncoder(ParallelExpertEncoder, StreamingEncoder):
 
     def _stream_diarizer(self, processed_signal, processed_signal_length, align_target, drop_extra_pre_encoded):
         """Advance the Sortformer by one chunk and return its NEW frames, ASR-aligned."""
+        state_batch = None
+        if self._diar_total_preds is not None:
+            state_batch = self._diar_total_preds.shape[0]
+        if state_batch is not None and state_batch != processed_signal.shape[0]:
+            raise RuntimeError(
+                f"The diarizer's streaming state was allocated for batch {state_batch} but this step "
+                f"has batch {processed_signal.shape[0]}. The embedded Sortformer keeps ONE batched "
+                "state on the module, so it cannot follow a caller that steps a subset of streams "
+                "(as `_generate_dynamic_streaming` does when streams desynchronise).\n"
+                "Workarounds: pass `spk_targets` explicitly so the diarizer is not stepped, or use "
+                "the chunked streaming path, which always steps the full batch."
+            )
         if self._diar_streaming_state is None:
             raise RuntimeError(
                 "ParallelExpertEncoder.cache_aware_stream_step requires get_initial_cache_state() first "

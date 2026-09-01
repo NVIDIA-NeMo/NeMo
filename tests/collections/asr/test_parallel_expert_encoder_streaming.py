@@ -50,7 +50,12 @@ def _cpu_default_device():
 def streaming_asr_encoder_cfg() -> DictConfig:
     """Tiny *cache-aware* ConformerEncoder config, so the streaming interface is exercisable."""
     cfg = toy_asr_encoder_cfg()
-    cfg.att_context_size = [8, 1]
+    # [12, 3] -> a 32-mel chunk. [8, 1] gives 16, which the toy Sortformer CANNOT pre-encode
+    # (feature_stacking x8 over a 16-frame chunk minus the 9-frame cache leaves nothing), so every
+    # streaming test had to stub the diarizer out and no real diarizer step was ever exercised.
+    # That is why several streaming-diarization bugs shipped. `chunked_limited` additionally
+    # requires left % (right + 1) == 0, and 12 % 4 == 0.
+    cfg.att_context_size = [12, 3]
     cfg.att_context_style = 'chunked_limited'
     cfg.causal_downsampling = True
     cfg.conv_context_size = 'causal'
@@ -184,11 +189,11 @@ def test_diarizer_drops_the_same_pre_encode_frames_as_the_asr_branch():
 
     seen = []
 
+    original = enc._stream_diarizer
+
     def spy(processed_signal, processed_signal_length, align_target, drop_extra_pre_encoded):
-        # Record the plumbing and stand in for the diarizer: the toy Sortformer cannot pre-encode
-        # a chunk this small, and what is under test is which `drop` value it is handed.
         seen.append(drop_extra_pre_encoded)
-        return torch.zeros(1, align_target, enc.n_spk)
+        return original(processed_signal, processed_signal_length, align_target, drop_extra_pre_encoded)
 
     enc._stream_diarizer = spy
     chunk_size = enc.streaming_cfg.chunk_size
@@ -219,3 +224,47 @@ def test_stream_step_without_initial_cache_state_raises_actionable_error():
             processed_signal=torch.randn(1, _MEL_FEATURES, chunk_size),
             processed_signal_length=torch.tensor([chunk_size]),
         )
+
+
+@pytest.mark.unit
+def test_subset_stepping_reports_the_batch_mismatch_clearly():
+    """Stepping a SUBSET of streams must fail with an actionable message, not a tensor-size error.
+
+    `_generate_dynamic_streaming` slices the ASR cache to the streams needing a refill and scatters
+    the result back. The diarizer keeps ONE batched state on the module, so it cannot follow --
+    previously this surfaced as `RuntimeError: Sizes of tensors must match except in dimension 1`
+    from deep inside the Sortformer, which says nothing about the cause.
+
+    This pins the diagnosis. It should be replaced by a real subset-stepping test if the state is
+    ever made sliceable (see PLAN section 0.0, next step 1).
+    """
+    enc = build_toy_streaming_pe_encoder().eval()
+    enc.setup_streaming_params()
+    chunk_size = enc.streaming_cfg.chunk_size
+    chunk_size = chunk_size[1] if isinstance(chunk_size, (list, tuple)) else chunk_size
+
+    batch = 3
+    cache_last_channel, cache_last_time, cache_last_channel_len = enc.get_initial_cache_state(
+        batch_size=batch, dtype=torch.float32, device=torch.device("cpu")
+    )
+    with torch.no_grad():
+        _, _, cache_last_channel, cache_last_time, cache_last_channel_len = enc.cache_aware_stream_step(
+            processed_signal=torch.randn(batch, _MEL_FEATURES, chunk_size),
+            processed_signal_length=torch.tensor([chunk_size] * batch),
+            cache_last_channel=cache_last_channel,
+            cache_last_time=cache_last_time,
+            cache_last_channel_len=cache_last_channel_len,
+            keep_all_outputs=False,
+        )
+
+    subset = torch.tensor([0, 2])  # stream 1 is still generating, as in the dynamic FSM
+    with pytest.raises(RuntimeError, match="steps a subset of streams"):
+        with torch.no_grad():
+            enc.cache_aware_stream_step(
+                processed_signal=torch.randn(len(subset), _MEL_FEATURES, chunk_size),
+                processed_signal_length=torch.tensor([chunk_size] * len(subset)),
+                cache_last_channel=cache_last_channel.index_select(1, subset),
+                cache_last_time=cache_last_time.index_select(1, subset),
+                cache_last_channel_len=cache_last_channel_len[subset],
+                keep_all_outputs=False,
+            )

@@ -178,3 +178,32 @@ def test_default_preserves_legacy_checkpoint_shape():
     StreamingSTTModel._resize_llm_embeddings(mock_self)
 
     assert mock_self.llm.get_input_embeddings().weight.shape[0] == n_tokens
+
+
+@pytest.mark.unit
+def test_registering_the_audio_token_is_shape_neutral_with_spare_rows():
+    """M2/R8: the placeholder must fit in the backbone's spare rows.
+
+    Qwen3 ships 151936 embedding rows for a 151669-token tokenizer, so blank,
+    write and the audio placeholder occupy three of the 267 spares. Under
+    ``allow_shrink_embedding=False`` the table is untouched; under the default
+    ``True`` it tracks ``len(tokenizer)``, which is why registering the token is
+    NOT safe for a checkpoint trained without it.
+    """
+    with_audio = QWEN3_TOKENIZER_LEN + 3  # blank + write + audio placeholder
+
+    never_shrink = _make_mock_self(QWEN3_VOCAB_ROWS, with_audio, allow_shrink=False)
+    StreamingSTTModel._resize_llm_embeddings(never_shrink)
+    assert never_shrink.llm.get_input_embeddings().weight.shape[0] == QWEN3_VOCAB_ROWS
+    assert never_shrink.llm.resize_calls == []
+
+    legacy = _make_mock_self(QWEN3_VOCAB_ROWS, with_audio, allow_shrink=True)
+    StreamingSTTModel._resize_llm_embeddings(legacy)
+    assert legacy.llm.get_input_embeddings().weight.shape[0] == with_audio
+
+
+@pytest.mark.unit
+def test_audio_token_registration_is_off_by_default():
+    """No recipe sets model.audio_tag, so the default must not register anything."""
+    assert StreamingSTTModelConfig.register_audio_token is False
+    assert StreamingSTTModelConfig.audio_tag == "<audio>"

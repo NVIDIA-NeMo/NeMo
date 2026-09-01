@@ -34,9 +34,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from omegaconf import OmegaConf
+
 from nemo.collections.speechlm2.data.streaming_stt_dataset import (
     AUDIO_TOKEN_IDX,
     IGNORE_INDEX,
+    StreamingSTTDataset,
     _replace_audio_chunks,
     _tokenize_compact_with_assistant_mask,
     _tokenize_with_assistant_mask,
@@ -1920,6 +1923,84 @@ class TestTokenizeWithAssistantMaskRealTokenizers:
 # ===========================================================================
 # Tests: compact chat template
 # ===========================================================================
+class TestSingleTokenAudioTag:
+    """M2: a single-token audio tag replaces the whole-chunk matcher.
+
+    The matcher exists only because a multi-token ``<audio>`` can BPE-merge with
+    adjacent tags. With one id per frame the replacement is a plain map, which
+    cannot mis-fire — but it must produce byte-identical token streams, and the
+    legacy path must stay the default so existing checkpoints keep loading (R8).
+    """
+
+    ALIGNED = [
+        WordAlignment(text=w, start_time=0.35 * i, end_time=0.35 * i + 0.30)
+        for i, w in enumerate(["the", "quick", "brown", "fox", "jumps", "over"])
+    ]
+    TRANSCRIPT = "the quick brown fox jumps over"
+
+    def _dataset(self, hf_tok_id, audio_tag, register):
+        from nemo.collections.common.tokenizers import AutoTokenizer as NeMoTok
+
+        tok = NeMoTok(hf_tok_id, use_fast=True)
+        tok.add_special_tokens({"additional_special_tokens": ["<blank>"]})
+        if register:
+            tok.add_special_tokens({"additional_special_tokens": [audio_tag]})
+        cfg = OmegaConf.create(
+            {
+                "sample_rate": 16000,
+                "frame_length_in_secs": 0.08,
+                "chunk_size": [2, 4, 7, 14],
+                "num_delay_frames": 3,
+                "audio_tag": audio_tag,
+                "blank_token": "<blank>",
+                "system_role": "system",
+                "system_prompt": "Transcribe the audio into text.",
+                "compact_template": True,
+            }
+        )
+        return StreamingSTTDataset(cfg=cfg, tokenizer=tok), tok
+
+    def _stream(self, ds, tok, chunk_size):
+        msgs = get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="Transcribe the audio into text.",
+            audio_tag=ds.cfg.audio_tag,
+            blank_token="<blank>",
+            chunk_size=chunk_size,
+            num_delay_frames=3,
+            audio_duration_secs=2.4,
+            frame_length_in_secs=0.08,
+            alignments=self.ALIGNED,
+            transcript=self.TRANSCRIPT,
+        )
+        ids, mask = _tokenize_compact_with_assistant_mask(msgs, tok, ds._eoa_id, ds._compact_eos_id)
+        if ds._audio_token_id is not None:
+            return [AUDIO_TOKEN_IDX if t == ds._audio_token_id else t for t in ids]
+        ids, _ = _replace_audio_chunks(ids, ds._audio_chunk_ids_by_size[chunk_size], chunk_size, mask=mask)
+        return ids
+
+    @pytest.mark.parametrize("chunk_size", [2, 4, 7, 14])
+    def test_streams_are_identical_to_the_whole_chunk_matcher(self, chunk_size):
+        """The whole point: this is a refactor, not a change to what the model sees."""
+        legacy, tok_l = self._dataset("Qwen/Qwen3-1.7B", "<audio>", register=False)
+        fast, tok_f = self._dataset("Qwen/Qwen3-1.7B", "<|_audio_placeholder_|>", register=True)
+        assert legacy._audio_token_id is None, "multi-token tag must use the matcher"
+        assert fast._audio_token_id is not None, "single-token tag must use the map"
+        assert self._stream(legacy, tok_l, chunk_size) == self._stream(fast, tok_f, chunk_size)
+
+    def test_per_size_cache_is_retired_on_the_fast_path(self):
+        fast, _ = self._dataset("Qwen/Qwen3-1.7B", "<|_audio_placeholder_|>", register=True)
+        legacy, _ = self._dataset("Qwen/Qwen3-1.7B", "<audio>", register=False)
+        assert fast._audio_chunk_ids_by_size == {}
+        assert sorted(legacy._audio_chunk_ids_by_size) == [2, 4, 7, 14]
+
+    def test_legacy_tag_is_untouched_by_default(self):
+        """R8: no recipe sets model.audio_tag, so the default path must not move."""
+        legacy, _ = self._dataset("Qwen/Qwen3-1.7B", "<audio>", register=False)
+        assert legacy._audio_token_id is None
+        assert legacy.cfg.audio_tag == "<audio>"
+
+
 class TestParseChatTemplateSpans:
     """M1 acceptance: the index-derived turn spans are the ones training emits.
 
@@ -2548,18 +2629,30 @@ class TestMultiChunkSizeDataset:
 
     # --- __init__ normalization & precompute ---
 
+    @staticmethod
+    def _assert_audio_mapping_ready(ds, sizes):
+        """Every candidate chunk size must be mappable, by whichever path applies.
+
+        A single-token audio tag maps one id per frame and needs no per-size
+        patterns; a multi-token tag needs ``audio_tag * chunk_size`` precomputed
+        for each size so BPE cannot merge across adjacent tags.
+        """
+        if ds._audio_token_id is not None:
+            assert ds._audio_chunk_ids_by_size == {}, "single-token path should not build per-size patterns"
+        else:
+            assert set(ds._audio_chunk_ids_by_size) == set(sizes)
+            for size in sizes:
+                assert len(ds._audio_chunk_ids_by_size[size]) == size
+
     def test_list_candidates_and_audio_ids(self):
         ds = self._make_dataset([2, 4])
         assert ds._chunk_size_candidates == [2, 4]
-        assert set(ds._audio_chunk_ids_by_size) == {2, 4}
-        assert len(ds._audio_chunk_ids_by_size[2]) == 2
-        assert len(ds._audio_chunk_ids_by_size[4]) == 4
+        self._assert_audio_mapping_ready(ds, [2, 4])
 
     def test_scalar_backward_compatible(self):
         ds = self._make_dataset(2)
         assert ds._chunk_size_candidates is None
-        assert set(ds._audio_chunk_ids_by_size) == {2}
-        assert len(ds._audio_chunk_ids_by_size[2]) == 2
+        self._assert_audio_mapping_ready(ds, [2])
 
     def test_scalar_dynamic_and_offline_have_no_audio_ids(self):
         for cs in (0, -1):

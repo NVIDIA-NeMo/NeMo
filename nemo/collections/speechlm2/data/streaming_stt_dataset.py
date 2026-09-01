@@ -996,10 +996,26 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             positive_sizes = [cs]
         else:
             positive_sizes = []
-        self._audio_chunk_ids_by_size: dict[int, list[int]] = {
-            size: self.tokenizer.tokenizer.encode(self.cfg.audio_tag * size, add_special_tokens=False)
-            for size in positive_sizes
-        }
+        # When the audio tag is a single vocab id (``model.register_audio_token``),
+        # every frame is exactly one token and the whole-chunk matcher is unnecessary:
+        # the replacement becomes a per-token map that cannot mis-fire. Otherwise fall
+        # back to matching ``audio_tag * chunk_size`` as a unit, which is what keeps a
+        # multi-token tag safe against BPE merging across adjacent tags.
+        audio_tag_ids = self.tokenizer.tokenizer.encode(self.cfg.audio_tag, add_special_tokens=False)
+        self._audio_token_id: Optional[int] = audio_tag_ids[0] if len(audio_tag_ids) == 1 else None
+        if self._audio_token_id is not None:
+            logging.info(
+                f"audio_tag {self.cfg.audio_tag!r} is a single token (id={self._audio_token_id}); "
+                "using the per-token audio mapping."
+            )
+        self._audio_chunk_ids_by_size: dict[int, list[int]] = (
+            {}
+            if self._audio_token_id is not None
+            else {
+                size: self.tokenizer.tokenizer.encode(self.cfg.audio_tag * size, add_special_tokens=False)
+                for size in positive_sizes
+            }
+        )
 
         # blank_token is part of the LLM output vocabulary — it must be a single
         # special token, otherwise loss is dominated by multi-token blanks and
@@ -1169,7 +1185,11 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             # Replace each audio chunk token sequence with chunk_size AUDIO_TOKEN_IDX markers.
             # We match the full chunk (audio_tag * chunk_size) as a unit because BPE
             # may merge tokens across adjacent audio tags.
-            if audio_chunk_ids is not None:
+            if self._audio_token_id is not None:
+                # Single-token audio tag: one id per frame, so a plain map suffices and
+                # works identically for fixed, dynamic and offline chunking.
+                input_ids = [AUDIO_TOKEN_IDX if t == self._audio_token_id else t for t in input_ids]
+            elif audio_chunk_ids is not None:
                 # Fixed chunking: single pre-computed pattern
                 input_ids, assistant_mask = _replace_audio_chunks(
                     input_ids, audio_chunk_ids, chunk_size, mask=assistant_mask

@@ -222,6 +222,20 @@ class StreamingSTTModelConfig:
     # by ``att_context_size`` and is independent of K.
     dynamic_chunk_step: Union[int, List[int]] = 1
     audio_tag: str = "<audio>"
+    # Register ``audio_tag`` as a single special token. Default OFF, and the
+    # ``audio_tag`` default deliberately stays ``"<audio>"``: no recipe sets
+    # ``model.audio_tag``, so every existing checkpoint relies on that default, and
+    # registering an extra token moves ``len(tokenizer)`` — which is what
+    # ``allow_shrink_embedding`` sizes the embedding table from. Turning this on
+    # therefore changes the parameter shape and is not safe for an existing
+    # checkpoint. New recipes opt in with BOTH
+    # ``audio_tag: "<|_audio_placeholder_|>"`` and ``register_audio_token: true``.
+    #
+    # The token is never embedded and never predicted: audio positions become
+    # ``AUDIO_TOKEN_IDX`` in the dataset and are overwritten with encoder output in
+    # ``interleave_embeddings``. It exists so the audio span is one id per frame,
+    # which removes the BPE-merge hazard in ``_replace_audio_chunks``.
+    register_audio_token: bool = False
     att_context_size: Optional[List[int]] = None
     audio_pad_to: Optional[int] = None
     sample_rate: int = 16000
@@ -588,6 +602,17 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 wt_id = self.tokenizer.tokenizer.convert_tokens_to_ids(wt)
                 logging.info(f"Using existing vocab token `{wt}` as write_token: {wt_id}")
 
+        # Audio placeholder registration: makes the audio tag a single vocab id so the
+        # dataset can map frames one-to-one instead of matching a multi-token span.
+        if self.core_cfg.register_audio_token:
+            at = self.core_cfg.audio_tag
+            if not token_in_vocab(at, self.tokenizer):
+                self.tokenizer.add_special_tokens({"additional_special_tokens": [at]})
+                self._resize_llm_embeddings()
+                logging.info(f"Added audio_tag `{at}` to tokenizer: {self.audio_token_id}")
+            else:
+                logging.info(f"Using existing vocab token `{at}` as audio_tag: {self.audio_token_id}")
+
         # Validate prepend_write_token preconditions
         if self.core_cfg.prepend_write_token:
             if self.blank_token == "":
@@ -752,6 +777,18 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         return self.tokenizer.text_to_ids(self.blank_token)[0]
 
     @property
+    def audio_token_id(self) -> Optional[int]:
+        """Vocab id of the audio placeholder, or ``None`` when it is not a single token.
+
+        ``None`` for every configuration that leaves ``register_audio_token`` off,
+        including all existing checkpoints.
+        """
+        if not self.core_cfg.register_audio_token:
+            return None
+        ids = self.tokenizer.tokenizer.encode(self.core_cfg.audio_tag, add_special_tokens=False)
+        return ids[0] if len(ids) == 1 else None
+
+    @property
     def has_blank(self) -> bool:
         return self.blank_token != ""
 
@@ -835,6 +872,11 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         if is_fixed:
             return "blank_only"
         return None
+
+    @cached_property
+    def _audio_token_id_cached(self) -> Optional[int]:
+        """``audio_token_id`` memoised for the per-step generation hot path."""
+        return self.audio_token_id
 
     @cached_property
     def _content_score_token_id(self) -> Optional[int]:
@@ -1578,6 +1620,14 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         Returns:
             ``(B,)`` tensor with the selected token IDs.
         """
+        # The audio placeholder is an input-only marker: it is never a training target
+        # and its embedding row is whatever the pretrained checkpoint left there, so it
+        # must never be sampled. Masked before the greedy fast path, not only in the
+        # suppress_tokens branch below, because greedy is the common case.
+        audio_id = self._audio_token_id_cached
+        if audio_id is not None:
+            logits[..., audio_id] = float('-inf')
+
         # Fast path: no config → greedy
         if generation_config is None and not generation_kwargs:
             return logits.argmax(dim=-1)

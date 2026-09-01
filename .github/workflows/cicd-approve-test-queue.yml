@@ -23,6 +23,10 @@ on:
     types: [completed]
   workflow_dispatch:
 
+concurrency:
+  group: approve-test-queue
+  cancel-in-progress: false
+
 jobs:
   approve-test-queue:
     if: github.repository == 'NVIDIA-NeMo/Speech'
@@ -30,9 +34,9 @@ jobs:
     with:
       workflow_name: CICD NeMo
       max_concurrency_internal: ${{ fromJSON(vars.MAX_CONCURRENCY || '1') }}
-      max_concurrency_external: ${{ fromJSON(vars.MAX_CONCURRENCY_EXTERNAL || '1') }}
+      max_concurrency_external: ${{ fromJSON(vars.MAX_CONCURRENCY || '1') }}
     secrets:
       PAT: ${{ secrets.PAT }}
-      NVIDIA_MANAGEMENT_ORG_PAT: ${{ secrets.NVIDIA_MANAGEMENT_ORG_PAT }}
+      NVIDIA_MANAGEMENT_ORG_PAT: ${{ secrets.PAT }}
       SLACK_CI_CHANNEL_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
       SLACK_TEAM_GROUP_ID: ${{ secrets.SLACK_WEBHOOK_ADMIN }}

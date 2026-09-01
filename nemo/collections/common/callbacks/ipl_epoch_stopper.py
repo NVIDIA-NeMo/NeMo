@@ -47,7 +47,8 @@ class IPLEpochStopper(Callback):
         """
         Sets `should_stop` stop flag to terminate the training.
         """
-        super().__init__()
+        if not self.enable_stop:
+            return
 
         if self.stop_every_n_epochs != 0:
             self.stop_every_n_epochs -= 1

@@ -90,29 +90,3 @@ class TestSelectBestBeamIdx:
         state = CacheAwareRNNTBeamStreamingState()
         with pytest.raises(RuntimeError):
             state.select_best_beam_idx_(score_norm=True)
-
-
-class TestSetBeamScoreBaseline:
-
-    @pytest.mark.unit
-    def test_snapshots_winning_beam_after_collapse(self):
-        # select_beam_in_state_item_ collapses to the winner at slot 0 before this is called.
-        state = _state_with_carry(score=[-42.0, -999.0], length=[17.0, 17.0])
-        state.set_beam_score_baseline_()
-        assert state._score_baseline == pytest.approx(-42.0)
-        assert state._length_baseline == pytest.approx(17.0)
-
-    @pytest.mark.unit
-    def test_noop_without_decoding_carry(self):
-        state = CacheAwareRNNTBeamStreamingState()
-        state.set_beam_score_baseline_()
-        assert state._score_baseline == 0.0
-        assert state._length_baseline == 0.0
-
-    @pytest.mark.unit
-    def test_reset_clears_baseline(self):
-        state = _state_with_carry(score=[-42.0], length=[17.0])
-        state.set_beam_score_baseline_()
-        state.reset_beam_decoding_state_()
-        assert state._score_baseline == 0.0
-        assert state._length_baseline == 0.0

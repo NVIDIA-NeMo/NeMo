@@ -18,12 +18,46 @@ import time
 from functools import wraps
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import TYPE_CHECKING, Dict, List
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import torch
+from omegaconf import open_dict
 
 if TYPE_CHECKING:
     from nemo.collections.asr.models import SortformerEncLabelModel
+
+
+def configure_output_subsampling_factor(
+    diar_model: "SortformerEncLabelModel",
+    output_subsampling_factor: Optional[int],
+) -> int:
+    """
+    Apply an inference-time output resolution override and return the effective factor.
+
+    Args:
+        diar_model (SortformerEncLabelModel): Model whose output resolution is configured.
+        output_subsampling_factor (Optional[int]): Requested output factor in 10 ms feature frames. If ``None``,
+            the model's current factor is retained.
+
+    Returns:
+        effective_output_subsampling_factor (int): Applied output subsampling factor.
+    """
+    if output_subsampling_factor is None:
+        return diar_model.output_subsampling_factor
+    if type(output_subsampling_factor) is not int or output_subsampling_factor < 1:
+        raise ValueError(f"output_subsampling_factor must be a positive integer, got {output_subsampling_factor}")
+    native_output_factor = 1 if diar_model.high_resolution else diar_model.encoder.subsampling_factor
+    if output_subsampling_factor % native_output_factor != 0:
+        logging.warning(
+            f"output_subsampling_factor={output_subsampling_factor} must be an integer multiple of the model's "
+            f"native subsampling factor ({native_output_factor}). Using {native_output_factor} instead."
+        )
+        output_subsampling_factor = native_output_factor
+
+    diar_model.output_subsampling_factor = output_subsampling_factor
+    with open_dict(diar_model._cfg):
+        diar_model._cfg.output_subsampling_factor = output_subsampling_factor
+    return output_subsampling_factor
 
 
 class InferenceProfiler:

@@ -47,28 +47,22 @@ from typing import Dict, List, Optional, Union
 
 import lightning.pytorch as pl
 import torch
-from omegaconf import OmegaConf, open_dict
+from omegaconf import OmegaConf
 from pytorch_lightning import seed_everything
 
 from nemo.collections.asr.metrics.der import score_labels
 from nemo.collections.asr.models import SortformerEncLabelModel
+from nemo.collections.asr.parts.utils.diarization_utils import convert_pred_mat_to_segments
 from nemo.collections.asr.parts.utils.sortformer_utils import (
     InferenceProfiler,
+    configure_output_subsampling_factor,
     get_prediction_cache_metadata,
     load_prediction_tensors,
     save_prediction_tensors,
 )
-from nemo.collections.asr.parts.utils.speaker_utils import (
-    audio_rttm_map,
-    get_uniqname_from_filepath,
-    timestamps_to_supervisions,
-)
+from nemo.collections.asr.parts.utils.speaker_utils import audio_rttm_map
 from nemo.collections.asr.parts.utils.transcribe_utils import read_and_maybe_sort_manifest
-from nemo.collections.asr.parts.utils.vad_utils import (
-    PostProcessingParams,
-    load_postprocessing_from_yaml,
-    predlist_to_timestamps,
-)
+from nemo.collections.asr.parts.utils.vad_utils import PostProcessingParams, load_postprocessing_from_yaml
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.core.config import hydra_runner
 from nemo.utils.dependency import import_optional_dependency
@@ -121,11 +115,11 @@ class DiarizationConfig:
     compile_encoder: bool = False
     # Emulate production streams arriving independently; offline batches otherwise update in lockstep.
     async_desync_updates: bool = False
-    spkcache_len: int = 188
+    spkcache_len: Optional[int] = None
     spkcache_update_period: int = 144
     fifo_len: int = 188
     chunk_len: int = 6
-    chunk_left_context: int = 1
+    chunk_left_context: Optional[int] = None
     chunk_right_context: int = 7
 
     # If `cuda` is a negative number, inference will be on CPU only.
@@ -139,38 +133,6 @@ class DiarizationConfig:
     optuna_storage: str = f"sqlite:///{optuna_study_name}.db"
     optuna_log_file: str = f"{optuna_study_name}.log"
     optuna_n_trials: int = 100000
-
-
-def configure_output_subsampling_factor(
-    diar_model: SortformerEncLabelModel, output_subsampling_factor: Optional[int]
-) -> int:
-    """
-    Apply an inference-time output resolution override and return the effective factor.
-
-    Args:
-        diar_model (SortformerEncLabelModel): Model whose output resolution is configured.
-        output_subsampling_factor (Optional[int]): Requested output factor in 10 ms feature frames. If ``None``,
-            the model's current factor is retained.
-
-    Returns:
-        effective_output_subsampling_factor (int): Applied output subsampling factor.
-    """
-    if output_subsampling_factor is None:
-        return diar_model.output_subsampling_factor
-    if type(output_subsampling_factor) is not int or output_subsampling_factor < 1:
-        raise ValueError(f"output_subsampling_factor must be a positive integer, got {output_subsampling_factor}")
-    native_output_factor = 1 if diar_model.high_resolution else diar_model.encoder.subsampling_factor
-    if output_subsampling_factor % native_output_factor != 0:
-        logging.warning(
-            f"output_subsampling_factor={output_subsampling_factor} must be an integer multiple of the model's "
-            f"native subsampling factor ({native_output_factor}). Using {native_output_factor} instead."
-        )
-        output_subsampling_factor = native_output_factor
-
-    diar_model.output_subsampling_factor = output_subsampling_factor
-    with open_dict(diar_model._cfg):
-        diar_model._cfg.output_subsampling_factor = output_subsampling_factor
-    return output_subsampling_factor
 
 
 def optuna_suggest_params(postprocessing_cfg: PostProcessingParams, trial) -> PostProcessingParams:
@@ -317,62 +279,6 @@ def run_optuna_hyperparam_search(
     study.optimize(worker_function, n_trials=cfg.optuna_n_trials)
 
 
-def convert_pred_mat_to_segments(
-    audio_rttm_map_dict: Dict[str, Dict[str, str]],
-    postprocessing_cfg,
-    batch_preds_list: List[torch.Tensor],
-    unit_10ms_frame_count: int = 8,
-    bypass_postprocessing: bool = False,
-    out_rttm_dir: str | None = None,
-):
-    """
-    Convert prediction matrix to time-stamp segments.
-
-    Args:
-        audio_rttm_map_dict (dict): dictionary of audio file path, offset, duration and RTTM filepath.
-        postprocessing_cfg (Optional[PostProcessingParams]): Postprocessing parameters, or ``None`` when
-            ``bypass_postprocessing`` is enabled.
-        batch_preds_list (List[torch.Tensor]): list of prediction matrices containing sigmoid values for each speaker.
-            Dimension: [(1, num_frames, num_speakers), ..., (1, num_frames, num_speakers)]
-        unit_10ms_frame_count (int, optional): number of 10ms segments in a frame. Defaults to 8.
-        bypass_postprocessing (bool, optional): if True, postprocessing will be bypassed. Defaults to False.
-        out_rttm_dir (Optional[str]): Directory in which to write RTTM files, or ``None`` to skip writing them.
-
-    Returns:
-        all_hypothesis (list): list of (uniq_id, list[SupervisionSegment]) per audio file.
-        all_reference (list): list of (uniq_id, list[SupervisionSegment]) per audio file.
-        all_uems (list): list of (uniq_id, list[SupervisionSegment]) per audio file.
-    """
-    all_hypothesis, all_reference, all_uems = [], [], []
-    if postprocessing_cfg is None and not bypass_postprocessing:
-        raise ValueError("postprocessing_cfg is required when postprocessing is enabled")
-    cfg_vad_params = OmegaConf.structured(postprocessing_cfg) if postprocessing_cfg is not None else None
-    total_speaker_timestamps = predlist_to_timestamps(
-        batch_preds_list=batch_preds_list,
-        audio_rttm_map_dict=audio_rttm_map_dict,
-        cfg_vad_params=cfg_vad_params,
-        unit_10ms_frame_count=unit_10ms_frame_count,
-        bypass_postprocessing=bypass_postprocessing,
-    )
-    for sample_idx, (uniq_id, audio_rttm_values) in enumerate(audio_rttm_map_dict.items()):
-        speaker_timestamps = total_speaker_timestamps[sample_idx]
-        if uniq_id is None:
-            if audio_rttm_values.get("uniq_id", None) is not None:
-                uniq_id = audio_rttm_values["uniq_id"]
-            else:
-                uniq_id = get_uniqname_from_filepath(audio_rttm_values["audio_filepath"])
-        all_hypothesis, all_reference, all_uems = timestamps_to_supervisions(
-            speaker_timestamps,
-            uniq_id,
-            audio_rttm_values,
-            all_hypothesis,
-            all_reference,
-            all_uems,
-            out_rttm_dir,
-        )
-    return all_hypothesis, all_reference, all_uems
-
-
 @hydra_runner(config_name="DiarizationConfig", schema=DiarizationConfig)
 def main(cfg: DiarizationConfig) -> Union[DiarizationConfig]:
     """Main function for end-to-end speaker diarization inference."""
@@ -461,8 +367,10 @@ def main(cfg: DiarizationConfig) -> Union[DiarizationConfig]:
         diar_model.async_pad_to_max = cfg.async_pad_to_max
         diar_model.sortformer_modules.async_desync_updates = cfg.async_desync_updates
         diar_model.sortformer_modules.chunk_len = cfg.chunk_len
-        diar_model.sortformer_modules.spkcache_len = cfg.spkcache_len
-        diar_model.sortformer_modules.chunk_left_context = cfg.chunk_left_context
+        if cfg.spkcache_len is not None:
+            diar_model.sortformer_modules.spkcache_len = cfg.spkcache_len
+        if cfg.chunk_left_context is not None:
+            diar_model.sortformer_modules.chunk_left_context = cfg.chunk_left_context
         diar_model.sortformer_modules.chunk_right_context = cfg.chunk_right_context
         diar_model.sortformer_modules.fifo_len = cfg.fifo_len
         diar_model.sortformer_modules.log = cfg.log

@@ -51,6 +51,9 @@ SEED: int = 42
 # Number of decimal digits used when formatting p-values in statistical tests.
 P_VAL_ROUND_DIGITS: int = 4
 
+# Default signature version used to sign S3 client requests.
+S3_SIGNATURE_VERSION: str = "s3"
+
 # Default lifetime of generated S3 presigned links in seconds (one year).
 S3_LINK_EXPIRES_IN: int = 31536000
 

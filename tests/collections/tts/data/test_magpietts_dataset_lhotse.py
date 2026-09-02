@@ -14,11 +14,12 @@
 
 import random
 from io import BytesIO
-from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
+from huggingface_hub import snapshot_download
+from huggingface_hub.errors import LocalEntryNotFoundError
 from lhotse import CutSet, SupervisionSegment
 from lhotse.array import Array, TemporalArray
 from lhotse.testing.dummies import dummy_cut, dummy_recording
@@ -38,9 +39,29 @@ NUM_AUDIO_CODEBOOKS = 8
 
 BPE_TOKENIZER_NAME = "nemotron_bpe"
 BPE_TOKENIZER_MODEL = "nvidia/NVIDIA-Nemotron-Nano-9B-v2"
-BPE_TOKENIZER_CACHED_PATH = Path("/home/TestData/nvidia--NVIDIA-Nemotron-Nano-9B-v2/")
-if BPE_TOKENIZER_CACHED_PATH.exists():
-    BPE_TOKENIZER_MODEL = str(BPE_TOKENIZER_CACHED_PATH)
+try:
+    # Attempt to resolve local cache for CI tests
+    BPE_TOKENIZER_MODEL = snapshot_download(BPE_TOKENIZER_MODEL, local_files_only=True)
+except LocalEntryNotFoundError:
+    # For local tests, can call into HF servers to download as needed
+    pass
+
+
+class _FakeIPATokenizer:
+    pad = 0
+    bos_token_id = 1
+    eos_token_id = 2
+
+    def encode(self, text):
+        return [7, 8] if text else []
+
+
+class _FakeTextTokenizer:
+    tokens = list(range(100))
+    pad = 0
+
+    def encode(self, text, tokenizer_name):
+        return [10 + len(text)]
 
 
 def _seed_everything():
@@ -136,6 +157,7 @@ def _multiturn_cutset():
             text="hello",
             language="en",
             speaker="assistant",
+            custom={"ipa": "həloʊ", "ipa_alignment": [[0, 5, "hello", "həloʊ"]]},
         ),
         SupervisionSegment(
             id="turn-user-1",
@@ -209,6 +231,45 @@ class TestMagpieTTSLhotseDatasets:
         assert batch["context_text_tokens"].shape[0] == 1
         assert batch["context_text_tokens_lens"].item() > 0
         assert batch["has_text_context"].tolist() == [True]
+
+    def test_multiturn_pronunciation_control_only_changes_target_turns(self):
+        _seed_everything()
+        kwargs = _dataset_kwargs()
+        kwargs.update(
+            {
+                "codec_model_input_sample_rate": CODEC_MODEL_INPUT_SAMPLE_RATE,
+                "frame_stacking_factor": FRAME_STACKING_FACTOR,
+                "source_sample_rate": SAMPLE_RATE,
+                "input_roles": ["user"],
+                "output_roles": ["assistant"],
+                "add_text_bos": False,
+                "use_text_conditioning_tokenizer": False,
+                "enable_phoneme_text_input": True,
+                "partial_phoneme_text_prob": 1.0,
+                "partial_phoneme_portion_min": 1.0,
+                "partial_phoneme_portion_max": 1.0,
+            }
+        )
+        dataset = MagpieTTSLhotseMultiturnDataset(**kwargs)
+        dataset.text_tokenizer = _FakeTextTokenizer()
+        dataset.phoneme_tokenizer = _FakeIPATokenizer()
+        dataset.bos_id = len(dataset.text_tokenizer.tokens)
+        dataset.eos_id = dataset.bos_id + 1
+        dataset.cfg_unk_token_id = dataset.bos_id + 2
+        dataset.interruption_token_id = dataset.bos_id + 3
+        dataset.pad_id = dataset.text_tokenizer.pad
+        dataset.text_phoneme_token_offset = dataset.bos_id + 4
+
+        batch = dataset[_multiturn_cutset()]
+
+        target_tokens = batch["text"][0]
+        source_tokens = batch["source_tokens"][0]
+        assert target_tokens[15:17].tolist() == [
+            dataset.text_phoneme_token_offset + 7,
+            dataset.text_phoneme_token_offset + 8,
+        ]
+        assert torch.all(source_tokens < dataset.text_phoneme_token_offset)
+        assert target_tokens[25].item() == dataset.interruption_token_id
 
     def test_multiturn_dataset_uses_bpe_and_cached_codes(self):
         _seed_everything()

@@ -35,11 +35,8 @@ asr:
       # Cache-aware streaming supports MALSD beam search only (set asr.decoding.strategy: malsd_batch).
       beam_size: 4
       allow_cuda_graphs: true
-      # Exponent on the length term when length-normalizing beam scores at EOU:
-      # (score - baseline) / (length - baseline + 1) ** length_norm_power. 1.0 = plain average (prior
-      # behavior). 0.0 disables length normalization entirely -- do not use with LM fusion
-      # (ngram_lm_alpha > 0): an unnormalized RNNT+LM score favors near-empty hypotheses and can collapse
-      # beam search to blank output. See cache_aware_rnnt_state.py::select_best_beam_idx_.
+      # Exponent controlling how strongly beam scores are length-normalized at EOU; 1.0 = plain average, 0.0 = off (unsafe with LM fusion).
+      # (score - baseline) / (length - baseline + 1) ** length_norm_power
       length_norm_power: 1.0
       preserve_frame_confidence: false  # Set to true to calculate confidence (token/word etc.)
       # n-gram LM (off by default)

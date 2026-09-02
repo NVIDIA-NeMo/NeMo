@@ -27,6 +27,7 @@ def _bare_model():
     '''Create a SALMAutomodel instance without loading any weights.'''
     model = SALMAutomodel.__new__(SALMAutomodel)
     torch.nn.Module.__init__(model)
+    model.cfg = {"debug_log_training_batches": 0}
     return model
 
 

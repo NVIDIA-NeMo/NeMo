@@ -124,6 +124,12 @@ class StreamingSTTDataConfig:
     # May also be a list of positive ints (e.g. ``[1, 3, 7]``) for multi
     # chunk-step training; one K is drawn per batch and recorded on the batch.
     chunk_step: Union[int, List[int]] = 1
+    # Rung 1: drop the blank token and its turn scaffolding from the LLM context on
+    # silent chunks. The blank is still SUPERVISED — it stays the target at the gate
+    # position — it just never becomes an input token, so later chunks do not attend
+    # to it. Requires a non-empty ``blank_token``; forced off with a warning otherwise
+    # (there is no blank to drop, and the gate target would be undefined).
+    drop_blank_from_context: bool = False
 
 
 def decode_with_blank(
@@ -737,6 +743,8 @@ def _tokenize_compact_with_assistant_mask(
     tokenizer: AutoTokenizer,
     end_of_audio_id: int,
     eos_id: int,
+    drop_blank_from_context: bool = False,
+    blank_token: str = "",
 ) -> tuple[list[int], list[int]]:
     """Tokenize chat messages in compact format and return (input_ids, assistant_mask).
 
@@ -787,6 +795,15 @@ def _tokenize_compact_with_assistant_mask(
             # Pair with following assistant turn if present.
             if i < len(turn_msgs) and turn_msgs[i]["role"] == "assistant":
                 asst = turn_msgs[i]
+                if drop_blank_from_context and blank_token and asst["content"] == blank_token:
+                    # Silent chunk under rung 1: emit the gate anchor and nothing else.
+                    # The blank stays supervised via a target override in
+                    # ``get_batch_data`` -- it is simply never an input token, so
+                    # subsequent chunks do not attend to it.
+                    input_ids.append(end_of_audio_id)
+                    assistant_mask.append(0)
+                    i += 1
+                    continue
                 asst_ids = hf_tok.encode(asst["content"], add_special_tokens=False) if asst["content"] else []
                 # <eoa> anchor: force-fed scaffold, not LM-supervised (mask=0).
                 input_ids.append(end_of_audio_id)
@@ -1042,6 +1059,25 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                 )
             self.blank_id = blank_ids[0]
 
+        # Rung 1 flag, resolved once. Requires a real blank token: with
+        # ``blank_token: ""`` a silent chunk is already just ``[audio][eoa][eos]``,
+        # there is no blank to drop, and the gate target would be undefined.
+        self._drop_blank = bool(getattr(self.cfg, "drop_blank_from_context", False))
+        if self._drop_blank and self.cfg.blank_token == "":
+            warnings.warn(
+                "drop_blank_from_context=True requires a non-empty blank_token; disabling it. "
+                "There is no blank token to drop and the gate target would be undefined.",
+                stacklevel=2,
+            )
+            self._drop_blank = False
+        if self._drop_blank and not self.cfg.compact_template:
+            raise NotImplementedError(
+                "drop_blank_from_context is only implemented for compact_template=True so far "
+                "(the non-compact two-stage turn feed is a later milestone)."
+            )
+        if self._drop_blank:
+            logging.info("drop_blank_from_context enabled: silent chunks contribute [audio, anchor] only")
+
         # Compact template: cache the end-of-audio anchor id and eos_id. Skip the
         # parse_chat_template_ids call since we derive the markers directly from config.
         if self.cfg.compact_template:
@@ -1177,7 +1213,12 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             # Tokenize and compute assistant content mask.
             if self.cfg.compact_template:
                 input_ids, assistant_mask = _tokenize_compact_with_assistant_mask(
-                    messages, self.tokenizer, self._eoa_id, self._compact_eos_id
+                    messages,
+                    self.tokenizer,
+                    self._eoa_id,
+                    self._compact_eos_id,
+                    drop_blank_from_context=self._drop_blank,
+                    blank_token=self.cfg.blank_token,
                 )
             else:
                 input_ids, assistant_mask = _tokenize_with_assistant_mask(messages, self.tokenizer)
@@ -1215,6 +1256,19 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             target_ids = input_ids[1:] + [IGNORE_INDEX]
             target_mask = assistant_mask[1:] + [0]
             target_ids = [tid if m else IGNORE_INDEX for tid, m in zip(target_ids, target_mask)]
+
+            # Rung 1: the blank is gone from the input, so re-attach it as the target at
+            # the gate. A gate anchor that ends a SILENT chunk is followed by audio (the
+            # next chunk) or by nothing (end of sequence); a speaking chunk's anchor is
+            # followed by the write token or text, so the two cannot be confused.
+            if self._drop_blank and chunk_size > 0:
+                n_ids = len(input_ids)
+                for i, tid in enumerate(input_ids):
+                    if tid != self._eoa_id:
+                        continue
+                    nxt = input_ids[i + 1] if i + 1 < n_ids else None
+                    if nxt is None or nxt == AUDIO_TOKEN_IDX:
+                        target_ids[i] = self.blank_id
 
             # Dynamic chunking: train the model to predict at audio positions.
             # Non-final audio frames → target = blank_id ("need more audio")

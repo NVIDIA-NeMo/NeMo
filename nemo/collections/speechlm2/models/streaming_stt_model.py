@@ -236,6 +236,14 @@ class StreamingSTTModelConfig:
     # ``interleave_embeddings``. It exists so the audio span is one id per frame,
     # which removes the BPE-merge hazard in ``_replace_audio_chunks``.
     register_audio_token: bool = False
+    # Rung 1: on a silent chunk, the blank token and its turn scaffolding never enter
+    # the LLM context. The blank is still supervised (it remains the target at the gate
+    # anchor) and still emitted into the output stream so per-chunk decoding is
+    # unchanged -- it is simply never fed back. Must match
+    # ``data.dataset.drop_blank_from_context``: the dataset supervises the gate and the
+    # model reads it, so a mismatch trains one position and infers another with no error.
+    # Requires a non-empty ``blank_token`` and, for now, ``compact_template=True``.
+    drop_blank_from_context: bool = False
     att_context_size: Optional[List[int]] = None
     audio_pad_to: Optional[int] = None
     sample_rate: int = 16000
@@ -2399,6 +2407,16 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         # Fixed-chunk mode: count frames consumed per segment to transition
         # after exactly chunk_size frames (ignoring model predictions).
         fixed_chunk_mode = chunk_size > 0
+        # Rung 1 is a fixed-chunk, compact-template, real-blank feature; anything else
+        # falls back to the unmodified path rather than half-applying.
+        drop_blank_ctx = (
+            bool(getattr(self.core_cfg, "drop_blank_from_context", False))
+            and fixed_chunk_mode
+            and self.has_blank
+            and self.core_cfg.compact_template
+        )
+        if drop_blank_ctx:
+            logging.info("drop_blank_from_context: silent chunks will not be fed back to the LLM")
         fixed_chunk_size = chunk_size if fixed_chunk_mode else 0
         frames_in_segment = [0] * B  # frames consumed in current LISTENING segment
         # When emit_delay_frames > 0: after the aux head decides "emit" at
@@ -2830,7 +2848,23 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                             # Immediately done generating — append chunk separator
                             # (blank when enabled, else EOS so decode_with_blank splits chunks)
                             all_tokens[b].append(self.blank_token_id if self.has_blank else self._eos_id)
-                            if fixed_chunk_mode and self.has_blank:
+                            if drop_blank_ctx:
+                                # Rung 1: the blank and the turn footer never enter the
+                                # context, so skip BLANK_FEED/ASST_FOOTER and return
+                                # straight to listening. The separator above is still
+                                # recorded, so decoding is unaffected -- only what the
+                                # LLM attends to changes.
+                                self._dynamic_finish_generating(
+                                    b,
+                                    stream_state,
+                                    template_pos,
+                                    audio_emb_buf,
+                                    audio_sample_idx,
+                                    n_samples_list,
+                                    _initial_state,
+                                    DONE,
+                                )
+                            elif fixed_chunk_mode and self.has_blank:
                                 # Feed blank to LLM first (matches training sequence)
                                 stream_state[b] = BLANK_FEED
                             elif af_ids:

@@ -39,6 +39,7 @@ from omegaconf import OmegaConf
 from nemo.collections.speechlm2.data.streaming_stt_dataset import (
     AUDIO_TOKEN_IDX,
     IGNORE_INDEX,
+    StreamingSTTDataConfig,
     StreamingSTTDataset,
     _replace_audio_chunks,
     _tokenize_compact_with_assistant_mask,
@@ -2763,3 +2764,124 @@ def _legacy_parse_chat_template_ids(hf_tok, last_turn: bool = False):
         mid_ids = hf_tok.encode(convo_4msg.split(_SENTINEL)[1], add_special_tokens=False)
 
     return user_header_ids, mid_ids, asst_footer_ids
+
+
+class TestDropBlankFromContext:
+    """M3 / rung 1: the blank leaves the context but stays supervised.
+
+    The point of the knob is that the model still learns to predict blank at the
+    gate — it simply never attends to a blank it emitted earlier. So the two
+    properties to pin are complementary: zero blanks among the INPUT ids, and an
+    unchanged count of blanks among the TARGETS.
+    """
+
+    WORDS = ["hello", "world", "again"]
+    ALIGNED = [WordAlignment(text=w, start_time=0.6 * i, end_time=0.6 * i + 0.25) for i, w in enumerate(WORDS)]
+
+    def _dataset(self, drop, blank_token="<blank>", compact=True):
+        from nemo.collections.common.tokenizers import AutoTokenizer as NeMoTok
+
+        tok = NeMoTok("Qwen/Qwen3-1.7B", use_fast=True)
+        tok.add_special_tokens({"additional_special_tokens": ["<blank>", "<|write|>"]})
+        cfg = OmegaConf.create(
+            {
+                "sample_rate": 16000,
+                "frame_length_in_secs": 0.08,
+                "chunk_size": 2,
+                "num_delay_frames": 3,
+                "audio_tag": "<audio>",
+                "blank_token": blank_token,
+                "system_role": "system",
+                "system_prompt": "Transcribe the audio into text.",
+                "compact_template": compact,
+                "prepend_write_token": True,
+                "write_token": "<|write|>",
+                "drop_blank_from_context": drop,
+            }
+        )
+        return StreamingSTTDataset(cfg=cfg, tokenizer=tok), tok
+
+    def _encode(self, ds, tok):
+        msgs = get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="Transcribe the audio into text.",
+            audio_tag="<audio>",
+            blank_token=ds.cfg.blank_token,
+            chunk_size=2,
+            num_delay_frames=3,
+            audio_duration_secs=2.0,
+            frame_length_in_secs=0.08,
+            alignments=self.ALIGNED,
+            transcript=" ".join(self.WORDS),
+            prepend_write_token=True,
+            write_token="<|write|>",
+        )
+        ids, mask = _tokenize_compact_with_assistant_mask(
+            msgs,
+            tok,
+            ds._eoa_id,
+            ds._compact_eos_id,
+            drop_blank_from_context=ds._drop_blank,
+            blank_token=ds.cfg.blank_token,
+        )
+        ids, mask = _replace_audio_chunks(ids, ds._audio_chunk_ids_by_size[2], 2, mask=mask)
+        targets = [t if m else IGNORE_INDEX for t, m in zip(ids[1:] + [IGNORE_INDEX], mask[1:] + [0])]
+        if ds._drop_blank:
+            n = len(ids)
+            for i, tid in enumerate(ids):
+                if tid != ds._eoa_id:
+                    continue
+                nxt = ids[i + 1] if i + 1 < n else None
+                if nxt is None or nxt == AUDIO_TOKEN_IDX:
+                    targets[i] = ds.blank_id
+        return ids, targets
+
+    def test_blank_leaves_the_input_but_stays_supervised(self):
+        off_ds, off_tok = self._dataset(drop=False)
+        on_ds, on_tok = self._dataset(drop=True)
+        off_ids, off_tgt = self._encode(off_ds, off_tok)
+        on_ids, on_tgt = self._encode(on_ds, on_tok)
+
+        blank = off_ds.blank_id
+        assert sum(1 for t in off_ids if t == blank) > 0, "baseline should contain blanks as input"
+        assert sum(1 for t in on_ids if t == blank) == 0, "blank must not be an input token"
+        assert sum(1 for t in on_tgt if t == blank) == sum(
+            1 for t in off_tgt if t == blank
+        ), "every blank that was supervised before must still be supervised"
+
+    def test_audio_is_untouched_and_the_sequence_shrinks(self):
+        off_ds, off_tok = self._dataset(drop=False)
+        on_ds, on_tok = self._dataset(drop=True)
+        off_ids, _ = self._encode(off_ds, off_tok)
+        on_ids, _ = self._encode(on_ds, on_tok)
+
+        n_audio = lambda ids: sum(1 for t in ids if t == AUDIO_TOKEN_IDX)
+        assert n_audio(on_ids) == n_audio(off_ids), "dropping blanks must not change the audio span"
+        assert len(on_ids) < len(off_ids)
+
+    def test_emitted_text_is_unchanged(self):
+        """Only silent chunks lose scaffolding; spoken content must survive verbatim."""
+        off_ds, off_tok = self._dataset(drop=False)
+        on_ds, on_tok = self._dataset(drop=True)
+        off_ids, _ = self._encode(off_ds, off_tok)
+        on_ids, _ = self._encode(on_ds, on_tok)
+
+        keep = lambda ids, ds: [
+            t for t in ids if t not in (AUDIO_TOKEN_IDX, ds._eoa_id, ds._compact_eos_id, ds.blank_id)
+        ]
+        assert keep(on_ids, on_ds) == keep(off_ids, off_ds)
+
+    def test_disabled_without_a_blank_token(self):
+        """blank_token='' leaves nothing to drop and no defined gate target."""
+        with pytest.warns(UserWarning, match="requires a non-empty blank_token"):
+            ds, _ = self._dataset(drop=True, blank_token="")
+        assert ds._drop_blank is False
+
+    def test_non_compact_is_rejected_not_half_applied(self):
+        with pytest.raises(NotImplementedError, match="compact_template=True"):
+            self._dataset(drop=True, compact=False)
+
+    def test_off_by_default(self):
+        ds, _ = self._dataset(drop=False)
+        assert ds._drop_blank is False
+        assert StreamingSTTDataConfig.drop_blank_from_context is False

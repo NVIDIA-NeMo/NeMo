@@ -13,13 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from omegaconf import DictConfig, open_dict
 
 from nemo.collections.asr.modules import conv_asr
 from nemo.collections.asr.parts.submodules import jasper
 from nemo.utils import logging
+
+if TYPE_CHECKING:
+    from nemo.collections.asr.models.asr_model import ASRModel
 
 
 def change_conv_asr_se_context_window(model: 'ASRModel', context_window: int, update_config: bool = True):

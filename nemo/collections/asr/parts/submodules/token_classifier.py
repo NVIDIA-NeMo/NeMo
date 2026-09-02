@@ -22,7 +22,7 @@ from torch import nn as nn
 from nemo.collections.asr.parts.submodules.classifier import Classifier
 from nemo.collections.common.parts import MultiLayerPerceptron
 from nemo.core.classes import typecheck
-from nemo.core.neural_types import ChannelType, FloatType, LogitsType, LogprobsType, NeuralType
+from nemo.core.neural_types import ChannelType, LogitsType, LogprobsType, NeuralType
 
 __all__ = ['BertPretrainingTokenClassifier', 'TokenClassifier']
 

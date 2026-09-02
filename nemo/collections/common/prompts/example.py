@@ -37,13 +37,13 @@ class ExamplePromptFormatter(PromptFormatter):
     OUTPUT_ROLE = "assistant"
     TEMPLATE = {
         "user": {
-            "template": f"User: |message|\n",
+            "template": "User: |message|\n",
             "slots": {
                 "message": Modality.Text,
             },
         },
         OUTPUT_ROLE: {
-            "template": f"Assistant: |message|\n",
+            "template": "Assistant: |message|\n",
             "slots": {
                 "message": Modality.Text,
             },

@@ -25,13 +25,13 @@ class Phi2QAPromptFormatter(PromptFormatter):
     OUTPUT_ROLE = "assistant"
     TEMPLATE = {
         "user": {
-            "template": f"Instruct: |message|\nOutput: ",
+            "template": "Instruct: |message|\nOutput: ",
             "slots": {
                 "message": Modality.Text,
             },
         },
         OUTPUT_ROLE: {
-            "template": f"|message|",
+            "template": "|message|",
             "slots": {
                 "message": Modality.Text,
             },
@@ -44,13 +44,13 @@ class Phi2ChatPromptFormatter(PromptFormatter):
     OUTPUT_ROLE = "assistant"
     TEMPLATE = {
         "user": {
-            "template": f"Human: |message|\nAI: ",
+            "template": "Human: |message|\nAI: ",
             "slots": {
                 "message": Modality.Text,
             },
         },
         OUTPUT_ROLE: {
-            "template": f"|message|",
+            "template": "|message|",
             "slots": {
                 "message": Modality.Text,
             },
@@ -63,13 +63,13 @@ class Phi2CodePromptFormatter(PromptFormatter):
     OUTPUT_ROLE = "assistant"
     TEMPLATE = {
         "user": {
-            "template": f"|message|\n",
+            "template": "|message|\n",
             "slots": {
                 "message": Modality.Text,
             },
         },
         OUTPUT_ROLE: {
-            "template": f"|message|",
+            "template": "|message|",
             "slots": {
                 "message": Modality.Text,
             },

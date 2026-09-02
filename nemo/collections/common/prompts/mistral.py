@@ -14,7 +14,8 @@
 # limitations under the License.
 
 """
-Implemented following the guide at https://www.promptingguide.ai/models/mistral-7b#chat-template-for-mistral-7b-instruct
+Implemented following the guide at
+https://www.promptingguide.ai/models/mistral-7b#chat-template-for-mistral-7b-instruct
 """
 
 from nemo.collections.common.prompts.formatter import Modality, PromptFormatter

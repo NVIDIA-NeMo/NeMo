@@ -18,7 +18,7 @@ import operator
 import os.path
 import time
 from collections.abc import Iterator
-from typing import Callable, List, Optional, Union
+from typing import TYPE_CHECKING, Callable, List, Optional, Union
 
 import torch
 from omegaconf import DictConfig
@@ -26,6 +26,9 @@ from omegaconf import DictConfig
 from nemo.collections.asr.data.audio_to_text import ASRManifestProcessor, expand_sharded_filepaths
 from nemo.collections.common.parts.preprocessing import parsers
 from nemo.utils import logging, model_utils
+
+if TYPE_CHECKING:
+    from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 try:
     import nvidia.dali as dali
@@ -708,7 +711,7 @@ class AudioToBPEDALIDataset(_AudioTextDALIDataset):
     def __init__(
         self,
         manifest_filepath: str,
-        tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
+        tokenizer: 'TokenizerSpec',
         device: str,
         batch_size: int,
         sample_rate: int = 16000,

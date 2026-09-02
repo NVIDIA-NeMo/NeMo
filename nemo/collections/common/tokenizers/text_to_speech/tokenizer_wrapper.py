@@ -21,6 +21,8 @@ __all__ = ['TextToSpeechTokenizer']
 
 
 class TextToSpeechTokenizer(TokenizerSpec):
+    """Adapt text-to-speech tokenizers to the common tokenizer interface."""
+
     def __init__(self, phoneme_dict, heteronyms):
         self.g2p = EnglishG2p(phoneme_dict=phoneme_dict, heteronyms=heteronyms)
         self.tokenizer = EnglishPhonemesTokenizer(

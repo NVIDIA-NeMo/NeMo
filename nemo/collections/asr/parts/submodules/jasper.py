@@ -18,10 +18,8 @@ from typing import Callable, Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch import Tensor
 from torch.nn.init import _calculate_correct_fan
-from torch.nn.modules.utils import _single
 
 from nemo.collections.common.parts.utils import activation_registry
 from nemo.core.classes.mixins import AccessMixin
@@ -29,10 +27,7 @@ from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 from nemo.utils import logging
 
 try:
-    from pytorch_quantization import calib
     from pytorch_quantization import nn as quant_nn
-    from pytorch_quantization import quant_modules
-    from pytorch_quantization.tensor_quant import QuantDescriptor
 
     PYTORCH_QUANTIZATION_AVAILABLE = True
 except ImportError:

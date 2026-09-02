@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import random
-from typing import Iterable
+from typing import Iterable, List
 
 import torch
 from lightning.pytorch import Trainer

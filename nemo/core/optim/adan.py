@@ -36,6 +36,8 @@ from torch.optim.optimizer import Optimizer
 
 
 class MultiTensorApply(object):
+    """Apply a fused operation to lists of tensors."""
+
     available = False
     warned = False
 
@@ -121,6 +123,7 @@ class Adan(Optimizer):
 
     @torch.no_grad()
     def restart_opt(self):
+        """Reset optimizer state for a fresh optimization phase."""
         for group in self.param_groups:
             group['step'] = 0
             for p in group['params']:

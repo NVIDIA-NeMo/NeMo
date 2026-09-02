@@ -51,6 +51,7 @@ class GemmaPromptFormatter(PromptFormatter):
 
 @registered_prompt_format_fn(Cut, GemmaPromptFormatter)
 def gemma1(cut: Cut, prompt: GemmaPromptFormatter):
+    """Format a prompted cut for Gemma 1 models."""
     if isinstance(cut, MixedCut):
         cut = cut.first_non_padding_cut
     if cut.has_custom("context"):

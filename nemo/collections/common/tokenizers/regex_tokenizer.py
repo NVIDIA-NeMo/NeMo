@@ -201,7 +201,7 @@ class RegExTokenizer(TokenizerSpec):
         """
         regex_file = regex_file or self.regex_file
         if not regex_file:
-            raise ValueError(f"regex_file must be specified")
+            raise ValueError("regex_file must be specified")
 
         vocab_file = vocab_file or self.vocab_file
         # try to infer vocab_file from regex_file

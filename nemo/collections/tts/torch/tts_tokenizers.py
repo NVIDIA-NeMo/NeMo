@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO @xueyang: deprecate this file since no other places import modules from here anymore. However,
-#  all checkpoints uploaded in ngc used this path. So it requires to update all ngc checkpoints path as well.
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
     BaseCharsTokenizer,
     BaseTokenizer,
@@ -24,3 +22,16 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
     GermanPhonemesTokenizer,
     IPATokenizer,
 )
+
+__all__ = [
+    'BaseCharsTokenizer',
+    'BaseTokenizer',
+    'EnglishCharsTokenizer',
+    'EnglishPhonemesTokenizer',
+    'GermanCharsTokenizer',
+    'GermanPhonemesTokenizer',
+    'IPATokenizer',
+]
+
+# TODO @xueyang: deprecate this file since no other places import modules from here anymore. However,
+#  all checkpoints uploaded in ngc used this path. So it requires to update all ngc checkpoints path as well.

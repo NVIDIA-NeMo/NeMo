@@ -37,7 +37,7 @@ from nemo.utils import logging
 
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
-except Exception as e:
+except Exception:
     pass  # Normalizer imported only for annotation purposes, error can be ignored
 
 AnyPath = Union[Path, str]

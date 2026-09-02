@@ -43,6 +43,7 @@ def safe_extract(
     *,
     skip_unsafe: bool = False,
 ) -> list[tarfile.TarInfo]:
+    """Extract tar members after validating their destination paths."""
     extract_to = os.path.realpath(path)
     os.makedirs(extract_to, exist_ok=True)
     if members is None:

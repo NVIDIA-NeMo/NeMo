@@ -49,6 +49,8 @@ class AnsiCodes(object):
 
 
 class AnsiCursor(object):
+    """ANSI escape sequences for moving the terminal cursor."""
+
     def UP(self, n=1):
         return CSI + str(n) + "A"
 
@@ -66,6 +68,8 @@ class AnsiCursor(object):
 
 
 class AnsiFore(AnsiCodes):
+    """ANSI escape sequences for foreground colors."""
+
     BLACK = 30
     RED = 31
     GREEN = 32
@@ -88,6 +92,8 @@ class AnsiFore(AnsiCodes):
 
 
 class AnsiBack(AnsiCodes):
+    """ANSI escape sequences for background colors."""
+
     BLACK = 40
     RED = 41
     GREEN = 42

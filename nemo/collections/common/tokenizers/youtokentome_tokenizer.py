@@ -23,6 +23,8 @@ __all__ = ['YouTokenToMeTokenizer']
 
 
 class YouTokenToMeTokenizer(TokenizerSpec):
+    """Tokenizer backed by a YouTokenToMe model."""
+
     def __init__(self, model_path, bpe_dropout=0.0, legacy=False, r2l=False):
         model_path = Path(model_path).expanduser()
         self.tokenizer = yttm.BPE(model=str(model_path))

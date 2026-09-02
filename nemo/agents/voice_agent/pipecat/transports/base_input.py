@@ -27,6 +27,8 @@ from pipecat.transports.base_input import BaseInputTransport as _BaseInputTransp
 
 
 class BaseInputTransport(_BaseInputTransport):
+    """Base transport for consuming inbound audio frames."""
+
     async def _handle_vad(self, audio_frame: InputAudioRawFrame, vad_state: VADState):
         """Handle Voice Activity Detection results and generate appropriate frames."""
         new_vad_state = await self._vad_analyze(audio_frame)

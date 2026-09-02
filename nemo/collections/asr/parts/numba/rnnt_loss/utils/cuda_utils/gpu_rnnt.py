@@ -158,7 +158,7 @@ class GPURNNT:
 
         used_offset, (denom, alphas, betas, llForward, llBackward) = self._prepare_workspace()
 
-        ######## START EXECUTION ########
+        # START EXECUTION ########
         self.log_softmax(acts, denom)
 
         # Compute alphas
@@ -377,7 +377,7 @@ class MultiblankGPURNNT(GPURNNT):
 
         _, (denom, alphas, betas, llForward, llBackward, bigblank_durations) = self._prepare_workspace()
 
-        ######## START EXECUTION ########
+        # START EXECUTION ########
         self.log_softmax(acts, denom)
 
         # Compute alphas
@@ -601,7 +601,7 @@ class GPUTDT(GPURNNT):
 
         _, (denom, alphas, betas, llForward, llBackward, durations) = self._prepare_workspace()
 
-        ######## START EXECUTION ########
+        # START EXECUTION ########
         self.log_softmax(label_acts, denom)
 
         r = random.uniform(0, 1)

@@ -131,7 +131,7 @@ class CanaryTokenizer(AggregateTokenizer):
         """
         Tokenize the input special prompt of Canary family of models.
 
-        Required because otherwise self.text_to_ids() returns a different result than what Canary had been trained with.
+        Required because otherwise self.text_to_ids() returns a different result than what Canary was trained with.
         """
         ans = []
 
@@ -165,6 +165,7 @@ class CanaryTokenizer(AggregateTokenizer):
     def build_special_tokenizer(
         tokens: List[str], model_dir: str | Path, force_rebuild: bool = False
     ) -> SentencePieceTokenizer:
+        """Build a SentencePiece tokenizer for the supplied special tokens."""
         if force_rebuild:
             logging.info("Building special tokenizer")
             # Checks for artifacts of previous build.

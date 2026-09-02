@@ -13,10 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import TYPE_CHECKING
+
 import torch
 
 from nemo.core.classes.mixins import adapter_mixins
 from nemo.utils import logging, logging_mode
+
+if TYPE_CHECKING:
+    from nemo.core.classes.mixins.adapter_mixin_strategies import AbstractAdapterStrategy
 
 
 class AttentionAdapterModuleMixin(adapter_mixins.AdapterModuleMixin):
@@ -60,7 +65,7 @@ class AttentionAdapterModuleMixin(adapter_mixins.AdapterModuleMixin):
         adapter_module: torch.nn.Module,
         *,
         adapter_name: str,
-        adapter_strategy: 'nemo.core.classes.mixins.adapter_mixin_strategies.AbstractAdapterStrategy',
+        adapter_strategy: 'AbstractAdapterStrategy',
     ):
         """
         Perform the forward step of a single adapter module on some input data.

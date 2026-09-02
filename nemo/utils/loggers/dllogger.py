@@ -50,6 +50,8 @@ class DLLoggerParams:
 
 
 class DLLogger(Logger):
+    """PyTorch Lightning logger backed by DLLogger."""
+
     @property
     def name(self):
         return self.__class__.__name__

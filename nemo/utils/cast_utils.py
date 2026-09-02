@@ -54,6 +54,7 @@ def cast_tensor(x, from_dtype=torch.float16, to_dtype=torch.float32):
 
 
 def cast_all(x, from_dtype=torch.float16, to_dtype=torch.float32):
+    """Recursively cast matching tensors to the requested dtype."""
     if isinstance(x, torch.Tensor):
         return cast_tensor(x, from_dtype=from_dtype, to_dtype=to_dtype)
     else:
@@ -67,6 +68,8 @@ def cast_all(x, from_dtype=torch.float16, to_dtype=torch.float32):
 
 
 class CastToFloat(torch.nn.Module):
+    """Module wrapper that casts floating-point inputs to float."""
+
     def __init__(self, mod):
         super(CastToFloat, self).__init__()
         self.mod = mod
@@ -81,6 +84,8 @@ class CastToFloat(torch.nn.Module):
 
 
 class CastToFloatAll(torch.nn.Module):
+    """Module wrapper that recursively casts inputs to float."""
+
     def __init__(self, mod):
         super(CastToFloatAll, self).__init__()
         self.mod = mod

@@ -15,15 +15,22 @@
 
 import os
 import re
+import shutil
 import tempfile
 from abc import ABC, abstractmethod, abstractproperty
 from collections import defaultdict, namedtuple
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Tuple, Union
 
 from nemo.utils import logging
+
+if TYPE_CHECKING:
+    import IPython
+    import torch
+
+    from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
 TW_BREAK = "‡"
@@ -1175,9 +1182,9 @@ class KaldiWordLattice(AbstractLattice):
         _kaldifst_maybe_raise()
 
         if not self.properties.InputEpsilonFree:
-            logging.warning(f"Lattice contains input epsilons. Edit distance calculations may not be accurate.")
+            logging.warning("Lattice contains input epsilons. Edit distance calculations may not be accurate.")
         if not all(reference_sequence):
-            raise ValueError(f"reference_sequence contains zeros, which is not allowed.")
+            raise ValueError("reference_sequence contains zeros, which is not allowed.")
         ref = levenshtein_graph_kaldi(kaldifst.make_linear_acceptor(reference_sequence))
         hyp = levenshtein_graph_kaldi(self._lattice)
         kaldifst.invert(hyp)

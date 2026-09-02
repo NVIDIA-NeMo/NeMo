@@ -41,6 +41,8 @@ class ASRResult:
 
 
 class NemoStreamingASRService:
+    """Pipecat service for stateful streaming ASR inference."""
+
     def __init__(
         self,
         model: str = "nvidia/parakeet_realtime_eou_120m-v1",
@@ -236,6 +238,7 @@ class NemoStreamingASRService:
         return tokens, probs
 
     def transcribe(self, audio: bytes, stream_id: str = "default") -> ASRResult:
+        """Transcribe one audio chunk for the specified stream."""
         start_time = time.time()
 
         # Convert bytes to numpy array

@@ -37,4 +37,4 @@
 """
 ALIAS FILE for backward compatibility
 """
-from nemo.collections.asr.parts.preprocessing.features import *
+from nemo.collections.asr.parts.preprocessing.features import *  # noqa: F401,F403

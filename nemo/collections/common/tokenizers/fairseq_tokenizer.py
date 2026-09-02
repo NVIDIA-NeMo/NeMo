@@ -44,6 +44,7 @@ NUMERICS = ''.join(get_unicode_categories()['No'])
 
 
 def tokenize_en(line):
+    """Tokenize and normalize an English text line."""
     line = line.strip()
     line = ' ' + line + ' '
     # remove ASCII junk

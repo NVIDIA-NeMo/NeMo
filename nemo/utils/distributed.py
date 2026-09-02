@@ -69,7 +69,8 @@ def gather_objects(partial_results_list, main_rank=None):
 
     Args:
         partial_results_list: list of partial results from each GPU
-        main_rank: rank of the main process to collect results from all GPUs (useful for collecting results in a target rank)
+        main_rank: Rank of the main process that collects results from all GPUs. Useful for collecting results in a
+            target rank.
 
 
     Example:

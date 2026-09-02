@@ -16,7 +16,7 @@
 import copy
 import inspect
 from dataclasses import is_dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from omegaconf import DictConfig, OmegaConf, open_dict
 
@@ -24,7 +24,7 @@ from nemo.utils import logging
 
 
 def update_model_config(
-    model_cls: 'nemo.core.config.modelPT.NemoConfig', update_cfg: 'DictConfig', drop_missing_subconfigs: bool = True
+    model_cls: Union[type, DictConfig], update_cfg: DictConfig, drop_missing_subconfigs: bool = True
 ):
     """
     Helper class that updates the default values of a ModelPT config class with the values
@@ -183,8 +183,8 @@ def _add_subconfig_keys(model_cfg: 'DictConfig', update_cfg: 'DictConfig', subco
 
 
 def assert_dataclass_signature_match(
-    cls: 'class_type',
-    datacls: 'dataclass',
+    cls: type,
+    datacls: type,
     ignore_args: Optional[List[str]] = None,
     remap_args: Optional[Dict[str, str]] = None,
 ):

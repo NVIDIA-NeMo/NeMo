@@ -23,7 +23,7 @@ import torch
 from kaldialign import align
 from omegaconf import open_dict
 
-from nemo.collections.asr.models import ASRModel, EncDecRNNTModel
+from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.parts.utils.confidence_metrics import (
     auc_nt,
     auc_pr,

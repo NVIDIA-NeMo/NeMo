@@ -48,10 +48,10 @@ def get_nemo_transformer(
         encoder (bool, optional): True will use EncoderTransformerNM, False will use DecoderTransformerNM. Defaults to True.
     """
     if model_name is not None:
-        raise ValueError(f'NeMo transformers cannot be loaded from NGC yet. model_name should be None')
+        raise ValueError('NeMo transformers cannot be loaded from NGC yet. model_name should be None')
 
     if pretrained:
-        raise ValueError(f'NeMo transformers cannot be loaded from NGC yet. pretrained should be False')
+        raise ValueError('NeMo transformers cannot be loaded from NGC yet. pretrained should be False')
 
     cfg = None
 

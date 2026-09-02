@@ -27,14 +27,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 
 from nemo.collections.asr.modules import rnnt
 from nemo.collections.asr.parts.utils.rnnt_utils import HATJointOutput
-
-from nemo.utils import logging
 
 
 class HATJoint(rnnt.RNNTJoint):

@@ -69,6 +69,8 @@ class NemoConfig:
 
 
 class ModelConfigBuilder:
+    """Fluent builder for model configuration objects."""
+
     def __init__(self, model_cfg: ModelConfig):
         """
         Base class for any Model Config Builder.
@@ -152,6 +154,8 @@ class ModelConfigBuilder:
         self.model_cfg.test_ds = cfg
 
     def set_optim(self, cfg: config.OptimizerParams, sched_cfg: Optional[config.SchedulerParams] = None):
+        """Set optimizer and scheduler configuration."""
+
         @dataclass
         class WrappedOptimConfig(OptimConfig, cfg.__class__):
             pass

@@ -62,6 +62,7 @@ def extract_dynamic_axes(name: str, ntype: NeuralType):
 
 
 def get_dynamic_axes(types, names, use_dynamo=False):
+    """Build dynamic-axis mappings from neural type declarations."""
     dynamic_axes = defaultdict(list)
     if names is not None:
         for name in names:

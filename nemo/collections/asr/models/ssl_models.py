@@ -960,7 +960,7 @@ class EncDecDenoiseMaskedTokenPredModel(EncDecMaskedTokenPredModel):
                 length=input_signal_length,
             )
 
-        ### Following code snipet is not used but kept for future reference
+        # Following code snipet is not used but kept for future reference
         #
         # has_noise_signal = noise_signal is not None and noise_signal_length is not None
         # has_processed_noise_signal = processed_noise_signal is not None and processed_noise_signal_length is not None

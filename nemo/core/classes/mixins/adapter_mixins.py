@@ -30,6 +30,8 @@ ADAPTER_REGISTRY = {}
 
 @dataclass
 class AdapterRegistryInfo:
+    """Registration metadata for an adapter module."""
+
     base_class: type
     adapter_class: type
 

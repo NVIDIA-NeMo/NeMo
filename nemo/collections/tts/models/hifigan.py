@@ -15,9 +15,11 @@
 
 import itertools
 from pathlib import Path
+from typing import Dict, Optional
 
 import torch
 import torch.nn.functional as F
+from lightning.pytorch import Trainer
 from lightning.pytorch.loggers.wandb import WandbLogger
 from omegaconf import DictConfig, OmegaConf, open_dict
 

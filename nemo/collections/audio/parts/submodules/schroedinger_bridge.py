@@ -90,14 +90,12 @@ class SBNoiseSchedule(NeuralModule, ABC):
     @property
     def alpha_t_max(self):
         """Return alpha_t at t_max."""
-        t_max = torch.tensor([self.time_max], device=alpha.device)
-        return self.alpha(t_max)
+        return self.alpha(torch.tensor([self.time_max]))
 
     @property
     def sigma_t_max(self):
         """Return sigma_t at t_max."""
-        t_max = torch.tensor([self.time_max], device=alpha.device)
-        return self.sigma(t_max)
+        return self.sigma(torch.tensor([self.time_max]))
 
     @abstractmethod
     def f(self, time: torch.Tensor) -> torch.Tensor:

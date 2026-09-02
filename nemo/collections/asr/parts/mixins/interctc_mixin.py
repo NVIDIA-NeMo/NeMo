@@ -70,7 +70,7 @@ class InterCTCMixin:
             self.propagate_model_guid()
         else:
             logging.warning(
-                f"Not able to propagate model_guid to the submodules. Make sure to call self.propagate_model_guid() in ModelPT class."
+                "Not able to propagate model_guid to the submodules. Make sure to call self.propagate_model_guid() in ModelPT class."
             )
 
     def setup_interctc(self, decoder_name, loss_name, wer_name):

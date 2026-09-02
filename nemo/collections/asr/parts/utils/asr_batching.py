@@ -98,7 +98,7 @@ class SemiSortBatchSampler(DistributedSampler):
 
         self.local_num_batches: int = self._calculate_local_num_batches()
 
-        logging.info(f"Semi Sorted Batch Sampler will be used")
+        logging.info("Semi Sorted Batch Sampler will be used")
 
     def _calculate_local_num_batches(self) -> int:
         init_num_samples = len(self.durations)

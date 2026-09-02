@@ -28,6 +28,7 @@
 
 import math
 
+import numba
 import torch
 from numba import cuda
 
@@ -61,13 +62,13 @@ def logp(
         The sum of logprobs[mb, t, u, v] + denom[mb, t, u]
     """
     col = (mb * maxT + t) * maxU + u
-    return denom[col] + acts[col * alphabet_size + v]
+    return denom[col] + numba.float32(acts[col * alphabet_size + v])
 
 
 @cuda.jit(device=True, inline=True)
 def logp_duration(acts: torch.Tensor, maxT: int, maxU: int, num_durations: int, mb: int, t: int, u: int, v: int):
     col = (mb * maxT + t) * maxU + u
-    return acts[col * num_durations + v]
+    return numba.float32(acts[col * num_durations + v])
 
 
 @cuda.jit()
@@ -351,7 +352,7 @@ def compute_grad_kernel(
         while idx < alphabet_size:
             # remember, `col` represents the tri-index [b, t, u]
             # therefore; logpk = denom[b, t, u] + acts[b, t, u, v]
-            logpk = denom[col] + acts[col * alphabet_size + idx]
+            logpk = logp(denom, acts, maxT, maxU, alphabet_size, mb, t, u, idx)
             # initialize the grad of the sample acts[b, t, u, v]
             grad = math.exp(alphas[col] + betas[col] + logpk - logll[mb])
 
@@ -363,7 +364,7 @@ def compute_grad_kernel(
             if fastemit_lambda > 0.0 and u < U - 1:
                 fastemit_grad = fastemit_lambda * math.exp(
                     alphas[col]  # alphas(t, u)
-                    + (denom[col] + acts[col * alphabet_size + labels[u]])  # y_hat(t, u)
+                    + logp(denom, acts, maxT, maxU, alphabet_size, mb, t, u, labels[u])  # y_hat(t, u)
                     + betas[col + 1]  # betas(t, u+1)
                     + logpk  # log Pr(k|t, u)
                     - logll[mb]  # total log likelihood for normalization
@@ -392,15 +393,14 @@ def compute_grad_kernel(
                 # multiplying (1.0 + fastemit_lambda) with result.
                 grad -= math.exp(math.log1p(fastemit_lambda) + alphas[col] + logpk - logll[mb] + betas[col + 1])
 
+            # clamp gradient (if needed) while it is still an FP32 register, so that
+            # narrow `grads` dtypes are not rounded twice.
+            if clamp > 0.0:
+                grad = min(grad, clamp)
+                grad = max(grad, -clamp)
+
             # update grads[b, t, u, v] = grad
             grads[col * alphabet_size + idx] = grad
-
-            # clamp gradient (if needed)
-            if clamp > 0.0:
-                g = grads[col * alphabet_size + idx]
-                g = min(g, clamp)
-                g = max(g, -clamp)
-                grads[col * alphabet_size + idx] = g
 
             # update internal index through the thread_buffer;
             # until idx < V + 1, such that entire vocabulary has been updated.
@@ -804,7 +804,7 @@ def compute_multiblank_grad_kernel(
         while idx < alphabet_size:
             # remember, `col` represents the tri-index [b, t, u]
             # therefore; logpk = denom[b, t, u] + acts[b, t, u, v]
-            logpk = denom[col] + acts[col * alphabet_size + idx]
+            logpk = logp(denom, acts, maxT, maxU, alphabet_size, mb, t, u, idx)
             # initialize the grad of the sample acts[b, t, u, v]
             grad = math.exp(alphas[col] + betas[col] + logpk - logll[mb])
 
@@ -820,7 +820,7 @@ def compute_multiblank_grad_kernel(
             if fastemit_lambda > 0.0 and u < U - 1:
                 fastemit_grad = fastemit_lambda * math.exp(
                     alphas[col]  # alphas(t, u)
-                    + (denom[col] + acts[col * alphabet_size + labels[u]])
+                    + logp(denom, acts, maxT, maxU, alphabet_size, mb, t, u, labels[u])  # y_hat(t, u)
                     + betas[col + 1]  # betas(t, u+1)
                     + logpk  # log Pr(k|t, u)
                     - sigma
@@ -870,15 +870,14 @@ def compute_multiblank_grad_kernel(
                     math.log1p(fastemit_lambda) + alphas[col] + logpk - sigma - logll[mb] + betas[col + 1]
                 )
 
+            # clamp gradient (if needed) while it is still an FP32 register, so that
+            # narrow `grads` dtypes are not rounded twice.
+            if clamp > 0.0:
+                grad = min(grad, clamp)
+                grad = max(grad, -clamp)
+
             # update grads[b, t, u, v] = grad
             grads[col * alphabet_size + idx] = grad
-
-            # clamp gradient (if needed)
-            if clamp > 0.0:
-                g = grads[col * alphabet_size + idx]
-                g = min(g, clamp)
-                g = max(g, -clamp)
-                grads[col * alphabet_size + idx] = g
 
             # update internal index through the thread_buffer;
             # until idx < V + 1, such that entire vocabulary has been updated.
@@ -1322,13 +1321,13 @@ def compute_tdt_grad_kernel(
 
     if t < T and u < U:
         logpk_blank = (
-            denom[col] + acts[col * alphabet_size + blank_] - sigma
+            logp(denom, acts, maxT, maxU, alphabet_size, mb, t, u, blank_) - sigma
         )  # whenever sigma is used, it is for logit under-normalization.
 
         if idx < num_durations:
             grad = 0.0
             if t + durations[idx] < T and u < U - 1:  # for label
-                logpk_label = denom[col] + acts[col * alphabet_size + labels[u]] - sigma
+                logpk_label = logp(denom, acts, maxT, maxU, alphabet_size, mb, t, u, labels[u]) - sigma
                 grad -= math.exp(alphas[col] + betas[col + 1 + durations[idx] * maxU] + logpk_label - logll[mb])
 
             if t + durations[idx] < T and durations[idx] > 0:  # for blank in the middle
@@ -1337,7 +1336,7 @@ def compute_tdt_grad_kernel(
             if t + durations[idx] == T and u == U - 1 and durations[idx] > 0:  # for blank as the last symbol
                 grad -= math.exp(alphas[col] + logpk_blank - logll[mb])
 
-            grad = grad * math.exp(duration_acts[col * num_durations + idx])
+            grad = grad * math.exp(logp_duration(duration_acts, maxT, maxU, num_durations, mb, t, u, idx))
             duration_grads[col * num_durations + idx] = grad
 
         # For cuda kernels, maximum number of threads per block is limited to some value.
@@ -1350,7 +1349,7 @@ def compute_tdt_grad_kernel(
         while idx < alphabet_size:
             # remember, `col` represents the tri-index [b, t, u]
             # therefore; logpk = denom[b, t, u] + acts[b, t, u, v]
-            logpk = denom[col] + acts[col * alphabet_size + idx]
+            logpk = logp(denom, acts, maxT, maxU, alphabet_size, mb, t, u, idx)
             # initialize the grad of the sample acts[b, t, u, v]
             grad = math.exp(alphas[col] + betas[col] + logpk - logll[mb])
 
@@ -1366,8 +1365,10 @@ def compute_tdt_grad_kernel(
                     if t + durations[i] < T:
                         fastemit_grad += fastemit_lambda * math.exp(
                             alphas[col]  # alphas(t, u)
-                            + (denom[col] + acts[col * alphabet_size + labels[u]])  # log prob of token emission
-                            + duration_acts[col * num_durations + i]  # duration log-prob
+                            + logp(
+                                denom, acts, maxT, maxU, alphabet_size, mb, t, u, labels[u]
+                            )  # log prob of token emission
+                            + logp_duration(duration_acts, maxT, maxU, num_durations, mb, t, u, i)  # duration log-prob
                             + betas[col + 1 + durations[i] * maxU]  # betas(t, u+1)
                             + logpk  # log Pr(k|t, u)
                             - sigma  # for logit under-normalization
@@ -1387,7 +1388,11 @@ def compute_tdt_grad_kernel(
                         continue
                     if t == T - durations[i]:
                         grad -= math.exp(
-                            alphas[col] + logpk - sigma - logll[mb] + duration_acts[col * num_durations + i]
+                            alphas[col]
+                            + logpk
+                            - sigma
+                            - logll[mb]
+                            + logp_duration(duration_acts, maxT, maxU, num_durations, mb, t, u, i)
                         )
 
             # grad of blank across t < T;
@@ -1403,7 +1408,7 @@ def compute_tdt_grad_kernel(
                             - sigma
                             - logll[mb]
                             + betas[col + maxU * durations[i]]
-                            + duration_acts[col * num_durations + i]
+                            + logp_duration(duration_acts, maxT, maxU, num_durations, mb, t, u, i)
                         )
 
             # grad of correct token across u < U;
@@ -1421,18 +1426,17 @@ def compute_tdt_grad_kernel(
                             - sigma
                             - logll[mb]
                             + betas[col + 1 + maxU * durations[i]]
-                            + duration_acts[col * num_durations + i]
+                            + logp_duration(duration_acts, maxT, maxU, num_durations, mb, t, u, i)
                         )
+
+            # clamp gradient (if needed) while it is still an FP32 register, so that
+            # narrow `label_grads` dtypes are not rounded twice.
+            if clamp > 0.0:
+                grad = min(grad, clamp)
+                grad = max(grad, -clamp)
 
             # update grads[b, t, u, v] = grad
             label_grads[col * alphabet_size + idx] = grad
-
-            # clamp gradient (if needed)
-            if clamp > 0.0:
-                g = label_grads[col * alphabet_size + idx]
-                g = min(g, clamp)
-                g = max(g, -clamp)
-                label_grads[col * alphabet_size + idx] = g
 
             # update internal index through the thread_buffer;
             # until idx < V + 1, such that entire vocabulary has been updated.

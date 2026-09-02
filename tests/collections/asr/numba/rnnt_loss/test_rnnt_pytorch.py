@@ -625,5 +625,81 @@ class TestTDTLoss:
         assert np.allclose(pt_grads, expected_grads, rtol=1e-2), "td gradient mismatch."
 
 
+class TestRNNTLossNumbaBFloat16:
+    """BF16 activations must compile and agree with FP32.
+
+    Numba-CUDA cannot implicitly unify BF16 with the FP32 dynamic-programming state, so a
+    regression here surfaces as a kernel compilation failure (``RecursionError`` from type
+    inference, or ``NumbaNotImplementedError`` when a BF16 buffer reaches a kernel argument)
+    rather than a numerical mismatch.
+    """
+
+    @staticmethod
+    def _inputs(dtype, vocab, batch=3, max_source=7, max_target=4):
+        torch.manual_seed(3)
+        acts = torch.randn(batch, max_source, max_target + 1, vocab, device='cuda', dtype=dtype, requires_grad=True)
+        labels = torch.randint(0, vocab - 4, (batch, max_target), device='cuda', dtype=torch.int64)
+        source_lengths = torch.full((batch,), max_source, device='cuda', dtype=torch.int64)
+        target_lengths = torch.full((batch,), max_target, device='cuda', dtype=torch.int64)
+        return acts, labels, source_lengths, target_lengths
+
+    def _compare_against_float32(self, build_loss, vocab):
+        costs, grads = {}, {}
+        for dtype in (torch.float32, torch.bfloat16):
+            acts, labels, source_lengths, target_lengths = self._inputs(dtype, vocab)
+            cost = build_loss()(acts, labels, source_lengths, target_lengths)
+            grads[dtype] = torch.autograd.grad(cost.sum(), acts)[0].float()
+            costs[dtype] = cost.float()
+
+        assert torch.isfinite(grads[torch.bfloat16]).all()
+        assert torch.count_nonzero(grads[torch.bfloat16])
+        torch.testing.assert_close(costs[torch.bfloat16], costs[torch.float32], atol=2e-2, rtol=2e-2)
+        torch.testing.assert_close(grads[torch.bfloat16], grads[torch.float32], atol=2e-2, rtol=2e-2)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('fastemit_lambda', [0.0, 0.01])
+    @pytest.mark.parametrize('clamp', [-1.0, 0.02])
+    def test_rnnt_bfloat16_matches_float32(self, fastemit_lambda, clamp):
+        numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
+        self._compare_against_float32(
+            lambda: RNNTLossNumba(blank=7, reduction='none', fastemit_lambda=fastemit_lambda, clamp=clamp),
+            vocab=8,
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('fastemit_lambda', [0.0, 0.01])
+    @pytest.mark.parametrize('clamp', [-1.0, 0.02])
+    def test_multiblank_rnnt_bfloat16_matches_float32(self, fastemit_lambda, clamp):
+        numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
+        self._compare_against_float32(
+            lambda: MultiblankRNNTLossNumba(
+                blank=9,
+                big_blank_durations=[2, 4],
+                reduction='none',
+                fastemit_lambda=fastemit_lambda,
+                clamp=clamp,
+                sigma=0.05,
+            ),
+            vocab=10,
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('fastemit_lambda', [0.0, 0.01])
+    @pytest.mark.parametrize('clamp', [-1.0, 0.02])
+    def test_tdt_bfloat16_matches_float32(self, fastemit_lambda, clamp):
+        numba_utils.skip_numba_cuda_test_if_unsupported(__NUMBA_MINIMUM_VERSION__)
+        self._compare_against_float32(
+            lambda: TDTLossNumba(
+                blank=7,
+                durations=[0, 1, 2],
+                reduction='none',
+                fastemit_lambda=fastemit_lambda,
+                clamp=clamp,
+                sigma=0.05,
+            ),
+            vocab=11,
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

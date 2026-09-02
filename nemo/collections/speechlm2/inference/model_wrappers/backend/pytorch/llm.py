@@ -1,0 +1,391 @@
+# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Native PyTorch backend for the LLM component of NemotronVoiceChat.
+
+Wraps the DuplexSTT model (which contains the Nemotron LLM backbone) for
+direct PyTorch inference with top-p sampling and repetition penalty support.
+
+Implements :class:`~nemo.collections.speechlm2.inference.model_wrappers.backend.llm.DuplexLLM`;
+the vLLM sibling lives in ``backend/vllm/llm.py``.
+"""
+
+import inspect
+import math
+from typing import Any
+
+import torch
+from packaging.version import Version
+
+from nemo.collections.speechlm2.inference.model_wrappers.backend.llm import DuplexLLM, LlmStepResult
+from nemo.collections.speechlm2.inference.model_wrappers.text_sampling import sample_text_token
+from nemo.collections.speechlm2.parts.text_utils import get_special_token_ids
+from nemo.utils import logging
+
+
+def _to_step_result(ans: dict[str, Any]) -> LlmStepResult:
+    """Project the raw forward-pass dict onto the backend contract.
+
+    ``__call__`` also carries ``cache``, which is per-stream state rather than
+    a step output, so it is applied to the decode state and dropped here.
+    """
+    return LlmStepResult(
+        predicted_token=ans["predicted_token"],
+        asr_predicted_token=ans.get("asr_predicted_token"),
+        function_predicted_token=ans.get("function_predicted_token"),
+        text_logits=ans.get("text_logits"),
+        asr_logits=ans.get("asr_logits"),
+        function_logits=ans.get("function_logits"),
+    )
+
+
+class PyTorchLLM(DuplexLLM):
+    """
+    Native PyTorch backend for the LLM (DuplexSTT) component.
+
+    Wraps the DuplexSTT model's forward pass (``stt_model()``) to produce
+    text/ASR token predictions. Supports top-p sampling and repetition penalty
+    through the same :func:`sample_text_token` the vLLM backend reaches via its
+    logits processor, so the two share one sampling policy.
+    """
+
+    def __init__(
+        self,
+        model,
+        special_token_ids: set[int] | None = None,
+        top_p: float = 1.0,
+        repetition_penalty: float = 1.0,
+        temperature: float = 1.0,
+        use_llm_cache: bool = False,
+    ):
+        """
+        Initialize with an existing model.
+
+        Args:
+            model: A :class:`~nemo.collections.speechlm2.models.nemotron_voicechat.NemotronVoiceChat`
+                   (or compatible) model whose ``stt_model`` sub-module drives the LLM channel.
+            special_token_ids: Set of special token IDs (pad, eos, bos) that should bypass sampling.
+                               These tokens will use greedy decoding and won't be penalized.
+                               If None, auto-extracted from model via
+                               :func:`~nemo.collections.speechlm2.parts.text_utils.get_special_token_ids`.
+            top_p: Top-p (nucleus) sampling threshold. 1.0 disables it (greedy). Default: 1.0
+            repetition_penalty: Penalty for repeated tokens. 1.0 disables it. Default: 1.0
+                               Recommended value when enabling: 1.2
+            temperature: Temperature for sampling. 1.0 = no change, <1.0 = sharper, >1.0 = flatter.
+                        0.0 = greedy (argmax). Default: 1.0
+            use_llm_cache: Keep a KV cache across decode steps instead of replaying the
+                        whole history every step. See :meth:`create_cache`. Default: False
+        """
+        if special_token_ids is None:
+            try:
+                stt = model.stt_model
+                special_token_ids = get_special_token_ids(stt.tokenizer, stt.text_pad_id, model_cfg=stt.cfg)
+            except AttributeError:
+                logging.debug("Cannot extract special token IDs: model has no stt_model.tokenizer")
+                special_token_ids = set()
+
+        if not math.isfinite(temperature):
+            raise ValueError(f"temperature must be finite, got {temperature}")
+        if temperature < 0.0:
+            raise ValueError(f"temperature must be >= 0.0, got {temperature}")
+
+        self.special_token_ids = special_token_ids or set()
+        self.top_p = top_p
+        self.repetition_penalty = repetition_penalty
+        self.temperature = temperature
+        # Pre-built tensor for special-token filtering in the repetition
+        # penalty; moved to the logits device on first use.
+        self._special_ids_tensor = (
+            torch.tensor(sorted(self.special_token_ids), dtype=torch.long) if self.special_token_ids else None
+        )
+
+        self.model = model
+        self.use_llm_cache = use_llm_cache
+        self.cache_key = self._resolve_cache_key()
+
+        logging.debug(f"Special token IDs: {self.special_token_ids}")
+
+        sampling_active = top_p < 1.0 or repetition_penalty != 1.0 or (temperature != 1.0 and temperature != 0.0)
+        if sampling_active and not self.special_token_ids:
+            import warnings
+
+            warnings.warn(
+                "Sampling is enabled but special_token_ids is empty. "
+                "Could not auto-extract from model.tokenizer. "
+                "Please provide special_token_ids manually to ensure special tokens use greedy decoding. "
+                "Otherwise, EOS tokens may be randomly sampled and generation may not stop properly!"
+            )
+
+    def _sample_text_token(
+        self,
+        logits: torch.Tensor,
+        generated_tokens: torch.Tensor,
+        current_step: int,
+        sampling_params: dict[str, float] | None = None,
+    ) -> torch.Tensor:
+        """Sample one text token, honouring per-request overrides.
+
+        Special tokens (pad, BOS, EOS) bypass sampling so generation still
+        stops reliably when top-p or a repetition penalty is enabled.
+        """
+        params = sampling_params or {}
+        device = logits.device
+        if self._special_ids_tensor is not None and self._special_ids_tensor.device != device:
+            self._special_ids_tensor = self._special_ids_tensor.to(device)
+        return sample_text_token(
+            logits,
+            generated_tokens,
+            current_step,
+            top_p=params.get("top_p", self.top_p),
+            repetition_penalty=params.get("repetition_penalty", self.repetition_penalty),
+            temperature=params.get("temperature", self.temperature),
+            special_token_ids=self.special_token_ids,
+            special_ids_tensor=self._special_ids_tensor,
+        )
+
+    def step(
+        self,
+        frame_embedding: torch.Tensor,
+        state: Any,
+        *,
+        frame_offset: int,
+        current_frame_idx: int,
+        has_prompt: bool,
+        return_debug: bool = False,
+        sampling_params: dict[str, float] | None = None,
+        debug_logger: Any = None,
+    ) -> LlmStepResult:
+        """One native forward pass for this frame -- see ``DuplexLLM.step``.
+
+        Builds the duplex input embedding from the committed token history, so
+        a caller's forced-turn-taking rewrite feeds back here exactly as it does
+        offline. Uses ``state.llm_cache`` when there is one, otherwise appends
+        to ``state.input_embeds_history`` and replays it (O(n^2), see
+        :meth:`create_cache`).
+        """
+        input_emb = self.model.stt_model.build_input_embedding(
+            frame_embedding,
+            current_frame_idx,
+            state.gen_text,
+            state.gen_asr_text,
+            state.gen_function,
+            has_prompt=has_prompt,
+        )
+        if debug_logger is not None:
+            debug_logger.log_input_embeds(input_emb)
+
+        if state.llm_cache is not None:
+            ans = self(
+                input_emb,
+                cache=state.llm_cache,
+                cache_position_offset=state.llm_cache_position_offset + frame_offset,
+                generated_tokens=state.gen_text,
+                current_step=current_frame_idx,
+                return_logits=return_debug,
+                sampling_params=sampling_params,
+            )
+            state.llm_cache = ans["cache"]
+            return _to_step_result(ans)
+
+        # No cache: this backend owns the replay history, so it extends it here
+        # rather than handing a list back for the caller to merge.
+        state.input_embeds_history.append(input_emb)
+        full_input_embeds = torch.cat(state.input_embeds_history, dim=1)
+        ans = self(
+            full_input_embeds,
+            cache=None,
+            generated_tokens=state.gen_text,
+            current_step=current_frame_idx,
+            return_logits=return_debug,
+            sampling_params=sampling_params,
+        )
+        return _to_step_result(ans)
+
+    def abort_request(self, request_id: str) -> bool:
+        """No-op: native PyTorch has no in-flight request to cancel."""
+        del request_id
+        return False
+
+    def _resolve_cache_key(self) -> str:
+        """Resolve the cache argument from the installed backbone API."""
+        configured = str(self.model.stt_model.cfg.get("cache_key", "past_key_values"))
+        try:
+            parameters = inspect.signature(self.model.stt_model.llm.forward).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+
+        if configured in parameters:
+            return configured
+        for candidate in ("past_key_values", "cache_params"):
+            if candidate in parameters:
+                if candidate != configured:
+                    logging.info(
+                        f"Using runtime LLM cache key {candidate!r} instead of checkpoint value {configured!r}"
+                    )
+                return candidate
+        return configured
+
+    def create_cache(self):
+        """Create an LLM KV cache, or None to replay the full history each step.
+
+        ``DynamicCache`` builds its per-layer state from ``config.layer_types``, which
+        covers NemotronH's hybrid mamba/attention stack as well as plain attention.
+        Needs transformers >= 5.13, which fixes Mamba2 chunked prefill (huggingface/
+        transformers#46741) for any forward with seq_len > 1 and a warm cache.
+        """
+        if not self.use_llm_cache:
+            logging.info("LLM KV cache disabled: replaying full history each step")
+            return None
+
+        stt_cfg = self.model.stt_model.cfg
+        if "Nemotron" in str(stt_cfg.get("pretrained_llm", "")):
+            import transformers
+
+            installed = Version(transformers.__version__.split("+", 1)[0])
+            if installed < Version("5.13.0"):
+                raise RuntimeError(
+                    "Native NemotronH KV cache requires transformers>=5.13.0 "
+                    f"(installed: {transformers.__version__}). Set use_llm_cache=false "
+                    "or use a compatible runtime."
+                )
+            if self.cache_key != "past_key_values":
+                raise RuntimeError(
+                    "Installed NemotronH does not expose the expected past_key_values cache API "
+                    f"(resolved cache key: {self.cache_key!r})."
+                )
+        from transformers import DynamicCache
+
+        return DynamicCache(config=self.model.stt_model.llm.config)
+
+    def __call__(
+        self,
+        input_embeds: torch.Tensor,
+        cache: Any | None = None,
+        cache_position: torch.Tensor | None = None,
+        cache_position_offset: int | None = None,
+        generated_tokens: torch.Tensor | None = None,
+        current_step: int = 0,
+        return_logits: bool = False,
+        sampling_params: dict[str, float] | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """
+        Perform inference using the native model.
+
+        Args:
+            input_embeds: Input embeddings [batch, seq_len, hidden_dim]
+            cache: Optional DynamicCache for standard transformer models.
+            cache_position: Optional cache-position tensor for cached decoding.
+                If not provided, ``cache_position_offset`` is used instead.
+            cache_position_offset: Optional integer offset; when ``cache_position``
+                is None, a single-element tensor ``[cache_position_offset]`` is
+                built on ``input_embeds.device``.
+            generated_tokens: Previously generated tokens [batch, num_generated].
+                             Required for repetition_penalty. If None, creates empty tensor.
+            current_step: Current decoding step. Used for repetition penalty.
+            sampling_params: Optional per-request overrides for sampling
+                (top_p, temperature, repetition_penalty).
+            **kwargs: Additional arguments passed to the model
+
+        Returns:
+            Dictionary with 'predicted_token', 'asr_predicted_token', and 'cache'
+        """
+        if cache_position is None and cache_position_offset is not None:
+            cache_position = torch.tensor([cache_position_offset], device=input_embeds.device)
+        result = self.model.stt_model(
+            input_embeds,
+            cache=cache,
+            cache_position=cache_position,
+            cache_key=self.cache_key,
+            **kwargs,
+        )
+
+        if not isinstance(result, dict):
+            raise TypeError(f"Model returned {type(result)}, expected dict")
+
+        if 'text_logits' not in result:
+            raise KeyError("Model output must contain 'text_logits' key")
+
+        text_logits = result["text_logits"][:, -1]  # [batch, vocab_size]
+        batch_size = text_logits.shape[0]
+
+        if generated_tokens is None:
+            gen_tokens = torch.empty(batch_size, 0, device=text_logits.device, dtype=torch.long)
+        else:
+            gen_tokens = generated_tokens
+
+        predicted_token = self._sample_text_token(
+            logits=text_logits,
+            generated_tokens=gen_tokens,
+            current_step=current_step,
+            sampling_params=sampling_params,
+        )
+
+        ans = {
+            "predicted_token": predicted_token,
+            "asr_predicted_token": None,
+            "function_predicted_token": None,
+            "cache": result.get("cache", None),
+        }
+        # Auxiliary channels use greedy decoding and are independently optional.
+        if result.get("asr_logits") is not None:
+            ans["asr_predicted_token"] = result["asr_logits"][:, -1].argmax(dim=-1)
+        if result.get("function_logits") is not None:
+            ans["function_predicted_token"] = result["function_logits"][:, -1].argmax(dim=-1)
+        if return_logits:
+            ans["text_logits"] = result["text_logits"]
+            ans["asr_logits"] = result.get("asr_logits")
+            ans["function_logits"] = result.get("function_logits")
+        return ans
+
+    def to(self, device_or_dtype: torch.device | torch.dtype) -> 'PyTorchLLM':
+        """Move underlying model to device or convert dtype."""
+        self.model = self.model.to(device_or_dtype)
+        return self
+
+    def eval(self) -> 'PyTorchLLM':
+        """Set underlying model to eval mode."""
+        self.model.eval()
+        return self
+
+    @property
+    def device(self) -> torch.device:
+        """Get device of the underlying model."""
+        try:
+            return next(self.model.parameters()).device
+        except StopIteration:
+            return torch.device('cpu')
+
+    def prefill_prompt(self, embeddings, cache=None, cache_position=None, **kwargs):
+        """Prefill the native LLM with prompt embeddings to warm up the KV cache.
+
+        Args:
+            embeddings: Prompt embeddings [batch, seq_len, hidden_dim].
+            cache: KV cache object to update in-place.
+            cache_position: Position tensor for the prompt tokens.
+
+        Returns:
+            Dictionary with updated 'cache'.
+        """
+        result = self.model.stt_model(
+            embeddings,
+            cache=cache,
+            cache_position=cache_position,
+            cache_key=self.cache_key,
+            **kwargs,
+        )
+        if not isinstance(result, dict):
+            raise TypeError(f"Model returned {type(result)}, expected dict")
+        return {"cache": result.get("cache", cache)}

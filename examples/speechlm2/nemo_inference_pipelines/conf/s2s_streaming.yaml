@@ -1,0 +1,157 @@
+# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Runtime args (set in this file or overridden with Hydra command-line arguments)
+# audio_file accepts a single .wav file, a directory of .wav files, or a
+# line-delimited JSON/JSONL manifest with "audio_filepath" and optional
+# "system_prompt"/"text" fields. For this streaming inference script, "text" is
+# an optional reference transcript used only for WER.
+audio_file: ???
+output_dir: ./generated
+
+# Input audio padding (set at most one; null = disabled). This appends silence
+# after the real input so the agent is more likely to finish speaking before the stream ends.
+pad_audio_to_sec: null       # Pad each audio to this fixed duration (seconds)
+pad_silence_ratio: null      # Append silence = ratio * original duration (e.g. 0.2 = 20%)
+pad_audio_by_sec: null       # Append this fixed number of extra seconds of silence
+
+pipeline_type: s2s_streaming
+
+# S2S model block
+s2s:
+  model_path: ???
+  decode_audio: true                          # Whether to conduct the TTS portion of inference, or just the STT portion
+  speaker_name: null                          # Required when decode_audio is true. Must match a speaker registered in the checkpoint.
+  llm_engine_type: native # 'native' or 'vllm_omni' (vllm_omni raises NotImplementedError in this PR)
+  tts_engine_type: native # 'native' or 'vllm_omni' (vllm_omni raises NotImplementedError in this PR)
+
+  # vllm_omni engine configuration. Selecting vllm_omni is rejected at wrapper
+  # construction in this PR; the keys document the combined-form API. The
+  # implementation is the parent commit on duplex-vllm-omni-on-main.
+  #
+  # On the first run a wrapper directory is built lazily under
+  # ``$TMPDIR/<model_basename>_vllm_omni_wrapper`` containing
+  #   * ``config.json``  (just ``{"model_type": "nemotron_voicechat"}``)
+  #   * ``nemotron/``    converted NemotronDuplexH checkpoint
+  #   * ``eartts/``      converted EarTTS checkpoint + speaker_latents/
+  # It is a full second copy of the weights. Subsequent runs reuse it, so point
+  # wrapper_dir somewhere persistent and large enough to avoid re-converting.
+  #
+  # The wrapper owns one one-stage AsyncOmni engine for each component that
+  # selects vllm_omni. ``stage_configs_path`` / ``stage_overrides`` configure
+  # Nemotron; the ``eartts_*`` counterparts configure EarTTS. A ``stage_1``
+  # override under ``stage_overrides`` also maps to EarTTS stage 0.
+  vllm_omni_config:
+    wrapper_dir: null                           # null -> $TMPDIR/<model_basename>_vllm_omni_wrapper
+    stage_configs_path: null                    # null -> bundled nemotron_voicechat.yaml inside NeMo
+    eartts_stage_configs_path: null             # null -> bundled single-stage eartts.yaml
+    nemotron_dtype: float32                     # dtype for the converted Nemotron LLM checkpoint
+    eartts_precompute_batch_size: 256           # batch size for baking out the subword lookup table
+    guidance_enabled: null                      # null -> converted eartts/config.json enable_guidance
+    log_stats: false
+    stage_init_timeout: 600                     # seconds to wait for both stage children to come up
+    step_timeout: 60.0                          # per-step timeout on the synchronous side (seconds)
+    speaker_name: null                          # overrides s2s.speaker_name when populated
+    stage_overrides: null                       # Nemotron stage 0 overrides
+    eartts_stage_overrides: null                # EarTTS stage 0 overrides
+
+  device: cuda
+  # ========================
+  # Device Configuration
+  # ========================
+  device_id: 0                                # GPU device ID
+  compute_dtype: bfloat16                     # Compute precision: 'bfloat16' for Ampere+,
+                                              #                    'float16' for older GPUs
+                                              #                    'float32'
+  # ========================
+  # Inference settings
+  # ========================
+  use_perception_cache: true                  # Enable cache-aware streaming for perception encoder
+  use_perception_cudagraph: true              # encoder.set_streaming_cuda_graphs on the perception encoder
+  use_llm_cache: false                        # Keep the LLM KV cache across steps (native engine only).
+                                              # False replays the whole history each step: O(n^2) and slow,
+                                              # and is the portable compatibility default.
+                                              # NemotronH cache mode requires transformers >= 5.13.
+
+  # TTS speedup flags (default to false; enable to speed up native inference)
+  use_tts_torch_compile: false                # Compile TTS backbone with torch.compile (mode='default')
+  use_tts_subword_cache: false                # Cache CharAwareSubwordEncoder embeddings (skip backbone for repeated tokens)
+
+  # Sampling parameters shared by native and vLLM-Omni. Both temperature=0.0
+  # and the all-ones configuration select greedy decoding.
+  top_p: 0.5
+  repetition_penalty: 1.1
+  temperature: 0.3
+  force_turn_taking: true                     # Automatically disabled when the checkpoint has no ASR head.
+  force_turn_taking_threshold: 40
+  force_turn_taking_pad_window: 25
+
+  # ------------------------------------------------------------------
+  # Model config overrides
+  #
+  # The keys below are read by the model itself rather than by the inference
+  # wrapper, so they are written into the relevant model config at load time.
+  # Leaving one null keeps whatever the checkpoint carries. See
+  # nemo/collections/speechlm2/inference/model_wrappers/config_overrides.py
+  # for the authoritative list and which backends honour each key; anything a
+  # selected backend ignores is reported at load time instead of silently
+  # doing nothing.
+  # ------------------------------------------------------------------
+
+  # Inference logit boosts (applied to model logits at inference time)
+  # User (ASR) side
+  inference_user_pad_boost: 0.8         # Boost ASR pad logit
+  inference_user_bos_boost: null         # Boost ASR BOS logit
+  inference_user_eos_boost: null         # Boost ASR EOS logit
+  # Agent (text) side
+  inference_pad_boost: null              # Boost agent text pad logit
+  inference_bos_boost: null              # Boost agent text BOS logit
+  inference_eos_boost: null              # Boost agent text EOS logit
+
+  inference_force_speech_silence_on_eos: null   # null -> checkpoint value (model default: true).
+                                                # Substitutes codec silence as the acoustic input of
+                                                # the step whose text token is EOS. vllm_omni always
+                                                # does this and cannot honour false.
+
+  system_prompt: ???
+
+  # ========================
+  # Profiling
+  # ========================
+  profile_timing: false                  # Log per-stage wall-clock times for each inference step
+
+  # ========================
+  # Precision & determinism
+  # ========================
+  # These defaults match what was used during model training.
+  matmul_precision: medium               # Matrix multiplication precision: highest, high, medium
+  allow_tf32: true                       # Allow TF32 for cuDNN and CUDA matmul (Ampere+ GPUs).
+                                         # Set to false for stricter float32 precision.
+  # Deterministic inference (native engine only). Ensures identical results across
+  # runs by disabling FlashAttention and forcing deterministic CUDA algorithms.
+  # Trade-offs: slower inference, might produce worse results than non-deterministic mode,
+  # since non-deterministic mode was used in training.
+  deterministic: false
+
+streaming:
+  # File inputs are converted to mono and resampled to this rate before chunking.
+  input_sample_rate: 16000
+  # Generated agent audio is saved at this rate.
+  output_sample_rate: 22050
+  batch_size: 1                               # Must be 1. Single-stream inference only.
+  att_context_size: [70,0]                    # Attention context size: [70,13],[70,6],[70,2],[70,0]
+  chunk_size_in_secs: ???                    # Needs to be multiple of 80ms
+  buffer_size_in_secs: ???                    # Audio buffer size in seconds (larger = more context, better quality)
+  request_type: frame                         # Type of request: frame, only frame is supported for cache-aware streaming
+  max_len: 8192                               # Decode-state buffer in 80 ms frames

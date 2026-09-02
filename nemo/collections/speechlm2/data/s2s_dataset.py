@@ -11,8 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import re
-
 import torch
 import torch.utils.data
 from lhotse import CutSet, Seconds, compute_num_frames
@@ -22,6 +20,7 @@ from lhotse.utils import ifnone
 
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.speechlm2.data.utils import get_pad_id
+from nemo.collections.speechlm2.parts.text_utils import strip_timestamps
 from nemo.utils import logging
 
 
@@ -100,7 +99,7 @@ class DuplexS2SDataset(torch.utils.data.Dataset):
         assert tokenizer.eos is not None, "EOS support in the tokenizer is required for S2S models."
 
     def __getitem__(self, cuts: CutSet) -> dict:
-        cuts = cuts.transform_text(_strip_timestamps)
+        cuts = cuts.transform_text(strip_timestamps)
         source_audio, source_audio_lens = collate_audio(cuts.resample(self.source_sample_rate))
         target_audio, target_audio_lens = collate_audio(
             cuts.resample(self.target_sample_rate, recording_field="target_audio"), recording_field="target_audio"
@@ -188,17 +187,3 @@ def build_token_channel(
                 tokens[eospos] = tokenizer.eos
 
     return tokens
-
-
-def _strip_timestamps(
-    text: str, _TIMESTAMP_PATTERN=re.compile(r"<\|\d+\|>"), _SPACE_PATTERN=re.compile(r"\s+")
-) -> str:
-    """
-    Strips timestamp tokens from text, e.g. turns:
-      '<|0|> Hey <|3|> <|3|> how <|5|> <|7|> are <|8|> <|8|> <|10|> you? <|12|>'
-      into:
-      'Hey how are you?'
-    """
-    # Regexp pattern args are cached compiled patterns (micro-optimization).
-    text = _TIMESTAMP_PATTERN.sub("", text)  # strip timestamp tokens if present
-    return _SPACE_PATTERN.sub(" ", text).strip()  # strip multi-whitespaces

@@ -28,6 +28,7 @@ from nemo.collections.asr.parts.utils.aligner_utils import (
     get_batch_variables,
     viterbi_decoding,
 )
+from nemo.collections.speechlm2.parts.text_utils import strip_timestamps
 
 
 class ForceAligner:
@@ -150,7 +151,7 @@ class ForceAligner:
 
         for i, (supervision, cut) in enumerate(zip(user_supervisions, user_cuts)):
             try:
-                text = self._strip_timestamps(supervision.text)
+                text = strip_timestamps(supervision.text)
                 normalized_text = self._normalize_transcript(text)
                 if not normalized_text.strip():
                     logging.warning(f"Text became empty after normalization: {supervision.text}")
@@ -326,18 +327,3 @@ class ForceAligner:
             timestamped_words.append(f"<|{start_frame}|> {word} <|{end_frame}|>")
 
         return " ".join(timestamped_words)
-
-    def _strip_timestamps(self, text: str) -> str:
-        """
-        Strip timestamp tokens from text.
-
-        Args:
-            text: Text that may contain timestamp tokens
-
-        Returns:
-            Text with timestamp tokens removed
-        """
-        text = re.sub(r'<\|[0-9]+\|>', '', text)
-        text = re.sub(r' +', ' ', text)
-
-        return text.strip()

@@ -86,19 +86,25 @@ diar_model.sortformer_modules.spkcache_update_period = 300
 predicted_segments = diar_model.diarize(audio="/path/to/audio.wav", batch_size=1)
 ```
 
-For a live mono waveform, create one session per audio stream and push float tensors at the model sample rate. A step
-can return no frames until the configured chunk and right context are available. Mark the last chunk with
-``is_final=True`` to flush the tail, or call ``reset()`` before reusing the session for a new stream. The session
-disables dither and feature padding while extracting each chunk, then applies the checkpoint's feature normalization
-over the complete model input window.
+For live mono waveforms, create a session with a fixed number of streams and push a padded float tensor at the model
+sample rate together with its valid sample lengths. Each row owns independent preprocessing buffers and asynchronous
+Sortformer cache state. A step can return no frames for a row until its configured chunk and right context are
+available. Use a per-row ``is_final`` mask to flush streams independently; finalized rows remain in the batch with a
+zero input length while other rows continue. Call ``reset()`` before reusing the session. The session disables dither
+and feature padding while extracting each chunk, then applies the checkpoint's feature normalization over each
+complete model input window.
 
 ```python
 import torch
 
-session = diar_model.create_streaming_session()
-for audio_chunk in audio_stream:
-    new_speaker_probabilities = session.diarize_step(audio_chunk)
-tail_speaker_probabilities = session.diarize_step(torch.empty(0), is_final=True)
+session = diar_model.create_streaming_session(batch_size=2)
+for audio_batch, audio_lengths, final_mask in audio_stream:
+    probabilities, probability_lengths = session.diarize_step(
+        audio_batch,
+        audio_chunk_lengths=audio_lengths,
+        is_final=final_mask,
+    )
+    stream_0_probabilities = probabilities[0, : probability_lengths[0]]
 session.reset()
 ```
 

@@ -614,18 +614,21 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             torch.cuda.empty_cache()
         return processed_signal, processed_signal_length
 
-    def create_streaming_session(self):
-        """Create an independent high-level raw-audio streaming session.
+    def create_streaming_session(self, batch_size: int = 1):
+        """Create an independent high-level raw-audio streaming session for a fixed batch of streams.
 
-        The returned session accepts arbitrarily sized mono waveform chunks through ``diarize_step()`` and owns all
-        preprocessing buffers and Sortformer cache state. Create one session per concurrent audio stream.
+        The returned session accepts arbitrarily sized mono waveform chunks through ``diarize_step()`` and owns the
+        per-stream preprocessing buffers and batched asynchronous Sortformer cache state.
+
+        Args:
+            batch_size: Fixed number of independent audio streams owned by the session.
 
         Returns:
             SortformerStreamingSession: A new session bound to this model.
         """
-        from nemo.collections.asr.parts.utils.streaming_sortformer import SortformerStreamingSession
+        from nemo.collections.asr.parts.utils.sortformer_utils import SortformerStreamingSession
 
-        return SortformerStreamingSession(self)
+        return SortformerStreamingSession(self, batch_size=batch_size)
 
     def forward(
         self,
@@ -950,6 +953,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         drop_extra_pre_encoded=0,
         left_offset=0,
         right_offset=0,
+        async_streaming=None,
     ):
         """
         One-step forward pass for diarization inference in streaming mode.
@@ -978,6 +982,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             drop_extra_pre_encoded (int): Number of leading pre-encoded frames to discard before streaming updates.
             left_offset (int): left offset for the current chunk
             right_offset (int): right offset for the current chunk
+            async_streaming (Optional[bool]): Override the model-level asynchronous streaming setting for this call.
 
         Returns:
             streaming_state (SortformerStreamingState):
@@ -987,6 +992,11 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                 Tensor containing the updated total predicted speaker activity probabilities.
                 Shape: (batch_size, cumulative pred length, num_speakers)
         """
+        if async_streaming is None:
+            async_streaming = self.async_streaming
+        elif not isinstance(async_streaming, bool):
+            raise TypeError(f"async_streaming must be a boolean or None, got {type(async_streaming).__name__}")
+
         chunk_pre_encode_embs, chunk_pre_encode_lengths = self._call_pre_encode(
             processed_signal, processed_signal_length
         )
@@ -995,7 +1005,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             chunk_pre_encode_embs = chunk_pre_encode_embs[:, drop_extra_pre_encoded:, :]
             chunk_pre_encode_lengths = chunk_pre_encode_lengths - drop_extra_pre_encoded
 
-        if self.async_streaming:
+        if async_streaming:
             output_length = None
             if self.async_pad_to_max:
                 output_length = (
@@ -1036,7 +1046,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             spkcache_fifo_chunk_preds = self.sortformer_modules.downsample_preds(
                 high_resolution_preds, self.upsample_factor
             ).detach()
-            if not self.async_streaming and streaming_state.spk_perm is not None:
+            if not async_streaming and streaming_state.spk_perm is not None:
                 inv_spk_perm = torch.stack(
                     [
                         torch.argsort(streaming_state.spk_perm[batch_index])
@@ -1053,7 +1063,7 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         spkcache_fifo_chunk_preds = self.sortformer_modules.apply_mask_to_preds(
             spkcache_fifo_chunk_preds, spkcache_fifo_chunk_fc_encoder_lengths
         )
-        if self.async_streaming:
+        if async_streaming:
             saved_spkcache_lengths = streaming_state.spkcache_lengths.clone()
             saved_fifo_lengths = streaming_state.fifo_lengths.clone()
             streaming_state, chunk_preds = self.sortformer_modules.streaming_update_async(

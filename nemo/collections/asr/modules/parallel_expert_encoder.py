@@ -1017,6 +1017,10 @@ class ParallelExpertEncoder(nn.Module):
         else:
             device = parameter.device
             stream_dtype = parameter.dtype
+            # Refresh the nested ModelPT/Lightning device tracker. Sortformer's
+            # streaming path uses ``self.device`` when assembling chunk state,
+            # which can otherwise remain stale after moving the parent encoder.
+            self.diarization_model.to(device)
         diar_signal = audio_signal.to(device=device, dtype=stream_dtype)
         diar_length = length.to(device=device)
         with _disable_dist_feature_sync(), _default_dtype(stream_dtype):

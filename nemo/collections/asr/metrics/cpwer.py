@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from itertools import permutations
-from typing import List, Tuple
+from typing import List, NamedTuple, Tuple
 
 import numpy as np
 from kaldialign import edit_distance
@@ -83,6 +83,96 @@ def calculate_session_cpWER_bruteforce(spk_hypothesis: List[str], spk_reference:
     return cpWER, best_hyp_trans, ref_trans
 
 
+class CpWERDetail(NamedTuple):
+    """Per-session cpWER with the counts a corpus-level aggregate needs.
+
+    :func:`calculate_session_cpWER` returns only a rate, and a micro-average cannot be recovered
+    from it: re-scoring ``min_perm_hyp_trans`` against ``ref_trans`` lets errors migrate across the
+    speaker boundary and disagrees with the per-pair sum (``ref=["hello there", "general kenobi"]``,
+    ``hyp=["hello", "there general", "kenobi"]`` gives cpWER 1.0 but re-scores to 0.5). The returned
+    string is also tie-break dependent, so anything derived from it is solver-dependent.
+    """
+
+    cpwer: float
+    errors: int
+    ref_words: int
+    ins: int
+    dels: int
+    subs: int
+    assignment: List[int]
+    hyp_in_ref_order: List[str]
+    min_perm_hyp_trans: str
+    ref_trans: str
+
+
+def calculate_session_cpWER_detail(spk_hypothesis: List[str], spk_reference: List[str]) -> CpWERDetail:
+    """Session cpWER plus the error/word counts, the speaker assignment, and the aligned strings.
+
+    Same algorithm and same numbers as :func:`calculate_session_cpWER`, which delegates here.
+
+    Args:
+        spk_hypothesis (list): One concatenated hypothesis string per speaker. Order is irrelevant.
+        spk_reference (list): One concatenated reference string per speaker. Order is irrelevant.
+
+    Returns:
+        CpWERDetail: ``cpwer`` is ``inf`` when the reference has no words (unchanged behaviour);
+        ``assignment[i]`` is the hypothesis speaker matched to reference speaker ``i``, or ``-1``
+        when that reference slot was matched against padding.
+    """
+    num_hyp = len(spk_hypothesis)
+    num_ref = len(spk_reference)
+
+    if num_hyp == 0 and num_ref == 0:
+        return CpWERDetail(0.0, 0, 0, 0, 0, 0, [], [], "", "")
+
+    num_speakers_padded = max(num_hyp, num_ref)
+    ref_word_lists = [
+        spk_reference[ref_idx].split() if ref_idx < num_ref else [] for ref_idx in range(num_speakers_padded)
+    ]
+    hyp_word_lists = [
+        spk_hypothesis[hyp_idx].split() if hyp_idx < num_hyp else [] for hyp_idx in range(num_speakers_padded)
+    ]
+
+    # Keep the full edit-distance dicts, not just the totals, so ins/del/sub come from the SAME
+    # computation as the assignment rather than a second pass over the concatenated strings.
+    distances = [[None] * num_speakers_padded for _ in range(num_speakers_padded)]
+    cost_matrix = np.zeros((num_speakers_padded, num_speakers_padded), dtype=np.float64)
+    for ref_idx in range(num_speakers_padded):
+        for hyp_idx in range(num_speakers_padded):
+            distance = edit_distance(ref_word_lists[ref_idx], hyp_word_lists[hyp_idx])
+            distances[ref_idx][hyp_idx] = distance
+            cost_matrix[ref_idx, hyp_idx] = distance['total']
+
+    row_ind, col_ind = scipy_linear_sum_assignment(cost_matrix)
+
+    total_errors = total_ref_length = total_ins = total_del = total_sub = 0
+    assignment = [-1] * num_speakers_padded
+    hyp_texts = []
+    for ref_idx, hyp_idx in zip(row_ind, col_ind):
+        distance = distances[ref_idx][hyp_idx]
+        total_errors += int(distance['total'])
+        total_ins += int(distance['ins'])
+        total_del += int(distance['del'])
+        total_sub += int(distance['sub'])
+        total_ref_length += len(ref_word_lists[ref_idx])
+        assignment[ref_idx] = int(hyp_idx) if hyp_idx < num_hyp else -1
+        hyp_texts.append(spk_hypothesis[hyp_idx] if hyp_idx < num_hyp else "")
+
+    cpwer = total_errors / total_ref_length if total_ref_length > 0 else float('inf')
+    return CpWERDetail(
+        cpwer=cpwer,
+        errors=total_errors,
+        ref_words=total_ref_length,
+        ins=total_ins,
+        dels=total_del,
+        subs=total_sub,
+        assignment=assignment[:num_ref] if num_ref else [],
+        hyp_in_ref_order=hyp_texts,
+        min_perm_hyp_trans=" ".join(hyp_texts),
+        ref_trans=" ".join(spk_reference),
+    )
+
+
 def calculate_session_cpWER(spk_hypothesis: List[str], spk_reference: List[str]) -> Tuple[float, str, str]:
     """
     Calculate a session-level concatenated minimum-permutation word error rate (cpWER) value,
@@ -118,42 +208,8 @@ def calculate_session_cpWER(spk_hypothesis: List[str], spk_reference: List[str])
         ref_trans (str):
             Reference transcript in an arbitrary permutation. Words are separated by spaces.
     """
-    num_hyp = len(spk_hypothesis)
-    num_ref = len(spk_reference)
-
-    if num_hyp == 0 and num_ref == 0:
-        return 0.0, "", ""
-
-    num_speakers_padded = max(num_hyp, num_ref)
-
-    ref_word_lists = [
-        spk_reference[ref_idx].split() if ref_idx < num_ref else [] for ref_idx in range(num_speakers_padded)
-    ]
-    hyp_word_lists = [
-        spk_hypothesis[hyp_idx].split() if hyp_idx < num_hyp else [] for hyp_idx in range(num_speakers_padded)
-    ]
-
-    cost_matrix = np.zeros((num_speakers_padded, num_speakers_padded), dtype=np.float64)
-    for ref_idx in range(num_speakers_padded):
-        for hyp_idx in range(num_speakers_padded):
-            cost_matrix[ref_idx, hyp_idx] = edit_distance(ref_word_lists[ref_idx], hyp_word_lists[hyp_idx])['total']
-
-    row_ind, col_ind = scipy_linear_sum_assignment(cost_matrix)
-
-    total_errors = 0
-    total_ref_length = 0
-    hyp_texts = []
-    for ref_idx, hyp_idx in zip(row_ind, col_ind):
-        total_errors += int(cost_matrix[ref_idx, hyp_idx])
-        total_ref_length += len(ref_word_lists[ref_idx])
-        hyp_texts.append(spk_hypothesis[hyp_idx] if hyp_idx < num_hyp else "")
-
-    cpWER = total_errors / total_ref_length if total_ref_length > 0 else float('inf')
-
-    min_perm_hyp_trans = " ".join(hyp_texts)
-    ref_trans = " ".join(spk_reference)
-
-    return cpWER, min_perm_hyp_trans, ref_trans
+    detail = calculate_session_cpWER_detail(spk_hypothesis, spk_reference)
+    return detail.cpwer, detail.min_perm_hyp_trans, detail.ref_trans
 
 
 def concat_perm_word_error_rate(

@@ -61,9 +61,11 @@ from whisper_normalizer.english import EnglishTextNormalizer
 
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.collections.asr.parts.utils.hf_asr_normalizer import get_hf_normalizer
+from nemo.collections.asr.parts.utils.sot_speaker_alignment import remove_speaker_tags
 from nemo.collections.common.data.lhotse.cutset import guess_parse_cutset
 from nemo.collections.common.data.lhotse.dataloader import pad_extra_duration
 from nemo.collections.speechlm2.models import StreamingSTTModel
+from nemo.collections.speechlm2.parts.metrics import CpWER
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -205,6 +207,24 @@ class StreamingSTTEvalConfig:
     # audio chunk it was generated from. Format matches the GT manifest:
     #   [{"text": "...", "start_time": float_s, "end_time": float_s}, ...]
     save_alignments: bool = True
+    # --- multi-speaker (SOT) scoring ---
+    # cpWER is permutation-invariant over speakers, so it scores transcription AND attribution.
+    # On a tagless corpus it degenerates to per-session WER, which makes its micro aggregate a free
+    # cross-check against the corpus WER above.
+    compute_cpwer: bool = True
+    # Bucket for words with no preceding <spk:N> tag -- the whole hypothesis, for the control arm.
+    # None drops them, which turns them into silent deletions; do not use.
+    cpwer_untagged_speaker: Optional[int] = 0
+    # Fold tag indices >= N into one bucket instead of inventing speakers. None = no folding.
+    cpwer_max_speakers: Optional[int] = None
+    # Also score a word-perfect but tagless pseudo-hypothesis: the score a system that attributes
+    # nothing would get. Makes the control arm's cpWER interpretable.
+    cpwer_report_notag_ceiling: bool = True
+    # Feed ORACLE RTTM speaker targets to the encoder at inference instead of letting a
+    # ParallelExpertEncoder run its own streaming diarizer. Separates "does the speaker kernel
+    # help" from "is the streaming diarizer good enough" -- a weak infusion result is otherwise
+    # ambiguous between the two. Needs spk_targets on the batch and the chunked path.
+    oracle_spk_targets: bool = False
     # --- Long-form segmentation -------------------------------------------
     # When ``max_segment_duration`` is set (> 0), each input recording is split into
     # windows of at most this many seconds; inference runs per segment and the
@@ -265,6 +285,21 @@ def main(cfg: StreamingSTTEvalConfig):
     # recording id -> its ordered segments; ``seg_start_by_id`` gives per-segment
     # start offsets (used to globalize per-word alignment timestamps).
     seg_mode = cfg.max_segment_duration is not None and cfg.max_segment_duration > 0
+    if cfg.oracle_spk_targets and cfg.use_state_machine_inference:
+        raise ValueError(
+            "oracle_spk_targets requires the chunked path: the dynamic/state-machine path steps a "
+            "subset of streams per iteration, so a full-utterance target tensor cannot be sliced to "
+            "match. Set use_state_machine_inference=false."
+        )
+
+    if seg_mode and cfg.compute_cpwer:
+        raise ValueError(
+            "cpWER requires globally consistent speaker indices, but <spk:N> is arrival-ordered "
+            "WITHIN each decode window -- segments are decoded independently, so <spk:0> in one "
+            "segment is generally a different person than in the next, and a session-global "
+            "permutation cannot undo a per-segment relabeling. Score cpWER per cut "
+            "(max_segment_duration=0), or add cross-segment speaker stitching."
+        )
     ref_cuts = cuts
     seg_meta: dict[str, list[tuple[int, str, float]]] = {}
     seg_start_by_id: dict[str, float] = {}
@@ -345,6 +380,11 @@ def main(cfg: StreamingSTTEvalConfig):
             chunk_size_override=cfg.chunk_size_override,
             return_alignments=cfg.save_alignments,
             return_debug_logs=cfg.debug_log_audio_frames,
+            **(
+                {"spk_targets": batch["spk_targets"].to(model.device, non_blocking=True)}
+                if cfg.oracle_spk_targets and batch.get("spk_targets") is not None
+                else {}
+            ),
         )
         batch_infer_duration = perf_counter() - ts
 
@@ -382,8 +422,13 @@ def main(cfg: StreamingSTTEvalConfig):
                 for cut, hyp in zip(batch["cuts"], batch_hyps):
                     logging.info(f"\n[SEG {cut.id}]\t`{hyp}`\n")
             else:
-                batch_refs = [normalizer(cut.supervisions[0].text) for cut in batch["cuts"]]
-                batch_wer, _, nins, ndel, nsub = word_error_rate_detail(batch_hyps, batch_refs)
+                # Strip tags on BOTH sides: batch_hyps are raw and still carry <spk:N>, while the
+                # normalizer removes them from the reference -- comparing the two directly inflates
+                # this progress WER.
+                batch_refs = [normalizer(remove_speaker_tags(cut.supervisions[0].text)) for cut in batch["cuts"]]
+                batch_wer, _, nins, ndel, nsub = word_error_rate_detail(
+                    [normalizer(remove_speaker_tags(h)) for h in batch_hyps], batch_refs
+                )
                 logging.info(
                     f"Batch {batch_idx}: "
                     f"WER={batch_wer:.2%} [ins={nins:.2%} del={ndel:.2%} sub={nsub:.2%}] "
@@ -416,8 +461,8 @@ def main(cfg: StreamingSTTEvalConfig):
                 (
                     rec.id,
                     rec.duration,
-                    normalizer(rec.supervisions[0].text),
-                    normalizer(hyp_raw),
+                    rec.supervisions[0].text,
+                    hyp_raw,
                     alignments,
                     None,
                     None,
@@ -429,20 +474,54 @@ def main(cfg: StreamingSTTEvalConfig):
                 (
                     cut.id,
                     cut.duration,
-                    normalizer(cut.supervisions[0].text),
-                    normalizer(hyp_by_id.get(cut.id, "")),
+                    cut.supervisions[0].text,
+                    hyp_by_id.get(cut.id, ""),
                     align_by_id.get(cut.id) if cfg.save_alignments else None,
                     content_score_by_id.get(cut.id),
                     annotated_by_id.get(cut.id),
                 )
             )
 
-    refs = [r[2] for r in reduced]
-    hyps = [r[3] for r in reduced]
+    # Strip speaker tags BEFORE normalizing for the speaker-agnostic WER. Without this, a pure
+    # speaker swap with word-identical content scores as word errors when use_normalizer=none.
+    refs = [normalizer(remove_speaker_tags(r[2])) for r in reduced]
+    hyps = [normalizer(remove_speaker_tags(r[3])) for r in reduced]
     wer, _, nins, ndel, nsub = word_error_rate_detail(hypotheses=hyps, references=refs, use_cer=False)
+
+    cpwer_metric = cpwer_results = None
+    if cfg.compute_cpwer:
+        cpwer_metric = CpWER(
+            normalize=True,
+            normalizer=normalizer,
+            untagged_speaker=cfg.cpwer_untagged_speaker,
+            max_speakers=cfg.cpwer_max_speakers,
+            report_notag_ceiling=cfg.cpwer_report_notag_ceiling,
+            verbose=False,
+        )
+        # Score per session from the RAW pairs, then aggregate. Same hypotheses as the WER above.
+        cpwer_results = {r[0]: cpwer_metric.score_session(r[2], r[3]) for r in reduced}
+        cpwer_metric.update("corpus", [r[2] for r in reduced], [r[3] for r in reduced])
+        cpwer_summary = cpwer_metric.compute()
     rtfx = sum(input_durations) / sum(infer_durations)
     logging.info(f"WER: {wer:.2%} [ins={nins:.2%} del={ndel:.2%} sub={nsub:.2%}]")
     logging.info(f"RTFx: {rtfx:.1f}")
+    cpwer_lines = []
+    if cpwer_results is not None:
+        micro = cpwer_summary.get("cpwer_corpus", float("nan"))
+        cpwer_lines.append(f"cpWER (micro): {micro:.2%}   [attribution gap vs WER: {micro - wer:+.2%}]")
+        cpwer_lines.append(f"cpWER (macro): {cpwer_summary.get('cpwer_macro_corpus', float('nan')):.2%}")
+        if "cpwer_notag_ceiling_corpus" in cpwer_summary:
+            cpwer_lines.append(
+                f"cpWER no-tag ceiling: {cpwer_summary['cpwer_notag_ceiling_corpus']:.2%} "
+                "(a word-perfect but unattributed hypothesis)"
+            )
+        for key in sorted(k for k in cpwer_summary if k.endswith("spk")):
+            cpwer_lines.append(f"  {key.rsplit('_', 1)[-1]:>5s} reference speakers: {cpwer_summary[key]:.2%}")
+        for key in ("cpwer_sessions_corpus", "cpwer_skipped_empty_ref_corpus", "cpwer_untagged_hyp_sessions_corpus"):
+            if key in cpwer_summary:
+                cpwer_lines.append(f"  {key}: {cpwer_summary[key]}")
+        for line in cpwer_lines:
+            logging.info(line)
 
     if cfg.output_manifest is not None:
         log_file = Path(cfg.output_manifest).parent / "log.txt"
@@ -453,9 +532,13 @@ def main(cfg: StreamingSTTEvalConfig):
                 f.write(f"Segmentation: method={cfg.seg_method} max_segment_duration={cfg.max_segment_duration}s\n")
             f.write(f"WER: {wer:.2%} [ins={nins:.2%} del={ndel:.2%} sub={nsub:.2%}]\n")
             f.write(f"RTFx: {rtfx:.1f}\n")
+            for line in cpwer_lines:
+                f.write(line + "\n")
             f.write(f"=============================================\n\n")
         with SequentialJsonlWriter(cfg.output_manifest) as writer:
-            for rec_id, duration, ref, hyp, alignments, content_scores, annotated in reduced:
+            for rec_id, duration, ref_raw, hyp_raw, alignments, content_scores, annotated in reduced:
+                ref = normalizer(remove_speaker_tags(ref_raw))
+                hyp = normalizer(remove_speaker_tags(hyp_raw))
                 uwer, _, unins, undel, unsub = word_error_rate_detail(
                     hypotheses=[hyp], references=[ref], use_cer=False
                 )
@@ -469,6 +552,27 @@ def main(cfg: StreamingSTTEvalConfig):
                     "del": undel,
                     "sub": unsub,
                 }
+                if cpwer_results is not None and rec_id in cpwer_results:
+                    session = cpwer_results[rec_id]
+                    record.update(
+                        {
+                            "cpwer": session.cpwer,
+                            "cpwer_errors": session.errors,
+                            "cpwer_ref_words": session.ref_words,
+                            "cpwer_ins": session.ins,
+                            "cpwer_del": session.dels,
+                            "cpwer_sub": session.subs,
+                            "num_ref_speakers": session.num_ref_speakers,
+                            "num_hyp_speakers": session.num_hyp_speakers,
+                            "ref_by_speaker": session.ref_by_speaker,
+                            # permuted into REFERENCE order by the assignment -- sorting the two
+                            # speaker dicts independently would misalign them whenever the key sets
+                            # differ (hyp {0,2} vs ref {0,1}).
+                            "hyp_by_speaker": session.hyp_in_ref_order,
+                            "cpwer_assignment": session.assignment,
+                            "notag_ceiling": session.notag_ceiling,
+                        }
+                    )
                 # Per-word predicted timestamps (same schema as the GT manifest's
                 # `alignments` field: text / start_time / end_time, in seconds).
                 # In seg_mode these are already shifted to recording-global time.

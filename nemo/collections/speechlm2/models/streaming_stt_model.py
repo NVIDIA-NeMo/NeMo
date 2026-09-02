@@ -2003,6 +2003,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         _audio_embs: Optional[Tensor] = None,
         chunk_size: Optional[int] = None,
         turn_template_ids: Optional[list[int]] = None,
+        spk_targets: Optional[Tensor] = None,
         **generation_kwargs,
     ) -> list[list[int]]:
         """
@@ -2048,6 +2049,12 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             ).long()
 
             # 1. Encode audio chunks with streaming cache
+            # Oracle speaker targets for THIS chunk, when supplied. Without them a
+            # ParallelExpertEncoder falls back to its embedded (streaming, causal) Sortformer, so
+            # passing them here is what makes an oracle-vs-predicted eval comparison possible.
+            perception_kwargs = {}
+            if spk_targets is not None and self._perception_accepts_spk_targets():
+                perception_kwargs["spk_targets"] = spk_targets
             outputs = self.perception(
                 processed_signal=processed_signal,
                 processed_signal_length=processed_signal_length,
@@ -2055,6 +2062,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 cache_last_time=state.audio_cache.cache_last_time,
                 cache_last_channel_len=state.audio_cache.cache_last_channel_len,
                 streaming=True,
+                **perception_kwargs,
             )
             audio_chunk_embs, _, new_perception_cache = outputs
 
@@ -3059,6 +3067,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         chunk_size: Optional[int] = None,
         use_offline_embs: bool = False,
         return_alignments: bool = True,
+        spk_targets: Optional[Tensor] = None,
         **generation_kwargs,
     ) -> StreamingSTTGenerateResult:
         """Chunk-by-chunk streaming generation for B samples in lockstep.
@@ -3146,6 +3155,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                         emb_chunks.append(torch.zeros(1, chunk_size, H, device=device, dtype=audios.dtype))
                 extra_kwargs["_audio_embs"] = torch.cat(emb_chunks, dim=0)
 
+            if spk_targets is not None:
+                # `chunk_size` is in 80 ms encoder frames and the dataset builds `spk_targets` on
+                # that same grid, so the slice is a plain frame-index window. A short final slice is
+                # fine: `_align_diar_frames` pads/trims to the ASR chunk's actual output length.
+                frame_start = chunk_i * chunk_size
+                extra_kwargs["spk_targets"] = spk_targets[:, frame_start : frame_start + chunk_size]
+
             chunk_tokens = self._chunked_streaming_step(
                 audio_batch,
                 lens_batch,
@@ -3214,6 +3230,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         disable_emit_for_debug: bool = False,
         return_alignments: bool = True,
         return_debug_logs: bool = False,
+        spk_targets: Optional[Tensor] = None,
         **generation_kwargs,
     ) -> StreamingSTTGenerateResult:
         """
@@ -3270,6 +3287,13 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     **generation_kwargs,
                 )
             elif chunk_size == 0 or use_state_machine_inference:
+                if spk_targets is not None:
+                    raise NotImplementedError(
+                        "`spk_targets` are only threaded through the chunked streaming path. The "
+                        "dynamic/state-machine path steps a subset of streams per iteration, so a "
+                        "full-utterance target tensor cannot be sliced to match. Use "
+                        "use_state_machine_inference=false with chunk_size>0 for oracle-target eval."
+                    )
                 # Dynamic chunking (chunk_size=0) or state machine inference opted in for chunk_size > 0.
                 # Note that for chunk_size > 0, use_state_machine_inference is not recommended.
                 result = self._generate_dynamic_streaming(
@@ -3301,6 +3325,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                     use_offline_embs=use_offline_embs,
                     return_alignments=return_alignments,
                     **generation_kwargs,
+                    spk_targets=spk_targets,
                 )
 
         return result

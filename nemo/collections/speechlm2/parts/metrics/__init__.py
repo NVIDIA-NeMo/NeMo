@@ -14,6 +14,7 @@
 from .asr_bleu import ASRBLEU
 from .asr_cer_wer import Intelligibility
 from .bleu import BLEU
+from .cpwer import CpWER, CpWERSessionResult
 from .perplexity import Perplexity, ValidationLoss
 from .results_logger import ResultsLogger
 from .token_accuracy import TokenAccuracy
@@ -28,6 +29,8 @@ __all__ = [
     'Perplexity',
     'ValidationLoss',
     'WER',
+    'CpWER',
+    'CpWERSessionResult',
     'TokenAccuracy',
     'ResultsLogger',
     'Intelligibility',

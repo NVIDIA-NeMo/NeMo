@@ -23,8 +23,12 @@ import torch
 
 SPEAKER_TOKEN_PATTERN = re.compile(r"<spk:(\d+)>")
 _SPEAKER_TOKEN_SPLIT_PATTERN = re.compile(r"(<spk:\d+>)")
+# Residue of a malformed/unclosed tag, e.g. "<spk:0" or "<spk>" -- dropped rather than scored.
+_MALFORMED_SPEAKER_TOKEN = re.compile(r"<spk:?\d*>?")
 
 __all__ = [
+    "sot_to_speaker_texts",
+    "remove_speaker_tags",
     "SPEAKER_TOKEN_PATTERN",
     "collate_speaker_activity_targets",
     "dtw_cost",
@@ -129,6 +133,81 @@ def parse_speaker_tokens(text: str) -> list[int]:
         for _ in part.split():
             spk_seq.append(current_spk)
     return spk_seq
+
+
+def remove_speaker_tags(text: Optional[str]) -> str:
+    """Return ``text`` with every ``<spk:N>`` tag removed and whitespace collapsed.
+
+    Never raises -- unlike :func:`strip_speaker_tags`, which rejects untagged text. Use this on the
+    speaker-agnostic WER path so a pure speaker swap is not scored as word errors.
+    """
+    if not text:
+        return ""
+    return " ".join(SPEAKER_TOKEN_PATTERN.sub(" ", text).split())
+
+
+def sot_to_speaker_texts(
+    text: Optional[str],
+    default_speaker: Optional[int] = 0,
+    keep_empty: bool = True,
+    max_speakers: Optional[int] = None,
+) -> dict:
+    """Group SOT-tagged text into ``{speaker_index: concatenated_text}``, keys ascending.
+
+    This is what cpWER consumes: one string per speaker. Deliberately not built on the neighbouring
+    helpers -- :func:`parse_speaker_tokens` silently drops every word before the first tag (so
+    ``"um <spk:0> hi"`` loses ``um`` to a phantom deletion), and :func:`strip_speaker_tags` *raises*
+    on untagged text, which would crash scoring of a tagless hypothesis.
+
+    Args:
+        text: SOT text, possibly untagged, possibly malformed. ``None``/empty yields ``{}``.
+        default_speaker: Bucket for words appearing before any tag. ``None`` drops them, which
+            turns them into silent deletions -- only do that deliberately.
+        keep_empty: Keep a speaker whose contribution is empty. Required for scoring: the bucket
+            count must be decided by the TAGS, never by downstream text normalization. A reference
+            speaker whose only word is a filler would otherwise vanish once the normalizer removes
+            it, deleting a whole reference speaker and misaligning the permutation search.
+        max_speakers: Fold indices ``>= max_speakers`` into one bucket rather than creating new
+            speakers. Folds, never drops.
+
+    Returns:
+        dict: speaker index -> concatenated text, ordered by ascending index.
+    """
+    if not text:
+        return {}
+
+    buckets: dict = {}
+
+    def _fold(index):
+        if index is None:
+            return None
+        if max_speakers is not None and index >= max_speakers:
+            index = max_speakers
+        return index
+
+    # `default_speaker` is only materialised if a word actually precedes the first tag. Creating it
+    # eagerly would invent an empty speaker for "<spk:2> hi", inflating the speaker count and adding
+    # a padding slot the permutation search then has to absorb.
+    current = _fold(default_speaker)
+    for piece in _SPEAKER_TOKEN_SPLIT_PATTERN.split(text):
+        if not piece:
+            continue
+        tag = SPEAKER_TOKEN_PATTERN.fullmatch(piece)
+        if tag is not None:
+            current = _fold(int(tag.group(1)))
+            if keep_empty and current is not None:
+                buckets.setdefault(current, [])
+            continue
+        # Drop malformed tag residue (e.g. an unclosed "<spk:0") so it does not survive
+        # normalization as the fake words "spk" and "0".
+        words = [w for w in piece.split() if not _MALFORMED_SPEAKER_TOKEN.fullmatch(w)]
+        if words and current is not None:
+            buckets.setdefault(current, []).extend(words)
+
+    out = {i: " ".join(words) for i, words in sorted(buckets.items())}
+    if not keep_empty:
+        out = {i: t for i, t in out.items() if t}
+    return out
 
 
 def get_text_speaker_char_counts(text: str, num_speakers: int) -> np.ndarray:

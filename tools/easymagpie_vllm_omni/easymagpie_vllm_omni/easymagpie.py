@@ -865,8 +865,7 @@ class EasyMagpieTTSForConditionalGeneration(
         reference_rows = 0
 
         if uses_raw_reference:
-            # Process the initial raw-reference prompt, including any scheduler
-            # chunks that remain after its reference boundary is first found.
+            # Build this request's initial prefix from raw reference audio.
             take, conditioning_len, has_user_audio, reference_rows = self._build_reference_audio_prefill_chunk(
                 input_embeds=input_embeds,
                 info_dict=info_dict,
@@ -882,8 +881,7 @@ class EasyMagpieTTSForConditionalGeneration(
                 else (self.speech_delay if has_user_audio else int(info_dict.get("text_prefill_num", 0) or 0))
             )
         elif reference_prefilled:
-            # The reference conditioning is already in this request's retained
-            # state. Keep its prefix length only to align the appended user rows.
+            # Reuse this request's retained reference and append user audio.
             conditioning_len = int(info_dict.get("reference_conditioning_len", 0) or 0)
             if conditioning_len <= 0:
                 raise ValueError("speaker_reference_prefilled requires reference_conditioning_len")
@@ -904,7 +902,7 @@ class EasyMagpieTTSForConditionalGeneration(
             decode_offset = self.speech_delay
             has_user_audio = True
         else:
-            # Load the converted embedding selected by speaker_id.
+            # Build this request's prefix from the stored speaker_id embedding.
             conditioning = self._build_prefill_embeds(device, info_dict, include_text_prefill=False)
             conditioning_len = int(conditioning.shape[0])
             legacy_prompt_len = conditioning_len + int(info_dict.get("text_prefill_num", 0) or 0)
@@ -1067,6 +1065,7 @@ class EasyMagpieTTSForConditionalGeneration(
         prompt_len: int,
         legacy_prompt_len: int,
     ) -> bool:
+        """Return whether this request chunk contains appended user-audio rows."""
         if not self.arch.condition_on_user_speech or prompt_len <= legacy_prompt_len:
             return False
         # The first scheduling chunk can contain only the ordinary context
@@ -1126,6 +1125,7 @@ class EasyMagpieTTSForConditionalGeneration(
         dtype: torch.dtype,
         text_tokens: list[int],
     ) -> torch.Tensor:
+        """Build text and phoneme rows aligned with the user-audio warmup."""
         rows = torch.zeros((self.speech_delay, self.embedding_dim), device=device, dtype=dtype)
         prefix_ids = text_tokens[: self.speech_delay]
         if prefix_ids:

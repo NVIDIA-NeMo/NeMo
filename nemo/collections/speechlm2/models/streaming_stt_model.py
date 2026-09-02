@@ -244,6 +244,11 @@ class StreamingSTTModelConfig:
     # model reads it, so a mismatch trains one position and infers another with no error.
     # Requires a non-empty ``blank_token`` and, for now, ``compact_template=True``.
     drop_blank_from_context: bool = False
+    # Rung 2: also drop the per-chunk gate anchor, so consecutive silent chunks form one
+    # contiguous acoustic run in the context. The gate moves to the last audio frame and
+    # becomes a binary blank/write choice, so ``prepend_write_token`` is required.
+    # Implies ``drop_blank_from_context``. Must match the dataset flag of the same name.
+    collapse_silent_audio: bool = False
     att_context_size: Optional[List[int]] = None
     audio_pad_to: Optional[int] = None
     sample_rate: int = 16000
@@ -2415,8 +2420,23 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
             and self.has_blank
             and self.core_cfg.compact_template
         )
+        collapse_audio = (
+            bool(getattr(self.core_cfg, "collapse_silent_audio", False))
+            and fixed_chunk_mode
+            and self.has_blank
+            and self.core_cfg.compact_template
+        )
+        if collapse_audio:
+            drop_blank_ctx = True  # rung 2 implies rung 1
+        write_token_id = (
+            self.tokenizer.tokenizer.convert_tokens_to_ids(self.core_cfg.write_token)
+            if self.core_cfg.prepend_write_token
+            else None
+        )
         if drop_blank_ctx:
             logging.info("drop_blank_from_context: silent chunks will not be fed back to the LLM")
+        if collapse_audio:
+            logging.info("collapse_silent_audio: gate read at the last audio frame; no chunk anchors fed")
         fixed_chunk_size = chunk_size if fixed_chunk_mode else 0
         frames_in_segment = [0] * B  # frames consumed in current LISTENING segment
         # When emit_delay_frames > 0: after the aux head decides "emit" at
@@ -2640,6 +2660,43 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                             template_pos[b] = 0
                             frames_in_segment[b] = 0
                             decision_str = "emit_forced_audio_end"
+                    elif fixed_chunk_mode and collapse_audio:
+                        # Rung 2: no gate anchor exists, so the emit decision is read
+                        # directly from the last audio frame of the chunk -- a binary
+                        # blank / write choice, the same shape as the dynamic-chunking
+                        # gate but on a forced cadence. A blank keeps the stream in
+                        # LISTENING, so consecutive silent chunks stay one contiguous
+                        # acoustic run in the KV cache.
+                        if frames_in_segment[b] >= fixed_chunk_size:
+                            frames_in_segment[b] = 0
+                            tok = self._sample_token(
+                                out.logits[b : b + 1, -1, :],
+                                None,
+                                generation_config,
+                                **generation_kwargs,
+                            ).item()
+                            is_stop = tok == self.blank_token_id or (self._eos_id is not None and tok == self._eos_id)
+                            if not is_stop:
+                                # Speaking chunk. Whatever the gate produced IS the first
+                                # emitted token -- the write token when
+                                # prepend_write_token is on, otherwise the first text
+                                # token -- and GENERATING feeds it on the next step. The
+                                # gate therefore needs no fixed vocabulary item, only a
+                                # blank to distinguish 'nothing to say' from 'text here'.
+                                stream_state[b] = GENERATING
+                                all_tokens[b].append(tok)
+                                last_gen_token[b] = tok
+                                gen_token_count[b] = 1
+                                decision_str = "emit_gate"
+                            else:
+                                # Silent chunk: record the separator so decoding still
+                                # splits per chunk, and keep listening without feeding
+                                # anything back.
+                                all_tokens[b].append(self.blank_token_id)
+                                decision_str = "blank_gate_keep_listening"
+                        elif not audio_emb_buf[b] and audio_sample_idx[b] >= n_samples_list[b]:
+                            stream_state[b] = DONE
+                            decision_str = "done_audio_end"
                     elif fixed_chunk_mode:
                         # Fixed chunking: transition after exactly chunk_size frames
                         if frames_in_segment[b] >= fixed_chunk_size:

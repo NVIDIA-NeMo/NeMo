@@ -2885,3 +2885,152 @@ class TestDropBlankFromContext:
         ds, _ = self._dataset(drop=False)
         assert ds._drop_blank is False
         assert StreamingSTTDataConfig.drop_blank_from_context is False
+
+
+class TestCollapseSilentAudio:
+    """M5 / rung 2: the per-chunk anchor goes too, so silent audio becomes contiguous.
+
+    The gate moves to the last audio frame of each chunk. Since no boundary marker
+    survives in the token stream, it is located by counting audio frames — every
+    chunk contributes exactly ``chunk_size``. Its target is ``blank`` when nothing
+    but more audio follows, and otherwise whatever token actually starts the
+    emission, so the inference-side test is ``!= blank`` and needs no fixed token.
+    """
+
+    WORDS = ["hello", "world", "again"]
+    ALIGNED = [WordAlignment(text=w, start_time=0.6 * i, end_time=0.6 * i + 0.25) for i, w in enumerate(WORDS)]
+    C = 2
+
+    def _dataset(self, collapse, prepend=True, blank_token="<blank>"):
+        from nemo.collections.common.tokenizers import AutoTokenizer as NeMoTok
+
+        tok = NeMoTok("Qwen/Qwen3-1.7B", use_fast=True)
+        tok.add_special_tokens({"additional_special_tokens": ["<blank>", "<|write|>"]})
+        cfg = OmegaConf.create(
+            {
+                "sample_rate": 16000,
+                "frame_length_in_secs": 0.08,
+                "chunk_size": self.C,
+                "num_delay_frames": 3,
+                "audio_tag": "<audio>",
+                "blank_token": blank_token,
+                "system_role": "system",
+                "system_prompt": "Transcribe the audio into text.",
+                "compact_template": True,
+                "prepend_write_token": prepend,
+                "write_token": "<|write|>",
+                "collapse_silent_audio": collapse,
+            }
+        )
+        return StreamingSTTDataset(cfg=cfg, tokenizer=tok), tok
+
+    def _encode(self, ds, tok, prepend=True):
+        msgs = get_llm_messages_for_sample(
+            system_role="system",
+            system_prompt="Transcribe the audio into text.",
+            audio_tag="<audio>",
+            blank_token=ds.cfg.blank_token,
+            chunk_size=self.C,
+            num_delay_frames=3,
+            audio_duration_secs=2.0,
+            frame_length_in_secs=0.08,
+            alignments=self.ALIGNED,
+            transcript=" ".join(self.WORDS),
+            prepend_write_token=prepend,
+            write_token="<|write|>",
+        )
+        ids, mask = _tokenize_compact_with_assistant_mask(
+            msgs,
+            tok,
+            ds._eoa_id,
+            ds._compact_eos_id,
+            drop_blank_from_context=ds._drop_blank,
+            blank_token=ds.cfg.blank_token,
+            collapse_silent_audio=ds._collapse_audio,
+        )
+        ids, mask = _replace_audio_chunks(ids, ds._audio_chunk_ids_by_size[self.C], self.C, mask=mask)
+        targets = [t if m else IGNORE_INDEX for t, m in zip(ids[1:] + [IGNORE_INDEX], mask[1:] + [0])]
+        gates = []
+        if ds._collapse_audio:
+            n, seen = len(ids), 0
+            for i, tid in enumerate(ids):
+                if tid != AUDIO_TOKEN_IDX:
+                    continue
+                seen += 1
+                if seen % self.C:
+                    continue
+                nxt = ids[i + 1] if i + 1 < n else None
+                targets[i] = ds.blank_id if (nxt is None or nxt == AUDIO_TOKEN_IDX) else nxt
+                gates.append(targets[i])
+        return ids, targets, gates
+
+    @staticmethod
+    def _longest_audio_run(ids):
+        best = cur = 0
+        for t in ids:
+            cur = cur + 1 if t == AUDIO_TOKEN_IDX else 0
+            best = max(best, cur)
+        return best
+
+    def test_silent_chunks_merge_into_one_contiguous_audio_run(self):
+        """The M5 acceptance criterion."""
+        off_ds, off_tok = self._dataset(collapse=False)
+        on_ds, on_tok = self._dataset(collapse=True)
+        off_ids, _, _ = self._encode(off_ds, off_tok)
+        on_ids, _, _ = self._encode(on_ds, on_tok)
+
+        assert self._longest_audio_run(off_ids) == self.C, "baseline audio is chunked every C frames"
+        assert self._longest_audio_run(on_ids) > self.C, "consecutive silent chunks should merge"
+        assert len(on_ids) < len(off_ids)
+
+    def test_no_anchor_survives_and_audio_is_untouched(self):
+        on_ds, on_tok = self._dataset(collapse=True)
+        off_ds, off_tok = self._dataset(collapse=False)
+        on_ids, _, _ = self._encode(on_ds, on_tok)
+        off_ids, _, _ = self._encode(off_ds, off_tok)
+
+        n_audio = lambda ids: sum(1 for t in ids if t == AUDIO_TOKEN_IDX)
+        assert n_audio(on_ids) == n_audio(off_ids), "dropping anchors must not change the audio span"
+        # The only <eoa> left is the system block's, which is not a per-chunk anchor.
+        assert sum(1 for t in on_ids if t == on_ds._eoa_id) < sum(1 for t in off_ids if t == off_ds._eoa_id)
+
+    @pytest.mark.parametrize("prepend", [True, False])
+    def test_gate_target_is_never_blank_on_a_speaking_chunk(self, prepend):
+        """The gate needs no fixed token: 'not blank' identifies emission either way.
+
+        With prepend_write_token the emit target is the write token; without it, the
+        first text token. Both are distinguishable from blank, which is all the
+        inference-side gate tests.
+        """
+        ds, tok = self._dataset(collapse=True, prepend=prepend)
+        _, _, gates = self._encode(ds, tok, prepend=prepend)
+
+        assert gates, "expected at least one gate"
+        emit = [g for g in gates if g != ds.blank_id]
+        blank = [g for g in gates if g == ds.blank_id]
+        assert emit and blank, "both silent and speaking chunks should be represented"
+        if prepend:
+            write_id = tok.tokenizer.convert_tokens_to_ids("<|write|>")
+            assert all(g == write_id for g in emit)
+        else:
+            assert all(g != ds.blank_id for g in emit)
+
+    def test_supervision_count_matches_the_unmodified_format(self):
+        """Rung 2 changes the context, never how many decisions are supervised."""
+        off_ds, off_tok = self._dataset(collapse=False)
+        on_ds, on_tok = self._dataset(collapse=True)
+        _, off_tgt, _ = self._encode(off_ds, off_tok)
+        _, on_tgt, on_gates = self._encode(on_ds, on_tok)
+
+        assert sum(1 for t in on_tgt if t == on_ds.blank_id) == sum(1 for t in off_tgt if t == off_ds.blank_id)
+
+    def test_requires_a_blank_token(self):
+        with pytest.raises(ValueError, match="requires a non-empty blank_token"):
+            self._dataset(collapse=True, blank_token="")
+
+    def test_implies_rung_1(self):
+        ds, _ = self._dataset(collapse=True)
+        assert ds._drop_blank is True, "collapse_silent_audio implies drop_blank_from_context"
+
+    def test_off_by_default(self):
+        assert StreamingSTTDataConfig.collapse_silent_audio is False

@@ -130,6 +130,12 @@ class StreamingSTTDataConfig:
     # to it. Requires a non-empty ``blank_token``; forced off with a warning otherwise
     # (there is no blank to drop, and the gate target would be undefined).
     drop_blank_from_context: bool = False
+    # Rung 2: additionally drop the per-chunk gate anchor, so a silent chunk
+    # contributes ONLY its audio frames and consecutive silent chunks become one
+    # contiguous acoustic run. The gate moves to the last audio frame of each chunk
+    # and becomes a binary blank / write choice, so ``prepend_write_token`` is
+    # required. Implies ``drop_blank_from_context``.
+    collapse_silent_audio: bool = False
 
 
 def decode_with_blank(
@@ -745,6 +751,7 @@ def _tokenize_compact_with_assistant_mask(
     eos_id: int,
     drop_blank_from_context: bool = False,
     blank_token: str = "",
+    collapse_silent_audio: bool = False,
 ) -> tuple[list[int], list[int]]:
     """Tokenize chat messages in compact format and return (input_ids, assistant_mask).
 
@@ -795,7 +802,22 @@ def _tokenize_compact_with_assistant_mask(
             # Pair with following assistant turn if present.
             if i < len(turn_msgs) and turn_msgs[i]["role"] == "assistant":
                 asst = turn_msgs[i]
-                if drop_blank_from_context and blank_token and asst["content"] == blank_token:
+                is_silent = bool(blank_token) and asst["content"] == blank_token
+                if collapse_silent_audio:
+                    # Rung 2: no anchor at all. A silent chunk contributes nothing
+                    # beyond its audio; a speaking chunk goes straight from the last
+                    # audio frame into the write token and its text.
+                    if is_silent:
+                        i += 1
+                        continue
+                    asst_ids = hf_tok.encode(asst["content"], add_special_tokens=False)
+                    input_ids.extend(asst_ids)
+                    assistant_mask.extend([1] * len(asst_ids))
+                    input_ids.append(eos_id)
+                    assistant_mask.append(1)
+                    i += 1
+                    continue
+                if drop_blank_from_context and blank_token and is_silent:
                     # Silent chunk under rung 1: emit the gate anchor and nothing else.
                     # The blank stays supervised via a target override in
                     # ``get_batch_data`` -- it is simply never an input token, so
@@ -1070,6 +1092,17 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                 stacklevel=2,
             )
             self._drop_blank = False
+        self._collapse_audio = bool(getattr(self.cfg, "collapse_silent_audio", False))
+        if self._collapse_audio:
+            self._drop_blank = True  # rung 2 implies rung 1
+            if self.cfg.blank_token == "":
+                raise ValueError(
+                    "collapse_silent_audio=True requires a non-empty blank_token: the gate at the "
+                    "last audio frame distinguishes 'silent' from 'text starts here' by predicting "
+                    "blank, so there must be a blank to predict."
+                )
+            logging.info("collapse_silent_audio enabled: silent chunks contribute audio frames only")
+
         if self._drop_blank and not self.cfg.compact_template:
             raise NotImplementedError(
                 "drop_blank_from_context is only implemented for compact_template=True so far "
@@ -1219,6 +1252,7 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
                     self._compact_eos_id,
                     drop_blank_from_context=self._drop_blank,
                     blank_token=self.cfg.blank_token,
+                    collapse_silent_audio=self._collapse_audio,
                 )
             else:
                 input_ids, assistant_mask = _tokenize_with_assistant_mask(messages, self.tokenizer)
@@ -1257,11 +1291,34 @@ class StreamingSTTDataset(torch.utils.data.Dataset):
             target_mask = assistant_mask[1:] + [0]
             target_ids = [tid if m else IGNORE_INDEX for tid, m in zip(target_ids, target_mask)]
 
+            # Rung 2: with the anchors gone there is no boundary marker left in the token
+            # stream, so the gate is located by counting audio frames — every chunk
+            # contributes exactly ``chunk_size`` of them, so every C-th audio token is a
+            # gate. Its target is ``write`` when the chunk speaks (the write token
+            # follows it directly) and ``blank`` when it does not (the next token is more
+            # audio, or the sequence ends).
+            if self._collapse_audio and chunk_size > 0:
+                n_ids = len(input_ids)
+                audio_seen = 0
+                for i, tid in enumerate(input_ids):
+                    if tid != AUDIO_TOKEN_IDX:
+                        continue
+                    audio_seen += 1
+                    if audio_seen % chunk_size:
+                        continue
+                    nxt = input_ids[i + 1] if i + 1 < n_ids else None
+                    # Silent when nothing follows but more audio (or the sequence ends);
+                    # otherwise whatever token actually starts the emission is the target.
+                    # With ``prepend_write_token`` that is the write token, giving a binary
+                    # gate; without it, it is the first text token. Both are "not blank",
+                    # which is all the inference-side gate tests.
+                    target_ids[i] = self.blank_id if (nxt is None or nxt == AUDIO_TOKEN_IDX) else nxt
+
             # Rung 1: the blank is gone from the input, so re-attach it as the target at
             # the gate. A gate anchor that ends a SILENT chunk is followed by audio (the
             # next chunk) or by nothing (end of sequence); a speaking chunk's anchor is
             # followed by the write token or text, so the two cannot be confused.
-            if self._drop_blank and chunk_size > 0:
+            if self._drop_blank and not self._collapse_audio and chunk_size > 0:
                 n_ids = len(input_ids)
                 for i, tid in enumerate(input_ids):
                     if tid != self._eoa_id:

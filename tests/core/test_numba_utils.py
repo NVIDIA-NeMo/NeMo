@@ -55,10 +55,8 @@ def test_cpu_unsupported_when_numba_missing(monkeypatch):
 
 @pytest.mark.unit
 def test_cuda_unsupported_when_version_check_fails(monkeypatch):
-    import nemo.core.utils.numba_utils as numba_utils
-
     stub, calls = _stub_check_lib_version((False, "too old"))
-    monkeypatch.setattr(numba_utils.model_utils, "check_lib_version", stub)
+    monkeypatch.setattr("nemo.core.utils.numba_utils.model_utils.check_lib_version", stub)
 
     assert numba_cuda_is_supported("0.57.0") is False
 

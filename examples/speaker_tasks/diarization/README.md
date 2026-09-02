@@ -94,10 +94,14 @@ zero input length while other rows continue. Call ``reset()`` before reusing the
 and feature padding while extracting each chunk, then applies the checkpoint's feature normalization over each
 complete model input window.
 
+Use ``max_speakers`` to enable fewer than the checkpoint's maximum number of speaker channels. A scalar applies to
+every stream, while a sequence or integer tensor supplies one limit per row. Disabled channels are zeroed in returned
+probabilities and excluded before speaker-cache, FIFO, and silence-profile updates.
+
 ```python
 import torch
 
-session = diar_model.create_streaming_session(batch_size=2)
+session = diar_model.create_streaming_session(batch_size=2, max_speakers=[2, 4])
 for audio_batch, audio_lengths, final_mask in audio_stream:
     probabilities, probability_lengths = session.diarize_step(
         audio_batch,

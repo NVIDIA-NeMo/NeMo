@@ -22,15 +22,9 @@ from collections import defaultdict, namedtuple
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
 
 from nemo.utils import logging
-
-if TYPE_CHECKING:
-    import IPython
-    import torch
-
-    from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
 TW_BREAK = "‡"
@@ -330,7 +324,7 @@ def add_tokenwords_(
 
 
 def generate_lexicon_sentencepiece(
-    tokenizer: 'TokenizerSpec',
+    tokenizer,
     id2word: Dict[int, str],
     oov: str = "<unk>",
     add_epsilon: bool = False,
@@ -883,7 +877,7 @@ def build_minimal_topo(token2id: Dict[str, int]) -> 'kaldifst.StdVectorFst':
 
 
 def mkgraph_ctc_ov(
-    tokenizer: 'TokenizerSpec',
+    tokenizer,
     lm_path: Union[Path, str],
     topology_name: str = "default",
     write_tlg_path: Optional[Union[Path, str]] = None,
@@ -1005,7 +999,7 @@ class AbstractLattice(ABC):
         self._properties = None
 
     @abstractmethod
-    def as_tensor(self) -> 'torch.Tensor':
+    def as_tensor(self):
         """Represents the lattice as a tensor.
 
         Returns:
@@ -1016,7 +1010,7 @@ class AbstractLattice(ABC):
     @abstractmethod
     def draw(
         self, filename: Optional[Union[Path, str]] = None, title: Optional[Union[Path, str]] = None, zoom: float = 1.0
-    ) -> Union['graphviz.Digraph', 'IPython.display.HTML']:
+    ):
         """Render FSA as an image via graphviz, and return the Digraph object; and optionally save to file filename.
         filename must have a suffix that graphviz understands, such as pdf, svg or png.
 
@@ -1161,7 +1155,7 @@ class KaldiWordLattice(AbstractLattice):
     def auxiliary_tables(self) -> Optional[Tuple[Any]]:
         return self._auxiliary_tables
 
-    def as_tensor(self) -> 'torch.Tensor':
+    def as_tensor(self):
         """Represents the lattice as a tensor.
 
         Returns:
@@ -1196,7 +1190,7 @@ class KaldiWordLattice(AbstractLattice):
 
     def draw(
         self, filename: Optional[Union[Path, str]] = None, title: Optional[Union[Path, str]] = None, zoom: float = 1.0
-    ) -> Union['graphviz.Digraph', 'IPython.display.HTML']:
+    ):
         """Render FSA as an image via graphviz, and return the Digraph object; and optionally save to file filename.
         filename must have a suffix that graphviz understands, such as pdf, svg or png.
 

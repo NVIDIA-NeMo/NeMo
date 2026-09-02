@@ -202,9 +202,6 @@ def _extract_last_frame(multimodal_output: OmniPayload | dict[str, Any]) -> torc
         frame = audio_codes[-1]
         if frame.numel() == 0 or not bool(frame.any().item()):
             return None
-        if int(frame.max().item()) >= _CODEBOOK_SIZE:
-            # Control frame (audio eos/mask) — not audio.
-            return None
         return frame.to(torch.long).reshape(-1)
     if audio_codes.ndim == 1:
         return audio_codes.to(torch.long).reshape(-1)
@@ -288,8 +285,7 @@ def talker2code2wav_async_chunk(
 
     if isinstance(multimodal_output, Mapping):
         frame = _extract_last_frame(multimodal_output)
-        # EOS and other control rows intentionally become ``None`` here: they
-        # stop Stage 0 and flush pending audio, but never enter the codec stream.
+        # Keep the terminal control row so the codec can retain any valid subframe before it.
         delay_state = _persistent_state(transfer_manager, "_emp_request_speech_delay")
         if request_id not in delay_state:
             base_speech_delay = _resolve_speech_delay(transfer_manager)

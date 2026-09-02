@@ -1206,6 +1206,69 @@ def read_lhotse_magpietts_data_as_s2s_duplex(config) -> Tuple[CutSet, bool]:
     return cuts, is_tarred
 
 
+def s2s_duplex_reverse_role_for_one_speaker(
+    speaker: str | None,
+    agent_roles: tuple[str, ...],
+    user_roles: tuple[str, ...],
+    target_agent_name: str,
+    target_user_name: str,
+) -> str | None:
+    """Swap one speaker label for the reverse-role duplex view."""
+    if speaker is None:
+        return speaker
+
+    speaker_l = speaker.lower()
+    if speaker_l in user_roles:
+        return target_agent_name
+    if speaker_l in agent_roles:
+        return target_user_name
+    return speaker
+
+
+def s2s_duplex_reverse_role_for_one_cut(
+    cut: Cut,
+    agent_roles: tuple[str, ...],
+    user_roles: tuple[str, ...],
+    target_agent_name: str,
+    target_user_name: str,
+) -> Cut:
+    """Swap speaker roles and source/target audio streams for one duplex cut."""
+    new_cut = deepcopy(cut)
+
+    if getattr(new_cut, "supervisions", None):
+        new_sups = []
+        for supervision in new_cut.supervisions:
+            swapped_supervision = deepcopy(supervision)
+            swapped_supervision.speaker = s2s_duplex_reverse_role_for_one_speaker(
+                getattr(swapped_supervision, "speaker", None),
+                agent_roles=agent_roles,
+                user_roles=user_roles,
+                target_agent_name=target_agent_name,
+                target_user_name=target_user_name,
+            )
+            new_sups.append(swapped_supervision)
+        new_cut.supervisions = new_sups
+
+    old_recording = new_cut.recording
+    old_target_audio = new_cut.target_audio
+    old_rec_id = old_recording.id
+    old_tar_id = old_target_audio.id
+
+    new_cut.recording = old_target_audio
+    new_cut.target_audio = old_recording
+
+    if hasattr(new_cut, "duration"):
+        new_cut.duration = new_cut.recording.duration
+
+    assert new_cut.target_audio.id == old_rec_id, f"{new_cut.id}: recording swap failed"
+    assert new_cut.recording.id == old_tar_id, f"{new_cut.id}: target_audio swap failed"
+    assert new_cut.recording is old_target_audio, f"{new_cut.id}: recording object not swapped"
+    assert new_cut.target_audio is old_recording, f"{new_cut.id}: target_audio object not swapped"
+
+    new_cut.task = "s2s_duplex_reverse_role"
+    return new_cut
+
+
 @data_type_parser(["s2s_duplex_reverse_role"])
 def read_s2s_duplex_reverse_role(config) -> Tuple[CutSet, bool]:
     """
@@ -1233,74 +1296,19 @@ def read_s2s_duplex_reverse_role(config) -> Tuple[CutSet, bool]:
     """
     cuts, is_tarred = read_cutset_from_config(config)
 
-    # Roles coming from config
-    agent_roles = config.get("agent_roles", ["agent", "Agent", "Assistant", "assistant"])
-    user_roles = config.get("user_roles", ["user", "User"])
-
-    # Normalize for robust matching
-    agent_roles_set = {r.lower() for r in agent_roles}
-    user_roles_set = {r.lower() for r in user_roles}
-
-    # Canonical names you want after swapping
+    agent_roles = tuple(r.lower() for r in config.get("agent_roles", ["agent", "Agent", "Assistant", "assistant"]))
+    user_roles = tuple(r.lower() for r in config.get("user_roles", ["user", "User"]))
     target_agent_name = config.get("target_agent_name", "agent")
     target_user_name = config.get("target_user_name", "user")
 
-    def swap_speaker(role: str) -> str:
-        """Swap a given role based on the configured user/agent sets."""
-        if role is None:
-            return role
-
-        role_l = role.lower()
-
-        # user -> agent
-        if role_l in user_roles_set:
-            return target_agent_name
-
-        # agent -> user
-        if role_l in agent_roles_set:
-            return target_user_name
-
-        # untouched roles (e.g., narrator, system, etc.)
-        return role
-
-    def convert_cut_fn(cut: Cut) -> Cut:
-        """Convert a single cut by swapping supervisions and audio streams."""
-        new_cut = deepcopy(cut)
-
-        # swap supervisions
-        if getattr(new_cut, "supervisions", None):
-            new_sups = []
-            for s in new_cut.supervisions:
-                s2 = deepcopy(s)
-                s2.speaker = swap_speaker(getattr(s2, "speaker", None))
-                new_sups.append(s2)
-            new_cut.supervisions = new_sups
-
-        # swap audio streams
-        old_recording = new_cut.recording
-        old_target_audio = new_cut.target_audio
-        old_rec_id = old_recording.id
-        old_tar_id = old_target_audio.id
-
-        new_cut.recording = old_target_audio
-        new_cut.target_audio = old_recording
-
-        # keep duration consistent
-        if hasattr(new_cut, "duration"):
-            new_cut.duration = new_cut.recording.duration
-
-        # Debug assertions
-        assert new_cut.target_audio.id == old_rec_id, f"{new_cut.id}: recording swap failed"
-        assert new_cut.recording.id == old_tar_id, f"{new_cut.id}: target_audio swap failed"
-
-        # Optional stronger assertions (object identity)
-        assert new_cut.recording is old_target_audio, f"{new_cut.id}: recording object not swapped"
-        assert new_cut.target_audio is old_recording, f"{new_cut.id}: target_audio object not swapped"
-
-        new_cut.task = "s2s_duplex_reverse_role"
-        return new_cut
-
-    cuts = cuts.map(convert_cut_fn)
+    convert_fn = partial(
+        s2s_duplex_reverse_role_for_one_cut,
+        agent_roles=agent_roles,
+        user_roles=user_roles,
+        target_agent_name=target_agent_name,
+        target_user_name=target_user_name,
+    )
+    cuts = cuts.map(convert_fn)
     return cuts, is_tarred
 
 

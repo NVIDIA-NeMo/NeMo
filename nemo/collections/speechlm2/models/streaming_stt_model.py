@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import math
+import warnings
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -253,6 +254,14 @@ class StreamingSTTModelConfig:
     audio_pad_to: Optional[int] = None
     sample_rate: int = 16000
     frame_length_in_secs: float = 0.08
+    # Down-weights blank targets (< 1.0) so easy no-emit decisions do not dominate.
+    # NOTE: ``drop_blank_from_context`` / ``collapse_silent_audio`` change the blank
+    # fraction this weight is balancing against. A silent chunk used to contribute two
+    # supervised tokens (the blank and its turn eos) and now contributes one, so the
+    # blank/non-blank ratio shifts and a value tuned on the old format is no longer
+    # equivalent. Watch the ``blank_ratio`` metric (logged every step alongside
+    # ``num_targets`` and ``sequence_length``) and re-tune rather than carrying the old
+    # value across. Gated on ``has_blank``, so it is inert when ``blank_token`` is empty.
     blank_loss_weight: float = 1.0
     log_every_n_steps: int = 10
     dtype: str = "bfloat16"
@@ -480,6 +489,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
                 else:
                     unfreeze_module(lm_head)
 
+        self._assert_context_flags_match_data(data_cfg)
         self._setup_forced_aligner(forced_aligner, data_cfg, val_data_cfg, dataset_cls)
 
         logging.info("\n" + str(ModelSummary(self, max_depth=2)))
@@ -1443,6 +1453,62 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         return (
             list(self._user_header_ids) + [AUDIO_TOKEN_IDX] * chunk_size + list(self._user_footer_and_asst_header_ids)
         )
+
+    def _resolve_context_flags(self, chunk_size: Optional[int]) -> tuple[bool, bool]:
+        """Resolve ``(drop_blank_from_context, collapse_silent_audio)`` for this call.
+
+        Both knobs need fixed chunking, a real blank token and the compact template.
+        When any of those is missing the knobs are downgraded to off — but **loudly**:
+        a silent downgrade would train or evaluate the unmodified format while the
+        config claims otherwise, and nothing downstream would signal it.
+
+        Returns ``(drop_blank, collapse_audio)``; ``collapse_silent_audio`` implies
+        ``drop_blank_from_context``.
+        """
+        want_drop = bool(getattr(self.core_cfg, "drop_blank_from_context", False))
+        want_collapse = bool(getattr(self.core_cfg, "collapse_silent_audio", False))
+        if want_collapse:
+            want_drop = True
+        if not want_drop:
+            return False, False
+
+        unmet = []
+        if chunk_size is None or chunk_size <= 0:
+            unmet.append(f"chunk_size={chunk_size} is not fixed chunking")
+        if not self.has_blank:
+            unmet.append("blank_token is empty")
+        if not self.core_cfg.compact_template:
+            unmet.append("compact_template=False (the non-compact two-stage feed is not implemented)")
+        if unmet:
+            warnings.warn(
+                "drop_blank_from_context/collapse_silent_audio are set but cannot apply: "
+                + "; ".join(unmet)
+                + ". Falling back to the unmodified context format.",
+                stacklevel=2,
+            )
+            return False, False
+        return want_drop, want_collapse
+
+    def _assert_context_flags_match_data(self, data_cfg) -> None:
+        """Fail if the model and dataset disagree about the context knobs.
+
+        The dataset decides where the gate is supervised and the model decides where
+        it is read. A mismatch raises nothing at runtime — the gate is simply trained
+        at one position and consulted at another, so the model silently never emits.
+        Checked here because the two are configured in different YAML blocks and, for
+        the dataloader, resolved in a different process.
+        """
+        if data_cfg is None:
+            return
+        for flag in ("drop_blank_from_context", "collapse_silent_audio"):
+            model_val = bool(getattr(self.core_cfg, flag, False))
+            data_val = bool(data_cfg.get(flag, False) if hasattr(data_cfg, "get") else getattr(data_cfg, flag, False))
+            if model_val != data_val:
+                raise ValueError(
+                    f"model.{flag}={model_val} but data.dataset.{flag}={data_val}. These must match: "
+                    f"the dataset supervises the emit gate and the model reads it, so a mismatch "
+                    f"trains one position and infers another with no error at runtime."
+                )
 
     def _set_encoder_att_context(self, chunk_size: Optional[int], recompute_streaming: bool = False) -> None:
         """Match the encoder's attention look-ahead to ``chunk_size``.
@@ -2414,20 +2480,7 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         fixed_chunk_mode = chunk_size > 0
         # Rung 1 is a fixed-chunk, compact-template, real-blank feature; anything else
         # falls back to the unmodified path rather than half-applying.
-        drop_blank_ctx = (
-            bool(getattr(self.core_cfg, "drop_blank_from_context", False))
-            and fixed_chunk_mode
-            and self.has_blank
-            and self.core_cfg.compact_template
-        )
-        collapse_audio = (
-            bool(getattr(self.core_cfg, "collapse_silent_audio", False))
-            and fixed_chunk_mode
-            and self.has_blank
-            and self.core_cfg.compact_template
-        )
-        if collapse_audio:
-            drop_blank_ctx = True  # rung 2 implies rung 1
+        drop_blank_ctx, collapse_audio = self._resolve_context_flags(chunk_size if fixed_chunk_mode else 0)
         write_token_id = (
             self.tokenizer.tokenizer.convert_tokens_to_ids(self.core_cfg.write_token)
             if self.core_cfg.prepend_write_token
@@ -3341,6 +3394,18 @@ class StreamingSTTModel(LightningModule, HFHubMixin):
         with self._move_embedding_ctx():
             B = audios.shape[0]
             n_samples_list = [int(audio_lens[b].item()) for b in range(B)]
+
+            want_ctx_knobs = bool(getattr(self.core_cfg, "drop_blank_from_context", False)) or bool(
+                getattr(self.core_cfg, "collapse_silent_audio", False)
+            )
+            if want_ctx_knobs and chunk_size > 0 and not use_state_machine_inference:
+                raise ValueError(
+                    "drop_blank_from_context / collapse_silent_audio are only implemented on the "
+                    "state-machine inference path, but use_state_machine_inference=False with "
+                    f"chunk_size={chunk_size}. The fast path would silently feed the unmodified "
+                    "context and report numbers that look valid. Pass "
+                    "use_state_machine_inference=True (the standard MCS eval setting)."
+                )
 
             if chunk_size < 0:
                 result = self._generate_offline(

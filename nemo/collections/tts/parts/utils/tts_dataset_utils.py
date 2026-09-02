@@ -499,21 +499,20 @@ def segment_wav(
         segment = torch.cat([wav, pad])
         return [segment]
 
-    else:
-        si = 0
-        segments = []
+    segment_start_idx = 0
+    segments = []
 
-        while si < len(wav) - min_segment_length:
-            segment = wav[si : si + segment_length]
+    while segment_start_idx < len(wav) - min_segment_length:
+        segment = wav[segment_start_idx : segment_start_idx + segment_length]
 
-            if len(segment) < segment_length:
-                pad = torch.zeros(segment_length - len(segment))
-                segment = torch.cat([segment, pad])
+        if len(segment) < segment_length:
+            pad = torch.zeros(segment_length - len(segment))
+            segment = torch.cat([segment, pad])
 
-            segments.append(segment)
-            si += segment_hop_size
+        segments.append(segment)
+        segment_start_idx += segment_hop_size
 
-        return segments
+    return segments
 
 
 def get_weighted_sampler(

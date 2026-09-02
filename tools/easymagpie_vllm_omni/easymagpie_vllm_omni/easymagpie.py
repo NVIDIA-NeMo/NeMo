@@ -864,8 +864,11 @@ class EasyMagpieTTSForConditionalGeneration(
         )
         reference_rows = 0
 
+        # Select the Stage-0 prefill path for this request. Streaming turns in
+        # one generate() call share the request's retained reference state.
         if uses_raw_reference:
-            # Build this request's initial prefix from raw reference audio.
+            # Process the initial raw-reference prompt, including subsequent
+            # scheduler chunks that still belong to that prompt.
             take, conditioning_len, has_user_audio, reference_rows = self._build_reference_audio_prefill_chunk(
                 input_embeds=input_embeds,
                 info_dict=info_dict,
@@ -881,7 +884,9 @@ class EasyMagpieTTSForConditionalGeneration(
                 else (self.speech_delay if has_user_audio else int(info_dict.get("text_prefill_num", 0) or 0))
             )
         elif reference_prefilled:
-            # Reuse this request's retained reference and append user audio.
+            # Process a later user-audio turn in the same request. Reference conditioning
+            # is already retained, so the stored prefix length is used to align the
+            # appended user-audio rows.
             conditioning_len = int(info_dict.get("reference_conditioning_len", 0) or 0)
             if conditioning_len <= 0:
                 raise ValueError("speaker_reference_prefilled requires reference_conditioning_len")
@@ -902,7 +907,7 @@ class EasyMagpieTTSForConditionalGeneration(
             decode_offset = self.speech_delay
             has_user_audio = True
         else:
-            # Build this request's prefix from the stored speaker_id embedding.
+            # Load the precomputed speaker embedding selected by speaker_id.
             conditioning = self._build_prefill_embeds(device, info_dict, include_text_prefill=False)
             conditioning_len = int(conditioning.shape[0])
             legacy_prompt_len = conditioning_len + int(info_dict.get("text_prefill_num", 0) or 0)

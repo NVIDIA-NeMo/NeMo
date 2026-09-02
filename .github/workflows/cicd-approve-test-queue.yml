@@ -37,6 +37,6 @@ jobs:
       max_concurrency_external: ${{ fromJSON(vars.MAX_CONCURRENCY || '1') }}
     secrets:
       PAT: ${{ secrets.PAT }}
-      NVIDIA_MANAGEMENT_ORG_PAT: ${{ secrets.PAT }}
+      NVIDIA_MANAGEMENT_ORG_PAT: ${{ secrets.NVIDIA_MANAGEMENT_ORG_PAT }}
       SLACK_CI_CHANNEL_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
       SLACK_TEAM_GROUP_ID: ${{ secrets.SLACK_WEBHOOK_ADMIN }}

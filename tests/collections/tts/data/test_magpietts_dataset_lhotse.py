@@ -218,10 +218,10 @@ def _dataset_kwargs():
 
 class TestMagpieTTSDataset:
     @pytest.mark.parametrize(
-        "use_raw_text_input,expected_text",
-        [(False, "july fifteenth"), (True, "July 15th")],
+        "load_normalized_text_percent,expected_text",
+        [(1.0, "july fifteenth"), (0.0, "July 15th")],
     )
-    def test_text_selection(self, tmp_path, use_raw_text_input, expected_text):
+    def test_text_selection(self, tmp_path, load_normalized_text_percent, expected_text):
         manifest_path = tmp_path / "manifest.jsonl"
         manifest_path.write_text(
             json.dumps(
@@ -241,10 +241,22 @@ class TestMagpieTTSDataset:
             codec_model_samples_per_frame=1024,
             eos_id=1,
             num_audio_codebooks=8,
-            use_raw_text_input=use_raw_text_input,
+            load_normalized_text_percent=load_normalized_text_percent,
         )
 
         assert dataset.data_samples[0].text == expected_text
+
+    @pytest.mark.parametrize("load_normalized_text_percent", [-0.1, 1.1])
+    def test_load_normalized_text_percent_validation(self, load_normalized_text_percent):
+        with pytest.raises(ValueError, match="load_normalized_text_percent"):
+            MagpieTTSDataset(
+                dataset_meta={},
+                sample_rate=22050,
+                codec_model_samples_per_frame=1024,
+                eos_id=1,
+                num_audio_codebooks=8,
+                load_normalized_text_percent=load_normalized_text_percent,
+            )
 
 
 class TestMagpieTTSLhotseDatasets:
@@ -355,13 +367,13 @@ class TestMagpieTTSLhotseDatasets:
         torch.testing.assert_close(batch["rewards"], torch.tensor([0.5], device=batch["rewards"].device))
 
     @pytest.mark.parametrize(
-        "use_raw_text_input,expected_text",
-        [(False, "july fifteenth"), (True, "July 15th")],
+        "load_normalized_text_percent,expected_text",
+        [(1.0, "july fifteenth"), (0.0, "July 15th")],
     )
-    def test_single_turn_text_selection(self, use_raw_text_input, expected_text):
+    def test_single_turn_text_selection(self, load_normalized_text_percent, expected_text):
         _seed_everything()
         kwargs = _dataset_kwargs()
-        kwargs["use_raw_text_input"] = use_raw_text_input
+        kwargs["load_normalized_text_percent"] = load_normalized_text_percent
         dataset = MagpieTTSLhotseDataset(**kwargs)
 
         batch = dataset[_single_turn_cutset(text="July 15th", normalized_text="july fifteenth")]
@@ -369,10 +381,10 @@ class TestMagpieTTSLhotseDatasets:
         assert batch["raw_texts"] == [expected_text]
 
     @pytest.mark.parametrize(
-        "use_raw_text_input,expected_texts",
+        "load_normalized_text_percent,expected_texts",
         [
             (
-                False,
+                1.0,
                 [
                     "normalized assistant greeting",
                     "normalized assistant acknowledgement",
@@ -380,10 +392,10 @@ class TestMagpieTTSLhotseDatasets:
                     "normalized user acknowledgement",
                 ],
             ),
-            (True, ["hello", "okay", "hi", "ok"]),
+            (0.0, ["hello", "okay", "hi", "ok"]),
         ],
     )
-    def test_multiturn_text_selection(self, use_raw_text_input, expected_texts):
+    def test_multiturn_text_selection(self, load_normalized_text_percent, expected_texts):
         _seed_everything()
         cuts = _multiturn_cutset()
         normalized_texts = [
@@ -405,7 +417,7 @@ class TestMagpieTTSLhotseDatasets:
                 "output_roles": ["assistant"],
                 "add_text_bos": False,
                 "use_text_conditioning_tokenizer": False,
-                "use_raw_text_input": use_raw_text_input,
+                "load_normalized_text_percent": load_normalized_text_percent,
             }
         )
         dataset = MagpieTTSLhotseMultiturnDataset(**kwargs)
@@ -420,3 +432,12 @@ class TestMagpieTTSLhotseDatasets:
 
         assert batch["text"].shape[0] == 1
         assert dataset.text_tokenizer.encoded_texts == expected_texts
+
+    @pytest.mark.parametrize("load_normalized_text_percent", [-0.1, 1.1])
+    @pytest.mark.parametrize("dataset_class", [MagpieTTSLhotseDataset, MagpieTTSLhotseMultiturnDataset])
+    def test_load_normalized_text_percent_validation(self, dataset_class, load_normalized_text_percent):
+        kwargs = _dataset_kwargs()
+        kwargs["load_normalized_text_percent"] = load_normalized_text_percent
+
+        with pytest.raises(ValueError, match="load_normalized_text_percent"):
+            dataset_class(**kwargs)

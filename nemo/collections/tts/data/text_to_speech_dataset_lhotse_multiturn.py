@@ -30,6 +30,8 @@ from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.data.text_to_speech_dataset_lhotse import setup_tokenizers
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     _sample_probability_range,
+    _select_text_for_tts_input,
+    _validate_probability,
     beta_binomial_prior_distribution,
     has_phoneme_text_spans,
     normalize_volume,
@@ -130,7 +132,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         text_context_remapping: Dict defining mapping of multiple text contexts to a single text context.
         text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
         phoneme_turn_max_words_to_drop: Turns with this many words or fewer keep empty phoneme string.
-        use_raw_text_input: Whether to use text instead of normalized_text when both are available.
+        load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
+            available. Defaults to `1.0`.
     """
 
     def __init__(
@@ -170,7 +173,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         phoneme_turn_dropout_batch_prob: float = 0.0,
         phoneme_turn_dropout_turn_prob: float = 0.0,
         phoneme_turn_max_words_to_drop: int = 2,
-        use_raw_text_input: bool = False,
+        load_normalized_text_percent: float = 1.0,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -212,7 +215,8 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
         self.phoneme_turn_dropout_batch_prob = phoneme_turn_dropout_batch_prob
         self.phoneme_turn_dropout_turn_prob = phoneme_turn_dropout_turn_prob
         self.phoneme_turn_max_words_to_drop = phoneme_turn_max_words_to_drop
-        self.use_raw_text_input = use_raw_text_input
+        _validate_probability("load_normalized_text_percent", load_normalized_text_percent)
+        self.load_normalized_text_percent = load_normalized_text_percent
 
         self.frame_length = (
             self.codec_model_samples_per_frame / codec_model_input_sample_rate
@@ -344,7 +348,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             phoneme_text_eop_marker=self.phoneme_text_eop_marker,
             ignore_phoneme_languages=self.ignore_phoneme_languages,
             apply_partial_phoneme_text=self.dataset_type == 'train',
-            use_raw_text_input=self.use_raw_text_input,
+            load_normalized_text_percent=self.load_normalized_text_percent,
         )
         source_tokens, source_token_lens = collate_token_channel(
             cuts,
@@ -357,7 +361,7 @@ class MagpieTTSLhotseMultiturnDataset(torch.utils.data.Dataset):
             eos_id=self.eos_id,
             bos_id=self.bos_id,
             interruption_token_id=self.interruption_token_id,
-            use_raw_text_input=self.use_raw_text_input,
+            load_normalized_text_percent=self.load_normalized_text_percent,
         )
 
         return {
@@ -811,7 +815,7 @@ def collate_token_channel(
     phoneme_text_eop_marker: str = "<eop>",
     ignore_phoneme_languages: list[str] = None,
     apply_partial_phoneme_text: bool = False,
-    use_raw_text_input: bool = False,
+    load_normalized_text_percent: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build and collate token channels aligned to the audio frame grid."""
     tokens = []
@@ -840,7 +844,7 @@ def collate_token_channel(
                 phoneme_text_eop_marker,
                 ignore_phoneme_languages,
                 apply_partial_phoneme_text,
-                use_raw_text_input=use_raw_text_input,
+                load_normalized_text_percent=load_normalized_text_percent,
             )
         )
     token_lens = torch.tensor([len(tt) for tt in tokens])
@@ -896,7 +900,7 @@ def build_token_channel(
     phoneme_text_eop_marker: str = "<eop>",
     ignore_phoneme_languages: list[str] = None,
     apply_partial_phoneme_text: bool = False,
-    use_raw_text_input: bool = False,
+    load_normalized_text_percent: float = 1.0,
 ) -> torch.Tensor:
 
     total = compute_num_frames(cut.duration, frame_length, cut.sampling_rate)
@@ -904,10 +908,11 @@ def build_token_channel(
 
     for supervision in cut.supervisions:
         if supervision.speaker in roles:
-            if not use_raw_text_input and supervision.has_custom("normalized_text"):
-                text = supervision.normalized_text
-            else:
-                text = supervision.text
+            text = _select_text_for_tts_input(
+                text=supervision.text,
+                normalized_text=supervision.normalized_text if supervision.has_custom("normalized_text") else None,
+                load_normalized_text_percent=load_normalized_text_percent,
+            )
             text_for_tokens = text
             language = cut.lang if cut.has_custom("lang") else supervision.language
             if (

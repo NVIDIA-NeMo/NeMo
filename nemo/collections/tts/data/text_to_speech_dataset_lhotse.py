@@ -30,6 +30,8 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
 )
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     _sample_probability_range,
+    _select_text_for_tts_input,
+    _validate_probability,
     beta_binomial_prior_distribution,
     has_phoneme_text_spans,
     normalize_volume,
@@ -172,7 +174,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
             are not set externally. Defaults to None.
         text_context_remapping: Dict defining mapping of multiple text contexts to a single text context.
         text_context_remapping_prob: Probability of remapping the original text context to a remapped text context.
-        use_raw_text_input: Whether to use text instead of normalized_text when both are available.
+        load_normalized_text_percent: Probability in `[0.0, 1.0]` of loading the normalized transcript when
+            available. Defaults to `1.0`.
     """
 
     def __init__(
@@ -203,7 +206,7 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         phoneme_text_bop_marker: str = "<bop>",
         phoneme_text_eop_marker: str = "<eop>",
         add_language_to_context_text: bool = False,
-        use_raw_text_input: bool = False,
+        load_normalized_text_percent: float = 1.0,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -237,7 +240,8 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
         self.phoneme_text_bop_marker = phoneme_text_bop_marker
         self.phoneme_text_eop_marker = phoneme_text_eop_marker
         self.add_language_to_context_text = add_language_to_context_text
-        self.use_raw_text_input = use_raw_text_input
+        _validate_probability("load_normalized_text_percent", load_normalized_text_percent)
+        self.load_normalized_text_percent = load_normalized_text_percent
 
     def get_num_audio_samples_to_slice(self, duration, sample_rate):
         num_codec_frames = int(duration * sample_rate / self.codec_model_samples_per_frame)
@@ -483,10 +487,11 @@ class MagpieTTSLhotseDataset(torch.utils.data.Dataset):
 
             # tokenize transcript
             supervision = cut.supervisions[0]
-            if not self.use_raw_text_input and supervision.has_custom("normalized_text"):
-                text_str = supervision.normalized_text
-            else:
-                text_str = supervision.text
+            text_str = _select_text_for_tts_input(
+                text=supervision.text,
+                normalized_text=supervision.normalized_text if supervision.has_custom("normalized_text") else None,
+                load_normalized_text_percent=self.load_normalized_text_percent,
+            )
             raw_text_list.append(text_str)
             text_for_tokens = text_str
             if (

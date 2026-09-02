@@ -17,7 +17,7 @@ import math
 import os
 import random
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -614,7 +614,11 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             torch.cuda.empty_cache()
         return processed_signal, processed_signal_length
 
-    def create_streaming_session(self, batch_size: int = 1):
+    def create_streaming_session(
+        self,
+        batch_size: int = 1,
+        max_speakers: Optional[Union[int, Sequence[int], torch.Tensor]] = None,
+    ):
         """Create an independent high-level raw-audio streaming session for a fixed batch of streams.
 
         The returned session accepts arbitrarily sized mono waveform chunks through ``diarize_step()`` and owns the
@@ -622,13 +626,15 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
 
         Args:
             batch_size: Fixed number of independent audio streams owned by the session.
+            max_speakers: Number of enabled speaker channels for every stream. A scalar applies to the complete batch;
+                a sequence or tensor supplies one value per row. By default, every model speaker channel is enabled.
 
         Returns:
             SortformerStreamingSession: A new session bound to this model.
         """
         from nemo.collections.asr.parts.utils.sortformer_utils import SortformerStreamingSession
 
-        return SortformerStreamingSession(self, batch_size=batch_size)
+        return SortformerStreamingSession(self, batch_size=batch_size, max_speakers=max_speakers)
 
     def forward(
         self,
@@ -1059,6 +1065,13 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
                         for batch_index in range(high_resolution_preds.shape[0])
                     ]
                 )
+            high_resolution_preds = self.sortformer_modules.apply_max_speakers_mask(
+                high_resolution_preds, streaming_state.max_speakers
+            )
+
+        spkcache_fifo_chunk_preds = self.sortformer_modules.apply_max_speakers_mask(
+            spkcache_fifo_chunk_preds, streaming_state.max_speakers
+        )
 
         spkcache_fifo_chunk_preds = self.sortformer_modules.apply_mask_to_preds(
             spkcache_fifo_chunk_preds, spkcache_fifo_chunk_fc_encoder_lengths

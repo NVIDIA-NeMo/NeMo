@@ -322,6 +322,80 @@ class TestSortformerEncLabelModelStreaming:
             )
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("high_resolution", [False, True])
+    def test_raw_audio_streaming_session_applies_per_row_max_speakers_before_state_update(self, high_resolution):
+        model = _create_sortformer_model(high_resolution=high_resolution).eval()
+        model.streaming_mode = True
+        model.sortformer_modules.chunk_len = 2
+        model.sortformer_modules.chunk_left_context = 1
+        model.sortformer_modules.chunk_right_context = 1
+        model._check_streaming_parameters()
+        captured_state_predictions = []
+        streaming_update_async = model.sortformer_modules.streaming_update_async
+
+        def capture_streaming_update(**kwargs):
+            captured_state_predictions.append(kwargs["preds"].clone())
+            return streaming_update_async(**kwargs)
+
+        model.sortformer_modules.streaming_update_async = capture_streaming_update
+        session = model.create_streaming_session(batch_size=2, max_speakers=[2, 4])
+        audio = torch.nn.utils.rnn.pad_sequence([torch.randn(8193), torch.randn(5001)], batch_first=True)
+        predictions, prediction_lengths = session.diarize_step(
+            audio,
+            audio_chunk_lengths=torch.tensor([8193, 5001]),
+            is_final=torch.tensor([True, True]),
+        )
+
+        assert torch.count_nonzero(predictions[0, : prediction_lengths[0], 2:]) == 0
+        assert torch.count_nonzero(predictions[1, : prediction_lengths[1], 2:]) > 0
+        assert captured_state_predictions
+        for state_predictions in captured_state_predictions:
+            assert torch.count_nonzero(state_predictions[0, :, 2:]) == 0
+        assert any(
+            torch.count_nonzero(state_predictions[1, :, 2:]) > 0 for state_predictions in captured_state_predictions
+        )
+        assert torch.count_nonzero(session.streaming_state.fifo_preds[0, :, 2:]) == 0
+        assert torch.count_nonzero(session.streaming_state.spkcache_preds[0, :, 2:]) == 0
+        assert session.streaming_state.max_speakers.tolist() == [2, 4]
+        session.reset()
+        assert session.streaming_state.max_speakers.tolist() == [2, 4]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "max_speakers, error_type, error_match",
+        [
+            ([2], ValueError, "one value per batch row"),
+            ([2, 5], ValueError, "between 1 and 4"),
+            ([2, 1.5], TypeError, "must contain integers"),
+            (torch.tensor([2.0, 4.0]), TypeError, "must contain integers"),
+            (True, TypeError, "must be an integer"),
+        ],
+    )
+    def test_raw_audio_streaming_session_rejects_invalid_max_speakers(self, max_speakers, error_type, error_match):
+        model = _create_sortformer_model().eval()
+        model.streaming_mode = True
+
+        with pytest.raises(error_type, match=error_match):
+            model.create_streaming_session(batch_size=2, max_speakers=max_speakers)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "max_speakers, expected",
+        [
+            (2, [2, 2]),
+            (torch.tensor(3), [3, 3]),
+            (torch.tensor([1, 4]), [1, 4]),
+        ],
+    )
+    def test_raw_audio_streaming_session_normalizes_max_speakers(self, max_speakers, expected):
+        model = _create_sortformer_model().eval()
+        model.streaming_mode = True
+
+        session = model.create_streaming_session(batch_size=2, max_speakers=max_speakers)
+
+        assert session.streaming_state.max_speakers.tolist() == expected
+
+    @pytest.mark.unit
     def test_raw_audio_streaming_session_reset_and_validation(self):
         offline_model = _create_sortformer_model().eval()
         with pytest.raises(ValueError, match="streaming_mode=True"):

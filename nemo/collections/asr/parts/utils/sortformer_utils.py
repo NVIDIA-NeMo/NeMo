@@ -20,7 +20,7 @@ import time
 from functools import wraps
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 from omegaconf import open_dict
@@ -41,9 +41,16 @@ class SortformerStreamingSession:
     Args:
         model: Streaming ``SortformerEncLabelModel`` in evaluation mode.
         batch_size: Fixed number of independent audio streams owned by the session.
+        max_speakers: Number of enabled speaker channels for every stream. A scalar applies to the complete batch; a
+            sequence or tensor supplies one value per row. By default, every model speaker channel is enabled.
     """
 
-    def __init__(self, model: "SortformerEncLabelModel", batch_size: int = 1):
+    def __init__(
+        self,
+        model: "SortformerEncLabelModel",
+        batch_size: int = 1,
+        max_speakers: Optional[Union[int, Sequence[int], torch.Tensor]] = None,
+    ):
         if not model.streaming_mode:
             raise ValueError("SortformerStreamingSession requires a model with streaming_mode=True")
         if model.training:
@@ -53,6 +60,7 @@ class SortformerStreamingSession:
 
         self.model = model
         self.batch_size = batch_size
+        self._max_speakers = max_speakers
         self.device = model.device
         self._normalization = model.preprocessor.featurizer.normalize
         self._preprocessor = copy.deepcopy(model.preprocessor).to(self.device).eval()
@@ -148,7 +156,9 @@ class SortformerStreamingSession:
             batch_size=self.batch_size,
             async_streaming=True,
             device=self.device,
+            max_speakers=self._max_speakers,
         )
+        self._max_speakers = self.streaming_state.max_speakers
         self._audio_buffers = [torch.empty(0, dtype=torch.float32, device=self.device) for _ in range(self.batch_size)]
         self._audio_buffer_starts = [0] * self.batch_size
         self._received_samples = [0] * self.batch_size

@@ -54,6 +54,18 @@ Mamba's selective-state-update kernel requires shape- and GPU-specific tuning, s
 suboptimal performance. Reuse the same Triton/vLLM cache directories across launches so repeated runs accumulate
 better kernels; for an explicit sweep, run `python scripts/tune_mamba_ssu.py --model converted_model` and restart.
 
+### Perth watermarking
+
+EasyMagpie audio is watermarked after native codec decoding and before float
+PCM leaves the vLLM-Omni codec stage. Equal-length outputs are processed as a
+GPU batch, including outputs produced by incremental streaming requests. The
+watermarker resamples codec audio to Perth's model rate and back while
+preserving each output's original sample count.
+
+Watermarking is enabled by default, and engine startup fails if Perth or its
+bundled checkpoint cannot be loaded. For controlled quality comparisons only,
+set `NEMOTRON_TTS_PERTH_WATERMARK=0` to disable it.
+
 ### Quick start — offline synthesis
 
 See the [`offline_demo.ipynb`](../../tutorials/tts/easymagpie_vllm_omni/offline_demo.ipynb) tutorial to check how

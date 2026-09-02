@@ -341,8 +341,10 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=300, help="Per-request timeout, s (default: 300)")
     parser.add_argument("--no-warmup", action="store_true", help="Skip warmup phase (concurrency requests)")
     parser.add_argument("--output-dir", default=None, help="If set, write each waveform to <output-dir>/<uttid>.wav")
+    parser.add_argument("--seed", type=int, default=1234, help="Prompt sampling seed (default: %(default)s)")
     args = parser.parse_args()
 
+    random.seed(args.seed)
     items = _load_items(args.text_file)
     if not items:
         print(f"ERROR: no usable lines found in {args.text_file}")

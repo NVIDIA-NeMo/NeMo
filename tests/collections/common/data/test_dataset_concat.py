@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import numpy as np
 import pytest
 import torch
 
@@ -107,3 +108,41 @@ def test_world_size_one_is_stable_and_complete():
     first = list(iter(concat))
     second = list(iter(concat))
     assert first == second == expected
+
+
+@pytest.mark.unit
+def test_temperature_weights_come_from_rank_shards():
+    a = ListDataset([f"a{i}" for i in range(10)])
+    b = ListDataset([f"b{i}" for i in range(7)])
+    concat = ConcatDataset(
+        datasets=[a, b],
+        sampling_technique='temperature',
+        sampling_temperature=0.5,
+        sampling_scale=2000,
+        shuffle=False,
+        seed=1234,
+        global_rank=2,
+        world_size=3,
+    )
+
+    shard_lengths = [len(a) - (len(a) // 3) * 2, len(b) - (len(b) // 3) * 2]
+    assert shard_lengths == [4, 3]
+    expected = np.array(shard_lengths, dtype=float)
+    expected = expected / expected.sum()
+    expected = expected ** (1.0 / 0.5)
+    expected = expected / expected.sum()
+
+    unsharded = np.array([len(a), len(b)], dtype=float)
+    unsharded = unsharded / unsharded.sum()
+    unsharded = unsharded ** (1.0 / 0.5)
+    unsharded = unsharded / unsharded.sum()
+
+    first = list(iter(concat))
+    second = list(iter(concat))
+    assert first == second
+    assert concat.datasets[0] is a
+    assert concat.datasets[1] is b
+
+    freq_a = sum(1 for item in first if item.startswith("a")) / len(first)
+    assert abs(freq_a - expected[0]) < 0.02
+    assert abs(freq_a - expected[0]) < abs(freq_a - unsharded[0])

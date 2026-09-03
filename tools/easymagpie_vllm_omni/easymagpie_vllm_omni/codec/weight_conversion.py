@@ -50,3 +50,28 @@ def convert_decoder_state_dict(state: Mapping[str, torch.Tensor]) -> dict[str, t
         converted[renamed] = value.contiguous()
 
     return converted
+
+
+def convert_encoder_state_dict(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Extract the codec encoder and materialize all weight-normalized convolutions."""
+    prefix = "audio_encoder."
+    encoder = {name: tensor for name, tensor in state.items() if name.startswith(prefix)}
+    if not encoder:
+        raise KeyError(f"checkpoint does not contain any {prefix} weights")
+
+    converted: dict[str, torch.Tensor] = {}
+    suffix_v = ".parametrizations.weight.original1"
+    suffix_g = ".parametrizations.weight.original0"
+    for name, value in encoder.items():
+        if name.endswith(suffix_g):
+            continue
+        if name.endswith(suffix_v):
+            base = name[: -len(suffix_v)]
+            g_name = base + suffix_g
+            if g_name not in encoder:
+                raise KeyError(f"missing weight-norm magnitude {g_name}")
+            converted[base + ".weight"] = fold_weight_norm(encoder[g_name], value).contiguous()
+            continue
+        converted[name] = value.contiguous()
+
+    return converted

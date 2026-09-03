@@ -18,6 +18,12 @@ from collections.abc import Mapping
 from typing import Any, Optional
 
 
+def is_audio_segment_finished(stage_output) -> bool:
+    """Whether a final-stage output closes one resumable audio segment."""
+    request_output = getattr(stage_output, "request_output", stage_output)
+    return bool(getattr(request_output, "is_segment_finished", False))
+
+
 def extract_audio_from_stage_output(stage_output) -> Optional[tuple[Any, int]]:
     """Return ``(waveform, sample_rate)`` from a final-stage output."""
     import torch

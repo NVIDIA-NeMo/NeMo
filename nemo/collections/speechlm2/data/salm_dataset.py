@@ -259,15 +259,14 @@ class SALMMultiSpeakerProcessor:
 
                 has_rttm = self._has_rttm_filepath(turn.cut)
                 cut = self._prepare_audio_turn_cut(turn)
-                speaker_activity = speaker_activity_from_cut(
-                    cut,
-                    num_speakers=cfg.num_speakers,
-                    num_sample_per_mel_frame=cfg.num_sample_per_mel_frame,
-                    num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
-                    no_rttm_to_ones=cfg.no_rttm_to_ones,
-                )
-
                 if not has_rttm:
+                    speaker_activity = speaker_activity_from_cut(
+                        cut,
+                        num_speakers=cfg.num_speakers,
+                        num_sample_per_mel_frame=cfg.num_sample_per_mel_frame,
+                        num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
+                        no_rttm_to_ones=cfg.no_rttm_to_ones,
+                    )
                     # Request inferred activity instead of the synthetic
                     # single-speaker fallback.  Skip SOT/RTTM column alignment:
                     # the sentinel replaces the whole target, and factorial
@@ -276,12 +275,22 @@ class SALMMultiSpeakerProcessor:
                 else:
                     text = self._audio_turn_text(turn, cut)
                     new_text, _, _ = ensure_single_speaker_sot(text)
-                    speaker_activity = fix_speaker_activity(
-                        new_text,
-                        speaker_activity,
-                        cfg.num_speakers,
-                        max_alignment_permutations=cfg.max_alignment_permutations,
+                    speaker_activity, is_permutation_resolved = speaker_activity_from_cut(
+                        cut,
+                        num_speakers=cfg.num_speakers,
+                        num_sample_per_mel_frame=cfg.num_sample_per_mel_frame,
+                        num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
+                        no_rttm_to_ones=cfg.no_rttm_to_ones,
+                        text=new_text,
+                        return_permutation_resolved=True,
                     )
+                    if not is_permutation_resolved:
+                        speaker_activity = fix_speaker_activity(
+                            new_text,
+                            speaker_activity,
+                            cfg.num_speakers,
+                            max_alignment_permutations=cfg.max_alignment_permutations,
+                        )
                 speaker_activities.append(speaker_activity)
         return speaker_activities
 

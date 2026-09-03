@@ -48,6 +48,7 @@ __all__ = [
     "dtw_cost_batch",
     "ensure_single_speaker_sot",
     "fix_speaker_activity",
+    "get_speaker_token_index_map",
     "get_text_speaker_char_counts",
     "has_speaker_tokens",
     "parse_speaker_tokens",
@@ -67,6 +68,30 @@ def has_speaker_tokens(text: Optional[str]) -> bool:
         bool: True if at least one ``<spk:N>`` speaker tag is present.
     """
     return bool(text and SPEAKER_TOKEN_PATTERN.search(text))
+
+
+def get_speaker_token_index_map(text: Optional[str], num_speakers: int) -> Optional[dict[str, int]]:
+    """Return canonical SOT speaker labels mapped to their target columns.
+
+    Args:
+        text (Optional[str]): SOT text containing ``<spk:N>`` speaker tags.
+        num_speakers (int): Number of available target speaker columns.
+
+    Returns:
+        Optional[dict[str, int]]: Unique exact token strings mapped to their numeric indices, or None when the text
+            has no speaker tokens or contains a non-canonical/out-of-range token.
+    """
+    if not text:
+        return None
+
+    speaker_to_idx = {}
+    for match in SPEAKER_TOKEN_PATTERN.finditer(text):
+        token = match.group(0)
+        speaker_idx = int(match.group(1))
+        if token != f"<spk:{speaker_idx}>" or speaker_idx >= num_speakers:
+            return None
+        speaker_to_idx[token] = speaker_idx
+    return speaker_to_idx or None
 
 
 def sl_to_wl_sot(text: str) -> str:
@@ -518,7 +543,9 @@ def speaker_activity_from_cut(
     num_mel_frame_per_target_frame: int,
     no_rttm_to_ones: bool = True,
     boundary_segments: bool = True,
-) -> torch.Tensor:
+    text: Optional[str] = None,
+    return_permutation_resolved: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, bool]:
     """Build frame-level speaker activity targets from a Lhotse cut.
 
     Args:
@@ -528,9 +555,13 @@ def speaker_activity_from_cut(
         num_mel_frame_per_target_frame (int): Mel frames per output target frame.
         no_rttm_to_ones (bool): If True, emit all-ones targets when no RTTM is present.
         boundary_segments (bool): If True, include boundary segments when building targets.
+        text (Optional[str]): SOT text used to derive an exact ``<spk:N>`` label-to-column mapping.
+        return_permutation_resolved (bool): If True, also return whether the RTTM labels exactly matched the text
+            speaker tokens and were placed directly in their numeric target columns.
 
     Returns:
-        torch.Tensor: Shape ``(T, num_speakers)`` frame-level speaker activity targets.
+        Union[torch.Tensor, tuple[torch.Tensor, bool]]: Shape ``(T, num_speakers)`` frame-level speaker activity
+            targets, optionally paired with the permutation-resolved detection status.
     """
     from nemo.collections.asr.parts.utils.asr_multispeaker_utils import speaker_to_target
 
@@ -541,6 +572,8 @@ def speaker_activity_from_cut(
         num_mel_frame_per_asr_frame=num_mel_frame_per_target_frame,
         boundary_segments=boundary_segments,
         no_rttm_to_ones=no_rttm_to_ones,
+        preferred_speaker_to_idx_map=get_speaker_token_index_map(text, num_speakers),
+        return_speaker_mapping_status=return_permutation_resolved,
     )
 
 

@@ -17,6 +17,7 @@ from itertools import permutations
 import numpy as np
 import pytest
 import torch
+from lhotse.testing.dummies import dummy_cut, dummy_recording
 
 import nemo.collections.asr.parts.utils.sot_speaker_alignment as sot_alignment
 from nemo.collections.asr.parts.utils.asr_multispeaker_utils import get_hidden_length_from_sample_length
@@ -52,6 +53,91 @@ def test_ensure_single_speaker_sot_keeps_existing_tokens():
     assert text == "<spk:2> hello"
     assert spk_idx == -1
     assert not changed
+
+
+@pytest.mark.unit
+def test_get_speaker_token_index_map_requires_canonical_in_range_tokens():
+    assert sot_alignment.get_speaker_token_index_map("<spk:1> one <spk:0> zero <spk:1> again", 2) == {
+        "<spk:1>": 1,
+        "<spk:0>": 0,
+    }
+    assert sot_alignment.get_speaker_token_index_map("<spk:01> one", 2) is None
+    assert sot_alignment.get_speaker_token_index_map("<spk:2> two", 2) is None
+
+
+@pytest.mark.unit
+def test_speaker_activity_from_cut_uses_exact_pr_rttm_labels(tmp_path):
+    cut = dummy_cut(0, duration=0.04, recording=dummy_recording(0, duration=0.04, with_data=True))
+    rttm_path = tmp_path / "permutation_resolved.rttm"
+    rttm_path.write_text(
+        "\n".join(
+            [
+                f"SPEAKER {cut.recording_id} 0 0.000 0.020 <NA> <NA> <spk:1> <NA> <NA>",
+                f"SPEAKER {cut.recording_id} 0 0.020 0.020 <NA> <NA> <spk:0> <NA> <NA>",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cut.custom = {"rttm_filepath": str(rttm_path)}
+    kwargs = {
+        "num_speakers": 2,
+        "num_sample_per_mel_frame": 160,
+        "num_mel_frame_per_target_frame": 1,
+    }
+
+    arrival_order_activity = sot_alignment.speaker_activity_from_cut(cut, **kwargs)
+    resolved_activity, is_permutation_resolved = sot_alignment.speaker_activity_from_cut(
+        cut,
+        text="<spk:0> zero <spk:1> one",
+        return_permutation_resolved=True,
+        **kwargs,
+    )
+
+    assert is_permutation_resolved
+    assert torch.equal(resolved_activity, arrival_order_activity[:, [1, 0]])
+
+    incomplete_activity, is_permutation_resolved = sot_alignment.speaker_activity_from_cut(
+        cut,
+        text="<spk:0> zero only",
+        return_permutation_resolved=True,
+        **kwargs,
+    )
+    assert not is_permutation_resolved
+    assert torch.equal(incomplete_activity, arrival_order_activity)
+
+
+@pytest.mark.unit
+def test_speaker_activity_from_cut_keeps_legacy_mapping_when_labels_do_not_match(tmp_path):
+    cut = dummy_cut(0, duration=0.04, recording=dummy_recording(0, duration=0.04, with_data=True))
+    rttm_path = tmp_path / "legacy.rttm"
+    rttm_path.write_text(
+        "\n".join(
+            [
+                f"SPEAKER {cut.recording_id} 0 0.000 0.020 <NA> <NA> speaker_b <NA> <NA>",
+                f"SPEAKER {cut.recording_id} 0 0.020 0.020 <NA> <NA> speaker_a <NA> <NA>",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cut.custom = {"rttm_filepath": str(rttm_path)}
+    kwargs = {
+        "num_speakers": 2,
+        "num_sample_per_mel_frame": 160,
+        "num_mel_frame_per_target_frame": 1,
+    }
+
+    legacy_activity = sot_alignment.speaker_activity_from_cut(cut, **kwargs)
+    detected_activity, is_permutation_resolved = sot_alignment.speaker_activity_from_cut(
+        cut,
+        text="<spk:0> zero <spk:1> one",
+        return_permutation_resolved=True,
+        **kwargs,
+    )
+
+    assert not is_permutation_resolved
+    assert torch.equal(detected_activity, legacy_activity)
 
 
 @pytest.mark.unit

@@ -1,7 +1,7 @@
 # Source: https://github.com/tartley/colorama/blob/master/colorama/ansi.py
 # Copyright: Jonathan Hartley 2013. BSD 3-Clause license.
 #
-# Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");

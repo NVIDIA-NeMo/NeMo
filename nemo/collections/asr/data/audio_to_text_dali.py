@@ -17,7 +17,7 @@ import operator
 import os.path
 import time
 from collections.abc import Iterator
-from typing import Callable, List, Optional, Union
+from typing import Any, Callable, List, Optional, Union
 
 import torch
 from omegaconf import DictConfig
@@ -246,28 +246,8 @@ class _AudioTextDALIDataset(Iterator):
                     f" It must be either 'per_feature' or 'all_features'."
                 )
 
-            self.window = None
             window_name = params['window'] if 'window' in params else 'hann'
-            torch_windows = {
-                'hann': torch.hann_window,
-                'hamming': torch.hamming_window,
-                'blackman': torch.blackman_window,
-                'bartlett': torch.bartlett_window,
-                'none': None,
-            }
-
-            if window_name == 'ones':
-                window_tensor = torch.ones(self.window_size)
-            else:
-                try:
-                    window_fn = torch_windows.get(window_name, None)
-                except:
-                    raise ValueError(
-                        f"{self} received '{window_name}' for the window parameter."
-                        f" It must be one of: ('hann', 'ones', 'hamming', 'blackman', 'bartlett', None)."
-                        f" None is equivalent to 'hann'."
-                    )
-                window_tensor = window_fn(self.window_size, periodic=False) if window_fn else None
+            window_tensor = _resolve_window_tensor(window_name, self.window_size, context=self)
             self.window = window_tensor.numpy().tolist() if window_tensor is not None else None
 
             self.n_fft = params['n_fft'] if 'n_fft' in params else 2 ** math.ceil(math.log2(self.window_size))
@@ -775,3 +755,49 @@ class AudioToBPEDALIDataset(_AudioTextDALIDataset):
             preprocessor_cfg=preprocessor_cfg,
             return_sample_id=return_sample_id,
         )
+
+
+def _resolve_window_tensor(
+    window_name: Optional[str], window_size: int, context: Optional[Any] = None
+) -> Optional[torch.Tensor]:
+    """
+    Resolves a preprocessor's `window` configuration value into the window tensor passed to DALI.
+
+    Args:
+        window_name: Name of the window function. One of: 'hann', 'ones', 'hamming', 'blackman',
+            'bartlett', 'none' or None.
+        window_size: Length of the window, in samples.
+        context: Optional object prepended to the error message, so that the raised `ValueError`
+            identifies the dataset that received the bad configuration, like the other
+            configuration errors raised in `_AudioTextDALIDataset.__init__`.
+
+    Returns:
+        The window tensor, or None if no explicit window should be passed to DALI. DALI applies
+        a Hann window by default, so 'none' and None are equivalent to 'hann'.
+
+    Raises:
+        ValueError: If `window_name` is not one of the supported window names.
+    """
+    torch_windows = {
+        'hann': torch.hann_window,
+        'hamming': torch.hamming_window,
+        'blackman': torch.blackman_window,
+        'bartlett': torch.bartlett_window,
+        'none': None,
+    }
+
+    if window_name == 'ones':
+        return torch.ones(window_size)
+
+    # `not isinstance(..., str)` is checked first so that an unhashable value (e.g. a list from a
+    # malformed config) reports the same error instead of a bare `TypeError` from the lookup.
+    if window_name is not None and (not isinstance(window_name, str) or window_name not in torch_windows):
+        prefix = f"{context} received" if context is not None else "Received"
+        raise ValueError(
+            f"{prefix} '{window_name}' for the window parameter."
+            f" It must be one of: ('hann', 'ones', 'hamming', 'blackman', 'bartlett', 'none', None)."
+            f" 'none' and None are equivalent to 'hann', since DALI applies a Hann window by default."
+        )
+
+    window_fn = torch_windows.get(window_name, None)
+    return window_fn(window_size, periodic=False) if window_fn is not None else None

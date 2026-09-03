@@ -37,6 +37,7 @@ from nemo.collections.asr.data.audio_to_text_dali import (
     __DALI_MINIMUM_VERSION__,
     AudioToBPEDALIDataset,
     AudioToCharDALIDataset,
+    _resolve_window_tensor,
     is_dali_supported,
 )
 from nemo.collections.asr.data.audio_to_text_dataset import inject_dataloader_value_from_model_config
@@ -613,6 +614,54 @@ class TestASRDatasets:
                 err = np.abs(a - b)
                 assert np.mean(err) < 0.0001
                 assert np.max(err) < 0.01
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('window_name', ['hanning', 'Hann', 'blackmanharris', 'not_a_window', ''])
+    def test_dali_window_validation_rejects_unknown_name(self, window_name):
+        # Unknown window names used to fall through to `window_fn=None`, silently making DALI
+        # substitute its own default Hann window instead of raising.
+        with pytest.raises(ValueError, match=f"Received '{window_name}' for the window parameter"):
+            _resolve_window_tensor(window_name, window_size=320)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('window_name', [5, ['hann'], {'window': 'hann'}])
+    def test_dali_window_validation_rejects_non_string(self, window_name):
+        # Unhashable values must not escape as a bare TypeError from the dict lookup.
+        with pytest.raises(ValueError, match="for the window parameter"):
+            _resolve_window_tensor(window_name, window_size=320)
+
+    @pytest.mark.unit
+    def test_dali_window_validation_error_reports_context(self):
+        # The dataset passes itself as the context, so the message keeps the same
+        # "<dataset> received ..." prefix as the other config errors raised in __init__.
+        with pytest.raises(ValueError, match="a-dali-dataset received 'hanning' for the window parameter"):
+            _resolve_window_tensor('hanning', window_size=320, context='a-dali-dataset')
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        'window_name,expected_fn',
+        [
+            ('hann', torch.hann_window),
+            ('hamming', torch.hamming_window),
+            ('blackman', torch.blackman_window),
+            ('bartlett', torch.bartlett_window),
+        ],
+    )
+    def test_dali_window_resolution_known_names(self, window_name, expected_fn):
+        window_size = 320
+        window_tensor = _resolve_window_tensor(window_name, window_size)
+        assert torch.allclose(window_tensor, expected_fn(window_size, periodic=False))
+
+    @pytest.mark.unit
+    def test_dali_window_resolution_ones(self):
+        window_size = 320
+        assert torch.allclose(_resolve_window_tensor('ones', window_size), torch.ones(window_size))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('window_name', ['none', None])
+    def test_dali_window_resolution_no_window(self, window_name):
+        # 'none' (and None) means no window is passed to DALI, which then applies its default.
+        assert _resolve_window_tensor(window_name, window_size=320) is None
 
     @pytest.mark.unit
     def test_feature_to_text_char_dataset(self):

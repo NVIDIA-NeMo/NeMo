@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -98,9 +99,14 @@ class SALMDataset(torch.utils.data.Dataset):
         # Setting USE_AIS_GET_BATCH=true makes the loader issue a single AIStore GetBatch
         # call per minibatch, paired with URL-backed cuts produced by the multimodal
         # conversation adapters (NeMoMultimodalConversation{Jsonl,ShareGPTJsonl}Adapter).
+        # USE_AIS_INDIVIDUAL_GETS=true (only meaningful when USE_AIS_GET_BATCH=true) forces
+        # the underlying AISBatchLoader to skip MOSS GetBatch and issue one
+        # ``Object.get_reader().read_all()`` per object — useful when the deployment
+        # doesn't support GetBatch or its performance is degraded.
         self.load_audio = AudioSamples(
             fault_tolerant=True,
             use_batch_loader=os.environ.get("USE_AIS_GET_BATCH", "False").lower() == "true",
+            ais_force_individual=os.environ.get("USE_AIS_INDIVIDUAL_GETS", "False").lower() == "true",
             mono_downmix=True,
         )
         self.multispeaker_cfg = MultiSpeakerConfig.from_dict(multispeaker_cfg)

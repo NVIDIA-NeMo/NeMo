@@ -1,4 +1,5 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -98,6 +99,26 @@ def test_sb_sampler_sde_clamps_negative_tmp_before_sqrt():
     assert sample_length is None
     assert torch.isfinite(sample).all()
     torch.testing.assert_close(sample, expected)
+
+
+@pytest.mark.parametrize("noise_schedule_type", ["ve", "vp"])
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")),
+    ],
+)
+def test_sb_noise_schedule_max_properties(noise_schedule_type, device):
+    if noise_schedule_type == "ve":
+        noise_schedule = SBNoiseScheduleVE(k=2.0, c=0.5)
+    else:
+        noise_schedule = SBNoiseScheduleVP(beta_0=0.1, beta_1=1.0, c=0.5)
+
+    noise_schedule = noise_schedule.to(device)
+    time_max = torch.tensor([noise_schedule.time_max], device=device)
+    torch.testing.assert_close(noise_schedule.alpha_t_max, noise_schedule.alpha(time_max))
+    torch.testing.assert_close(noise_schedule.sigma_t_max, noise_schedule.sigma(time_max))
 
 
 @pytest.mark.parametrize("num_steps", NUM_STEPS)

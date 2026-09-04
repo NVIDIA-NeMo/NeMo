@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2020, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,7 +42,6 @@ autodoc_mock_imports = [
     'torch.utils.data',
     'torch.utils.data.sampler',
     'torchtext',
-    'torchvision',
     'hydra',  # hydra-core in requirements, hydra during import
     'transformers.tokenization_bert',  # has ., troublesome for this regex
     'sklearn',  # scikit_learn in requirements, sklearn in import
@@ -245,7 +245,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/NVIDIA-NeMo/NeMo",
+            "url": "https://github.com/NVIDIA-NeMo/Speech",
             "icon": "fa-brands fa-github",
         }
     ],

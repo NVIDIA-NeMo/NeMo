@@ -1,4 +1,5 @@
-# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +15,11 @@
 
 import pytest
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy
-from nemo_automodel.components.distributed.config import FSDP2Config
-from nemo_automodel.components.moe.config import MoEParallelizerConfig
+from nemo_automodel.components.distributed.config import FSDP2Config, MoEParallelizerConfig
 from omegaconf import DictConfig
 
 from nemo.collections.speechlm2.parts.parallel import AutomodelParallelStrategy
 from nemo.utils.trainer_utils import _resolve_automodel_configs, resolve_trainer_cfg
-
 
 # ---------------------------------------------------------------------------
 # AutomodelParallelStrategy

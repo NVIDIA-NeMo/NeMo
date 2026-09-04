@@ -1,5 +1,6 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2021, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 # Copyright 2015 and onwards Google, Inc.
+# SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -758,9 +759,10 @@ class SaveRestoreConnector:
 
         """
         try:
-            return torch.load(model_weights, map_location=map_location, weights_only=True)
+            # Use torch's default weights_only handling so TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD is honored.
+            return torch.load(model_weights, map_location=map_location)
         except Exception as e:
-            logging.error(f"Failed to load checkpoint with weights_only=True: {e}")
+            logging.error(f"Failed to load checkpoint: {e}")
             raise e
 
     @property

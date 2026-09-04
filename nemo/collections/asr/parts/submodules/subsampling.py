@@ -49,6 +49,15 @@ class FeatureStacking(nn.Module):
     def compute_num_out_frames(self, in_frames):
         return (in_frames + self.subsampling_factor - 1) // self.subsampling_factor
 
+    def get_sampling_frames(self):
+        """Input frames consumed per output frame — probed by the cache-aware streaming utils."""
+        return self.subsampling_factor
+
+    def get_streaming_cache_size(self):
+        """Input-frame look-back needed to reproduce the offline output. Stacking is
+        non-overlapping, so a chunk aligned to ``subsampling_factor`` needs none."""
+        return 0
+
     def forward(self, x, lengths):
         """
         Args:

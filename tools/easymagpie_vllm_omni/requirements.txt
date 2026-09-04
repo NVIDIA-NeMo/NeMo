@@ -1,18 +1,7 @@
 # Runtime dependencies used by EasyMagpie or the speech-serving endpoint.
-audioread==3.0.1
-decorator==5.2.1
-joblib==1.5.1
-lazy-loader==0.4
-librosa==0.11.0
 numpy>=1.26
-pooch==1.8.2
 PyYAML>=6.0
-resemble-perth==1.0.1
 safetensors>=0.8.0
-scikit-learn==1.7.1
-soxr==0.5.0.post1
-threadpoolctl==3.6.0
-torchaudio
 soundfile>=0.13.1
 tokenizers
 transformers>=5.5.3

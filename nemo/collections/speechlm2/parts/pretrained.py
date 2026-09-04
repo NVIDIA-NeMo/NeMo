@@ -23,11 +23,7 @@ from safetensors.torch import load_file
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.asr.models import ASRModel
-from nemo.collections.asr.modules.parallel_expert_encoder_resolver import (
-    classify_parallel_expert_encoder_config,
-    read_parallel_expert_encoder_bundle_config,
-    resolve_parallel_expert_encoder_pt,
-)
+from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
 from nemo.collections.speechlm2.modules import AudioPerceptionModule
 from nemo.collections.speechlm2.parts.precision import fp32_precision
 from nemo.collections.tts.models import AudioCodecModel
@@ -334,11 +330,6 @@ def setup_speech_encoder(model: torch.nn.Module, pretrained_weights: bool = True
         setup_parallel_expert_encoder(model)
 
 
-def _resolve_parallel_expert_encoder_class(model_path_or_name: str, *, architecture: str | None = None):
-    """Resolve a PEE loader by bundle schema while preserving remote defaults."""
-    return resolve_parallel_expert_encoder_pt(model_path_or_name, architecture=architecture)
-
-
 def setup_parallel_expert_encoder(model: torch.nn.Module):
     """Mount the external perception encoder from ``model.pe_encoder_path``.
 
@@ -372,10 +363,7 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
             "feature extractors) need a separate implementation."
         )
 
-    encoder_class = _resolve_parallel_expert_encoder_class(
-        pe_encoder_path, architecture=model.cfg.get("pe_encoder_type", None)
-    )
-    pe_encoder = encoder_class.load_from_nemo(
+    pe_encoder = ParallelExpertEncoderPT.load_from_nemo(
         pe_encoder_path,
         map_location="cpu",
         strict=True,
@@ -444,48 +432,22 @@ def setup_parallel_expert_encoder(model: torch.nn.Module):
         pass
 
     model.perception.encoder = pe_encoder
-    encoder_kind = getattr(pe_encoder, "parallel_expert_encoder_kind", None)
-    if encoder_kind == "two_branch":
-        # Disable the historical automatic eval-time streaming only while mounted
-        # in SALM; generation re-enables it through the explicit context manager.
-        if getattr(pe_encoder, "online_inference_enabled", None) is None:
-            pe_encoder.online_inference_enabled = False
-        logging.info(
-            "Mounted two-branch ParallelExpertEncoder from %s "
-            "(d_model=%d, n_spk=%d, frozen: asr=%s diar=%s, spk_kernel_scale=%g); "
-            "perception preprocessor normalization disabled (was %r).",
-            pe_encoder_path,
-            int(pe_encoder.d_model),
-            int(pe_encoder.n_spk),
-            bool(pe_encoder.freeze_asr),
-            bool(pe_encoder.freeze_diar),
-            float(getattr(pe_encoder, "spk_kernel_scale", 1.0)),
-            prev_normalize,
-        )
-    elif encoder_kind == "ggemm":
-        if pe_encoder.merge_sound_expert_to_asr:
-            sound_route = "encoder states"
-        else:
-            sound_route = f"{int(pe_encoder.n_sound_events)} CTC event tags"
-            if int(pe_encoder.n_sound_styles):
-                sound_route += f" + {int(pe_encoder.n_sound_styles)} style tags"
-        logging.info(
-            "Mounted GGEMM ParallelExpertEncoder from %s "
-            "(d_model=%d, n_spk=%d, frozen: speech=%s speaker=%s sound=%s, "
-            "sound->ASR via %s, spk_kernel_scale=%g); "
-            "perception preprocessor normalization disabled (was %r).",
-            pe_encoder_path,
-            int(pe_encoder.d_model),
-            int(pe_encoder.n_spk),
-            bool(pe_encoder.freeze_speech),
-            bool(pe_encoder.freeze_speaker),
-            bool(pe_encoder.freeze_sound),
-            sound_route,
-            float(pe_encoder.spk_kernel_scale),
-            prev_normalize,
-        )
-    else:
-        raise TypeError(f"Unsupported ParallelExpertEncoder implementation: {type(pe_encoder).__name__}")
+    # Disable historical automatic eval-time streaming while mounted in SALM;
+    # generation re-enables it through the explicit context manager.
+    if getattr(pe_encoder, "online_inference_enabled", None) is None:
+        pe_encoder.online_inference_enabled = False
+    logging.info(
+        "Mounted ParallelExpertEncoder from %s "
+        "(d_model=%d, n_spk=%d, frozen: asr=%s diar=%s, spk_kernel_scale=%g); "
+        "perception preprocessor normalization disabled (was %r).",
+        pe_encoder_path,
+        int(pe_encoder.d_model),
+        int(pe_encoder.n_spk),
+        bool(pe_encoder.freeze_asr),
+        bool(pe_encoder.freeze_diar),
+        float(getattr(pe_encoder, "spk_kernel_scale", 1.0)),
+        prev_normalize,
+    )
 
 
 def set_model_dict_for_partial_init(
@@ -765,12 +727,7 @@ def init_from_training_checkpoint(model: torch.nn.Module, checkpoint_path: str):
     logging.info(f"Initializing model weights from training checkpoint: {checkpoint_path}")
 
     if isinstance(checkpoint_path, str) and checkpoint_path.endswith(".nemo") and Path(checkpoint_path).is_file():
-        try:
-            bundle_cfg = read_parallel_expert_encoder_bundle_config(checkpoint_path)
-            classify_parallel_expert_encoder_config(bundle_cfg)
-        except ValueError:
-            pass
-        else:
+        if ParallelExpertEncoderPT.is_pe_nemo(checkpoint_path):
             raise ValueError(
                 f"init_from_checkpoint={checkpoint_path!r} points to a ParallelExpertEncoderPT bundle. "
                 "Use model.pe_encoder_path for PE encoder bundles."

@@ -409,7 +409,8 @@ def get_mask_from_segments(
         segments: A list of Lhotse Supervision segments iterator.
         cut (MonoCut, MixedCut): Lhotse MonoCut or MixedCut instance.
         speaker_to_idx_map (dict): A dictionary mapping speaker names to indices.
-        num_speakers (int): max number of speakers for all cuts ("mask" dim0), 4 by default
+        num_speakers (int): Optional maximum number of speakers for all cuts ("mask" dim0).
+            A cut with more speakers is rejected rather than truncated.
         feat_per_sec (int): number of frames per second, 100 by default, 0.01s frame rate
 
     Returns:
@@ -635,14 +636,11 @@ def speaker_to_target(
         num_speakers_dim = len(speaker_ats)
     else:
         if len(speaker_ats) > num_speakers:
-            logging.warning(
-                "Number of speakers in the target %s is greater than "
-                "the maximum number of speakers %s. Truncating extra speakers. "
-                "Set the `num_speakers` to higher value to avoid this warning.",
-                len(speaker_ats),
-                num_speakers,
+            raise ValueError(
+                f"Speaker target contains {len(speaker_ats)} speakers, but num_speakers={num_speakers}. "
+                "Increase num_speakers instead of dropping speaker supervision."
             )
-        num_speakers_dim = max(len(speaker_ats), num_speakers)
+        num_speakers_dim = num_speakers
 
     speaker_to_idx_map = {spk: idx for idx, spk in enumerate(speaker_ats)}
     used_preferred_speaker_mapping = False

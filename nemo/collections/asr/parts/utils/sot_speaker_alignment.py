@@ -593,7 +593,8 @@ def collate_speaker_activity_targets(
         audio_lens (torch.Tensor): Shape ``(B,)`` per-example audio sample lengths.
             Retained for API compatibility; target lengths are taken from the
             generated activity tensors themselves.
-        num_speakers (int): Number of speaker columns to pad/truncate the targets to.
+        num_speakers (int): Number of speaker columns to pad the targets to. Inputs with
+            more columns are rejected to avoid silently discarding speaker supervision.
         num_sample_per_mel_frame (int): Audio samples per mel frame.
         num_mel_frame_per_target_frame (int): Mel frames per output target frame.
         dtype (torch.dtype): Output dtype for the collated targets.
@@ -606,16 +607,19 @@ def collate_speaker_activity_targets(
 
     # `collate_matrices` pads the time axis (dim 0) to the batch max but requires a
     # uniform speaker axis (dim 1). `speaker_to_target` emits one column per speaker
-    # found in each cut's RTTM -- e.g. a 5-speaker cut yields (T, 5) even when
-    # `num_speakers=4` -- so a batch mixing different speaker counts crashes inside
-    # `collate_matrices`. Normalize every per-example target to exactly `num_speakers`
-    # columns (truncate extras / zero-pad missing) BEFORE collating; this is what the
-    # original post-collate clamp intended, just moved ahead of the collate.
+    # found in each cut's RTTM, so a batch mixing different speaker counts crashes
+    # inside `collate_matrices`. Normalize every per-example target to exactly
+    # `num_speakers` columns before collating. Never truncate here: that would silently
+    # turn an 8-speaker PR-RTTM example into 4-speaker supervision when a recipe forgot
+    # to override the historical default.
     normalized = []
     for activity in speaker_activities:
         n_spk = activity.shape[1]
         if n_spk > num_speakers:
-            activity = activity[:, :num_speakers]
+            raise ValueError(
+                f"Speaker activity has {n_spk} columns, but multispeaker_cfg.num_speakers={num_speakers}. "
+                "Increase num_speakers instead of dropping speaker supervision."
+            )
         elif n_spk < num_speakers:
             activity = torch.nn.functional.pad(activity, (0, num_speakers - n_spk), mode="constant", value=0.0)
         normalized.append(activity)

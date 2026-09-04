@@ -61,6 +61,7 @@ class SALMDataset(torch.utils.data.Dataset):
             training step.
         multispeaker_cfg (dict | None):
             Optional Serialized Output Training (SOT) speaker-activity settings.
+            ``num_speakers`` is required when this mapping is provided.
             When provided, each batch additionally includes RTTM-derived
             ``spk_targets`` / ``spk_target_length``. Rows without an explicit
             RTTM path contain the reserved value ``-1`` so the perception encoder
@@ -193,7 +194,7 @@ def default_multimodal_conversation_prompt_format_fn(
 class MultiSpeakerConfig:
     """Configuration for auxiliary multi-speaker SOT targets."""
 
-    num_speakers: int = 4
+    num_speakers: int
     no_rttm_to_ones: bool = True
     num_sample_per_mel_frame: int = 160
     num_mel_frame_per_target_frame: int = 8
@@ -204,9 +205,16 @@ class MultiSpeakerConfig:
         """Build a config from a raw settings dict, or return ``None`` when no SOT settings are given."""
         if cfg is None:
             return None
+        if 'num_speakers' not in cfg:
+            raise ValueError(
+                "multispeaker_cfg.num_speakers must be set explicitly; there is no implicit 4-speaker cap."
+            )
+        num_speakers = int(cfg['num_speakers'])
+        if num_speakers <= 0:
+            raise ValueError(f"multispeaker_cfg.num_speakers must be positive, got {num_speakers}.")
         max_alignment_permutations = cfg.get('max_alignment_permutations', 720)
         return MultiSpeakerConfig(
-            num_speakers=int(cfg.get('num_speakers', 4)),
+            num_speakers=num_speakers,
             no_rttm_to_ones=cfg.get('no_rttm_to_ones', True),
             num_sample_per_mel_frame=int(cfg.get('window_stride', 0.01) * cfg.get('sample_rate', 16000)),
             num_mel_frame_per_target_frame=int(cfg.get('subsampling_factor', 8)),

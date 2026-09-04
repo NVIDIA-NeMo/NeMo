@@ -35,6 +35,12 @@ def stub_audio_samples(monkeypatch):
 
 
 @pytest.mark.unit
+def test_multispeaker_config_requires_explicit_speaker_count():
+    with pytest.raises(ValueError, match="no implicit 4-speaker cap"):
+        salm_dataset_module.MultiSpeakerConfig.from_dict({})
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("rttm_filepath", "expected_targets"),
     [
@@ -178,6 +184,59 @@ def test_salm_dataset_skips_legacy_alignment_for_pr_rttm(monkeypatch):
     batch = dataset[conversations]
 
     assert torch.equal(batch["spk_targets"], resolved_activity.unsqueeze(0))
+
+
+@pytest.mark.unit
+def test_salm_dataset_preserves_all_eight_pr_rttm_speakers(monkeypatch):
+    text = " ".join(f"<spk:{speaker}> utterance-{speaker}" for speaker in range(8))
+    cut = dummy_cut(0, duration=0.08, recording=dummy_recording(0, duration=0.08, with_data=True))
+    cut.custom = {"rttm_filepath": "/fake/pr-8speaker.rttm"}
+    cut.supervisions = [
+        SupervisionSegment(id=cut.id, recording_id=cut.recording_id, start=0.0, duration=0.08, text=text)
+    ]
+    conversation = NeMoMultimodalConversation(
+        id="eight-speaker-example",
+        turns=[
+            AudioTurn(role="user", cut=cut, audio_locator_tag="<|audio|>", text=text),
+            TextTurn(role="assistant", value=text),
+        ],
+        token_equivalent_duration=0.01,
+    )
+    conversation.input_ids = torch.tensor([7, 8, 9], dtype=torch.long)
+    conversation.mask = torch.tensor([False, True, True])
+    conversations = CutSet([conversation])
+    resolved_activity = torch.eye(8)
+
+    def fake_audio_collate(conversations, *args, **kwargs):
+        return torch.zeros(1, 1280), torch.tensor([1280], dtype=torch.long), conversations
+
+    def fake_speaker_activity_from_cut(cut, **kwargs):
+        assert kwargs["num_speakers"] == 8
+        assert kwargs["text"] == text
+        assert kwargs["return_permutation_resolved"]
+        return resolved_activity, True
+
+    def unexpected_fix_speaker_activity(*args, **kwargs):
+        raise AssertionError("Permutation-resolved 8-speaker PR-RTTM targets must not be realigned")
+
+    monkeypatch.setattr(salm_dataset_module, "collate_conversation_audio_fault_tolerant", fake_audio_collate)
+    monkeypatch.setattr(salm_dataset_module, "speaker_activity_from_cut", fake_speaker_activity_from_cut)
+    monkeypatch.setattr(salm_dataset_module, "fix_speaker_activity", unexpected_fix_speaker_activity)
+
+    dataset = salm_dataset_module.SALMDataset(
+        tokenizer=_Tokenizer(),
+        multispeaker_cfg={
+            "num_speakers": 8,
+            "sample_rate": 16000,
+            "window_stride": 0.01,
+            "subsampling_factor": 1,
+        },
+    )
+    batch = dataset[conversations]
+
+    assert batch["spk_targets"].shape == (1, 8, 8)
+    assert torch.equal(batch["spk_targets"], resolved_activity.unsqueeze(0))
+    assert batch["spk_target_length"].tolist() == [8]
 
 
 @pytest.mark.unit

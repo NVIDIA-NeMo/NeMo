@@ -21,9 +21,8 @@ a sinusoidal speaker kernel. The encoder expects unnormalized mels; the ASR and
 Sortformer branches independently reapply ``normalize_batch`` internally. I/O
 matches :class:`ConformerEncoder`.
 
-Only self-contained two-branch bundles with inline ``asr_encoder_cfg`` and
-``diarization_model_cfg`` sections are supported. Legacy speech/speaker/sound
-GGEMM bundles are intentionally rejected.
+Only self-contained bundles with inline ``asr_encoder_cfg`` and
+``diarization_model_cfg`` sections are supported.
 """
 
 from __future__ import annotations
@@ -57,15 +56,6 @@ __all__ = [
     "ParallelExpertEncoderPT",
 ]
 
-_LEGACY_CONFIG_KEYS = frozenset(
-    {
-        "speech_expert_cfg",
-        "speaker_expert_cfg",
-        "sound_expert_cfg",
-        "sortformer_modules_cfg",
-        "sound_ctc_head_cfg",
-    }
-)
 _ASR_ENCODER_TYPES = {
     "fastconformer": ConformerEncoder,
     "transformer": TransformerEncoder,
@@ -76,7 +66,6 @@ _SPEAKER_FEATURE_MODE_THRESHOLD = "thresholded"
 _SPEAKER_FEATURE_MODES = frozenset({_SPEAKER_FEATURE_MODE_CONTINUOUS, _SPEAKER_FEATURE_MODE_THRESHOLD})
 _BUNDLE_CONFIG_OVERRIDE_KEYS = frozenset(
     {
-        "align_diarization_output_resolution",
         "asr_normalize_type",
         "diar_normalize_type",
         "missing_rttm_target",
@@ -138,17 +127,7 @@ def _normalize_speaker_feature_contract(
 
 
 def _resolve_speaker_feature_contract(cfg: DictConfig) -> tuple[str, Optional[float]]:
-    """Resolve old bundle configs once, then emit the versioned contract.
-
-    The legacy portable ``parallel_expert_encoder_two_branch`` implementation
-    had one known default: thresholded activity at 0.5. Canonical unversioned
-    bundles are ambiguous because real training lineages used both thresholded
-    and continuous activity with identical saved metadata, so they fail closed.
-
-    New configs must carry ``speaker_feature_mode`` explicitly. The portable
-    target compatibility check is isolated here and is never used after the
-    config has been normalized.
-    """
+    """Resolve the versioned speaker-feature contract and fail closed when ambiguous."""
     config_version = cfg.get("speaker_feature_config_version", None)
     speaker_feature_mode = cfg.get("speaker_feature_mode", None)
     has_threshold = "speaker_activity_threshold" in cfg
@@ -165,14 +144,6 @@ def _resolve_speaker_feature_contract(cfg: DictConfig) -> tuple[str, Optional[fl
         raise ValueError("speaker_feature_config_version requires an explicit speaker_feature_mode.")
     if has_threshold:
         return _normalize_speaker_feature_contract(None, speaker_activity_threshold)
-
-    target = str(cfg.get("target", ""))
-    if "parallel_expert_encoder_two_branch" in target:
-        logging.warning(
-            "[ParallelExpertEncoder] Migrating legacy portable two-branch bundle "
-            "without a speaker-feature contract to thresholded activity at 0.5."
-        )
-        return _SPEAKER_FEATURE_MODE_THRESHOLD, 0.5
 
     raise ValueError(
         "Unversioned canonical ParallelExpertEncoder bundle has no speaker-feature contract. "
@@ -271,7 +242,7 @@ def _read_bundle_members(nemo_path: str) -> tuple[DictConfig, dict[str, torch.Te
 
 @experimental
 class ParallelExpertEncoderPT(ModelPT):
-    """ModelPT shell for saving and restoring a two-branch PE ``.nemo`` archive."""
+    """ModelPT shell for saving and restoring a PE ``.nemo`` archive."""
 
     def __init__(self, cfg: DictConfig, trainer: Optional[Trainer] = None):
         self._validate_bundle_schema(cfg)
@@ -296,10 +267,6 @@ class ParallelExpertEncoderPT(ModelPT):
             speaker_activity_threshold=speaker_activity_threshold,
             spk_kernel_scale=self._cfg.get("spk_kernel_scale", 1.0),
             sync_max_audio_length=self._cfg.get("sync_max_audio_length", False),
-            align_diarization_output_resolution=self._cfg.get(
-                "align_diarization_output_resolution",
-                "parallel_expert_encoder_two_branch" in str(self._cfg.get("target", "")),
-            ),
         )
         # Keep the architecture-only bundle config beside the inner module.
         # SpeechLM HF export embeds this small config in config.json so the
@@ -314,24 +281,10 @@ class ParallelExpertEncoderPT(ModelPT):
 
     @staticmethod
     def _validate_bundle_schema(cfg: DictConfig) -> None:
-        """Require the main_nemo two-branch schema and reject legacy bundles."""
-        legacy_keys = sorted(key for key in _LEGACY_CONFIG_KEYS if cfg.get(key, None) not in (None, {}, ""))
-        has_two_branch = all(
-            cfg.get(key, None) not in (None, {}, "") for key in ("asr_encoder_cfg", "diarization_model_cfg")
-        )
-        if legacy_keys and has_two_branch:
-            raise ValueError("ParallelExpertEncoder config ambiguously contains both two-branch and GGEMM schemas.")
-        if legacy_keys:
-            raise ValueError(
-                "Legacy three-expert ParallelExpertEncoder bundles are not supported; "
-                f"found legacy config sections {legacy_keys}. Export a two-branch bundle with "
-                "asr_encoder_cfg and diarization_model_cfg."
-            )
+        """Require the self-contained ParallelExpertEncoder bundle schema."""
         missing = [key for key in ("asr_encoder_cfg", "diarization_model_cfg") if cfg.get(key, None) in (None, {}, "")]
         if missing:
-            raise ValueError(
-                "ParallelExpertEncoder requires the self-contained two-branch bundle schema; " f"missing {missing}."
-            )
+            raise ValueError(f"ParallelExpertEncoder bundle is missing required config sections {missing}.")
         _normalize_asr_encoder_type(cfg.get("asr_encoder_type", "fastconformer"))
 
     @classmethod
@@ -346,7 +299,7 @@ class ParallelExpertEncoderPT(ModelPT):
 
     @classmethod
     def is_pe_nemo(cls, nemo_path: str) -> bool:
-        """Return whether a local archive contains the two-branch PE schema."""
+        """Return whether a local archive declares a ParallelExpertEncoderPT target."""
         if not (isinstance(nemo_path, str) and nemo_path.endswith(".nemo") and os.path.isfile(nemo_path)):
             return False
         try:
@@ -377,7 +330,7 @@ class ParallelExpertEncoderPT(ModelPT):
         strict: bool = True,
         config_overrides: Optional[Mapping[str, Any]] = None,
     ) -> ParallelExpertEncoder:
-        """Load a two-branch PE bundle and return its inner encoder.
+        """Load a PE bundle and return its inner encoder.
 
         config_overrides is intentionally restricted to runtime-semantic fields.
         It resolves legacy bundle ambiguity without allowing a recipe to replace
@@ -445,7 +398,7 @@ class ParallelExpertEncoderPT(ModelPT):
         *,
         template_bundle_path: str,
     ) -> None:
-        """Save ``encoder`` using a compatible two-branch bundle config as a template."""
+        """Save ``encoder`` using a compatible PE bundle config as a template."""
         if not isinstance(encoder, ParallelExpertEncoder):
             raise TypeError(f"save_to_nemo expects a ParallelExpertEncoder, got {type(encoder).__name__}")
         if not os.path.isfile(template_bundle_path):
@@ -507,7 +460,6 @@ class ParallelExpertEncoder(nn.Module):
     """
 
     supports_external_speaker_targets = True
-    parallel_expert_encoder_kind = "two_branch"
 
     def __init__(
         self,
@@ -529,7 +481,6 @@ class ParallelExpertEncoder(nn.Module):
         speaker_activity_threshold: Optional[float] = None,
         spk_kernel_scale: float = 1.0,
         sync_max_audio_length: bool = False,
-        align_diarization_output_resolution: bool = False,
     ):
         super().__init__()
 
@@ -601,7 +552,6 @@ class ParallelExpertEncoder(nn.Module):
             speaker_feature_mode, speaker_activity_threshold
         )
         self.spk_kernel_scale = float(spk_kernel_scale)
-        self.align_diarization_output_resolution = bool(align_diarization_output_resolution)
         self.n_spk = int(self.diarization_model.sortformer_modules.n_spk)
         self.asr_d_model = int(self.asr_encoder.d_model)
 
@@ -875,7 +825,7 @@ class ParallelExpertEncoder(nn.Module):
             return self.asr_encoder(audio_signal=audio_signal, length=length)
 
     def _forward(self, audio_signal, length, spk_targets=None):
-        """Single-pass two-branch forward used by training and validation."""
+        """Single-pass forward used by training and validation."""
         self._check_spk_targets(spk_targets, audio_signal.shape[0])
         use_diarization = None if spk_targets is None else self._missing_target_rows(spk_targets)
         needs_diarization = self._should_run_diarization(spk_targets, use_diarization)

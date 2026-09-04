@@ -144,7 +144,7 @@ def test_split_spk_targets_into_chunks_uses_chunk_spans(
     chunk_spans,
     expected_chunks,
 ):
-    cfg = MultiSpeakerConfig()
+    cfg = MultiSpeakerConfig(num_speakers=4)
     spk_targets = torch.arange(5 * cfg.num_speakers, dtype=torch.float32).reshape(1, 5, cfg.num_speakers)
 
     chunked_spk_targets = _split_spk_targets_into_chunks(spk_targets, input_signal_lengths, chunk_spans)
@@ -334,7 +334,7 @@ def test_encode_audio_with_optional_chunking_can_microbatch_chunks():
 def test_encode_audio_with_optional_chunking_forwards_chunked_spk_targets(
     audio_values, audio_len, expected_chunk_lens, expected_spk_targets
 ):
-    cfg = MultiSpeakerConfig()
+    cfg = MultiSpeakerConfig(num_speakers=4)
     perception = ChunkingTestPerception(sampling_rate=2, hop_length=1)
     audios = torch.tensor([audio_values])
     audio_lens = torch.tensor([audio_len], dtype=torch.long)

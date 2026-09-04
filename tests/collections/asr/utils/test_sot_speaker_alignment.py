@@ -109,6 +109,35 @@ def test_speaker_activity_from_cut_uses_exact_pr_rttm_labels(tmp_path):
 
 
 @pytest.mark.unit
+def test_speaker_activity_from_cut_preserves_eight_pr_rttm_columns(tmp_path):
+    cut = dummy_cut(0, duration=0.08, recording=dummy_recording(0, duration=0.08, with_data=True))
+    rttm_path = tmp_path / "eight_speakers.rttm"
+    rttm_path.write_text(
+        "\n".join(
+            f"SPEAKER {cut.recording_id} 0 {(7 - speaker) * 0.01:.3f} 0.010 <NA> <NA> " f"<spk:{speaker}> <NA> <NA>"
+            for speaker in range(8)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cut.custom = {"rttm_filepath": str(rttm_path)}
+    text = " ".join(f"<spk:{speaker}> utterance-{speaker}" for speaker in range(8))
+
+    activity, is_permutation_resolved = sot_alignment.speaker_activity_from_cut(
+        cut,
+        num_speakers=8,
+        num_sample_per_mel_frame=160,
+        num_mel_frame_per_target_frame=1,
+        text=text,
+        return_permutation_resolved=True,
+    )
+
+    assert is_permutation_resolved
+    assert activity.shape == (8, 8)
+    assert torch.equal(activity.sum(dim=0), torch.ones(8))
+
+
+@pytest.mark.unit
 def test_speaker_activity_from_cut_keeps_legacy_mapping_when_labels_do_not_match(tmp_path):
     cut = dummy_cut(0, duration=0.04, recording=dummy_recording(0, duration=0.04, with_data=True))
     rttm_path = tmp_path / "legacy.rttm"
@@ -139,6 +168,29 @@ def test_speaker_activity_from_cut_keeps_legacy_mapping_when_labels_do_not_match
 
     assert not is_permutation_resolved
     assert torch.equal(detected_activity, legacy_activity)
+
+
+@pytest.mark.unit
+def test_speaker_activity_from_cut_rejects_more_speakers_than_configured(tmp_path):
+    cut = dummy_cut(0, duration=0.05, recording=dummy_recording(0, duration=0.05, with_data=True))
+    rttm_path = tmp_path / "five_speakers.rttm"
+    rttm_path.write_text(
+        "\n".join(
+            f"SPEAKER {cut.recording_id} 0 {speaker * 0.01:.3f} 0.010 <NA> <NA> <spk:{speaker}> <NA> <NA>"
+            for speaker in range(5)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cut.custom = {"rttm_filepath": str(rttm_path)}
+
+    with pytest.raises(ValueError, match="contains 5 speakers.*num_speakers=4"):
+        sot_alignment.speaker_activity_from_cut(
+            cut,
+            num_speakers=4,
+            num_sample_per_mel_frame=160,
+            num_mel_frame_per_target_frame=1,
+        )
 
 
 @pytest.mark.unit
@@ -376,14 +428,13 @@ def test_fix_speaker_activity_exactly_collapses_text_unused_permutation_classes(
 @pytest.mark.parametrize(
     "n_spk_in, num_speakers",
     [
-        (5, 4),  # speaker dim > num_speakers -> truncate extra columns
         (4, 4),  # speaker dim == num_speakers -> unchanged
         (2, 4),  # speaker dim < num_speakers -> zero-pad missing columns
     ],
 )
 def test_collate_speaker_activity_targets_normalizes_speaker_axis(n_spk_in, num_speakers):
     num_frames = 2
-    # Distinct per-element values so truncation/padding is observable.
+    # Distinct per-element values so padding is observable.
     activity = torch.arange(1, num_frames * n_spk_in + 1, dtype=torch.float32).reshape(num_frames, n_spk_in)
 
     targets, target_length = sot_alignment.collate_speaker_activity_targets(
@@ -395,10 +446,9 @@ def test_collate_speaker_activity_targets_normalizes_speaker_axis(n_spk_in, num_
         dtype=torch.float32,
     )
 
-    # Truncate extras / zero-pad missing so the speaker axis is always num_speakers wide.
+    # Zero-pad missing columns so the speaker axis is always num_speakers wide.
     expected = torch.zeros(num_frames, num_speakers)
-    keep = min(n_spk_in, num_speakers)
-    expected[:, :keep] = activity[:, :keep]
+    expected[:, :n_spk_in] = activity
 
     assert targets.shape == (1, num_frames, num_speakers)
     assert torch.equal(targets[0], expected)
@@ -406,15 +456,28 @@ def test_collate_speaker_activity_targets_normalizes_speaker_axis(n_spk_in, num_
 
 
 @pytest.mark.unit
+def test_collate_speaker_activity_targets_rejects_speaker_truncation():
+    with pytest.raises(ValueError, match="8 columns.*num_speakers=4"):
+        sot_alignment.collate_speaker_activity_targets(
+            [torch.ones(2, 8)],
+            audio_lens=torch.tensor([2560]),
+            num_speakers=4,
+            num_sample_per_mel_frame=160,
+            num_mel_frame_per_target_frame=8,
+            dtype=torch.float32,
+        )
+
+
+@pytest.mark.unit
 def test_collate_speaker_activity_targets_mixed_speaker_counts_and_lengths():
     # Batch mixing different speaker counts AND time lengths must not crash inside
     # collate_matrices: the speaker axis is normalized first, then the time axis is
     # zero-padded to the batch max.
-    five_spk = torch.ones(2, 5)  # (T=2, N=5) -> truncated to (2, 4)
+    four_spk = torch.ones(2, 4)
     two_spk = torch.full((3, 2), 2.0)  # (T=3, N=2) -> padded to (3, 4)
 
     targets, target_length = sot_alignment.collate_speaker_activity_targets(
-        [five_spk, two_spk],
+        [four_spk, two_spk],
         audio_lens=torch.tensor([2560, 3840]),
         num_speakers=4,
         num_sample_per_mel_frame=160,
@@ -424,7 +487,7 @@ def test_collate_speaker_activity_targets_mixed_speaker_counts_and_lengths():
 
     assert targets.shape == (2, 3, 4)  # B=2, T_max=3, num_speakers=4
     assert targets.dtype == torch.float16
-    # Truncated example: only first 4 cols kept, and its 3rd time-step is zero-padded.
+    # Four-speaker example is unchanged, and its 3rd time-step is zero-padded.
     assert torch.equal(targets[0, :2], torch.ones(2, 4, dtype=torch.float16))
     assert torch.equal(targets[0, 2], torch.zeros(4, dtype=torch.float16))
     # Padded example: cols 2-3 are zero.

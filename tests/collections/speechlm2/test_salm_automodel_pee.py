@@ -398,18 +398,11 @@ def test_pee_prepare_inputs_routes_spk_targets_as_spk_targets(dummy_pe_encoder):
 
 
 @pytest.mark.unit
-def test_pee_prepare_inputs_warns_for_experimental_inference_options(dummy_pe_encoder):
+def test_pee_generation_warns_that_outer_chunking_is_ignored(dummy_pe_encoder):
     model = _make_pee_routing_test_model(
         dummy_pe_encoder,
         cfg={"pe_encoder_path": "/tmp/pee.nemo", "encoder_chunk_size_seconds": 30.0},
     )
-    batch = {
-        "audios": torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]]),
-        "audio_lens": torch.tensor([5], dtype=torch.long),
-        "input_ids": torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long),
-        "loss_mask": torch.tensor([[False, True]], dtype=torch.bool),
-    }
 
-    with pytest.warns(UserWarning, match="ParallelExpertEncoder inference path.*encoder_chunk_size_seconds"):
-        model.prepare_inputs(batch)
-    assert model.perception.spk_targets_calls[-1] is None
+    with pytest.warns(UserWarning, match="generate ignores encoder_chunk_size_seconds"):
+        model._warn_parallel_expert_encoder_inference_chunking()

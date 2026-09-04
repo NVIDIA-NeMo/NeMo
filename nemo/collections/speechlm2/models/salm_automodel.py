@@ -243,19 +243,15 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 ans["mtp_per_depth_h"] = mtp_h
         return ans
 
-    def _uses_ext_spk_tgts(self) -> bool:
+    def _uses_parallel_expert_encoder(self) -> bool:
         """Whether the mounted perception encoder is a ``ParallelExpertEncoder``.
 
         During generation the PE encoder does its own context-preserving long-form
         windowing, so audio must reach it as one long sequence rather than pre-chunked.
         """
-        from nemo.collections.asr.modules.parallel_expert_encoder_resolver import is_parallel_expert_encoder
+        from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder
 
-        return is_parallel_expert_encoder(getattr(self.perception, "encoder", None))
-
-    def _uses_parallel_expert_encoder(self) -> bool:
-        """Backward-compatible name for the shared external-speaker encoder capability."""
-        return self._uses_ext_spk_tgts()
+        return isinstance(getattr(self.perception, "encoder", None), ParallelExpertEncoder)
 
     @contextmanager
     def _perception_online_inference(self):
@@ -266,30 +262,19 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         the windowed loop emits a number of collectives that tracks each rank's own audio
         length, which would deadlock a distributed step.
         """
-        if not self._uses_ext_spk_tgts():
+        if not self._uses_parallel_expert_encoder():
             yield
             return
         with self.perception.encoder.online_inference():
             yield
 
-    def _warn_parallel_expert_encoder_inference_compatibility(self, cp_size: int) -> None:
+    def _warn_parallel_expert_encoder_inference_chunking(self) -> None:
         if not self.cfg.get("pe_encoder_path", None):
             return
-
-        unsupported = []
         if self.cfg.get("encoder_chunk_size_seconds", None) is not None:
-            unsupported.append("encoder_chunk_size_seconds")
-        if self.cfg.get("packed_sequences", False):
-            unsupported.append("packed_sequences")
-        if cp_size > 1:
-            unsupported.append(f"cp_size={cp_size}")
-
-        if unsupported:
             warnings.warn(
-                "The ParallelExpertEncoder inference path is currently experimental and does not support "
-                f"{', '.join(unsupported)}. It will be made to work with these options later."
-                " This applies to generation, which always uses the encoder's own long-form windowing;"
-                " training and validation use the regular single-pass encoder path.",
+                "SALMAutomodel.generate ignores encoder_chunk_size_seconds for ParallelExpertEncoder because "
+                "the encoder owns its context-preserving long-form inference window.",
                 stacklevel=2,
             )
 
@@ -322,7 +307,7 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         device_mesh = getattr(self, "_device_mesh", None)
         spk_targets = batch.get("spk_targets", None)
         spk_target_lengths = batch.get("spk_target_length", None)
-        cp_mesh, cp_size, _ = get_cp_mesh(device_mesh)
+        cp_mesh, _, _ = get_cp_mesh(device_mesh)
         fsdp_sync_group = get_perception_fsdp_group(device_mesh)
 
         # Source audio encoding. Input audio: (B, T_samples), audio embeddings: (B, T, H).
@@ -333,27 +318,20 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         # PEE=false, RTTM absent: The regular encoder runs through optional chunking/CP without speaker targets.
         # PEE=false, RTTM exists: RTTM is ignored and the regular encoder runs through optional chunking/CP.
         # Audio-free batches must take the branch below, whose audio-presence all-reduce keeps FSDP ranks in step.
-        dummy_audio_loss = None
-        if self._uses_ext_spk_tgts() and spk_targets is None and batch["audios"].shape[0] > 0:
-            self._warn_parallel_expert_encoder_inference_compatibility(cp_size)
-            audio_embs, audio_emb_lens = self.perception(
-                input_signal=batch["audios"], input_signal_length=batch["audio_lens"]
-            )
-            audio_embs = [emb[:emblen] for emb, emblen in zip(audio_embs, audio_emb_lens)]
-        else:
-            audio_embs, dummy_audio_loss = encode_audio_with_cp_distribution(
-                self.perception,
-                batch["audios"],
-                batch["audio_lens"],
-                chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
-                chunk_batch_size=self.cfg.get("encoder_chunk_batch_size", None),
-                sampling_rate=self.sampling_rate,
-                cp_mesh=cp_mesh,
-                spk_targets=spk_targets if self._uses_ext_spk_tgts() else None,
-                spk_target_lengths=spk_target_lengths if self._uses_ext_spk_tgts() else None,
-                fsdp_sync_group=fsdp_sync_group,
-                return_dummy_loss=True,
-            )
+        uses_parallel_expert_encoder = self._uses_parallel_expert_encoder()
+        audio_embs, dummy_audio_loss = encode_audio_with_cp_distribution(
+            self.perception,
+            batch["audios"],
+            batch["audio_lens"],
+            chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
+            chunk_batch_size=self.cfg.get("encoder_chunk_batch_size", None),
+            sampling_rate=self.sampling_rate,
+            cp_mesh=cp_mesh,
+            spk_targets=spk_targets if uses_parallel_expert_encoder else None,
+            spk_target_lengths=spk_target_lengths if uses_parallel_expert_encoder else None,
+            fsdp_sync_group=fsdp_sync_group,
+            return_dummy_loss=True,
+        )
         input_ids_to_embed = torch.where(batch["input_ids"] == self.audio_locator_tag_id, 0, batch["input_ids"])
         text_embs = self._embed_tokens(input_ids_to_embed)
         target_ids_full = batch["input_ids"].where(batch["loss_mask"], -100)  # CrossEntropyLoss().ignore_index
@@ -890,7 +868,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
         audios: torch.Tensor = None,
         audio_lens: torch.Tensor = None,
         spk_targets: torch.Tensor = None,
-        spk_target_lengths: torch.Tensor = None,
         generation_config: GenerationConfig = None,
         enable_thinking: bool | None = None,
         **generation_kwargs,
@@ -960,10 +937,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                 encoder is a ``ParallelExpertEncoder`` (i.e. ``model.pe_encoder_path`` was set); rows
                 supplied here override its Sortformer prediction. When ``None`` (default), or for a
                 row of ``-1``, the encoder predicts speaker activity itself.
-            spk_target_lengths: Optional ``(B,)`` valid frame counts for ``spk_targets``.
-                Used for exact target slicing when an ordinary encoder chunks a padded,
-                mixed-length speaker-target batch; a ``ParallelExpertEncoder`` does its own
-                windowing and does not need it.
             generation_config: Optional HuggingFace GenerationConfig object.
             enable_thinking: Optional prompt-formatter hint forwarded to ``encode_dialog``.
                 Relevant for prompt formats that support thinking/reasoning mode.
@@ -1000,11 +973,11 @@ class SALMAutomodel(LightningModule, HFHubMixin):
             tokens_to_embed = tokens.where(tokens != self.audio_locator_tag_id, 0)
             token_embeds = self._embed_tokens(tokens_to_embed)
             with self._perception_online_inference():
-                if self._uses_ext_spk_tgts():
+                if self._uses_parallel_expert_encoder():
                     # The PE encoder walks long-form audio window by window itself, so hand it
                     # the whole sequence: chunking here would nest a second windowing inside
                     # every chunk. Rows without RTTM get a streaming Sortformer prediction.
-                    self._warn_parallel_expert_encoder_inference_compatibility(cp_size=1)
+                    self._warn_parallel_expert_encoder_inference_chunking()
                     audio_embeds, audio_embed_lens = self.perception(
                         input_signal=audios, input_signal_length=audio_lens, spk_targets=spk_targets
                     )
@@ -1016,8 +989,6 @@ class SALMAutomodel(LightningModule, HFHubMixin):
                         audio_lens,
                         chunk_size_seconds=self.cfg.get("encoder_chunk_size_seconds", None),
                         sampling_rate=self.sampling_rate,
-                        spk_targets=spk_targets if self._uses_ext_spk_tgts() else None,
-                        spk_target_lengths=spk_target_lengths if self._uses_ext_spk_tgts() else None,
                     )
             # Insert audio embeddings into relevant positions in text embeddings.
             input_embeds, _, attention_mask = replace_placeholders_and_build_targets(

@@ -112,9 +112,7 @@ def _build_pe_encoder_from_config(pe_encoder_config: Mapping[str, object]) -> nn
     """Reconstruct a PE encoder whose config and weights are embedded in an HF export."""
     from omegaconf import OmegaConf
 
-    from nemo.collections.asr.modules.parallel_expert_encoder import (
-        ParallelExpertEncoder,
-    )
+    from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder
 
     if hasattr(pe_encoder_config, "to_dict"):
         pe_encoder_config = pe_encoder_config.to_dict()

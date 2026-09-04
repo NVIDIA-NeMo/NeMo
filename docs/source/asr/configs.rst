@@ -432,6 +432,61 @@ Conformer-Transducer
 Please refer to the model page of :ref:`Conformer-Transducer <Conformer-Transducer_model>` for more information on this model.
 
 
+Streaming Transformer
+~~~~~~~~~~~~~~~~~~~~~
+
+:ref:`nemo.collections.asr.modules.StreamingTransformerEncoder <streaming-transformer-encoder-api>`
+is a convolution-free Transformer encoder for streaming ASR. It extends
+:ref:`TransformerEncoder <transformer-encoder-api>` with local attention and a rolling KV cache,
+and implements the same cache-aware streaming interface as ``ConformerEncoder``, so it can be
+driven by the shared streaming tooling unchanged.
+
+Attention is bounded by ``att_context_size: [left, right]``, in encoder frames, under one of two
+``att_context_style`` values:
+
+* ``chunked_limited`` — frames are grouped into chunks of ``right + 1``, and a query attends to
+  its whole chunk plus the ``left // (right + 1)`` preceding chunks. The look-ahead does **not**
+  compound across layers, so streaming stays exact at any depth. Use this for in-chunk look-ahead.
+* ``sliding_window`` (default) — a query attends to ``[t - left, t + right]``. Exact for
+  streaming only when ``right == 0``, since a sliding right context compounds across layers.
+
+The read-only ``cache_size`` property reports how many encoder frames the rolling KV cache retains.
+For ``sliding_window`` it equals ``left``. For ``chunked_limited`` it is rounded down to the visible
+whole chunks when ``right`` is finite: ``(left // (right + 1)) * (right + 1)``. An unlimited right
+context uses ``left`` directly. A negative cache size means unbounded left context;
+``setup_streaming_params`` maps it to ``max_context`` (10,000 frames by default) for the allocated
+streaming cache. This is separate from ``pre_encode_cache_size``, which retains input-feature frames
+needed before subsampling.
+
+Passing a list of pairs trains one model across several latencies; one entry is sampled per
+training batch, and evaluation and streaming use the first entry (or whatever
+``set_default_att_context_size`` pins). Select the operating point at inference with
+``transcribe_speech.py att_context_size=[70,13]``.
+
+.. code-block:: yaml
+
+  model:
+    encoder:
+      _target_: nemo.collections.asr.modules.transformer_encoder.StreamingTransformerEncoder
+      d_model: 1024
+      n_heads: 8
+      n_layers: 48
+      subsampling: feature_stacking
+      subsampling_factor: 8
+      self_attention_model: rope     # rel_pos | abs_pos | rope | no_pos
+      qk_norm: true
+      att_context_style: chunked_limited
+      att_context_size: [[70, 13], [70, 6], [70, 1], [70, 0]]
+      # Input-frame look-back prepended to each streaming chunk so the mel front-end's STFT
+      # window has its context. Must be a multiple of ``subsampling_factor``. ``FeatureStacking``
+      # is non-overlapping and needs none of this offline, but a streaming front-end that
+      # recomputes the spectrogram per chunk does.
+      pre_encode_cache_size: ${model.encoder.subsampling_factor}
+
+A ready-to-train RNN-T recipe ships at
+``examples/asr/conf/transformer/transformer_stacking_rnnt_bpe_streaming.yaml``.
+
+
 Transducer Configurations
 -------------------------
 

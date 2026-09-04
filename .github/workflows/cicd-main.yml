@@ -63,7 +63,6 @@ jobs:
     needs: [pre-flight]
     outputs:
       test_to_run: ${{ steps.test_to_run.outputs.main }}
-      is_ci_workload: ${{ steps.is_ci_workload.outputs.main }}
       no_fail_fast: ${{ steps.no_fail_fast.outputs.main }}
       components_to_run: ${{ steps.components_to_run.outputs.main }}
       run_nightly: ${{ steps.pr_labels.outputs.run_nightly }}
@@ -101,21 +100,6 @@ jobs:
 
           parsed_string=$(echo "$TESTS_TO_RUN" | jq -c --raw-input 'split(",")')
           echo "main=${parsed_string}" | tee -a "$GITHUB_OUTPUT"
-
-      - name: Check if this is a CI workload
-        shell: bash
-        id: is_ci_workload
-        run: |
-          branch_name=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}
-
-          if [[ "$branch_name" =~ ^bump-ci-container || "$EVENT_NAME" == "schedule" ]]; then
-            is_ci_workload=true
-            echo "main=true" | tee -a "$GITHUB_OUTPUT"
-          else
-            is_ci_workload=false
-          fi
-
-          echo "main=$is_ci_workload" | tee -a "$GITHUB_OUTPUT"
 
       - name: Fetch PR labels
         id: pr_labels
@@ -158,13 +142,13 @@ jobs:
       skip_linting: ${{ needs.configure.outputs.skip_linting }}
 
   cicd-wait-in-queue:
-    needs: [configure, code-linting]
+    needs: [pre-flight, configure, code-linting]
     runs-on: ubuntu-latest
     environment: test
     if: |
       needs.configure.outputs.test_to_run != '[]'
       && needs.configure.outputs.components_to_run != '[]'
-      && needs.configure.outputs.is_ci_workload == 'false'
+      && needs.pre-flight.outputs.is_ci_workload == 'false'
     steps:
       - name: Running CI tests
         run: |
@@ -180,7 +164,7 @@ jobs:
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.configure.outputs.is_ci_workload == 'true'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
@@ -198,7 +182,7 @@ jobs:
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.configure.outputs.is_ci_workload == 'true'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
@@ -219,7 +203,6 @@ jobs:
         run: |
           docker run \
               --rm \
-            --device=/dev/nvidia0 \
             --gpus all \
             --shm-size=8g \
             --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
@@ -243,7 +226,7 @@ jobs:
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.configure.outputs.is_ci_workload == 'true'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
@@ -274,7 +257,7 @@ jobs:
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.configure.outputs.is_ci_workload == 'true'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()
@@ -297,7 +280,7 @@ jobs:
         success()
         || (
           needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.configure.outputs.is_ci_workload == 'true'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
         )
       )
       && !cancelled()

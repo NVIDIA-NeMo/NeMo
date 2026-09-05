@@ -398,6 +398,46 @@ def test_pee_prepare_inputs_routes_spk_targets_as_spk_targets(dummy_pe_encoder):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("packed_encoder_sequences", "expected_outer_chunk_size"),
+    [(False, 30.0), (True, None)],
+)
+def test_pee_prepare_inputs_routes_shared_chunk_size_at_the_correct_layer(
+    dummy_pe_encoder, monkeypatch, packed_encoder_sequences, expected_outer_chunk_size
+):
+    from nemo.collections.speechlm2.parts import cp_helpers
+
+    model = _make_pee_routing_test_model(
+        dummy_pe_encoder,
+        cfg={
+            "encoder_chunk_size_seconds": 30.0,
+            "encoder_chunk_batch_size": None,
+            "packed_encoder_sequences": packed_encoder_sequences,
+        },
+    )
+    batch = {
+        "audios": torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]]),
+        "audio_lens": torch.tensor([5], dtype=torch.long),
+        "input_ids": torch.tensor([[model.audio_locator_tag_id, 10]], dtype=torch.long),
+        "loss_mask": torch.tensor([[False, True]], dtype=torch.bool),
+    }
+    recorded = {}
+    original = cp_helpers.encode_audio_with_cp_distribution
+
+    def record_chunk_routing(*args, **kwargs):
+        recorded["chunk_size_seconds"] = kwargs["chunk_size_seconds"]
+        # This test isolates routing. Other tests exercise the native packed path.
+        kwargs["sequence_packed"] = False
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cp_helpers, "encode_audio_with_cp_distribution", record_chunk_routing)
+
+    model.prepare_inputs(batch)
+
+    assert recorded["chunk_size_seconds"] == expected_outer_chunk_size
+
+
+@pytest.mark.unit
 def test_pee_generation_warns_that_outer_chunking_is_ignored(dummy_pe_encoder):
     model = _make_pee_routing_test_model(
         dummy_pe_encoder,

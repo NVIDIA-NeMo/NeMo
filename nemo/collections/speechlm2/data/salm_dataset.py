@@ -61,8 +61,11 @@ class SALMDataset(torch.utils.data.Dataset):
             training step.
         multispeaker_cfg (dict | None):
             Optional Serialized Output Training (SOT) speaker-activity settings.
+            ``num_speakers`` is required when this mapping is provided.
             When provided, each batch additionally includes RTTM-derived
-            ``spk_targets`` / ``spk_target_length``.
+            ``spk_targets`` / ``spk_target_length``. Rows without an explicit
+            RTTM path contain the reserved value ``-1`` so the perception encoder
+            can replace them with inferred speaker activity.
 
             [ SOT Example for overlapping speakers ]
             Speaker-parallel transcription as a timeline:
@@ -191,36 +194,57 @@ def default_multimodal_conversation_prompt_format_fn(
 class MultiSpeakerConfig:
     """Configuration for auxiliary multi-speaker SOT targets."""
 
-    num_speakers: int = 4
+    num_speakers: int
     no_rttm_to_ones: bool = True
     num_sample_per_mel_frame: int = 160
     num_mel_frame_per_target_frame: int = 8
+    max_alignment_permutations: int | None = 720
 
     @staticmethod
     def from_dict(cfg: dict | None) -> "MultiSpeakerConfig | None":
         """Build a config from a raw settings dict, or return ``None`` when no SOT settings are given."""
         if cfg is None:
             return None
+        if 'num_speakers' not in cfg:
+            raise ValueError(
+                "multispeaker_cfg.num_speakers must be set explicitly; there is no implicit 4-speaker cap."
+            )
+        num_speakers = int(cfg['num_speakers'])
+        if num_speakers <= 0:
+            raise ValueError(f"multispeaker_cfg.num_speakers must be positive, got {num_speakers}.")
+        max_alignment_permutations = cfg.get('max_alignment_permutations', 720)
         return MultiSpeakerConfig(
-            num_speakers=int(cfg.get('num_speakers', 4)),
+            num_speakers=num_speakers,
             no_rttm_to_ones=cfg.get('no_rttm_to_ones', True),
             num_sample_per_mel_frame=int(cfg.get('window_stride', 0.01) * cfg.get('sample_rate', 16000)),
             num_mel_frame_per_target_frame=int(cfg.get('subsampling_factor', 8)),
+            max_alignment_permutations=(
+                None if max_alignment_permutations is None else int(max_alignment_permutations)
+            ),
         )
 
 
 class SALMMultiSpeakerProcessor:
-    """Adds auxiliary SOT speaker-activity targets to an otherwise prepared SALM batch."""
+    """Add SOT activity targets, using ``-1`` rows to request inferred diarization."""
 
     def __init__(self, cfg: MultiSpeakerConfig) -> None:
         self.cfg = cfg
 
     def __call__(self, batch: dict) -> None:
-        """Attach RTTM-derived ``spk_targets`` / ``spk_target_length`` to ``batch`` in place."""
+        """Attach RTTM targets or missing-RTTM sentinels to ``batch`` in place."""
         cfg = self.cfg
         speaker_activities = self._build_speaker_activities(batch["conversations"])
         if not speaker_activities:
             return
+        # The shared collator pads variable-length rows with zeros. Preserve
+        # the all--1 sentinel across that padding: PEE detects missing-RTTM
+        # rows over the whole padded tensor, so a single padded zero would
+        # otherwise make a short no-RTTM row look like an explicit
+        # (all-silent) RTTM target and bypass its embedded Sortformer.
+        missing_rttm_rows = torch.tensor(
+            [bool(torch.all(activity == -1.0)) for activity in speaker_activities],
+            dtype=torch.bool,
+        )
         targets, target_length = collate_speaker_activity_targets(
             speaker_activities,
             batch["audio_lens"],
@@ -229,6 +253,7 @@ class SALMMultiSpeakerProcessor:
             num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
             dtype=batch["audios"].dtype,
         )
+        targets[missing_rttm_rows] = -1.0
         batch["spk_targets"] = targets
         batch["spk_target_length"] = target_length
 
@@ -240,21 +265,52 @@ class SALMMultiSpeakerProcessor:
                 if not isinstance(turn, AudioTurn):
                     continue
 
+                has_rttm = self._has_rttm_filepath(turn.cut)
                 cut = self._prepare_audio_turn_cut(turn)
-                speaker_activity = speaker_activity_from_cut(
-                    cut,
-                    num_speakers=cfg.num_speakers,
-                    num_sample_per_mel_frame=cfg.num_sample_per_mel_frame,
-                    num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
-                    no_rttm_to_ones=cfg.no_rttm_to_ones,
-                )
-
-                text = self._audio_turn_text(turn, cut)
-                new_text, _, _ = ensure_single_speaker_sot(text)
-
-                speaker_activity = fix_speaker_activity(new_text, speaker_activity, cfg.num_speakers)
+                if not has_rttm:
+                    speaker_activity = speaker_activity_from_cut(
+                        cut,
+                        num_speakers=cfg.num_speakers,
+                        num_sample_per_mel_frame=cfg.num_sample_per_mel_frame,
+                        num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
+                        no_rttm_to_ones=cfg.no_rttm_to_ones,
+                    )
+                    # Request inferred activity instead of the synthetic
+                    # single-speaker fallback.  Skip SOT/RTTM column alignment:
+                    # the sentinel replaces the whole target, and factorial
+                    # alignment work here would be both wasted and misleading.
+                    speaker_activity = torch.full_like(speaker_activity, -1.0)
+                else:
+                    text = self._audio_turn_text(turn, cut)
+                    new_text, _, _ = ensure_single_speaker_sot(text)
+                    speaker_activity, is_permutation_resolved = speaker_activity_from_cut(
+                        cut,
+                        num_speakers=cfg.num_speakers,
+                        num_sample_per_mel_frame=cfg.num_sample_per_mel_frame,
+                        num_mel_frame_per_target_frame=cfg.num_mel_frame_per_target_frame,
+                        no_rttm_to_ones=cfg.no_rttm_to_ones,
+                        text=new_text,
+                        return_permutation_resolved=True,
+                    )
+                    if not is_permutation_resolved:
+                        speaker_activity = fix_speaker_activity(
+                            new_text,
+                            speaker_activity,
+                            cfg.num_speakers,
+                            max_alignment_permutations=cfg.max_alignment_permutations,
+                        )
                 speaker_activities.append(speaker_activity)
         return speaker_activities
+
+    @staticmethod
+    def _has_rttm_filepath(cut) -> bool:
+        """Return whether a cut or any constituent mixed track has an explicit RTTM file."""
+        custom = getattr(cut, "custom", None) or {}
+        if custom.get("rttm_filepath", None):
+            return True
+        if isinstance(cut, MixedCut):
+            return any(SALMMultiSpeakerProcessor._has_rttm_filepath(track.cut) for track in cut.tracks)
+        return False
 
     @staticmethod
     def _prepare_audio_turn_cut(turn: AudioTurn):

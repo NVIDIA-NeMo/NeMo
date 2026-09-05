@@ -41,7 +41,7 @@ def _default_device_cuda():
     """Run this module's tests on CUDA by default, but scope the change so it does
     not leak. ``torch.set_default_device`` is a global, process-wide mutation; setting
     it at import time bleeds into other modules collected in the same pytest session
-    (e.g. the CPU tests in tests/collections/asr/test_parallel_expert_encoder.py),
+    (e.g. device-agnostic ASR module tests),
     causing spurious cuda/cpu device-mismatch failures. The previous default device
     is always restored on teardown.
     """
@@ -204,6 +204,44 @@ def test_salm_automodel_training_step(model, dataset, prompt_formatter, training
 
 def test_salm_automodel_training_step_uses_dataloader_iter_signature():
     assert list(inspect.signature(SALMAutomodel.training_step).parameters) == ["self", "dataloader_iter"]
+
+
+def test_salm_automodel_pad_token_override_preserves_eot_labels(monkeypatch):
+    seen = {}
+
+    class FakeTokenizer:
+        def __init__(self, _src, *, use_fast, trust_remote_code, pad_token):
+            seen["pad_token"] = pad_token
+            self.pad = 0 if pad_token == "<unk>" else 11
+            self.unk_id = 0
+
+        def add_special_tokens(self, _tokens):
+            return 0
+
+    salm_module = __import__("nemo.collections.speechlm2.models.salm_automodel", fromlist=["AutoTokenizer"])
+    monkeypatch.setattr(salm_module, "AutoTokenizer", FakeTokenizer)
+    model = SALMAutomodel(
+        {
+            "pretrained_llm": "unused",
+            "audio_locator_tag": "<|audio|>",
+            "pad_token": "<unk>",
+        }
+    )
+
+    assert seen["pad_token"] == "<unk>"
+    assert model.text_pad_id == 0
+
+    from nemo.collections.speechlm2.parts.packed_sequences import prepare_packed_llm_inputs
+
+    packed = prepare_packed_llm_inputs(
+        input_ids=torch.tensor([[0, 10, 11, 10, 42, 11]]),
+        text_embs=torch.randn(1, 6, 2),
+        audio_embs=[],
+        target_ids=torch.tensor([[-100, -100, -100, -100, 42, 11]]),
+        padding_id=model.text_pad_id,
+        placeholder_id=999,
+    )
+    assert packed["target_ids"].tolist() == [-100, -100, 42, 11, -100]
 
 
 def test_salm_automodel_record_training_stats_uses_thd_metadata():
@@ -376,10 +414,9 @@ def test_salm_automodel_prepare_inputs_chunks_long_audio(device):
     chunked_signal, chunked_lens = model.perception.calls[0]
     assert chunked_signal.shape == (2, 3)
     assert torch.equal(chunked_lens, torch.tensor([2, 3], dtype=torch.long, device=device))
-    assert torch.equal(
-        model.perception.spk_targets_calls[0],
-        torch.stack([torch.cat([spk_targets[0, :2], spk_targets[0, 1:2]]), spk_targets[0, 2:5]]),
-    )
+    # Ordinary encoders keep their existing audio-chunking path and ignore
+    # unsupported speaker targets.
+    assert model.perception.spk_targets_calls[0] is None
     assert torch.equal(inputs["input_embeds"][0, :, 0], torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device=device))
     assert torch.equal(inputs["attention_mask"], torch.ones((1, 5), dtype=torch.bool, device=device))
 
@@ -465,10 +502,9 @@ def test_salm_automodel_generate_chunks_audio_before_llm(device):
     chunked_signal, chunked_lens = model.perception.calls[0]
     assert chunked_signal.shape == (2, 3)
     assert torch.equal(chunked_lens, torch.tensor([2, 3], dtype=torch.long, device=device))
-    assert torch.equal(
-        model.perception.spk_targets_calls[0],
-        torch.stack([torch.cat([spk_targets[0, :2], spk_targets[0, 1:2]]), spk_targets[0, 2:5]]),
-    )
+    # Ordinary encoders keep their existing audio-chunking path and ignore
+    # unsupported speaker targets.
+    assert model.perception.spk_targets_calls[0] is None
     assert torch.equal(
         model.llm.generate_kwargs["inputs_embeds"][0, :5, 0],
         torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device=device),

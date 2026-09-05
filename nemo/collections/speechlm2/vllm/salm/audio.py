@@ -83,9 +83,12 @@ _MIN_CHUNK_SIZE_SAMPLES = 320
 
 
 def _ensure_special_tokens(tokenizer: PreTrainedTokenizerBase) -> None:
-    special = [_AUDIO_PLACEHOLDER]
-    existing = set(tokenizer.get_vocab().keys())
-    to_add = [t for t in special if t not in existing]
+    # NOTE: called per request from _call_hf_processor on the API-server event loop.
+    # Use O(1) dict membership; `set(get_vocab().keys())` rebuilt a 131k-entry set
+    # every request (~5-6 ms) purely to check one token. get_vocab() returns vLLM's
+    # cached dict, so membership is O(1).
+    vocab = tokenizer.get_vocab()
+    to_add = [t for t in (_AUDIO_PLACEHOLDER,) if t not in vocab]
     if to_add:
         tokenizer.add_special_tokens({"additional_special_tokens": to_add})
 
@@ -106,7 +109,62 @@ def _load_nemo_perception(perception_cfg: dict) -> nn.Module:
     return perception
 
 
-def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) -> bool:
+def _build_pe_encoder_from_config(pe_encoder_config: Mapping[str, object]) -> nn.Module:
+    """Reconstruct a PE encoder whose config and weights are embedded in an HF export."""
+    from omegaconf import OmegaConf
+
+    from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoder
+
+    if hasattr(pe_encoder_config, "to_dict"):
+        pe_encoder_config = pe_encoder_config.to_dict()
+    if not isinstance(pe_encoder_config, Mapping):
+        raise TypeError(
+            "pe_encoder_config must be a mapping containing inline ASR and diarization configs; "
+            f"got {type(pe_encoder_config).__name__}."
+        )
+
+    cfg = OmegaConf.create(dict(pe_encoder_config))
+    return ParallelExpertEncoder(
+        asr_encoder_cfg=cfg.get("asr_encoder_cfg"),
+        diarization_model_cfg=cfg.get("diarization_model_cfg"),
+        asr_normalize_type=cfg.get("asr_normalize_type"),
+        freeze_diar=cfg.get("freeze_diar", True),
+        freeze_asr=cfg.get("freeze_asr", False),
+        online_inference_length=cfg.get("online_inference_length", 500),
+        chunk_left_context=cfg.get("chunk_left_context", 50),
+        chunk_right_context=cfg.get("chunk_right_context", 50),
+        diar_fifo_len=cfg.get("diar_fifo_len", 40),
+        diar_spkcache_update_period=cfg.get("diar_spkcache_update_period", 300),
+        diar_spkcache_len=cfg.get("diar_spkcache_len", 188),
+    )
+
+
+def _attach_pe_encoder(perception: nn.Module, pe_encoder: nn.Module, source: str) -> None:
+    """Replace the direct perception encoder while preserving placement and preprocessing."""
+    if not hasattr(perception, "encoder"):
+        raise RuntimeError(f"{source} is set but perception has no encoder attribute to replace.")
+
+    existing_d_model = int(getattr(perception.encoder, "d_model", -1))
+    if existing_d_model > 0 and int(pe_encoder.d_model) != existing_d_model:
+        raise ValueError(
+            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match the existing "
+            f"perception encoder d_model={existing_d_model}."
+        )
+
+    ref_param = next(perception.encoder.parameters(), None)
+    if ref_param is not None:
+        pe_encoder = pe_encoder.to(device=ref_param.device, dtype=ref_param.dtype)
+
+    try:
+        perception.preprocessor.featurizer.normalize = None
+    except AttributeError:
+        pass
+
+    perception.encoder = pe_encoder
+    perception.eval()
+
+
+def _mount_pe_encoder_from_path(perception: nn.Module, pe_encoder_path: str | None) -> bool:
     """Replace ``perception.encoder`` with a ParallelExpertEncoder bundle so PE-trained
     checkpoints (nested ``asr_encoder.*`` / ``diarization_model.*`` weights) load correctly.
 
@@ -133,45 +191,50 @@ def _maybe_mount_pe_encoder(perception: nn.Module, pe_encoder_path: str | None) 
     """
     if pe_encoder_path in (None, "", False):
         return False
-    if not hasattr(perception, "encoder"):
-        raise RuntimeError("pe_encoder_path is set but perception has no `encoder` attribute to replace.")
+    if not isinstance(pe_encoder_path, str):
+        raise TypeError(f"pe_encoder_path must be a string, got {type(pe_encoder_path).__name__}.")
 
     from nemo.collections.asr.modules.parallel_expert_encoder import ParallelExpertEncoderPT
 
     # Only fail-fast for a *local* ``.nemo`` file that is not a PE bundle. A
     # non-local reference (HF repo id / NGC alias) is resolved offline from the
     # HuggingFace cache by load_from_nemo -> from_pretrained, so do not reject it.
-    is_local_nemo_file = (
-        isinstance(pe_encoder_path, str) and pe_encoder_path.endswith(".nemo") and os.path.isfile(pe_encoder_path)
-    )
+    is_local_nemo_file = pe_encoder_path.endswith(".nemo") and os.path.isfile(pe_encoder_path)
     if is_local_nemo_file and not ParallelExpertEncoderPT.is_pe_nemo(pe_encoder_path):
         raise ValueError(f"pe_encoder_path={pe_encoder_path!r} is not a ParallelExpertEncoderPT .nemo bundle.")
 
     pe_encoder = ParallelExpertEncoderPT.load_from_nemo(pe_encoder_path, map_location="cpu", strict=True)
-
-    existing_d_model = int(getattr(perception.encoder, "d_model", -1))
-    if existing_d_model > 0 and int(pe_encoder.d_model) != existing_d_model:
-        raise ValueError(
-            f"ParallelExpertEncoder d_model={pe_encoder.d_model} does not match the existing "
-            f"perception encoder d_model={existing_d_model}."
-        )
-
-    # load_from_nemo restores onto CPU; copy the replaced encoder's device/dtype to avoid CPU/dtype mismatches.
-    ref_param = next(perception.encoder.parameters(), None)
-    if ref_param is not None:
-        pe_encoder = pe_encoder.to(device=ref_param.device, dtype=ref_param.dtype)
-
-    # PE encoder consumes un-normalised mels and replays ASR norm internally, so disable preprocessor norm.
-    try:
-        perception.preprocessor.featurizer.normalize = None
-    except AttributeError:
-        # Preprocessor/featurizer layout varies across backends; if the attribute is
-        # absent there is no outer normalization to disable, so skipping is correct.
-        pass
-
-    perception.encoder = pe_encoder
-    perception.eval()
+    _attach_pe_encoder(perception, pe_encoder, "pe_encoder_path")
     return True
+
+
+def _maybe_mount_pe_encoder(
+    perception: nn.Module,
+    pe_encoder_path: str | None,
+    pe_encoder_config: Mapping[str, object] | None = None,
+) -> bool:
+    """Mount the PE encoder represented by an exported SpeechLM checkpoint.
+
+    Self-contained HF exports store the constructor inputs in pe_encoder_config
+    and the nested encoder weights in their own safetensors file. That embedded
+    form takes precedence over pe_encoder_path so serving does not depend on a
+    path from the training machine. Legacy path-only checkpoints retain their
+    existing local-bundle and pretrained-model behavior.
+
+    Args:
+        perception: Perception module whose direct encoder is replaced.
+        pe_encoder_path: Legacy local bundle path or pretrained model identifier.
+        pe_encoder_config: Optional self-contained PE constructor config.
+
+    Returns:
+        True when a PE encoder was mounted, otherwise False.
+    """
+    if pe_encoder_config:
+        pe_encoder = _build_pe_encoder_from_config(pe_encoder_config)
+        _attach_pe_encoder(perception, pe_encoder, "pe_encoder_config")
+        return True
+
+    return _mount_pe_encoder_from_path(perception, pe_encoder_path)
 
 
 def _pad_to_vocab_size(tensor: torch.Tensor, target_vocab: int) -> torch.Tensor:

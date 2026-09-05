@@ -31,6 +31,7 @@ from nemo.collections.asr.modules.parallel_expert_encoder import (
     _default_dtype,
     _disable_dist_feature_sync,
 )
+from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 
 # ``@experimental`` wraps the class in a wrapt proxy, so ``__new__`` (used to build
 # bare instances that skip the heavy real ``__init__``) must target the underlying
@@ -348,6 +349,29 @@ def toy_asr_encoder_cfg() -> DictConfig:
     )
 
 
+def toy_transformer_asr_encoder_cfg() -> DictConfig:
+    """Tiny production-style TransformerEncoder config for the PE ASR branch."""
+    return DictConfig(
+        {
+            '_target_': 'nemo.collections.asr.modules.transformer_encoder.TransformerEncoder',
+            'feat_in': _MEL_FEATURES,
+            'd_model': 64,
+            'n_heads': 4,
+            'n_layers': 1,
+            'drop_rate': 0.0,
+            'qkv_bias': False,
+            'qk_norm': True,
+            'ff_expansion': 2,
+            'pre_block_norm': True,
+            'subsampling_factor': _SUBSAMPLING_FACTOR,
+            'attn_mode': 'full',
+            'self_attention_model': 'rope',
+            'rope_base': 10000.0,
+            'rotary_fraction': 0.5,
+        }
+    )
+
+
 def toy_diarization_model_cfg() -> DictConfig:
     """Tiny SortformerEncLabelModel config the PE encoder mounts as its diar branch."""
     model_defaults = {'fc_d_model': _DIAR_FC_D_MODEL, 'tf_d_model': _DIAR_TF_D_MODEL}
@@ -461,6 +485,17 @@ def test_pe_encoder_builds_and_wires_both_real_encoders():
     # freeze_diar defaults to True -> diar params are frozen, ASR params remain trainable.
     assert all(not p.requires_grad for p in enc.diarization_model.parameters())
     assert any(p.requires_grad for p in enc.asr_encoder.parameters())
+
+
+@pytest.mark.unit
+def test_pe_encoder_accepts_transformer_asr_branch():
+    enc = build_toy_pe_encoder(asr_encoder_cfg=toy_transformer_asr_encoder_cfg())
+
+    assert isinstance(enc.asr_encoder, TransformerEncoder)
+    assert enc.d_model == 64
+    assert enc.subsampling_factor == _SUBSAMPLING_FACTOR
+    assert enc.pre_encode is enc.asr_encoder.pre_encode
+    assert enc.diar_kernel.shape == (_N_SPK, 64)
 
 
 @pytest.mark.unit

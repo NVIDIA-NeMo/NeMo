@@ -25,6 +25,148 @@ Backbone-specific behavior is selected at instantiation time.
 """
 
 _PKG = "nemo.collections.speechlm2.vllm.salm"
+_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = None
+_AUTOMODEL_DFLASH2_ARCHITECTURES = frozenset(
+    {
+        "Qwen3DFlash2DraftModel",
+        "DFlashQwen3DFlash2DraftModel",
+    }
+)
+
+
+def _normalize_dflash2_architecture(hf_config):
+    """Route Automodel DFlash2 exports to vLLM's canonical runtime.
+
+    Automodel keeps its training class in ``config.json`` so the checkpoint can
+    be reopened for training. The pinned vLLM DFlash2 implementation dispatches
+    both its V2 runner and candidate-selector speculator only when it sees the
+    canonical ``DFlash2DraftModel`` architecture. Normalize before vLLM wraps
+    the draft in ``EAGLEConfig``; otherwise ``method=dflash`` prefixes the
+    Automodel name and silently selects the plain-DFlash speculator.
+    """
+    architectures = getattr(hf_config, "architectures", None) or []
+    if len(architectures) == 1 and architectures[0] in _AUTOMODEL_DFLASH2_ARCHITECTURES:
+        hf_config.architectures = ["DFlash2DraftModel"]
+    return hf_config
+
+
+def _nemo_speechlm_mtp_hf_config_override(hf_config):
+    """Apply SpeechLM speculative-config rewrites, then defer to vLLM.
+
+    This function must remain at module scope: vLLM retains it on the draft
+    ``ModelConfig``, which can cross a spawned process boundary. The original
+    vLLM callable stays in process-local module state because binding the
+    replaced static method inside a ``partial`` also makes that method
+    unresolvable by standard pickle.
+    """
+    if hf_config.model_type == "nemo_speechlm":
+        mtp_cfg = getattr(hf_config, "mtp", None)
+        if not isinstance(mtp_cfg, dict):
+            mtp_cfg = {}
+        # Match SALMAutomodel's training defaults exactly: merely retaining a
+        # recipe depth does not enable MTP, while an enabled block with no
+        # explicit depth constructs one logical head.
+        mtp_enabled = bool(mtp_cfg.get("enabled", False))
+        n_predict = mtp_cfg.get("num_nextn_predict_layers", 1 if mtp_enabled else 0)
+        if mtp_enabled and n_predict > 0:
+            use_repeated_layer = bool(mtp_cfg.get("use_repeated_layer", False))
+            if n_predict > 1 and not use_repeated_layer:
+                raise ValueError(
+                    f"NeMo SpeechLM MTP with {n_predict} distinct head layers is not "
+                    f"supported: vLLM's NemotronHMultiTokenPredictor builds a single "
+                    f"physical MTP layer and reuses it every speculative step. Only "
+                    f"checkpoints trained with mtp.use_repeated_layer=true match that "
+                    f"execution model."
+                )
+            hf_config.model_type = "nemo_speechlm_mtp"
+            hf_config.update(
+                {
+                    # Size of the physical MTP block that vLLM reuses. A
+                    # repeated-layer checkpoint ships one shared head even
+                    # when it was trained for multiple next-token positions,
+                    # so arbitrary inference K values must be multiples of 1.
+                    # Consequently vLLM defaults to K=1 when K is omitted;
+                    # callers should set num_speculative_tokens explicitly.
+                    "n_predict": 1,
+                    # Physical MTP prediction steps to instantiate. Repeated-layer checkpoints
+                    # ship one shared step (one mtp.layers.* module per hybrid-pattern character)
+                    # that is reapplied every speculative iteration, exactly as vLLM drives its
+                    # MTP draft. This also shadows the backbone text_config's
+                    # num_nextn_predict_layers (e.g. 4), which would otherwise trip the
+                    # single-step assert in NemotronHMultiTokenPredictor.
+                    "num_nextn_predict_layers": 1,
+                    "architectures": ["NeMoSpeechLMMTPModel"],
+                }
+            )
+            return hf_config
+
+    global _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE
+    if _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is None:
+        # A spawn child can import this module while unpickling the function
+        # without running the vLLM plugin hook first. In that case the class
+        # still exposes its native override, which is safe to capture lazily.
+        import vllm.config.speculative as _spec_mod
+
+        current_override = _spec_mod.SpeculativeConfig.hf_config_override
+        if current_override is _nemo_speechlm_mtp_hf_config_override:
+            raise RuntimeError("NeMo SpeechLM MTP override was installed without preserving vLLM's original hook.")
+        _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = current_override
+    hf_config = _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE(hf_config)
+    return _normalize_dflash2_architecture(hf_config)
+
+
+_nemo_speechlm_mtp_hf_config_override._nemo_speechlm_mtp_override = True
+
+
+def _patch_vllm_for_nemo_speechlm_mtp() -> None:
+    """Extend vLLM's speculative-decoding framework for SpeechLM drafts.
+
+    Four patches are applied on supported vLLM releases:
+
+    1. ``MTPModelTypes`` — the Literal type that guards the MTP detection
+       branch in ``SpeculativeConfig.__post_init__`` is extended to include
+       ``"nemo_speechlm_mtp"``.
+
+    2. ``SpeculativeConfig.hf_config_override`` — the static method that
+       rewrites the draft-model HF config is wrapped to detect
+       ``nemo_speechlm`` checkpoints that carry MTP heads (``mtp.enabled``
+       and ``mtp.num_nextn_predict_layers > 0``) and redirect them to the
+       ``NeMoSpeechLMMTPModel`` architecture with the right ``n_predict``.
+
+    3. ``ModelRegistry`` — ``NeMoSpeechLMMTPModel`` is registered so that
+       vLLM can resolve and instantiate it as the draft model.
+
+    4. Automodel DFlash2 architecture names are normalized to vLLM's canonical
+       ``DFlash2DraftModel`` before ``EAGLEConfig`` wrapping, which activates
+       the V2 model runner and candidate-selector speculator.
+    """
+    from typing import Literal, get_args
+
+    import vllm.config.speculative as _spec_mod
+
+    # Extend vLLM's recognized MTP model types.
+    old_args = get_args(_spec_mod.MTPModelTypes)
+    if "nemo_speechlm_mtp" not in old_args:
+        _spec_mod.MTPModelTypes = Literal[old_args + ("nemo_speechlm_mtp",)]
+
+    # Route SpeechLM MTP checkpoints through SpeculativeConfig.hf_config_override.
+    current_override = _spec_mod.SpeculativeConfig.hf_config_override
+    if not getattr(current_override, "_nemo_speechlm_mtp_override", False):
+        global _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE
+        # Preserve the first native hook for the lifetime of this process.
+        # Replacing it during a later registration could capture a third-party
+        # wrapper that already delegates to us, creating an override cycle.
+        if _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is None:
+            _ORIGINAL_VLLM_HF_CONFIG_OVERRIDE = current_override
+        _spec_mod.SpeculativeConfig.hf_config_override = staticmethod(_nemo_speechlm_mtp_hf_config_override)
+
+    # Register the SpeechLM MTP draft architecture with vLLM.
+    from vllm.model_executor.models.registry import ModelRegistry
+
+    ModelRegistry.register_model(
+        "NeMoSpeechLMMTPModel",
+        f"{_PKG}.mtp:NeMoSpeechLMMTP",
+    )
 
 
 def register():
@@ -45,3 +187,18 @@ def register():
         "NeMoSpeechLMForConditionalGeneration",
         f"{_PKG}.model:NeMoSpeechLMForConditionalGeneration",
     )
+    supported_archs = ModelRegistry.get_supported_archs()
+    if "DFlashDraftModel" in supported_archs:
+        native_dflash_model = ModelRegistry.models["DFlashDraftModel"]
+        native_dflash_model_ref = f"{native_dflash_model.module_name}:{native_dflash_model.class_name}"
+        for automodel_arch in ("Qwen3DFlashDraftModel", "DFlashQwen3DFlashDraftModel"):
+            if automodel_arch not in supported_archs:
+                ModelRegistry.register_model(automodel_arch, native_dflash_model_ref)
+    if "DFlash2DraftModel" in supported_archs:
+        native_dflash2_model = ModelRegistry.models["DFlash2DraftModel"]
+        native_dflash2_model_ref = f"{native_dflash2_model.module_name}:{native_dflash2_model.class_name}"
+        for automodel_arch in _AUTOMODEL_DFLASH2_ARCHITECTURES:
+            if automodel_arch not in supported_archs:
+                ModelRegistry.register_model(automodel_arch, native_dflash2_model_ref)
+
+    _patch_vllm_for_nemo_speechlm_mtp()

@@ -23,8 +23,9 @@ rename rules, optional LoRA merge, mamba state passthroughs) lives in
 ``backends.py`` and is selected once at ``__init__`` time via
 ``make_backend(config)``. The class declares ``IsHybrid`` /
 ``SupportsMambaPrefixCaching`` so vLLM's hybrid KV-cache allocator picks up
-NemotronH backbones; for transformer backbones the runtime
-``ModelConfig.is_hybrid`` property returns False because ``config.py``
+NemotronH backbones, and ``SupportsEagle3`` so DFlash and DFlash2 can consume
+auxiliary hidden states from the language tower. For transformer backbones the
+runtime ``ModelConfig.is_hybrid`` property returns False because ``config.py``
 populates ``text_config.layer_types`` with all-attention markers (vLLM's
 granite-4.0-micro escape hatch).
 
@@ -41,6 +42,7 @@ from vllm.config import VllmConfig
 from vllm.model_executor.models.interfaces import (
     IsHybrid,
     MultiModalEmbeddings,
+    SupportsEagle3,
     SupportsMambaPrefixCaching,
     SupportsMultiModal,
     SupportsPP,
@@ -79,6 +81,7 @@ class NeMoSpeechLMForConditionalGeneration(
     SupportsPP,
     IsHybrid,
     SupportsMambaPrefixCaching,
+    SupportsEagle3,
 ):
     """Backbone-agnostic NeMo SpeechLM. Composition with a backend handles per-backbone details."""
 
@@ -107,11 +110,34 @@ class NeMoSpeechLMForConditionalGeneration(
 
         with self._mark_tower_model(vllm_config, {"audio"}):
             self.perception = _load_nemo_perception(config.perception)
-            _maybe_mount_pe_encoder(self.perception, getattr(config, "pe_encoder_path", None))
+            _maybe_mount_pe_encoder(
+                self.perception,
+                getattr(config, "pe_encoder_path", None),
+                getattr(config, "pe_encoder_config", None),
+            )
 
         self._uses_pe_encoder = isinstance(getattr(self.perception, "encoder", None), ParallelExpertEncoder)
 
         self.make_empty_intermediate_tensors = self.language_model.make_empty_intermediate_tensors
+
+    # ── language-model integration ──
+
+    def get_language_model(self) -> nn.Module:
+        """Return the wrapped decoder used by vLLM speculative decoders.
+
+        DFlash and DFlash2 resolve the target embedding table and LM head
+        through this hook. Returning the registered vLLM language tower also
+        lets the ``SupportsEagle3`` interface reach its inner ``EagleModelMixin``.
+        """
+        return self.language_model
+
+    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
+        """Select target layers whose hidden states are consumed by DFlash drafters."""
+        self.language_model.set_aux_hidden_state_layers(layers)
+
+    def get_eagle3_default_aux_hidden_state_layers(self) -> tuple[int, ...]:
+        """Delegate vLLM's fallback auxiliary-layer selection to the decoder."""
+        return self.language_model.get_eagle3_default_aux_hidden_state_layers()
 
     # ── audio processing ──
 
@@ -190,7 +216,7 @@ class NeMoSpeechLMForConditionalGeneration(
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
         **kwargs,
-    ) -> torch.Tensor | IntermediateTensors:
+    ) -> torch.Tensor | IntermediateTensors | tuple[torch.Tensor, list[torch.Tensor]]:
         if intermediate_tensors is not None:
             inputs_embeds = None
         return self.language_model(input_ids, positions, intermediate_tensors, inputs_embeds)
@@ -223,6 +249,13 @@ class NeMoSpeechLMForConditionalGeneration(
                 continue
             if name.startswith("perception."):
                 perception[name[len("perception.") :]] = tensor
+            elif name.startswith("llm.mtp."):
+                pass  # MTP draft-head weights; loaded by the speculative draft model, not here
+            elif name.startswith("mtp."):
+                raise ValueError(
+                    f"Unsupported bare MTP tensor {name!r}; NeMo SpeechLM exports must store draft weights "
+                    f"under the 'llm.mtp.*' namespace."
+                )
             else:
                 llm.append((name, tensor))
         return perception, llm

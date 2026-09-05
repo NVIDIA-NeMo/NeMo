@@ -15,10 +15,10 @@
 
 """Parallel Expert Speech Encoder.
 
-Runs a Sortformer speaker-diarization expert and an ASR Conformer encoder on the
+Runs a Sortformer speaker-diarization expert and an ASR encoder on the
 same mel input, then fuses their outputs (LayerNorm + sinusoidal speaker-kernel +
 ADD). Expects un-normalised mels; the ASR branch re-applies ``normalize_batch``
-internally. I/O matches :class:`ConformerEncoder` (drop-in). Only self-contained PE
+internally. I/O matches the supported ASR encoders (drop-in). Only self-contained PE
 bundles (inline ``asr_encoder_cfg`` + ``diarization_model_cfg`` in
 ``model_config.yaml``) are supported.
 """
@@ -39,6 +39,7 @@ from torch import nn
 from tqdm import tqdm
 
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
+from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
@@ -285,16 +286,17 @@ class ParallelExpertEncoderPT(ModelPT):
 
 @experimental
 class ParallelExpertEncoder(nn.Module):
-    """Sortformer-diarizer + ASR Conformer encoder; I/O identical to :class:`ConformerEncoder`.
+    """Sortformer-diarizer plus a supported ASR encoder with a shared I/O contract.
 
     Reconstructed from inline configs in the PE bundle's ``model_config.yaml``.
 
     Args:
-        asr_encoder_cfg (DictConfig): Inline config for the ASR-side :class:`ConformerEncoder`.
+        asr_encoder_cfg (DictConfig): Inline config for an ASR-side :class:`ConformerEncoder`
+            or :class:`TransformerEncoder`.
         diarization_model_cfg (DictConfig): Inline config for the :class:`SortformerEncLabelModel`.
         asr_normalize_type (str, optional): Normalization replayed on the ASR branch. Defaults to ``per_feature``.
         freeze_diar (bool): Freeze the Sortformer parameters. Defaults to ``True``.
-        freeze_asr (bool): Freeze the wrapped ASR ConformerEncoder. Defaults to ``False``.
+        freeze_asr (bool): Freeze the wrapped ASR encoder. Defaults to ``False``.
         online_inference_length (int): Online-inference window in encoder output frames
             (default ``500`` ~= 40s); ``<= 0`` disables it.
         chunk_left_context (int): Left context (output frames) per online window, shared by
@@ -333,10 +335,10 @@ class ParallelExpertEncoder(nn.Module):
             )
 
         self.asr_encoder = ConformerEncoder.from_config_dict(_clone_config(asr_encoder_cfg))
-        if not isinstance(self.asr_encoder, ConformerEncoder):
+        if not isinstance(self.asr_encoder, (ConformerEncoder, TransformerEncoder)):
             raise TypeError(
-                f"Expected `asr_encoder_cfg._target_` to instantiate a "
-                f"ConformerEncoder, got {type(self.asr_encoder).__name__} instead."
+                "Expected `asr_encoder_cfg._target_` to instantiate a ConformerEncoder "
+                f"or TransformerEncoder, got {type(self.asr_encoder).__name__} instead."
             )
         self.asr_normalize_type = asr_normalize_type or 'per_feature'
         self._feat_in = self.asr_encoder._feat_in
@@ -407,7 +409,7 @@ class ParallelExpertEncoder(nn.Module):
             self.asr_encoder.eval()
         return self
 
-    # ConformerEncoder-compatible properties (drop-in for SALM perception).
+    # ASR-encoder-compatible properties (drop-in for SALM perception).
     @property
     def d_model(self) -> int:
         return self.asr_d_model
@@ -487,7 +489,7 @@ class ParallelExpertEncoder(nn.Module):
 
         return fused.transpose(1, 2)  # (B, D, T)
 
-    # Forward — identical signature to ConformerEncoder.forward
+    # Forward — identical signature across the supported ASR encoders.
     def forward(
         self,
         audio_signal,

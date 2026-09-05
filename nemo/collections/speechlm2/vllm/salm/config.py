@@ -40,9 +40,12 @@ _HYBRID_ARCHITECTURES = frozenset(
 # silently rendering the wrong placeholder at request time.
 _AUDIO_PLACEHOLDER = "<|audio|>"
 
-# Number of extra embedding rows the SpeechLM adds on top of the backbone's
-# native vocab during training: ``<|audio|>`` locator plus headroom for other
-# special tokens and TensorCore-friendly alignment.
+# Historical serving-time headroom above the backbone vocabulary. vLLM builds
+# the target and draft embedding tables at this padded size, and the weight
+# loader zero-pads the smaller training tensors to match. ``prepare_for_vllm``
+# validates the tokenizer's audio-token ID against this bound during export;
+# the default export flow treats a validation failure as non-fatal and leaves
+# an HF-only checkpoint.
 _SPEECHLM_EMBED_EXTRA_ROWS = 10
 
 
@@ -72,6 +75,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self,
         perception: dict | None = None,
         pretrained_llm: str | None = None,
+        llm_config: dict | None = None,
         pretrained_asr: str | None = None,
         audio_locator_tag: str | None = None,
         prompt_format: str | None = None,
@@ -101,6 +105,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         # path; real checkpoint loads replace it below after field validation.
         self.text_config = PretrainedConfig()
         self.is_hybrid = False
+        self._pending_image_token_index = None
 
         super().__init__(**kwargs)
 
@@ -110,12 +115,14 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             # path inert; real checkpoint loads continue through validation below.
             self.perception = {}
             self.pretrained_llm = None
+            self.llm_config = None
             self.pretrained_asr = None
             self.audio_locator_tag = None
             self.prompt_format = None
             self.pretrained_weights = None
             self.lora = None
             self.encoder_chunk_size_seconds = None
+            self.__dict__.pop("_pending_image_token_index", None)
             return
 
         for name, value in required_fields.items():
@@ -136,6 +143,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             )
         self.perception = perception or {}
         self.pretrained_llm = pretrained_llm
+        self.llm_config = llm_config
         self.pretrained_asr = pretrained_asr
         self.audio_locator_tag = audio_locator_tag
         self.prompt_format = prompt_format
@@ -143,7 +151,16 @@ class NeMoSpeechLMConfig(PretrainedConfig):
         self.lora = lora
         self.encoder_chunk_size_seconds = encoder_chunk_size_seconds
 
-        self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+        if llm_config is None:
+            self.text_config = AutoConfig.from_pretrained(pretrained_llm, trust_remote_code=True)
+        else:
+            if not isinstance(llm_config, dict):
+                raise ValueError(f"NeMo SpeechLM llm_config must be a dict, got {type(llm_config).__name__}.")
+            embedded_config = dict(llm_config)
+            model_type = embedded_config.pop("model_type", None)
+            if not model_type:
+                raise ValueError("NeMo SpeechLM llm_config must declare model_type.")
+            self.text_config = AutoConfig.for_model(model_type, **embedded_config)
 
         raw_archs = getattr(self.text_config, "architectures", [])
         if len(raw_archs) != 1:
@@ -178,6 +195,13 @@ class NeMoSpeechLMConfig(PretrainedConfig):
                 self.text_config.layer_types = ["attention"] * num_layers
 
         self.text_config.vocab_size += _SPEECHLM_EMBED_EXTRA_ROWS
+        pending_image_token_index = self.__dict__.pop("_pending_image_token_index", None)
+        if pending_image_token_index is not None and pending_image_token_index != self.image_token_index:
+            raise ValueError(
+                f"image_token_index={pending_image_token_index!r} does not match the backbone vocabulary "
+                f"boundary {self.image_token_index}. Remove this legacy serialized field; SpeechLM derives "
+                f"the vLLM compatibility value at runtime."
+            )
 
     @property
     def llm_architectures(self) -> list[str]:
@@ -186,6 +210,46 @@ class NeMoSpeechLMConfig(PretrainedConfig):
 
     def get_text_config(self, decoder=False) -> PretrainedConfig:
         return self.text_config
+
+    @property
+    def image_token_index(self) -> int | None:
+        """Return the vocabulary-boundary value expected by vLLM's MTP proposer.
+
+        vLLM calls this compatibility field ``image_token_index`` even for an
+        audio multimodal target. Actual audio locations come from vLLM's
+        placeholder ranges; no token-index field is serialized by SpeechLM.
+        """
+        vocab_size = getattr(self.text_config, "vocab_size", None)
+        if vocab_size is None:
+            return None
+        return int(vocab_size) - _SPEECHLM_EMBED_EXTRA_ROWS
+
+    @image_token_index.setter
+    def image_token_index(self, value: int | None) -> None:
+        """Accept vLLM's runtime target-to-draft copy without serializing it."""
+        expected = self.image_token_index
+        if expected is None:
+            # Transformers applies unknown config kwargs in its base-class
+            # constructor, before this wrapper has loaded the real backbone.
+            # Defer validation and discard the temporary value afterwards so
+            # it never becomes serialized state.
+            self._pending_image_token_index = value
+        elif value is not None and value != expected:
+            raise ValueError(
+                f"image_token_index={value!r} does not match the backbone vocabulary boundary {expected}."
+            )
+
+    @property
+    def mtp_hybrid_override_pattern(self) -> str:
+        """Hybrid layer pattern for MTP heads, consumed by NemotronHMultiTokenPredictor.
+
+        Reads from the ``mtp.hybrid_override_pattern`` field in config.json.
+        vLLM supports any sequence of ``"*"`` (attention) and ``"E"`` (MoE),
+        with one physical MTP layer module instantiated per character. Other
+        characters are rejected by vLLM during model construction.
+        """
+        mtp_cfg = self.__dict__.get("mtp") or {}
+        return mtp_cfg.get("hybrid_override_pattern", "*") if isinstance(mtp_cfg, dict) else "*"
 
     _ATTR_ALIASES = {
         "rms_norm_eps": "layer_norm_epsilon",
@@ -214,6 +278,7 @@ class NeMoSpeechLMConfig(PretrainedConfig):
             "pretrained_llm",
             "pretrained_asr",
             "audio_locator_tag",
+            "image_token_index",
             "prompt_format",
             "pretrained_weights",
             "text_config",

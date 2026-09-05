@@ -15,7 +15,8 @@
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from numbers import Integral
+from typing import List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -46,6 +47,7 @@ class StreamingSortformerState:
         spk_perm (torch.Tensor): Speaker permutation information for the speaker cache
         mean_sil_emb (torch.Tensor): Mean silence embedding
         n_sil_frames (torch.Tensor): Number of silence frames
+        max_speakers (torch.Tensor): Per-row number of enabled speaker channels, or ``None`` for all channels.
     """
 
     spkcache = None  # Speaker cache to store embeddings from start
@@ -58,6 +60,7 @@ class StreamingSortformerState:
     spk_perm = None
     mean_sil_emb = None
     n_sil_frames = None
+    max_speakers = None
 
     def to(self, device):
         """
@@ -86,6 +89,8 @@ class StreamingSortformerState:
             self.mean_sil_emb = self.mean_sil_emb.to(device)
         if self.n_sil_frames is not None:
             self.n_sil_frames = self.n_sil_frames.to(device)
+        if self.max_speakers is not None:
+            self.max_speakers = self.max_speakers.to(device)
 
 
 class SortformerModules(NeuralModule, Exportable):
@@ -486,7 +491,13 @@ class SortformerModules(NeuralModule, Exportable):
         output = flat_output[: batch_size * sig_length].view(batch_size, sig_length, emb_dim)
         return output, total_lengths
 
-    def init_streaming_state(self, batch_size: int = 1, async_streaming: bool = False, device: torch.device = None):
+    def init_streaming_state(
+        self,
+        batch_size: int = 1,
+        async_streaming: bool = False,
+        device: torch.device = None,
+        max_speakers: Optional[Union[int, Sequence[int], torch.Tensor]] = None,
+    ):
         """
         Initializes StreamingSortformerState with empty tensors or zero-valued tensors.
 
@@ -494,6 +505,8 @@ class SortformerModules(NeuralModule, Exportable):
             batch_size (int): Batch size for tensors in streaming state
             async_streaming (bool): True for asynchronous update, False for synchronous update
             device (torch.device): Device for tensors in streaming state
+            max_speakers (Optional[Union[int, Sequence[int], torch.Tensor]]): Number of enabled speaker channels for
+                every row. A scalar applies to the complete batch; a sequence or tensor supplies one value per row.
 
         Returns:
             streaming_state (SortformerStreamingState): initialized streaming state
@@ -511,7 +524,50 @@ class SortformerModules(NeuralModule, Exportable):
             streaming_state.fifo = torch.zeros((batch_size, 0, self.fc_d_model), device=device)
         streaming_state.mean_sil_emb = torch.zeros((batch_size, self.fc_d_model), device=device)
         streaming_state.n_sil_frames = torch.zeros((batch_size,), dtype=torch.long, device=device)
+        streaming_state.max_speakers = self._normalize_max_speakers(max_speakers, batch_size, device)
         return streaming_state
+
+    def _normalize_max_speakers(self, max_speakers, batch_size, device):
+        """Validate a scalar or per-row speaker limit and return it as a device tensor."""
+        if max_speakers is None:
+            return None
+        if isinstance(max_speakers, bool):
+            raise TypeError("max_speakers must be an integer, sequence of integers, or integer tensor")
+        if isinstance(max_speakers, Integral):
+            max_speakers = torch.full((batch_size,), int(max_speakers), dtype=torch.long, device=device)
+        elif isinstance(max_speakers, torch.Tensor):
+            if (
+                max_speakers.dtype == torch.bool
+                or torch.is_floating_point(max_speakers)
+                or torch.is_complex(max_speakers)
+            ):
+                raise TypeError("max_speakers must contain integers")
+            if max_speakers.ndim == 0:
+                max_speakers = max_speakers.expand(batch_size)
+            elif max_speakers.ndim != 1 or max_speakers.numel() != batch_size:
+                raise ValueError(f"max_speakers must contain one value per batch row; expected {batch_size}")
+            max_speakers = max_speakers.to(device=device, dtype=torch.long)
+        else:
+            if not isinstance(max_speakers, Sequence) or isinstance(max_speakers, (str, bytes)):
+                raise TypeError("max_speakers must be an integer, sequence of integers, or integer tensor")
+            if len(max_speakers) != batch_size:
+                raise ValueError(f"max_speakers must contain one value per batch row; expected {batch_size}")
+            if any(isinstance(value, bool) or not isinstance(value, Integral) for value in max_speakers):
+                raise TypeError("max_speakers must contain integers")
+            max_speakers = torch.tensor(max_speakers, dtype=torch.long, device=device)
+
+        if torch.any(max_speakers < 1) or torch.any(max_speakers > self.n_spk):
+            raise ValueError(f"max_speakers values must be between 1 and {self.n_spk}")
+        return max_speakers
+
+    @staticmethod
+    def apply_max_speakers_mask(predictions, max_speakers):
+        """Zero speaker channels at or above each row's configured limit."""
+        if max_speakers is None:
+            return predictions
+        speaker_indices = torch.arange(predictions.shape[2], device=predictions.device).view(1, 1, -1)
+        enabled_speakers = speaker_indices < max_speakers.view(-1, 1, 1)
+        return predictions.masked_fill(~enabled_speakers, 0.0)
 
     @staticmethod
     def apply_mask_to_preds(spkcache_fifo_chunk_preds, spkcache_fifo_chunk_fc_encoder_lengths):

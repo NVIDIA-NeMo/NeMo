@@ -66,6 +66,10 @@ class TranscribeConfig:
     timestamps: Optional[bool] = None  # returns timestamps for each word and segments if model supports punctuations
     verbose: bool = True
 
+    # Target language/task prompt for prompt-conditioned ("unified") models (e.g. "en", "de").
+    # Ignored by models that were not trained with prompt conditioning.
+    target_lang: Optional[str] = None
+
     # Utility
     partial_hypothesis: Optional[List[Any]] = None
 

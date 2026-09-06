@@ -37,6 +37,22 @@ def test_packed_half_snake() -> None:
     torch.testing.assert_close(actual, expected, atol=2e-5, rtol=2e-5)
 
 
+def test_packed_half_snake_with_residual() -> None:
+    torch.manual_seed(18)
+    inputs = torch.randn(113, 32, device="cuda")
+    residual = torch.randn_like(inputs)
+    alpha = torch.rand(1, 16, 1, device="cuda") + 0.25
+    actual = packed_half_snake(inputs, alpha, residual)
+    combined = inputs + residual
+    snake_in = combined[:, :16]
+    scale = alpha.reshape(1, -1)
+    expected = torch.cat(
+        (snake_in + torch.sin(scale * snake_in).square() / (scale + 1e-9), F.leaky_relu(combined[:, 16:])),
+        dim=-1,
+    )
+    torch.testing.assert_close(actual, expected, atol=2e-5, rtol=2e-5)
+
+
 def test_packed_causal_conv1d() -> None:
     torch.manual_seed(19)
     device = torch.device("cuda")

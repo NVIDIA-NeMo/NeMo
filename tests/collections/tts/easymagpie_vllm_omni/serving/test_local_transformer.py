@@ -52,6 +52,29 @@ def _build_predictor(profile_kwargs: dict):
     return cp, arch
 
 
+def _full_buffer_codes(cp, dec_hidden, gumbel_noise, temperature):
+    """Reference the original loop that transforms all codebook positions."""
+    num_tokens = dec_hidden.shape[0]
+    num_codebooks = cp.num_codebooks
+    buf = dec_hidden.new_zeros(num_tokens, num_codebooks, cp.lt_hidden)
+    buf[:, 0, :] = cp.local_transformer_in_projection(dec_hidden)
+
+    codes = []
+    for k in range(num_codebooks):
+        hidden = cp.local_transformer(buf)
+        row = cp.local_transformer_audio_out_projection(hidden[:, k, :])
+        logits = cp.local_transformer_out_projections[k](row)
+        logits = logits.masked_fill(cp.forbidden_mask, float("-inf")) / temperature
+        vals, idxs = torch.topk(logits, cp._sample_top_k, dim=-1)
+        picked = (vals + gumbel_noise[:, k, :]).argmax(dim=-1, keepdim=True)
+        code = idxs.gather(-1, picked).squeeze(-1)
+        codes.append(code)
+        if k + 1 < num_codebooks:
+            emb = cp.audio_in_projection(cp.audio_embeddings[k](code))
+            buf[:, k + 1, :] = cp.local_transformer_in_projection(emb)
+    return torch.stack(codes, dim=1)
+
+
 @pytest.mark.unit
 def test_generate_codes_shape_dtype_and_range():
     """``generate_codes`` returns valid (num_tokens, num_codebooks) int64 codes within vocab."""
@@ -93,3 +116,21 @@ def test_generate_codes_deterministic_with_seed():
     second = cp.generate_codes(dec_hidden)
 
     assert torch.equal(first, second)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("profile", ARCH_PROFILES.values(), ids=ARCH_PROFILES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
+def test_code_loop_matches_full_buffer_reference(profile, dtype):
+    """Causal prefix execution preserves every sampled code from the original loop."""
+    cp, arch = _build_predictor(profile)
+    cp.to(dtype=dtype)
+    num_tokens = 3
+    dec_hidden = torch.randn(num_tokens, arch.hidden_dim, dtype=dtype)
+    gumbel_noise = torch.randn(num_tokens, arch.num_stacked_codebooks, cp._sample_top_k)
+    temperature = torch.tensor([0.7])
+
+    expected = _full_buffer_codes(cp, dec_hidden, gumbel_noise, temperature)
+    actual = cp._code_loop(dec_hidden, gumbel_noise, temperature)
+
+    assert torch.equal(actual, expected)

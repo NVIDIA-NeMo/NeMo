@@ -219,6 +219,16 @@ class EasyMagpieInputStream:
 class EasyMagpieStreamingSpeechHandler(OmniStreamingSpeechHandler):
     """Use resumable EasyMagpie requests while preserving the generic handler."""
 
+    async def _receive_config(self, websocket: WebSocket):
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=self._config_timeout)
+        msg = await self._parse_message(websocket, raw)
+        if msg is None:
+            return None
+        if msg.get("type") != "session.config":
+            await self._send_error(websocket, f"Expected session.config, got: {msg.get('type')}")
+            return None
+        return await self._build_config(websocket, msg)
+
     async def handle_session(self, websocket: WebSocket) -> None:
         if getattr(self._speech_service, "_tts_model_type", None) != _MODEL_TYPE:
             await super().handle_session(websocket)

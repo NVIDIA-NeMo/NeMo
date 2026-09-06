@@ -17,21 +17,28 @@ connectors:
       connector_get_max_wait_first_chunk: 3000
       connector_get_max_wait: 300
       # Native vLLM state pages retain the decoder's exact causal history.
-      # Two startup chunks provide playback headroom before steady-state streaming.
+      # Short startup chunks reduce TTFA and preserve playback headroom.
       codec_chunk_frames: 8
-      codec_startup_chunk_frames: [6, 6]
+      codec_startup_chunk_frames: [2, 2, 2, 4]
+      codec_busy_startup_chunk_frames: [8]
+      stage0_admission_coalesce_ms: 10
+      codec_startup_coalesce_ms: 2
+      codec_busy_coalesce_ms: 4
 
 stages:
   # Keep engine settings flat at the stage level; nested settings are not parsed.
   - stage_id: 0
-    max_num_seqs: 32
-    gpu_memory_utilization: 0.5
+    num_replicas: 2
+    max_num_seqs: 64
+    gpu_memory_utilization: 0.18
+    kv_cache_memory_bytes: 2147483648
     enforce_eager: false
     async_scheduling: true
     enable_prefix_caching: false
     enable_chunked_prefill: true
     max_num_batched_tokens: 4096
     max_model_len: 4096
+    max_cudagraph_capture_size: 64
     devices: "0"
     output_connectors:
       to_stage_1: connector_of_shared_memory
@@ -45,8 +52,10 @@ stages:
       max_tokens: 2048
 
   - stage_id: 1
-    max_num_seqs: 32
-    gpu_memory_utilization: 0.35
+    num_replicas: 1
+    max_num_seqs: 128
+    gpu_memory_utilization: 0.04
+    kv_cache_memory_bytes: 268435456
     # FP16 is faster, but introduces audible codec artifacts.
     dtype: float32
     enforce_eager: true
@@ -54,11 +63,14 @@ stages:
     enable_prefix_caching: false
     # Codec chunks are atomic: never split one request's state update across steps.
     enable_chunked_prefill: false
-    max_num_batched_tokens: 512
-    max_model_len: 512
+    max_num_batched_tokens: 1536
+    # Leave room for up to seven synthetic terminal padding frames.
+    max_model_len: 520
     devices: "0"
     input_connectors:
       from_stage_0: connector_of_shared_memory
+    engine_extras:
+      worker_cls: easymagpie_vllm_omni.runner.EasyMagpieCodecGPUGenerationWorker
     default_sampling_params:
       temperature: 0.0
       max_tokens: 65536

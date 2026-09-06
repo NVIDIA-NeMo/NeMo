@@ -48,6 +48,7 @@ class RequestResult:
 
 
 def _save_wav(path: Path, audio: np.ndarray, sample_rate: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     audio = np.clip(audio, -1.0, 1.0)
     pcm = (audio * 32767.0).astype(np.int16)
     with wave.open(str(path), "wb") as wf:
@@ -65,9 +66,7 @@ def _do_request(task: dict) -> RequestResult:
         "input": task["text"],
         "voice": task["speaker_id"] or "eng",
         "response_format": "pcm",
-        "stream": True,
         "stream_format": "audio",
-        "max_new_tokens": task["max_new_tokens"],
     }
 
     t0 = time.perf_counter()
@@ -126,6 +125,8 @@ def _load_items(text_file: str) -> list[tuple[str, str]]:
             if not line.strip():
                 continue
             parts = line.split("\t", 1)
+            if len(parts) != 2:
+                parts = line.split("|", 1)
             if len(parts) != 2:
                 raise ValueError(f"Expected '<uttid>\\t<text>' per line, got: {line!r}")
             uttid, text = parts[0].strip(), parts[1].strip()
@@ -339,9 +340,11 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--sample-rate", type=int, default=22050, help="Raw PCM sample rate (default: %(default)s)")
     parser.add_argument("--timeout", type=float, default=300, help="Per-request timeout, s (default: 300)")
+    parser.add_argument("--seed", type=int, default=0, help="Request selection seed (default: %(default)s)")
     parser.add_argument("--no-warmup", action="store_true", help="Skip warmup phase (concurrency requests)")
     parser.add_argument("--output-dir", default=None, help="If set, write each waveform to <output-dir>/<uttid>.wav")
     args = parser.parse_args()
+    random.seed(args.seed)
 
     items = _load_items(args.text_file)
     if not items:

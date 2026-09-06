@@ -166,7 +166,27 @@ def test_async_codec_forwards_terminal_audio_eos_row():
     )
 
     assert bool(terminal.meta.finished)
-    torch.testing.assert_close(terminal.codes.audio, torch.tensor([[1, 101], [2, 102], [1025, 777]]))
+    torch.testing.assert_close(
+        terminal.codes.audio,
+        torch.tensor([[1, 101], [2, 102], [1025, 777], [-1, -1]]),
+    )
+
+
+def test_async_codec_pads_short_terminal_chunk_to_steady_size():
+    manager = _manager()
+    manager.config.hf_config.streaming_speech_delay = 0
+    manager.connector.config["extra"]["codec_chunk_frames"] = 4
+    request = _Request()
+    request.resumable = False
+
+    assert talker2code2wav_async_chunk(manager, _output(1), request) is None
+    request.finished = True
+    terminal = talker2code2wav_async_chunk(manager, _output(2), request, is_finished=True)
+
+    torch.testing.assert_close(
+        terminal.codes.audio,
+        torch.tensor([[1, 101], [2, 102], [-1, -1], [-1, -1]]),
+    )
 
 
 def test_async_codec_buffer_drops_emitted_rows():
@@ -226,6 +246,26 @@ def test_async_codec_allows_larger_first_chunk_than_steady_state():
     first = talker2code2wav_async_chunk(manager, _output(5), request)
     assert first is not None
     torch.testing.assert_close(first.codes.audio, torch.tensor([[1, 101], [2, 102], [3, 103], [4, 104], [5, 105]]))
+
+
+def test_async_codec_gives_rolling_admissions_more_headroom():
+    manager = _manager()
+    manager.config.hf_config.streaming_speech_delay = 0
+    manager.connector.config["extra"].update(
+        {
+            "codec_chunk_frames": 4,
+            "codec_startup_chunk_frames": [2],
+            "codec_busy_startup_chunk_frames": [3],
+        }
+    )
+    manager._emp_emitted_chunks = defaultdict(int, existing=1)
+    request = _Request()
+
+    assert talker2code2wav_async_chunk(manager, _output(1), request) is None
+    assert talker2code2wav_async_chunk(manager, _output(2), request) is None
+    first = talker2code2wav_async_chunk(manager, _output(3), request)
+
+    torch.testing.assert_close(first.codes.audio, torch.tensor([[1, 101], [2, 102], [3, 103]]))
 
 
 def test_async_codec_rejects_invalid_startup_chunk_ramp():

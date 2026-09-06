@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for the vLLM-Omni 0.24 async scheduler compatibility layer."""
+"""Tests for the vLLM-Omni scheduler compatibility layer."""
 from __future__ import annotations
 
 import threading
@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+import easymagpie_vllm_omni.scheduler as scheduler_module
 from easymagpie_vllm_omni.scheduler import (
     EasyMagpieARAsyncScheduler,
     EasyMagpieCodecScheduler,
@@ -27,6 +28,7 @@ from easymagpie_vllm_omni.scheduler import (
 )
 from vllm.v1.request import RequestStatus
 from vllm_omni.core.sched.omni_ar_scheduler import OmniARAsyncScheduler
+from vllm_omni.core.sched.omni_generation_scheduler import OmniGenerationScheduler
 from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import OmniChunkTransferAdapter
 
 
@@ -34,6 +36,7 @@ def test_no_stop_is_inert_for_non_resumable_requests(monkeypatch):
     """A plain HTTP request never hits a segment stop, so the override must pass
     ``super()`` through unchanged and leave request accounting untouched."""
     scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    monkeypatch.setattr(scheduler_module, "_UPSTREAM_HAS_SEGMENT_STOP_ACCOUNTING_FIX", False)
     request = SimpleNamespace(
         async_tokens_to_discard=0,
         num_computed_tokens=20,
@@ -62,6 +65,7 @@ def test_terminal_stop_without_discard_is_inert(monkeypatch):
     """HTTP requests end on a normal audio-EOS stop (not a resumable segment
     stop), so omni arms no discard and the override must not roll anything back."""
     scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    monkeypatch.setattr(scheduler_module, "_UPSTREAM_HAS_SEGMENT_STOP_ACCOUNTING_FIX", False)
     request = SimpleNamespace(
         async_tokens_to_discard=0,
         num_computed_tokens=20,
@@ -89,6 +93,7 @@ def test_terminal_stop_without_discard_is_inert(monkeypatch):
 @pytest.mark.parametrize("remaining_placeholders", [0, 1, 2])
 def test_segment_stop_discards_and_rolls_back_exact_inflight_count(monkeypatch, remaining_placeholders):
     scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    monkeypatch.setattr(scheduler_module, "_UPSTREAM_HAS_SEGMENT_STOP_ACCOUNTING_FIX", False)
     request = SimpleNamespace(
         async_tokens_to_discard=0,
         num_computed_tokens=20,
@@ -113,6 +118,19 @@ def test_segment_stop_discards_and_rolls_back_exact_inflight_count(monkeypatch, 
     assert outputs == "outputs"
     assert request.async_tokens_to_discard == remaining_placeholders
     assert request.num_computed_tokens == 20 - remaining_placeholders
+
+
+def test_vllm_026_uses_upstream_segment_stop_accounting(monkeypatch):
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    monkeypatch.setattr(scheduler_module, "_UPSTREAM_HAS_SEGMENT_STOP_ACCOUNTING_FIX", True)
+    monkeypatch.setattr(
+        OmniARAsyncScheduler,
+        "update_from_output",
+        lambda self, scheduler_output, model_runner_output: "upstream",
+    )
+
+    assert scheduler.update_from_output(None, None) == "upstream"
+    assert not hasattr(scheduler, "_emp_stopped_this_step")
 
 
 def test_final_streaming_sentinel_marks_session_non_resumable(monkeypatch):
@@ -166,26 +184,252 @@ def test_resume_uses_exact_discard_count_and_forwards_chunk_metadata(monkeypatch
     assert session.additional_information == {"text_token": [2, 3]}
 
 
+def test_stage0_coalesces_only_new_idle_admissions(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(scheduler_module, "monotonic", lambda: now[0])
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    scheduler._admission_wait_s = 0.003
+    scheduler._admission_deadline = None
+    scheduler.max_num_running_reqs = 32
+    scheduler.running = []
+    scheduler.waiting = [SimpleNamespace(num_computed_tokens=0)]
+
+    assert scheduler._should_defer_waiting_admission() is True
+    scheduler.waiting.append(SimpleNamespace(num_computed_tokens=0))
+    now[0] += 0.002
+    assert scheduler._should_defer_waiting_admission() is True
+    now[0] += 0.001
+    assert scheduler._should_defer_waiting_admission() is False
+    assert scheduler._should_defer_waiting_admission() is False
+
+    scheduler.waiting.clear()
+    assert scheduler._should_defer_waiting_admission() is False
+    assert scheduler._admission_deadline is None
+
+    scheduler.waiting.append(SimpleNamespace(num_computed_tokens=0))
+    assert scheduler._should_defer_waiting_admission() is True
+
+
+@pytest.mark.parametrize("mode", ["disabled", "continuation", "full", "running"])
+def test_stage0_admission_coalescing_bypass(mode):
+    scheduler = object.__new__(EasyMagpieARAsyncScheduler)
+    scheduler._admission_wait_s = 0 if mode == "disabled" else 0.003
+    scheduler._admission_deadline = None
+    scheduler.max_num_running_reqs = 2
+    scheduler.running = [object()] if mode == "running" else []
+    computed = 1 if mode == "continuation" else 0
+    count = 2 if mode == "full" else 1
+    scheduler.waiting = [SimpleNamespace(num_computed_tokens=computed) for _ in range(count)]
+
+    assert scheduler._should_defer_waiting_admission() is False
+
+
+def test_codec_startup_coalescing_finishes_receive_pass(monkeypatch):
+    lock = threading.Lock()
+    first = SimpleNamespace(
+        request_id="first",
+        status=RequestStatus.WAITING_FOR_CHUNK,
+        num_computed_tokens=0,
+    )
+    second = SimpleNamespace(
+        request_id="second",
+        status=RequestStatus.WAITING_FOR_CHUNK,
+        num_computed_tokens=0,
+    )
+    adapter = SimpleNamespace(
+        _easymagpie_chunk_lock=lock,
+        _easymagpie_chunk_ready=threading.Condition(lock),
+        _finished_load_reqs={"first"},
+    )
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._codec_startup_wait_s = 0.002
+    scheduler._codec_busy_wait_s = 0
+    scheduler.chunk_transfer_adapter = adapter
+    scheduler.running = []
+    scheduler.waiting = [first, second]
+
+    def fake_sleep(delay):
+        assert delay == 0.002
+        assert not lock.locked()
+        with lock:
+            adapter._finished_load_reqs.add("second")
+
+    def fake_schedule(self, *args, **kwargs):
+        assert lock.locked()
+        return set(adapter._finished_load_reqs)
+
+    monkeypatch.setattr(scheduler_module, "sleep", fake_sleep)
+    monkeypatch.setattr(OmniGenerationScheduler, "schedule", fake_schedule)
+
+    assert scheduler.schedule() == {"first", "second"}
+
+
+@pytest.mark.parametrize("mode", ["disabled", "running", "not_ready", "continuation"])
+def test_codec_startup_coalescing_bypass(monkeypatch, mode):
+    lock = threading.Lock()
+    request = SimpleNamespace(
+        request_id="request",
+        status=RequestStatus.WAITING_FOR_CHUNK,
+        num_computed_tokens=1 if mode == "continuation" else 0,
+    )
+    adapter = SimpleNamespace(
+        _easymagpie_chunk_lock=lock,
+        _easymagpie_chunk_ready=threading.Condition(lock),
+        _finished_load_reqs=set() if mode == "not_ready" else {"request"},
+    )
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._codec_startup_wait_s = 0 if mode == "disabled" else 0.002
+    scheduler._codec_busy_wait_s = 0
+    scheduler.chunk_transfer_adapter = adapter
+    scheduler.running = [object()] if mode == "running" else []
+    scheduler.waiting = [request]
+
+    monkeypatch.setattr(scheduler_module, "sleep", lambda delay: pytest.fail("unexpected sleep"))
+
+    def fake_schedule(self, *args, **kwargs):
+        assert lock.locked()
+        return "scheduled"
+
+    monkeypatch.setattr(OmniGenerationScheduler, "schedule", fake_schedule)
+
+    assert scheduler.schedule() == "scheduled"
+
+
+def test_codec_busy_coalescing_collects_established_chunks(monkeypatch):
+    lock = threading.Lock()
+    first = SimpleNamespace(request_id="first", num_computed_tokens=8)
+    second = SimpleNamespace(request_id="second", num_computed_tokens=8)
+
+    class _ReadyCondition(threading.Condition):
+        def wait_for(self, predicate, timeout=None):
+            assert timeout == 0.001
+            assert predicate() is False
+            adapter._finished_load_reqs.add("second")
+            assert predicate() is True
+            return True
+
+    adapter = SimpleNamespace(
+        _easymagpie_chunk_lock=lock,
+        _easymagpie_chunk_ready=_ReadyCondition(lock),
+        _finished_load_reqs={"first"},
+    )
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._codec_startup_wait_s = 0
+    scheduler._codec_busy_wait_s = 0.001
+    scheduler.chunk_transfer_adapter = adapter
+    scheduler.running = [first, second]
+    scheduler.waiting = []
+
+    def fake_schedule(self, *args, **kwargs):
+        assert lock.locked()
+        return set(adapter._finished_load_reqs)
+
+    monkeypatch.setattr(OmniGenerationScheduler, "schedule", fake_schedule)
+
+    assert scheduler.schedule() == {"first", "second"}
+
+
+def test_codec_busy_coalescing_bypasses_full_ready_batch(monkeypatch):
+    lock = threading.Lock()
+    first = SimpleNamespace(request_id="first", num_computed_tokens=8)
+    second = SimpleNamespace(request_id="second", num_computed_tokens=8)
+    condition = threading.Condition(lock)
+    adapter = SimpleNamespace(
+        _easymagpie_chunk_lock=lock,
+        _easymagpie_chunk_ready=condition,
+        _finished_load_reqs={"first", "second"},
+    )
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._codec_startup_wait_s = 0
+    scheduler._codec_busy_wait_s = 0.001
+    scheduler.chunk_transfer_adapter = adapter
+    scheduler.running = [first, second]
+    scheduler.waiting = []
+
+    monkeypatch.setattr(condition, "wait_for", lambda *args, **kwargs: pytest.fail("unexpected wait"))
+    monkeypatch.setattr(OmniGenerationScheduler, "schedule", lambda self, *args, **kwargs: "scheduled")
+
+    assert scheduler.schedule() == "scheduled"
+
+
+def test_codec_busy_coalescing_wakes_for_first_audio(monkeypatch):
+    lock = threading.Lock()
+    established = SimpleNamespace(request_id="established", num_computed_tokens=8)
+    startup = SimpleNamespace(request_id="startup", num_computed_tokens=0)
+
+    class _ReadyCondition(threading.Condition):
+        def wait_for(self, predicate, timeout=None):
+            assert predicate() is False
+            adapter._finished_load_reqs.add("startup")
+            assert predicate() is True
+            return True
+
+    adapter = SimpleNamespace(
+        _easymagpie_chunk_lock=lock,
+        _easymagpie_chunk_ready=_ReadyCondition(lock),
+        _finished_load_reqs={"established"},
+    )
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._codec_startup_wait_s = 0
+    scheduler._codec_busy_wait_s = 0.001
+    scheduler.chunk_transfer_adapter = adapter
+    scheduler.running = [established, startup]
+    scheduler.waiting = []
+
+    monkeypatch.setattr(OmniGenerationScheduler, "schedule", lambda self, *args, **kwargs: "scheduled")
+
+    assert scheduler.schedule() == "scheduled"
+
+
+def test_codec_busy_coalescing_bypasses_ready_first_audio(monkeypatch):
+    lock = threading.Lock()
+    established = SimpleNamespace(request_id="established", num_computed_tokens=8)
+    startup = SimpleNamespace(request_id="startup", num_computed_tokens=0)
+    condition = threading.Condition(lock)
+    adapter = SimpleNamespace(
+        _easymagpie_chunk_lock=lock,
+        _easymagpie_chunk_ready=condition,
+        _finished_load_reqs={"established", "startup"},
+    )
+    scheduler = object.__new__(EasyMagpieCodecScheduler)
+    scheduler._codec_startup_wait_s = 0
+    scheduler._codec_busy_wait_s = 0.001
+    scheduler.chunk_transfer_adapter = adapter
+    scheduler.running = [established, startup]
+    scheduler.waiting = []
+
+    monkeypatch.setattr(condition, "wait_for", lambda *args, **kwargs: pytest.fail("unexpected wait"))
+    monkeypatch.setattr(OmniGenerationScheduler, "schedule", lambda self, *args, **kwargs: "scheduled")
+
+    assert scheduler.schedule() == "scheduled"
+
+
 def test_native_codec_chunk_appends_prompt_without_resetting_state(monkeypatch):
     adapter = object.__new__(OmniChunkTransferAdapter)
     adapter._easymagpie_num_quantizers = 2
     adapter._easymagpie_chunk_lock = threading.Lock()
+    adapter._easymagpie_chunk_ready = threading.Condition(adapter._easymagpie_chunk_lock)
     adapter.get_req_chunk = {"request": 1}
+    new_codes = torch.arange(6, dtype=torch.long).reshape(3, 2)
     request = SimpleNamespace(
         prompt_token_ids=[0, 0],
         request_id="request",
         _all_token_ids=[0, 0],
         num_computed_tokens=2,
         num_prompt_tokens=2,
-        additional_information=None,
+        additional_information={"codes": {"audio": torch.full((2, 2), 99, dtype=torch.long)}},
         update_block_hashes=lambda: None,
     )
 
     def fake_poll(self, req):
+        assert self._easymagpie_chunk_lock.locked()
         req.prompt_token_ids = [0]
         req._all_token_ids[:] = []
         req.num_computed_tokens = 0
-        req.additional_information = {"codes": {"audio": torch.ones((3, 2), dtype=torch.long)}}
+        info = dict(req.additional_information or {})
+        info["codes"] = {**info.get("codes", {}), "audio": new_codes}
+        info["meta"] = {"is_segment_finished": True}
+        req.additional_information = info
         return True
 
     monkeypatch.setattr(OmniChunkTransferAdapter, "_poll_single_request", fake_poll)
@@ -195,7 +439,8 @@ def test_native_codec_chunk_appends_prompt_without_resetting_state(monkeypatch):
     assert request._all_token_ids == [0, 0, 0, 0, 0]
     assert request.num_prompt_tokens == 5
     assert request.num_computed_tokens == 2
-    assert request.additional_information["codes"]["audio"].shape == (3, 2)
+    assert request.additional_information["codes"]["audio"] is new_codes
+    assert request.additional_information["meta"]["is_segment_finished"] is True
 
     prewarm_request = SimpleNamespace(
         prompt_token_ids=[0],
@@ -216,6 +461,7 @@ def test_native_codec_empty_segment_marker_does_not_reset_state(monkeypatch):
     adapter = object.__new__(OmniChunkTransferAdapter)
     adapter._easymagpie_num_quantizers = 2
     adapter._easymagpie_chunk_lock = threading.Lock()
+    adapter._easymagpie_chunk_ready = threading.Condition(adapter._easymagpie_chunk_lock)
     request = SimpleNamespace(
         prompt_token_ids=[0, 0, 0],
         request_id="request",
@@ -243,6 +489,86 @@ def test_native_codec_empty_segment_marker_does_not_reset_state(monkeypatch):
     assert request._all_token_ids == [0, 0, 0]
     assert request.num_prompt_tokens == 3
     assert request.num_computed_tokens == 3
+
+
+def test_native_codec_loaded_empty_segment_marker_is_not_scheduled(monkeypatch):
+    adapter = object.__new__(OmniChunkTransferAdapter)
+    adapter._easymagpie_num_quantizers = 2
+    adapter._easymagpie_chunk_lock = threading.Lock()
+    adapter._easymagpie_chunk_ready = threading.Condition(adapter._easymagpie_chunk_lock)
+    adapter._finished_load_reqs = {"request"}
+    request = SimpleNamespace(
+        prompt_token_ids=[0, 0, 0],
+        request_id="request",
+        _all_token_ids=[0, 0, 0],
+        num_computed_tokens=3,
+        num_prompt_tokens=3,
+        additional_information={"codes": {"audio": torch.ones((3, 2), dtype=torch.long)}},
+        update_block_hashes=lambda: None,
+    )
+
+    def fake_poll(self, req):
+        req.prompt_token_ids = []
+        req._all_token_ids[:] = []
+        req.num_prompt_tokens = 0
+        req.num_computed_tokens = 0
+        req.additional_information = {"meta": {"is_segment_finished": True}}
+        return True
+
+    monkeypatch.setattr(OmniChunkTransferAdapter, "_poll_single_request", fake_poll)
+
+    assert _poll_native_codec_chunk(adapter, request) is False
+    assert request.prompt_token_ids == [0, 0, 0]
+    assert request._all_token_ids == [0, 0, 0]
+    assert request.num_prompt_tokens == 3
+    assert request.num_computed_tokens == 3
+    assert adapter._finished_load_reqs == set()
+
+
+@pytest.mark.parametrize("marker", ["finished", "is_segment_finished"])
+def test_native_codec_loaded_control_marker_does_not_replay_previous_chunk(monkeypatch, marker):
+    adapter = object.__new__(OmniChunkTransferAdapter)
+    adapter._easymagpie_num_quantizers = 2
+    adapter._easymagpie_chunk_lock = threading.Lock()
+    adapter._easymagpie_chunk_ready = threading.Condition(adapter._easymagpie_chunk_lock)
+    adapter._finished_load_reqs = set()
+    ref = torch.tensor([0.1, -0.1])
+    request = SimpleNamespace(
+        prompt_token_ids=[0, 0, 0],
+        request_id="request",
+        _all_token_ids=[0, 0, 0],
+        num_computed_tokens=3,
+        num_prompt_tokens=3,
+        additional_information={
+            "codes": {"audio": torch.ones((3, 2), dtype=torch.long), "ref": ref},
+            "meta": {"chunk_seq": 1},
+        },
+        update_block_hashes=lambda: None,
+    )
+
+    def fake_poll(self, req):
+        # vLLM-Omni merges a control marker into the previous payload.
+        info = dict(req.additional_information)
+        info["meta"] = {**info.get("meta", {}), marker: True}
+        req.additional_information = info
+        req.prompt_token_ids = [0]
+        req._all_token_ids[:] = []
+        req.num_prompt_tokens = 1
+        req.num_computed_tokens = 0
+        self._finished_load_reqs.add(req.request_id)
+        return True
+
+    monkeypatch.setattr(OmniChunkTransferAdapter, "_poll_single_request", fake_poll)
+
+    assert _poll_native_codec_chunk(adapter, request) is False
+    assert request.prompt_token_ids == [0, 0, 0]
+    assert request._all_token_ids == [0, 0, 0]
+    assert request.num_prompt_tokens == 3
+    assert request.num_computed_tokens == 3
+    assert "audio" not in request.additional_information["codes"]
+    assert request.additional_information["codes"]["ref"] is ref
+    assert request.additional_information["meta"][marker] is True
+    assert request.request_id not in adapter._finished_load_reqs
 
 
 def test_native_codec_streaming_update_preserves_state_and_resumes_polling():

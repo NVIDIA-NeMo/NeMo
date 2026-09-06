@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import torch
 import vllm.v1.attention.backends.mamba_attn as _mamba_attn
+from vllm import envs, platforms
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import ReLUSquaredActivation, get_act_fn
 
@@ -103,4 +104,48 @@ def patch_moe_routed_scale(backbone) -> int:
         mixer.register_forward_hook(_scale_output)
         patched += 1
     logger.info("FP16 MoE routed-scale fix installed on %d layers", patched)
+    return patched
+
+
+def patch_moe_router_logit_cast(backbone) -> int:
+    """Let the fused grouped router consume FP16 gate logits directly."""
+    if not platforms.current_platform.is_cuda() or not envs.VLLM_USE_FUSED_MOE_GROUPED_TOPK:
+        return 0
+
+    patched = 0
+    for layer in backbone.layers:
+        mixer = getattr(layer, "mixer", None)
+        if mixer is None or mixer.__class__.__name__ != "NemotronHMoE":
+            continue
+        gate = getattr(mixer, "gate", None)
+        router = getattr(getattr(mixer, "experts", None), "router", None)
+        weight = getattr(gate, "weight", None)
+        num_experts = weight.shape[0] if isinstance(weight, torch.Tensor) else 0
+        num_groups = getattr(router, "num_expert_group", 0)
+        specialized_gate = any(
+            getattr(gate, name, False)
+            for name in (
+                "allow_ll_bf16_gemm",
+                "allow_dsv3_router_gemm",
+                "allow_fp32_router_gemm",
+                "allow_bf16x3_router_gemm",
+                "allow_cublas_router_gemm",
+            )
+        )
+        if (
+            getattr(gate, "out_dtype", None) != torch.float32
+            or getattr(weight, "dtype", None) != torch.float16
+            or specialized_gate
+            or router.__class__.__name__ != "GroupedTopKRouter"
+            or getattr(router, "scoring_func", None) != "sigmoid"
+            or getattr(router, "e_score_correction_bias", None) is None
+            or not 0 < num_groups <= 32
+            or num_experts <= num_groups
+            or num_experts % num_groups
+            or getattr(router, "top_k", 33) > 32
+        ):
+            continue
+        gate.out_dtype = torch.float16
+        patched += 1
+    logger.info("FP16 fused-router logit cast removed on %d layers", patched)
     return patched

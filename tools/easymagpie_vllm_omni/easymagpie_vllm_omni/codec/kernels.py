@@ -27,17 +27,22 @@ from vllm.triton_utils import tl, triton
 @triton.jit
 def _packed_half_snake_kernel(
     input_ptr,
+    residual_ptr,
     alpha_ptr,
     output_ptr,
     numel,
     channels: tl.constexpr,
     snake_channels: tl.constexpr,
+    HAS_RESIDUAL: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
     offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < numel
     channel = offsets % channels
-    values = tl.load(input_ptr + offsets, mask=mask).to(tl.float32)
+    values = tl.load(input_ptr + offsets, mask=mask)
+    if HAS_RESIDUAL:
+        values += tl.load(residual_ptr + offsets, mask=mask)
+    values = values.to(tl.float32)
     alpha = tl.load(alpha_ptr + channel, mask=mask & (channel < snake_channels), other=1.0).to(tl.float32)
     sine = tl.sin(alpha * values)
     periodic = values + sine * sine / (alpha + 1.0e-9)
@@ -45,20 +50,28 @@ def _packed_half_snake_kernel(
     tl.store(output_ptr + offsets, tl.where(channel < snake_channels, periodic, leaky), mask=mask)
 
 
-def packed_half_snake(inputs: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
+def packed_half_snake(
+    inputs: torch.Tensor,
+    alpha: torch.Tensor,
+    residual: torch.Tensor | None = None,
+) -> torch.Tensor:
     """Fused HalfSnake and leaky-ReLU over packed ``[tokens, channels]`` input."""
     inputs = inputs.contiguous()
+    if residual is not None:
+        residual = residual.contiguous()
     channels = inputs.shape[1]
     snake_channels = alpha.numel()
     outputs = torch.empty_like(inputs)
     block = 256
     _packed_half_snake_kernel[(triton.cdiv(inputs.numel(), block),)](
         inputs,
+        inputs if residual is None else residual,
         alpha,
         outputs,
         inputs.numel(),
         channels,
         snake_channels,
+        HAS_RESIDUAL=residual is not None,
         BLOCK=block,
     )
     return outputs

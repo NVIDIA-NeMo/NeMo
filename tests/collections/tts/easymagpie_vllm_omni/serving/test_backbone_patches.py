@@ -21,7 +21,11 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("vllm")
 
-from easymagpie_vllm_omni.backbone_patches import patch_shared_expert_activation  # noqa: E402
+import easymagpie_vllm_omni.backbone_patches as backbone_patches  # noqa: E402
+from easymagpie_vllm_omni.backbone_patches import (  # noqa: E402
+    patch_moe_router_logit_cast,
+    patch_shared_expert_activation,
+)
 from vllm.model_executor.layers.activation import ReLUSquaredActivation  # noqa: E402
 
 
@@ -57,3 +61,22 @@ def test_shared_expert_patch_rejects_unknown_upstream_implementation():
 
     with pytest.raises(RuntimeError, match="implementation changed"):
         patch_shared_expert_activation(backbone)
+
+
+def test_fp16_grouped_router_skips_logit_upcast(monkeypatch):
+    monkeypatch.setattr(backbone_patches.platforms, "current_platform", SimpleNamespace(is_cuda=lambda: True))
+    monkeypatch.setattr(backbone_patches.envs, "VLLM_USE_FUSED_MOE_GROUPED_TOPK", True)
+    router = type("GroupedTopKRouter", (), {})()
+    router.num_expert_group = 1
+    router.top_k = 4
+    router.scoring_func = "sigmoid"
+    router.e_score_correction_bias = torch.zeros(24)
+    gate = SimpleNamespace(weight=torch.empty(24, 1536, dtype=torch.float16), out_dtype=torch.float32)
+    mixer = NemotronHMoE(_relu_squared_without_vllm_context())
+    mixer.gate = gate
+    mixer.experts = SimpleNamespace(router=router)
+    backbone = SimpleNamespace(layers=[SimpleNamespace(mixer=mixer)])
+
+    assert patch_moe_router_logit_cast(backbone) == 1
+    assert gate.out_dtype == torch.float16
+    assert patch_moe_router_logit_cast(backbone) == 0

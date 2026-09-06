@@ -66,9 +66,7 @@ def test_request_uses_openai_speech_endpoint_and_decodes_streaming_pcm(monkeypat
         "input": "Hello",
         "voice": "eng",
         "response_format": "pcm",
-        "stream": True,
         "stream_format": "audio",
-        "max_new_tokens": 128,
     }
     assert result.error is None
     assert result.num_samples == 2

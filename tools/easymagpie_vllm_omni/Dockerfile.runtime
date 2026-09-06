@@ -1,0 +1,13 @@
+ARG BASE_IMAGE=nemotron-speech:frontend-prefill
+FROM ${BASE_IMAGE}
+
+USER root
+COPY . /tmp/easymagpie_vllm_omni
+RUN python3 -m pip install --no-deps --no-build-isolation --no-cache-dir \
+        --upgrade --target /opt/nemotron-speech/engine/python \
+        /tmp/easymagpie_vllm_omni \
+    && install -m 0755 /tmp/easymagpie_vllm_omni/scripts/launch_engines.py \
+        /opt/nemotron-speech/bin/launch_easymagpie_engines.py \
+    && rm -rf /tmp/easymagpie_vllm_omni
+
+USER 65532:65532

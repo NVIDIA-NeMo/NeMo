@@ -49,6 +49,7 @@ CODEC_STATE_ELEMENTS = 4608
 @dataclass
 class CodecStateMetadata(Mamba1AttentionMetadata):
     codec_uniform: bool = False
+    codec_prefill_uniform: bool = False
     codec_max_query_len: int | None = None
 
 
@@ -66,13 +67,20 @@ class CodecStateMetadataBuilder(Mamba1AttentionMetadataBuilder):
     ) -> CodecStateMetadata:
         metadata = super().build(common_prefix_len, common_attn_metadata, fast_build=fast_build, **kwargs)
         uniform = metadata.num_decodes == 0 or metadata.num_prefills == 0
+        prefill_uniform = False
         max_query_len = None
         if metadata.num_prefills:
             starts = common_attn_metadata.query_start_loc_cpu[-metadata.num_prefills - 1 :]
             lengths = torch.diff(starts)
-            uniform = uniform and bool(torch.all(lengths == lengths[0]).item())
+            prefill_uniform = bool(torch.all(lengths == lengths[0]).item())
+            uniform = uniform and prefill_uniform
             max_query_len = int(lengths.max().item())
-        return replace(metadata, codec_uniform=uniform, codec_max_query_len=max_query_len)
+        return replace(
+            metadata,
+            codec_uniform=uniform,
+            codec_prefill_uniform=prefill_uniform,
+            codec_max_query_len=max_query_len,
+        )
 
     def build_for_cudagraph_capture(
         self,
@@ -107,14 +115,13 @@ class PackedFiniteScalarDequantizer(nn.Module):
             torch.tensor([1, *config.num_levels_per_group[:-1]], dtype=torch.int64),
             dim=0,
         )
-        self.num_groups = config.num_codebooks
-        self.register_buffer("levels", levels, persistent=False)
-        self.register_buffer("bases", bases, persistent=False)
+        indices = torch.arange(config.codebook_size, dtype=torch.int64).unsqueeze(-1)
+        scale = torch.div(levels, 2, rounding_mode="floor")
+        lookup = ((torch.div(indices, bases, rounding_mode="floor") % levels - scale) / scale).float()
+        self.register_buffer("lookup", lookup, persistent=False)
 
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
-        nonnegative = torch.div(indices.unsqueeze(-1), self.bases, rounding_mode="floor") % self.levels
-        scale = torch.div(self.levels, 2, rounding_mode="floor")
-        return ((nonnegative - scale) / scale).flatten(start_dim=1)
+        return F.embedding(indices, self.lookup).flatten(start_dim=1)
 
 
 class PackedHalfSnake(nn.Module):
@@ -124,11 +131,13 @@ class PackedHalfSnake(nn.Module):
         # Preserve the NeMo checkpoint shape.
         self.alpha = nn.Parameter(torch.ones(1, self.snake_channels, 1))
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: torch.Tensor, residual: torch.Tensor | None = None) -> torch.Tensor:
         if inputs.is_cuda:
             from easymagpie_vllm_omni.codec.kernels import packed_half_snake
 
-            return packed_half_snake(inputs, self.alpha)
+            return packed_half_snake(inputs, self.alpha, residual)
+        if residual is not None:
+            inputs = inputs + residual
         snake_in = inputs[:, : self.snake_channels]
         alpha = self.alpha.reshape(1, -1)
         snake_out = snake_in + torch.sin(alpha * snake_in).square() / (alpha + 1e-9)
@@ -343,20 +352,7 @@ class PackedCausalConv1d(CodecStateLayer):
             parts = []
             decode_rows = metadata.num_decode_tokens * self.time_factor
             if metadata.num_decodes:
-                state_indices_d = self._decode_state_indices(metadata)
-                parts.append(
-                    packed_causal_conv1d(
-                        inputs[:decode_rows],
-                        self.conv.weight,
-                        self.conv.bias,
-                        self.kv_cache[0],
-                        state_indices_d,
-                        state_indices_d,
-                        state_indices_d,
-                        time_factor=self.time_factor,
-                        is_decode=True,
-                    )
-                )
+                parts.append(self._uniform_cuda(inputs[:decode_rows], metadata, is_decode=True))
             if metadata.num_prefills:
                 if (
                     metadata.query_start_loc_p is None
@@ -364,19 +360,23 @@ class PackedCausalConv1d(CodecStateLayer):
                     or metadata.has_initial_states_p is None
                 ):
                     raise RuntimeError("incomplete codec prefill metadata")
-                parts.append(
-                    packed_causal_conv1d(
-                        inputs[decode_rows:],
-                        self.conv.weight,
-                        self.conv.bias,
-                        self.kv_cache[0],
-                        metadata.query_start_loc_p,
-                        metadata.state_indices_tensor_p,
-                        metadata.has_initial_states_p,
-                        time_factor=self.time_factor,
-                        max_query_len=self._prefill_max_query_len(metadata),
+                prefill_inputs = inputs[decode_rows:]
+                if getattr(metadata, "codec_prefill_uniform", False):
+                    parts.append(self._uniform_cuda(prefill_inputs, metadata, is_decode=False))
+                else:
+                    parts.append(
+                        packed_causal_conv1d(
+                            prefill_inputs,
+                            self.conv.weight,
+                            self.conv.bias,
+                            self.kv_cache[0],
+                            metadata.query_start_loc_p,
+                            metadata.state_indices_tensor_p,
+                            metadata.has_initial_states_p,
+                            time_factor=self.time_factor,
+                            max_query_len=self._prefill_max_query_len(metadata),
+                        )
                     )
-                )
             if len(parts) == 1:
                 outputs = parts[0]
             else:
@@ -422,52 +422,6 @@ class PackedCausalConvTranspose1d(CodecStateLayer):
         state.copy_(joined[-1:])
         return self.activation(outputs)
 
-    def _uniform_cuda(
-        self,
-        inputs: torch.Tensor,
-        metadata: Mamba1AttentionMetadata,
-        *,
-        is_decode: bool,
-    ) -> torch.Tensor:
-        """Run a uniform packed batch through one batched cuDNN deconvolution."""
-        from easymagpie_vllm_omni.codec.kernels import gather_packed_state_inputs, update_packed_state
-
-        inputs = inputs.contiguous()
-        if is_decode:
-            state_indices = self._decode_state_indices(metadata)
-            query_start_loc = state_indices
-            has_initial = state_indices
-        else:
-            state_indices = metadata.state_indices_tensor_p
-            query_start_loc = metadata.query_start_loc_p
-            has_initial = metadata.has_initial_states_p
-            if state_indices is None or query_start_loc is None or has_initial is None:
-                raise RuntimeError("incomplete codec prefill metadata")
-
-        joined = gather_packed_state_inputs(
-            inputs,
-            self.kv_cache[0],
-            state_indices,
-            has_initial,
-            history=1,
-            is_decode=is_decode,
-        )
-        outputs = self.conv(joined.transpose(1, 2))[:, :, self.stride : -self.stride]
-        outputs = outputs.transpose(1, 2).contiguous()
-
-        update_packed_state(
-            inputs,
-            self.kv_cache[0],
-            query_start_loc,
-            state_indices,
-            has_initial,
-            channels=self.in_channels,
-            history=1,
-            time_factor=self.time_factor,
-            is_decode=is_decode,
-        )
-        return outputs.reshape(-1, self.conv.out_channels)
-
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         metadata = self._metadata()
         if metadata is None:
@@ -478,12 +432,6 @@ class PackedCausalConvTranspose1d(CodecStateLayer):
             raise RuntimeError(f"codec metadata describes {expected_rows} rows, got {inputs.shape[0]}")
         if inputs.is_cuda:
             from easymagpie_vllm_omni.codec.kernels import packed_causal_conv_transpose1d
-
-            if getattr(metadata, "codec_uniform", False):
-                if metadata.num_decodes and metadata.num_prefills:
-                    raise NotImplementedError("uniform codec batches cannot mix prefill and decode")
-                outputs = self._uniform_cuda(inputs, metadata, is_decode=bool(metadata.num_decodes))
-                return self.activation(outputs)
 
             parts = []
             decode_rows = metadata.num_decode_tokens * self.time_factor
@@ -571,7 +519,7 @@ class PackedResidualBlock(nn.Module):
         self.output_activation = PackedHalfSnake(channels)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        return self.output_activation(inputs + self.skip_conv(self.input_conv(inputs)))
+        return self.output_activation(self.skip_conv(self.input_conv(inputs)), inputs)
 
 
 class PackedResNetDecoder(nn.Module):

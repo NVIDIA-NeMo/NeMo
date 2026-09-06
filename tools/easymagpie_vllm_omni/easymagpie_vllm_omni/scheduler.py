@@ -20,13 +20,25 @@ Configure it on a single-stage deployment with::
 from __future__ import annotations
 
 import threading
+from importlib.metadata import version
+from time import monotonic, sleep
 from types import MethodType
 
 import torch
+from packaging.version import Version
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm_omni.core.sched.omni_ar_scheduler import OmniARAsyncScheduler
 from vllm_omni.core.sched.omni_generation_scheduler import OmniGenerationScheduler
 from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import OmniChunkTransferAdapter
+
+_UPSTREAM_HAS_SEGMENT_STOP_ACCOUNTING_FIX = Version(version("vllm-omni")) >= Version("0.26.0")
+
+
+def _connector_extra(vllm_config) -> dict:
+    connector = getattr(vllm_config.model_config, "stage_connector_config", {})
+    if isinstance(connector, dict):
+        return connector.get("extra", {}) or {}
+    return getattr(connector, "extra", {}) or {}
 
 
 class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
@@ -64,6 +76,30 @@ class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
     branch), then drop this override.
     """
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        wait_ms = float(_connector_extra(self.vllm_config).get("stage0_admission_coalesce_ms", 0))
+        if not 0 <= wait_ms <= 10:
+            raise ValueError("stage0_admission_coalesce_ms must be in [0, 10]")
+        self._admission_wait_s = wait_ms / 1000
+        self._admission_deadline = None
+
+    def _should_defer_waiting_admission(self) -> bool:
+        if not self._admission_wait_s or not self.waiting or self.running:
+            self._admission_deadline = None
+            return False
+        if any(request.num_computed_tokens > 0 for request in self.waiting):
+            self._admission_deadline = None
+            return False
+        if len(self.waiting) >= self.max_num_running_reqs:
+            self._admission_deadline = 0.0
+            return False
+
+        now = monotonic()
+        if self._admission_deadline is None:
+            self._admission_deadline = now + self._admission_wait_s
+        return now < self._admission_deadline
+
     def _update_request_with_output(self, request: Request, new_token_ids):
         new_token_ids, stopped = super()._update_request_with_output(request, new_token_ids)
         if stopped:
@@ -80,6 +116,9 @@ class EasyMagpieARAsyncScheduler(OmniARAsyncScheduler):
         return new_token_ids, stopped
 
     def update_from_output(self, scheduler_output, model_runner_output):
+        if _UPSTREAM_HAS_SEGMENT_STOP_ACCOUNTING_FIX:
+            return super().update_from_output(scheduler_output, model_runner_output)
+
         self._emp_stopped_this_step = []
         try:
             outputs = super().update_from_output(scheduler_output, model_runner_output)
@@ -146,37 +185,59 @@ def _codec_payload_frames(info, num_quantizers: int) -> int:
     raise ValueError(f"invalid native codec payload shape: {tuple(audio.shape)}")
 
 
+def _without_consumed_codec_audio(info):
+    """Copy request metadata without the previous chunk's audio codes."""
+    if not isinstance(info, dict):
+        return info
+    codes = info.get("codes")
+    if not isinstance(codes, dict) or "audio" not in codes:
+        return info
+    return {**info, "codes": {key: value for key, value in codes.items() if key != "audio"}}
+
+
 def _poll_native_codec_chunk_unlocked(adapter: OmniChunkTransferAdapter, request: Request) -> bool:
     """Receive a chunk without resetting the vLLM state-cache position."""
     old_num_computed_tokens = request.num_computed_tokens
+    old_additional_information = request.additional_information
     # Async-chunk prewarm may install one unscheduled placeholder before the
     # first real payload. Only tokens with materialized state are retained.
     old_prompt = list(request.prompt_token_ids or [])[:old_num_computed_tokens]
     old_all_token_ids = list(request._all_token_ids)[:old_num_computed_tokens]
 
+    # vLLM-Omni merges incoming generation payloads into this object. Remove
+    # consumed audio so a control-only boundary cannot inherit and replay it.
+    poll_information = _without_consumed_codec_audio(old_additional_information)
+    request.additional_information = poll_information
     received = OmniChunkTransferAdapter._poll_single_request(adapter, request)
-    if not received:
-        request.prompt_token_ids = old_prompt
-        request._all_token_ids[:] = old_all_token_ids
-        request.num_prompt_tokens = len(old_prompt)
-        request.num_computed_tokens = old_num_computed_tokens
-        request.update_block_hashes()
-        return False
+    if received:
+        frames = _codec_payload_frames(request.additional_information, adapter._easymagpie_num_quantizers)
+        if frames > 0:
+            placeholders = [0] * frames
+            request.prompt_token_ids = old_prompt + placeholders
+            request._all_token_ids[:] = old_all_token_ids + placeholders
+            request.num_prompt_tokens = len(request.prompt_token_ids)
+            request.num_computed_tokens = old_num_computed_tokens
+            request.update_block_hashes()
+            return True
+        adapter._finished_load_reqs.discard(request.request_id)
+    elif request.additional_information is poll_information:
+        request.additional_information = old_additional_information
 
-    frames = _codec_payload_frames(request.additional_information, adapter._easymagpie_num_quantizers)
-    placeholders = [0] * frames
-    request.prompt_token_ids = old_prompt + placeholders
-    request._all_token_ids[:] = old_all_token_ids + placeholders
-    request.num_prompt_tokens = len(request.prompt_token_ids)
+    request.prompt_token_ids = old_prompt
+    request._all_token_ids[:] = old_all_token_ids
+    request.num_prompt_tokens = len(old_prompt)
     request.num_computed_tokens = old_num_computed_tokens
     request.update_block_hashes()
-    return True
+    return False
 
 
 def _poll_native_codec_chunk(adapter: OmniChunkTransferAdapter, request: Request) -> bool:
     """Publish connector readiness only after the request payload is coherent."""
-    with adapter._easymagpie_chunk_lock:
-        return _poll_native_codec_chunk_unlocked(adapter, request)
+    with adapter._easymagpie_chunk_ready:
+        received = _poll_native_codec_chunk_unlocked(adapter, request)
+        if received:
+            adapter._easymagpie_chunk_ready.notify_all()
+        return received
 
 
 class EasyMagpieCodecScheduler(OmniGenerationScheduler):
@@ -191,7 +252,16 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
         num_quantizers = int(getattr(config, "num_stacked_codebooks", 0))
         if num_quantizers <= 0:
             raise ValueError("native EasyMagpie codec config has no stacked codebooks")
+        wait_ms = float(_connector_extra(self.vllm_config).get("codec_startup_coalesce_ms", 0))
+        if not 0 <= wait_ms <= 2:
+            raise ValueError("codec_startup_coalesce_ms must be in [0, 2]")
+        self._codec_startup_wait_s = wait_ms / 1000
+        busy_wait_ms = float(_connector_extra(self.vllm_config).get("codec_busy_coalesce_ms", 0))
+        if not 0 <= busy_wait_ms <= 4:
+            raise ValueError("codec_busy_coalesce_ms must be in [0, 4]")
+        self._codec_busy_wait_s = busy_wait_ms / 1000
         adapter._easymagpie_chunk_lock = threading.Lock()
+        adapter._easymagpie_chunk_ready = threading.Condition(adapter._easymagpie_chunk_lock)
         adapter._easymagpie_num_quantizers = num_quantizers
         adapter._poll_single_request = MethodType(_poll_native_codec_chunk, adapter)
 
@@ -259,6 +329,46 @@ class EasyMagpieCodecScheduler(OmniGenerationScheduler):
             self._easymagpie_stopped_sessions = None
         return outputs
 
+    def _should_coalesce_codec_startup(self) -> bool:
+        if not self._codec_startup_wait_s or self.running:
+            return False
+        adapter = self.chunk_transfer_adapter
+        with adapter._easymagpie_chunk_lock:
+            return any(
+                request.status == RequestStatus.WAITING_FOR_CHUNK
+                and request.num_computed_tokens == 0
+                and request.request_id in adapter._finished_load_reqs
+                for request in self.waiting
+            )
+
+    def _ready_codec_requests(self):
+        ready = self.chunk_transfer_adapter._finished_load_reqs
+        return [request for request in (*self.running, *self.waiting) if request.request_id in ready]
+
+    def _codec_busy_wait_done(self) -> bool:
+        ready = self.chunk_transfer_adapter._finished_load_reqs
+        return self._has_ready_codec_start() or all(request.request_id in ready for request in self.running)
+
+    def _has_ready_codec_start(self) -> bool:
+        return any(request.num_computed_tokens == 0 for request in self._ready_codec_requests())
+
+    def _should_coalesce_codec_busy(self) -> bool:
+        if not self._codec_busy_wait_s or len(self.running) < 2:
+            return False
+        ready = self._ready_codec_requests()
+        return (
+            any(request.num_computed_tokens > 0 for request in ready)
+            and not self._codec_busy_wait_done()
+        )
+
     def schedule(self, *args, **kwargs):
-        with self.chunk_transfer_adapter._easymagpie_chunk_lock:
+        adapter = self.chunk_transfer_adapter
+        if self._should_coalesce_codec_startup():
+            sleep(self._codec_startup_wait_s)
+        with adapter._easymagpie_chunk_ready:
+            if self._should_coalesce_codec_busy():
+                adapter._easymagpie_chunk_ready.wait_for(
+                    self._codec_busy_wait_done,
+                    timeout=self._codec_busy_wait_s,
+                )
             return super().schedule(*args, **kwargs)

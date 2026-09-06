@@ -32,6 +32,7 @@ logger = init_logger(__name__)
 
 # Base codebook size, excluding control tokens.
 _CODEBOOK_SIZE = 1024
+_CODEC_PADDING = -1
 
 
 def _empty_finished_payload() -> dict[str, Any]:
@@ -335,10 +336,18 @@ def talker2code2wav_async_chunk(
             f"must be a list, got {type(raw_startup_chunks).__name__}"
         )
     startup_chunk_sizes = [int(value) for value in raw_startup_chunks]
-    if chunk_size <= 0 or any(value <= 0 for value in startup_chunk_sizes):
+    raw_busy_chunks = cfg.get("codec_busy_startup_chunk_frames", raw_startup_chunks)
+    if not isinstance(raw_busy_chunks, (list, tuple)):
+        raise ValueError(
+            "Invalid EasyMagpie codec chunk config: codec_busy_startup_chunk_frames "
+            f"must be a list, got {type(raw_busy_chunks).__name__}"
+        )
+    busy_chunk_sizes = [int(value) for value in raw_busy_chunks]
+    if chunk_size <= 0 or any(value <= 0 for value in startup_chunk_sizes + busy_chunk_sizes):
         raise ValueError(
             f"Invalid EasyMagpie codec chunk config: codec_chunk_frames={chunk_size}, "
-            f"codec_startup_chunk_frames={startup_chunk_sizes}"
+            f"codec_startup_chunk_frames={startup_chunk_sizes}, "
+            f"codec_busy_startup_chunk_frames={busy_chunk_sizes}"
         )
     # Track one absolute emission high-water mark across resumable text
     # segments so repeated segment-finish notifications cannot duplicate frames.
@@ -352,12 +361,21 @@ def talker2code2wav_async_chunk(
     emitted = emitted_state[request_id]
     emitted_chunks_state = _persistent_state(transfer_manager, "_emp_emitted_chunks")
     emitted_chunks = emitted_chunks_state[request_id]
+    request_startup_chunks = getattr(transfer_manager, "_emp_request_startup_chunks", None)
+    if request_startup_chunks is None:
+        request_startup_chunks = {}
+        transfer_manager._emp_request_startup_chunks = request_startup_chunks
+    if request_id not in request_startup_chunks:
+        busy = any(key != request_id and value > 0 for key, value in emitted_chunks_state.items())
+        request_startup_chunks[request_id] = busy_chunk_sizes if busy else startup_chunk_sizes
+    startup_chunk_sizes = request_startup_chunks[request_id]
 
     true_finished = _is_true_request_finish(request)
 
     def _cleanup() -> None:
         emitted_state.pop(request_id, None)
         emitted_chunks_state.pop(request_id, None)
+        request_startup_chunks.pop(request_id, None)
         _persistent_state(transfer_manager, "_emp_seen_frames").pop(request_id, None)
         _persistent_state(transfer_manager, "_emp_request_speech_delay").pop(request_id, None)
         base_state.pop(request_id, None)
@@ -394,6 +412,12 @@ def talker2code2wav_async_chunk(
     relative_start = emitted - base_index
     relative_end = new_end - base_index
     code_predictor_codes = torch.stack(buffer[relative_start:relative_end], dim=0).contiguous()
+    if true_finished and context_length < chunk_size:
+        padding = code_predictor_codes.new_full(
+            (chunk_size - context_length, code_predictor_codes.shape[1]),
+            _CODEC_PADDING,
+        )
+        code_predictor_codes = torch.cat((code_predictor_codes, padding), dim=0)
 
     emitted_state[request_id] = new_end
     emitted_chunks_state[request_id] += 1

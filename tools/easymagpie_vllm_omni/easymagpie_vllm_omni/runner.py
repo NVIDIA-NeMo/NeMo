@@ -21,13 +21,23 @@ preserving model-generated state such as ``decode_offset`` and ``text_tokens``.
 """
 from __future__ import annotations
 
+import json
+import os
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import torch
 from vllm_omni.engine.serialization import deserialize_additional_information
 from vllm_omni.worker import gpu_ar_worker
+from vllm_omni.worker import gpu_generation_worker
 from vllm_omni.worker.gpu_ar_model_runner import GPUARModelRunner
 from vllm_omni.worker.gpu_ar_worker import GPUARWorker
+from vllm_omni.worker.gpu_generation_model_runner import GPUGenerationModelRunner
+from vllm_omni.worker.gpu_generation_worker import GPUGenerationWorker
+
+_trace_dir = os.environ.get("EASYMAGPIE_STAGE0_TRACE_DIR")
+_STAGE0_TRACE_DIR = Path(_trace_dir) if _trace_dir else None
 
 
 def merge_streaming_additional_information(
@@ -65,6 +75,66 @@ def merge_streaming_additional_information(
 class EasyMagpieGPUARModelRunner(GPUARModelRunner):
     """GPU AR runner that restores streaming chunk metadata propagation."""
 
+    def _build_omni_async_snapshot_payload(
+        self,
+        *,
+        hidden_states: torch.Tensor,
+        staged_hidden_states_cpu: torch.Tensor | None,
+        multimodal_outputs: Any,
+    ) -> dict[str, Any]:
+        payload = super()._build_omni_async_snapshot_payload(
+            hidden_states=hidden_states,
+            staged_hidden_states_cpu=staged_hidden_states_cpu,
+            multimodal_outputs=multimodal_outputs,
+        )
+        payload.setdefault("hidden_states", hidden_states[:, :0])
+        return payload
+
+    def _update_intermediate_buffer(self, req_id: str, upd: dict) -> None:
+        if not isinstance(upd, dict) or not upd:
+            return
+        request = self.requests.get(req_id)
+        if request is None:
+            return
+
+        model = getattr(self, "model", None)
+        gpu_keys = getattr(model, "gpu_resident_buffer_keys", set())
+        top_level_gpu_keys = {key for key in gpu_keys if isinstance(key, str)}
+        nested_gpu_keys = {key for key in gpu_keys if isinstance(key, tuple) and len(key) == 2}
+        existing = self.model_intermediate_buffer.setdefault(req_id, {})
+        for key, value in upd.items():
+            if isinstance(value, dict):
+                existing_sub = existing.setdefault(key, {})
+                resident_qualifiers = {qualifier for type_key, qualifier in nested_gpu_keys if type_key == key}
+                for qualifier, subvalue in value.items():
+                    self._store_value(existing_sub, qualifier, subvalue, resident_qualifiers)
+            else:
+                self._store_value(existing, key, value, top_level_gpu_keys)
+        self._trace_stage0_prediction(req_id, upd, existing)
+        request.additional_information_cpu = existing
+
+    @staticmethod
+    def _trace_stage0_prediction(req_id: str, upd: dict, existing: dict) -> None:
+        if _STAGE0_TRACE_DIR is None or existing.get("_omni_is_prefill", False):
+            return
+        audio = upd.get("last_audio_codes")
+        phoneme = upd.get("last_phoneme_token")
+        if not isinstance(audio, torch.Tensor) or not isinstance(phoneme, torch.Tensor):
+            return
+
+        phoneme_count = phoneme.numel()
+        values = torch.cat((phoneme.reshape(-1), audio.reshape(-1))).to("cpu").tolist()
+        row = {
+            "request_id": req_id,
+            "decode_offset": int(existing.get("decode_offset", 1)) - 1,
+            "phoneme_tokens": values[:phoneme_count],
+            "audio_codes": values[phoneme_count:],
+        }
+        _STAGE0_TRACE_DIR.mkdir(parents=True, exist_ok=True)
+        path = _STAGE0_TRACE_DIR / f"stage0.{os.getpid()}.jsonl"
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(row) + "\n")
+
     def _update_streaming_request(self, req_id, new_req_data):
         payload = getattr(new_req_data, "additional_information", None)
         incoming = deserialize_additional_information(payload)
@@ -92,3 +162,43 @@ class EasyMagpieGPUARWorker(GPUARWorker):
             return super().init_device()
         finally:
             gpu_ar_worker.GPUARModelRunner = original_runner_cls
+
+
+def batch_waveforms_to_cpu(outputs: Any) -> Any:
+    """Copy a per-request waveform list to CPU in one transfer."""
+    if not isinstance(outputs, list) or len(outputs) < 2 or not all(isinstance(x, torch.Tensor) for x in outputs):
+        return outputs
+    if len({(x.device, x.dtype) for x in outputs}) != 1:
+        return outputs
+
+    sizes = [x.numel() for x in outputs]
+    shapes = [x.shape for x in outputs]
+    packed = torch.cat([x.detach().reshape(-1) for x in outputs]).to("cpu").contiguous()
+    return [part.view(shape) for part, shape in zip(packed.split(sizes), shapes, strict=True)]
+
+
+class EasyMagpieCodecGPUGenerationModelRunner(GPUGenerationModelRunner):
+    """Batch Stage-1 waveform D2H before upstream output handling."""
+
+    def sample_tokens(self, grammar_output=None):
+        state = self.execute_model_state
+        if state is not None and isinstance(state.multimodal_outputs, Mapping):
+            multimodal_outputs = dict(state.multimodal_outputs)
+            outputs = multimodal_outputs.get("model_outputs")
+            batched = batch_waveforms_to_cpu(outputs)
+            if batched is not outputs:
+                multimodal_outputs["model_outputs"] = batched
+                self.execute_model_state = state._replace(multimodal_outputs=multimodal_outputs)
+        return super().sample_tokens(grammar_output)
+
+
+class EasyMagpieCodecGPUGenerationWorker(GPUGenerationWorker):
+    """Construct the codec runner through the upstream worker."""
+
+    def init_device(self):
+        original_runner_cls = gpu_generation_worker.GPUGenerationModelRunner
+        gpu_generation_worker.GPUGenerationModelRunner = EasyMagpieCodecGPUGenerationModelRunner
+        try:
+            return super().init_device()
+        finally:
+            gpu_generation_worker.GPUGenerationModelRunner = original_runner_cls

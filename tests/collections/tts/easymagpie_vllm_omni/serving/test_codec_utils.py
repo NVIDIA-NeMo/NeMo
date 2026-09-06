@@ -45,6 +45,17 @@ def test_fsq_decode() -> None:
     torch.testing.assert_close(actual, expected)
 
 
+def test_fsq_lookup_matches_arithmetic() -> None:
+    config = tiny_config()
+    decode = PackedFiniteScalarDequantizer(config)
+    indices = torch.arange(config.codebook_size).repeat(config.num_codebooks, 1).T
+    levels = torch.tensor(config.num_levels_per_group)
+    bases = torch.cumprod(torch.tensor([1, *config.num_levels_per_group[:-1]]), dim=0)
+    scale = torch.div(levels, 2, rounding_mode="floor")
+    expected = ((torch.div(indices[..., None], bases, rounding_mode="floor") % levels - scale) / scale).flatten(1)
+    torch.testing.assert_close(decode(indices), expected)
+
+
 def test_unstack_predictor_codes_preserves_codebook_and_time_order() -> None:
     # Each predictor row is [c0_t0, c0_t1, c1_t0, c1_t1, ...].
     stacked = torch.tensor(

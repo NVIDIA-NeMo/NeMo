@@ -85,10 +85,11 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
         runtime_infos: list[dict[str, Any]],
         device: torch.device,
         request_token_spans: list[tuple[int, int]] | None = None,
-    ) -> tuple[torch.Tensor, list[int]]:
+    ) -> tuple[torch.Tensor, list[int], list[int]]:
         q = self.config.num_stacked_codebooks
         packed: list[torch.Tensor] = []
         frame_counts: list[int] = []
+        valid_sample_counts: list[int] = []
         if request_token_spans is not None and len(request_token_spans) != len(runtime_infos):
             raise ValueError(f"got {len(request_token_spans)} request spans for {len(runtime_infos)} codec payloads")
         for index, info in enumerate(runtime_infos):
@@ -100,7 +101,7 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
                     continue
             codes = info.get("codes", {}) if isinstance(info, dict) else {}
             audio = codes.get("audio") if isinstance(codes, dict) else None
-            tensor = torch.as_tensor(audio, dtype=torch.long, device=device)
+            tensor = torch.as_tensor(audio, dtype=torch.long)
             if tensor.ndim == 2:
                 if tensor.shape[1] != q:
                     raise ValueError(f"expected codec payload [frames, {q}], got {tuple(tensor.shape)}")
@@ -120,9 +121,39 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
                 )
             packed.append(rows)
             frame_counts.append(int(rows.shape[0]))
+            valid_sample_counts.append(self._valid_sample_count(rows))
         if not packed:
-            return torch.empty((0, q), dtype=torch.long, device=device), []
-        return torch.cat(packed, dim=0), frame_counts
+            empty = torch.empty((0, q), dtype=torch.long, device=device)
+            return empty, [], []
+        if all(rows.device.type == "cpu" for rows in packed):
+            codes = torch.cat(packed, dim=0).to(device=device, non_blocking=True)
+        else:
+            codes = torch.cat([rows.to(device=device, non_blocking=True) for rows in packed], dim=0)
+        return codes, frame_counts, valid_sample_counts
+
+    def _valid_sample_count(self, rows: torch.Tensor) -> int:
+        frames = int(rows.shape[0])
+        if frames == 0:
+            return 0
+
+        values = rows.detach()
+        if values.device.type != "cpu":
+            values = values.to(device="cpu")
+        padding = values.lt(0).all(dim=1).nonzero(as_tuple=False)
+        valid_frames = int(padding[0].item()) if padding.numel() else frames
+        if valid_frames == 0:
+            return 0
+
+        control = values[valid_frames - 1].view(-1, self.config.frame_stacking_factor).ge(
+            self.config.codebook_size
+        ).any(dim=0)
+        indices = control.nonzero(as_tuple=False)
+        if indices.numel():
+            valid_subframes = int(indices[0].item())
+            return (valid_frames - 1) * self.config.samples_per_frame + (
+                valid_subframes * self.config.samples_per_codec_frame
+            )
+        return valid_frames * self.config.samples_per_frame
 
     @torch.no_grad()
     def forward(
@@ -141,10 +172,12 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
             input_ids = torch.empty((0,), dtype=torch.long, device=self.vllm_config.device_config.device)
 
         if codec_codes is not None:
-            codes = codec_codes.to(device=input_ids.device, dtype=torch.long)
+            source_codes = codec_codes.to(dtype=torch.long)
+            valid_sample_counts = [self._valid_sample_count(source_codes)]
+            codes = source_codes.to(device=input_ids.device, non_blocking=True)
             frame_counts = [int(codes.shape[0])]
         elif runtime_additional_information:
-            codes, frame_counts = self._payload_codes(
+            codes, frame_counts, valid_sample_counts = self._payload_codes(
                 runtime_additional_information,
                 input_ids.device,
                 request_token_spans,
@@ -159,6 +192,7 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
                 device=input_ids.device,
             )
             frame_counts = [frames]
+            valid_sample_counts = [frames * self.config.samples_per_frame]
 
         if codes.shape[0] != input_ids.numel():
             raise ValueError(
@@ -167,21 +201,10 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
             )
         packed_audio = self.codec(codes)
         outputs: list[torch.Tensor] = []
-        frame_offset = 0
         offset = 0
-        for frames in frame_counts:
+        for frames, valid_samples in zip(frame_counts, valid_sample_counts, strict=True):
             samples = frames * self.config.samples_per_frame
-            valid_samples = samples
-            if frames > 0:
-                last = codes[frame_offset + frames - 1].view(-1, self.config.frame_stacking_factor)
-                control = (last >= self.config.codebook_size).any(dim=0)
-                if control.any():
-                    valid_subframes = int(control.to(torch.int64).argmax().item())
-                    valid_samples -= (self.config.frame_stacking_factor - valid_subframes) * (
-                        self.config.samples_per_codec_frame
-                    )
             outputs.append(packed_audio[offset : offset + valid_samples].float())
-            frame_offset += frames
             offset += samples
         sample_rate = torch.tensor(self.config.output_sample_rate, dtype=torch.int32)
         return OmniOutput(
